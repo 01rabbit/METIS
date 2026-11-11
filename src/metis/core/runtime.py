@@ -71,7 +71,7 @@ class FixtureRuntime:
             return ToolResult(ok=False, output="tool denied")
         name = "metis-fixture-" + uuid4().hex
         prefix = ["docker", "--host=unix:///var/run/docker.sock"]
-        command = [*prefix, "run", "--rm", "--name", name, "--pull=never", "-i",
+        command = [*prefix, "create", "--name", name, "--pull=never", "-i",
                    "--network=none", "--read-only", "--cap-drop=ALL",
                    "--security-opt=no-new-privileges", "--pids-limit=32",
                    "--memory=64m", "--memory-swap=64m", "--cpus=0.5",
@@ -80,10 +80,25 @@ class FixtureRuntime:
                    "--env=http_proxy=", "--env=https_proxy=", "--env=all_proxy=",
                    "--entrypoint=python", self.image, "-I", "-c", WORKER]
         environment = self._environment()
+        creation_timed_out = False
         try:
+            # Complete creation before starting a deadline-bound worker. Killing
+            # `docker run` mid-create can otherwise race removal and leak a late
+            # container after cleanup reported "not found".
+            try:
+                created = subprocess.run(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=30, check=False, env=environment,
+                )
+            except subprocess.TimeoutExpired:
+                creation_timed_out = True
+                raise RuntimeError("container creation outcome unknown; inspect runtime") from None
+            if created.returncode:
+                return ToolResult(ok=False, output="isolated runtime unavailable")
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
                 completed = subprocess.run(
-                    command, input=request.model_dump_json().encode(), stdout=output,
+                    [*prefix, "start", "-ai", name],
+                    input=request.model_dump_json().encode(), stdout=output,
                     stderr=error, timeout=self.timeout_seconds, check=False, env=environment,
                 )
                 if completed.returncode:
@@ -106,5 +121,7 @@ class FixtureRuntime:
                 )
                 if cleanup.returncode and b"no such container" not in cleanup.stderr.lower():
                     raise RuntimeError("sandbox cleanup could not be confirmed")
+                if creation_timed_out:
+                    raise RuntimeError("container creation outcome unknown; inspect runtime")
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise RuntimeError("sandbox cleanup could not be confirmed") from exc

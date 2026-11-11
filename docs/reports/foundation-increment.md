@@ -16,10 +16,20 @@ corruption detection and read-only inspection, descriptor-based artifact reads,
 and the restricted Docker runtime. Type checking covers 7 source files.
 The initial 6 tests also remain passing. No benchmark solve-rate is reported.
 
-Final local results: 75 passed, zero skipped; Ruff passed; mypy passed for all 7
+Local results before final cleanup review: 75 passed, zero skipped; Ruff passed; mypy passed for all 7
 source files; sdist/wheel build and `git diff --check` passed. GitHub Actions has
 not been observed. A prior integration assertion was corrected to match Docker's
 case-insensitive missing-container error text, then the full suite was rerun.
+Final cleanup review subsequently detected a late-create race in `docker run`:
+timeout removal could race creation and leave a stopped container. The runner
+now completes `docker create` before invoking deadline-bound `docker start -ai`.
+A creation timeout is an explicit unresolved infrastructure error. Cleanup of
+normal execution timeouts is tested against already-created containers.
+
+After that fix: all 75 cases passed again with zero skips, mypy and Ruff passed,
+the package rebuilt successfully, and a final daemon query found no remaining
+`metis-fixture-*` containers. The review branch was pushed to GitHub; Draft PR
+creation returned `Forbidden` from the GraphQL API and remains outstanding.
 
 Security review: no challenge executables are executed and no network client or
 shell tool is exposed. Three fixed transforms operate on bounded input strings.
