@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = ["pydantic>=2.9,<3"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "ruff>=0.7", "mypy>=1.13"]
+dev = ["pytest>=8.3", "ruff>=0.7", "mypy>=1.13", "build>=1.2"]
 agents = ["openai-agents>=0.1"]
 
 [project.scripts]

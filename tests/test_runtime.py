@@ -35,11 +35,28 @@ def test_daemon_selectors_are_cleared_without_dropping_registry_config(monkeypat
     assert environment["DOCKER_CONFIG"] == "/tmp/test-registry-config"
 
 
+def test_unenforced_resources_are_rejected_before_container_creation(monkeypatch):
+    monkeypatch.setattr(FixtureRuntime, "isolation_available", lambda *args, **kwargs: False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must not start a container without enforceable quotas")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", forbidden)
+    with pytest.raises(RuntimeError, match="resource isolation unavailable"):
+        FixtureRuntime(IMAGE).execute(ToolRequest(tool="sha256", data="test"))
+
+
 @pytest.fixture
 def container_runtime():
     image = os.environ.get("METIS_TEST_DOCKER_IMAGE")
     if not image:
+        if os.environ.get("METIS_REQUIRE_DOCKER_TESTS") == "1":
+            pytest.fail("required Docker image configuration missing")
         pytest.skip("set METIS_TEST_DOCKER_IMAGE to a locally available pinned Python image")
+    if not FixtureRuntime.isolation_available():
+        if os.environ.get("METIS_REQUIRE_DOCKER_TESTS") == "1":
+            pytest.fail("required Docker cgroup v2 resource enforcement unavailable")
+        pytest.skip("environment lacks enforced cgroup v2 quotas; runtime fails closed")
     return FixtureRuntime(image, timeout_seconds=30)
 
 
@@ -96,7 +113,7 @@ def test_timeout_removes_container(container_runtime, monkeypatch):
     identifier = uuid4().hex
     monkeypatch.setattr(runtime_module, "uuid4", lambda: SimpleNamespace(hex=identifier))
     monkeypatch.setattr(runtime_module, "WORKER", "import time; time.sleep(30)")
-    container_runtime.timeout_seconds = 1
+    container_runtime.timeout_seconds = 5
     result = container_runtime.execute(ToolRequest(tool="sha256", data="timeout"))
     assert not result.ok
     assert result.output == "tool timeout"

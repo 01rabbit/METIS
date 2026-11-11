@@ -15,19 +15,35 @@ Also implemented: descriptor-based bounded artifact reads rejecting symlinks and
 special files, SHA-256 digests, and a restricted Docker fixture runtime supporting
 only Base64/hex decoding and SHA-256. The runtime has no host mounts, no network,
 a read-only filesystem, dropped capabilities, non-root UID and bounded resources.
-Arbitrary commands/binaries are unsupported. Timeouts force container removal;
+Arbitrary commands/binaries are unsupported. Resource enforcement is checked
+before creation and in the container; unavailable enforcement refuses execution.
+Timeouts force container removal;
 unconfirmed cleanup raises an infrastructure error.
 
 Local Linux checks: see the implementation report for final test counts,
 lint/type/build results, and the pinned container image used. No GitHub CI
-result, live-model solve, isolation evaluation, or macOS validation is claimed.
+result, live-model solve, complete isolation evaluation, or macOS validation is claimed.
+
+The next increment adds a bounded provider-neutral plan/tool/verify loop,
+controller-owned action/token/cost reservations and deadlines, repeated-action
+stopping, cancellation markers, an independent private fixture oracle, two
+generated categories and an optional OpenAI JSON adapter. `uv.lock` pins runtime
+and development dependencies. CLI `run` and `generate-fixtures` are implemented.
+Actual decoded candidates and raw exception text are never written to events.
+
+Current validation after hardening: 86 tests passed, 8 container cases skipped
+because this daemon reports `CgroupDriver=none` (rootless, cgroup v2 without
+delegation). The runtime now refuses execution in this environment. Earlier
+functional trials solved both generated categories before the enforcement check
+was added; these are NOT proof of resource isolation or current readiness.
+CI requires those container tests and fails, rather than skips, if unsupported.
 
 ## Phase gates and remaining work
 
 | Phase | Evidence and remaining requirements |
 | --- | --- |
-| P0 | Partial. Contracts, bounded artifact snapshots, development checks, lifecycle evidence and a restricted fixture runtime exist. Container tests establish host-oracle path denial for this runtime; a full solver/verifier protocol and adversarial isolation evaluation remain. |
-| P1 | Not accepted. Lifecycle persistence and inspection exist; autonomous loop, isolated runtime, verifier, cancellation and real-model two-category solves remain. |
+| P0 | Partial. Contracts, bounded artifact snapshots, locked setup, lifecycle evidence, an independent local oracle and a restricted fixture runtime exist. Required resource isolation cannot currently be validated on this daemon; no full issue closure is claimed. |
+| P1 | Not accepted. Plan/tool/observe/verify loop, budgets, cancellation and optional OpenAI adapter exist. Requires enforced Docker quotas, live-model two-category validation, durable execution resume and broader tool support. |
 | P2 | Not started; requires accepted P1 baseline. |
 | P3 | Not started; requires P1 and an independently protected evaluation boundary. |
 | P4 | Not started; requires P1/P3 with measured baseline. |
@@ -45,11 +61,20 @@ result, live-model solve, isolation evaluation, or macOS validation is claimed.
   in the current session. Restore scoped GitHub Issue/PR access to complete the
   requested external review workflow; do not assume a new raw token is required.
 - `OPENAI_API_KEY` is absent in the runtime and no model binding is declared in
-  environment status. A live-provider P1 acceptance run cannot be performed yet.
-  Configure credentials securely in environment settings when that runner exists;
-  never enter secret values in chat. No paid model request has been made.
+  the running environment. `METIS_OPENAI_API_KEY` is also absent. A draft now
+  declares `METIS_OPENAI_API_KEY` restricted to `api.openai.com`, and that domain
+  was added to the draft. Supply the value securely in environment settings,
+  review/save changes and publish; no real API call has been made.
+- The managed daemon is rootless with `CgroupDriver=none`. A non-root task user
+  cannot enable cgroup delegation or replace it with a privileged daemon. Recover
+  or provide an environment with enforced cgroup v2 CPU/memory/PID limits. No
+  privilege escalation or weaker sandbox fallback was attempted.
+
+Reusable install/start instructions and the pinned test image variable were
+saved successfully in the environment draft. This supersedes the earlier draft
+save failures. Saving neither applies them to this instance nor publishes them.
 
 These external blockers do not imply that the unfinished local implementation
-is complete. Continue with a protected verifier protocol, budget enforcement and
-the model/tool loop before autonomous solves; do not bypass acceptance gates to
-claim later phases.
+is complete. Durable execution resume, adversarial boundary review and broader
+tools remain local implementation work. Do not bypass acceptance gates or claim
+later-phase completion from deterministic synthetic fixtures.

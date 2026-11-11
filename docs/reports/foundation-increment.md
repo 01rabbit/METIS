@@ -31,6 +31,12 @@ the package rebuilt successfully, and a final daemon query found no remaining
 `metis-fixture-*` containers. The review branch was pushed to GitHub; Draft PR
 creation returned `Forbidden` from the GraphQL API and remains outstanding.
 
+Later correction: this daemon's cgroup driver is `none` despite accepting quota
+flags. The earlier functional isolation probes did not validate CPU/memory/PID
+enforcement. The local-loop increment now refuses unsupported quotas and checks
+actual cgroup files. See `local-loop-increment.md` for current readiness blockers;
+earlier passing decoder tests must not be read as full resource-isolation evidence.
+
 Security review: no challenge executables are executed and no network client or
 shell tool is exposed. Three fixed transforms operate on bounded input strings.
 Endpoint syntax does not implement DNS or connection authorization. Descriptor

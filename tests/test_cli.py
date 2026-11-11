@@ -51,3 +51,25 @@ def test_invalid_encoding_is_rejected_without_traceback(tmp_path):
     result = cli("validate", manifest)
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
+
+
+def test_oversized_manifest_is_rejected_before_parsing(tmp_path):
+    manifest = tmp_path / "large.json"
+    manifest.write_bytes(b"x" * 1_048_577)
+    result = cli("validate", manifest)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+
+
+def test_generated_fixture_cli_respects_stop_marker_without_docker(tmp_path):
+    oracle = tmp_path / "private/answers.json"
+    generated = cli("generate-fixtures", tmp_path / "solver", "--oracle", oracle)
+    assert generated.returncode == 0, generated.stderr
+    manifest = json.loads(generated.stdout)["manifests"][0]
+    marker = tmp_path / "stop"
+    marker.touch()
+    result = cli("run", manifest, "--database", tmp_path / "runs.sqlite",
+                 "--oracle", oracle, "--image", "python@sha256:" + "a" * 64,
+                 "--stop-file", marker)
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)["status"] == "cancelled"

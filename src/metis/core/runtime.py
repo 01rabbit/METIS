@@ -1,10 +1,12 @@
 """Restricted local-fixture transforms; no arbitrary commands or network tools."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import tempfile
+import time
 from uuid import uuid4
 
 from pydantic import Field
@@ -12,6 +14,21 @@ from pydantic import Field
 from metis.core.contracts import Contract
 
 TOOLS = frozenset({"base64_decode", "hex_decode", "sha256"})
+RESOURCE_GUARD = r'''
+import json, sys
+from pathlib import Path
+try:
+    root = Path("/sys/fs/cgroup")
+    memory = int((root / "memory.max").read_text())
+    pids = int((root / "pids.max").read_text())
+    quota, period = map(int, (root / "cpu.max").read_text().split())
+    bounded = 0 < memory <= 67108864 and 0 < pids <= 32 and 0 < quota / period <= 0.5
+except (OSError, ValueError, ZeroDivisionError):
+    bounded = False
+if not bounded:
+    print(json.dumps({"ok": False, "output": "resource isolation unavailable"}))
+    sys.exit(0)
+'''
 WORKER = r'''
 import base64, hashlib, json, sys
 request = json.load(sys.stdin)
@@ -64,11 +81,34 @@ class FixtureRuntime:
             "DOCKER_CERT_PATH",
         }}
 
-    def execute(self, request: ToolRequest) -> ToolResult:
+    @classmethod
+    def isolation_available(cls, *, timeout_seconds: float = 5) -> bool:
+        try:
+            result = subprocess.run(
+                ["docker", "--host=unix:///var/run/docker.sock", "info", "--format",
+                 '{{json .CgroupDriver}} {{json .CgroupVersion}}'],
+                capture_output=True, check=False, timeout=timeout_seconds, env=cls._environment(),
+            )
+            parts = result.stdout.decode().strip().split()
+            return (result.returncode == 0 and len(parts) == 2
+                    and json.loads(parts[0]) in {"systemd", "cgroupfs"}
+                    and str(json.loads(parts[1])) == "2")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return False
+
+    def execute(self, request: ToolRequest, *, timeout_seconds: float | None = None) -> ToolResult:
         # Validate again at the trust boundary, even for model_construct callers.
         request = ToolRequest.model_validate(request.model_dump())
         if request.tool not in TOOLS:
             return ToolResult(ok=False, output="tool denied")
+        limit = self.timeout_seconds if timeout_seconds is None else min(
+            self.timeout_seconds, timeout_seconds,
+        )
+        if limit <= 0:
+            return ToolResult(ok=False, output="tool timeout")
+        deadline = time.monotonic() + limit
+        if not self.isolation_available(timeout_seconds=min(5, limit)):
+            raise RuntimeError("cgroup v2 resource isolation unavailable")
         name = "metis-fixture-" + uuid4().hex
         prefix = ["docker", "--host=unix:///var/run/docker.sock"]
         command = [*prefix, "create", "--name", name, "--pull=never", "-i",
@@ -78,7 +118,7 @@ class FixtureRuntime:
                    "--user=65534:65534", "--log-driver=none",
                    "--env=HTTP_PROXY=", "--env=HTTPS_PROXY=", "--env=ALL_PROXY=",
                    "--env=http_proxy=", "--env=https_proxy=", "--env=all_proxy=",
-                   "--entrypoint=python", self.image, "-I", "-c", WORKER]
+                   "--entrypoint=python", self.image, "-I", "-c", RESOURCE_GUARD + WORKER]
         environment = self._environment()
         creation_timed_out = False
         try:
@@ -88,18 +128,22 @@ class FixtureRuntime:
             try:
                 created = subprocess.run(
                     command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=30, check=False, env=environment,
+                    timeout=max(0.001, min(30, deadline - time.monotonic())),
+                    check=False, env=environment,
                 )
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
                 creation_timed_out = True
                 raise RuntimeError("container creation outcome unknown; inspect runtime") from None
             if created.returncode:
                 return ToolResult(ok=False, output="isolated runtime unavailable")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return ToolResult(ok=False, output="tool timeout")
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
                 completed = subprocess.run(
                     [*prefix, "start", "-ai", name],
                     input=request.model_dump_json().encode(), stdout=output,
-                    stderr=error, timeout=self.timeout_seconds, check=False, env=environment,
+                    stderr=error, timeout=remaining, check=False, env=environment,
                 )
                 if completed.returncode:
                     return ToolResult(ok=False, output="isolated tool failed")
@@ -107,7 +151,10 @@ class FixtureRuntime:
                 payload = output.read(1_048_577)
                 if len(payload) > 1_048_576:
                     return ToolResult(ok=False, output="tool output limit exceeded")
-                return ToolResult.model_validate_json(payload)
+                result = ToolResult.model_validate_json(payload)
+                if not result.ok and result.output == "resource isolation unavailable":
+                    raise RuntimeError("container resource enforcement could not be confirmed")
+                return result
         except subprocess.TimeoutExpired:
             return ToolResult(ok=False, output="tool timeout")
         except (OSError, ValueError):
