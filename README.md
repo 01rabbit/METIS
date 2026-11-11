@@ -16,6 +16,9 @@ METIS is for local training fixtures, explicitly authorized competitions, and is
 
 ## Development
 
+See [Development and current CLI](docs/DEVELOPMENT.md) for installation, checks,
+fixture preparation and read-only run inspection.
+
 1. Follow the [master plan](docs/MASTER_IMPLEMENTATION.md) and GitHub phase issues.
 2. Implement a tested vertical slice before increasing agent count.
 3. Run tests locally and record evidence; do not claim CI passes without CI results.
