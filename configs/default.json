@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "network_default": "deny",
+  "max_actions": 40,
+  "wall_time_seconds": 1200,
+  "per_tool_seconds": 30,
+  "max_parallel_workers": 2,
+  "max_model_tokens": 100000,
+  "max_cost_usd": 10.0
+}
