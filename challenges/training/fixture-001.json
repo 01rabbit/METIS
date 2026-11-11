@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "challenge_id": "local-demo-001",
+  "title": "Local Training Fixture Placeholder",
+  "description": "Authorized local fixture. No answer is included here.",
+  "categories": ["crypto"],
+  "artifacts": [],
+  "scope": {
+    "granted_by": "fixture-author",
+    "challenge_id": "local-demo-001",
+    "authorized": true,
+    "allowed_endpoints": []
+  }
+}
