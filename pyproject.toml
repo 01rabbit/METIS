@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "metis-ctf"
+version = "0.0.1"
+description = "METIS: autonomous adversarial problem-solving intelligence for authorized CTFs"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.9,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "ruff>=0.7", "mypy>=1.13"]
+agents = ["openai-agents>=0.1"]
+
+[project.scripts]
+metis = "metis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/metis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
