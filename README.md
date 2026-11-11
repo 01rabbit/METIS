@@ -8,6 +8,30 @@ METIS is a research-oriented autonomous Capture-the-Flag problem-solving agent. 
 
 ## Project status
 
+### Use METIS inside Codex
+
+Codex itself supplies the reasoning. **No API key or Docker is required** for
+the Codex-native local-puzzle workflow.
+
+Tell Codex: **“METISでローカルデモを解いて”**, or provide an authorized inline
+challenge manifest. Codex follows the repository's [METIS skill](.agents/skills/metis/SKILL.md).
+
+To create two immediately runnable demo puzzles:
+
+```sh
+uv sync --locked --extra dev
+.venv/bin/metis codex --database /tmp/metis-codex.sqlite demo
+```
+
+The result contains two run IDs and their problem statements. Codex chooses and
+calls `act RUN_ID base64_decode|hex_decode|sha256`, examines the observation, then
+uses `submit RUN_ID` with the candidate on stdin. A pre-existing local answer
+commitment verifies the result. `context RUN_ID` restores session context and
+`cancel RUN_ID` stops it. All commands use the same `codex --database ...` prefix.
+The current native tools handle inline local data puzzles; they do not execute
+challenge binaries or contact targets. The standalone model/Docker experiment
+below is optional and does not block this workflow.
+
 Early development. No autonomous solve-rate or exploit capability is claimed without verification. The [master implementation plan](docs/MASTER_IMPLEMENTATION.md) defines P0–P8, milestone dependencies, acceptance gates, and Codex execution instructions. See [AGENTS.md](AGENTS.md) for repository-wide engineering rules.
 
 ## Scope and authorization

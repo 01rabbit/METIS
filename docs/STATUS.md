@@ -1,5 +1,17 @@
 # METIS implementation status
 
+## Current product direction: Codex-native
+
+The user's latest clarification supersedes the standalone application assumption:
+Codex supplies reasoning and selects tools through `.agents/skills/metis/SKILL.md`
+and `metis codex`. This path requires neither API credentials nor Docker. Two
+generated local puzzles were solved in this Codex session using native Base64/hex
+tools and independently checked commitments. The backend stores no plaintext
+demo answers or tool observations. It supports start/context/act/submit/cancel.
+This is a working local-data-puzzle slice, not completion of P0–P8 or a general
+CTF competitor. The older Docker/API blockers below apply only to the optional
+standalone runner and no longer block the Codex-native workflow.
+
 ## Current increment
 
 Branch: `metis-full-implementation` (the requested `work/...` namespace conflicts

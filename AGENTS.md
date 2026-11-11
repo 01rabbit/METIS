@@ -2,6 +2,16 @@
 
 Mission: implement the entire P0–P8 program described in `docs/MASTER_IMPLEMENTATION.md`. Keep working through independent, verifiable increments; phase completion is gated by empirical evidence, not generated text.
 
+## Current user-facing workflow: run inside Codex
+
+The user clarified that METIS runs inside Codex: the current Codex agent supplies
+reasoning and tool selection. Read [.agents/skills/metis/SKILL.md](.agents/skills/metis/SKILL.md)
+when asked to use METIS on a local puzzle. Use `metis codex`, which needs neither
+an external model API nor Docker. Those dependencies belong only to the optional
+standalone experiments. Do not make them prerequisites for the Codex workflow.
+The native tool path runs only bounded builtin data transforms, never challenge
+programs, arbitrary shell commands or network clients. Keep that boundary.
+
 ## Working agreement
 - Read README, master plan, existing code, issues and tests before editing.
 - Use feature branches and reviewable PRs; never force-push, auto-merge or change unrelated files.

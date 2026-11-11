@@ -21,7 +21,7 @@ docker pull "$METIS_TEST_DOCKER_IMAGE"
 ```
 
 Without that variable or enforced cgroup v2 limits, eight container cases are
-explicitly skipped. CI supplies the image and `METIS_REQUIRE_DOCKER_TESTS=1`,
+explicitly skipped. The optional standalone workflow supplies the image and `METIS_REQUIRE_DOCKER_TESTS=1`,
 which makes missing capabilities a failure. The runner uses the local Unix daemon explicitly;
 no remote Docker endpoint, host filesystem mounts or arbitrary tools are accepted.
 It supports only Base64 decoding, hex decoding and SHA-256 for local fixtures.

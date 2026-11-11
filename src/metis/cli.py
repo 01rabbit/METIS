@@ -4,16 +4,18 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from uuid import uuid4
 
 from metis.core.artifacts import read_artifact
+from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
 from metis.core.fixtures import generate_fixtures
 from metis.core.models import FixtureProvider, ModelProvider
 from metis.core.openai_provider import OpenAIProvider
 from metis.core.runner import Runner
-from metis.core.runtime import FixtureRuntime
+from metis.core.runtime import FixtureRuntime, ToolRequest
 from metis.core.store import RunStore
 from metis.core.verification import FixtureOracle
 
@@ -47,8 +49,51 @@ def main() -> int:
     run.add_argument("--max-cost-usd", type=float, default=10)
     run.add_argument("--stop-file", type=Path,
                      help="controller-owned cancellation marker checked between calls")
+    codex = sub.add_parser("codex", help="Codex-native sessions: no API key or Docker")
+    codex.add_argument("--database", type=Path, required=True)
+    commands = codex.add_subparsers(dest="codex_command", required=True)
+    commands.add_parser("demo", help="create two local puzzles without plaintext answer storage")
+    start = commands.add_parser("start", help="start an inline authorized local puzzle")
+    start.add_argument("manifest", type=Path)
+    start.add_argument("--expected-sha256")
+    start.add_argument("--max-actions", type=int, default=40)
+    start.add_argument("--wall-seconds", type=int, default=1200)
+    for command in ("context", "act", "submit", "cancel"):
+        action = commands.add_parser(command)
+        action.add_argument("run_id")
+        if command == "act":
+            action.add_argument("tool", choices=("base64_decode", "hex_decode", "sha256"))
+            action.add_argument("--data", help="omit to read exact UTF-8 input from stdin")
     args = parser.parse_args()
 
+    if args.command == "codex":
+        try:
+            session = CodexSession(args.database)
+            if args.codex_command == "demo":
+                output = {"sessions": session.demo()}
+            elif args.codex_command == "start":
+                manifest = ChallengeManifest.model_validate_json(read_artifact(
+                    args.manifest.parent, args.manifest.name,
+                ))
+                output = session.start(manifest, commitment=args.expected_sha256,
+                                       max_actions=args.max_actions, wall_seconds=args.wall_seconds)
+            elif args.codex_command == "context":
+                output = session.context(args.run_id)
+            elif args.codex_command == "cancel":
+                output = session.cancel(args.run_id)
+            else:
+                data = (args.data if args.codex_command == "act" and args.data is not None
+                        else sys.stdin.buffer.read(65_537).decode())
+                if len(data.encode()) > 65_536:
+                    raise ValueError("input exceeds limit")
+                if args.codex_command == "act":
+                    output = session.act(args.run_id, ToolRequest(tool=args.tool, data=data))
+                else:
+                    output = session.submit(args.run_id, data)
+            print(json.dumps(output))
+            return 0
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            parser.exit(2, "Codex session command rejected; check scope, state and input limits\n")
     if args.command == "generate-fixtures":
         try:
             if args.oracle.resolve().is_relative_to(Path(__file__).resolve().parents[2]):
