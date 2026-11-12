@@ -37,6 +37,8 @@ python3 scripts/setup.py --dev                         passed; doctor ready
 pytest -ra                                             156 passed, 8 skipped
 ruff check src tests scripts                          passed
 mypy src/metis                                        passed (22 files)
+fresh feature-branch clone + setup + doctor            passed
+fresh-clone Codex/web focused tests                    14 passed
 ```
 
 The eight skipped tests belong to the optional Docker runner and require a
