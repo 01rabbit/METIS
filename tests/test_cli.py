@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -73,3 +74,24 @@ def test_generated_fixture_cli_respects_stop_marker_without_docker(tmp_path):
                  "--stop-file", marker)
     assert result.returncode == 1, result.stderr
     assert json.loads(result.stdout)["status"] == "cancelled"
+
+
+def test_web_submit_removes_one_terminal_line_ending(monkeypatch, tmp_path, capsys):
+    captured = []
+
+    class Workflow:
+        def __init__(self, database):
+            assert database == tmp_path / "runs.sqlite"
+
+        def submit(self, run_id, candidate):
+            captured.append((run_id, candidate))
+            return {"verified": True}
+
+    monkeypatch.setattr("metis.cli.WebWorkflow", Workflow)
+    monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(tmp_path / "runs.sqlite"),
+                                      "submit", "run-1"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"FLAG_example\r\n")))
+    from metis.cli import main
+    assert main() == 0
+    assert captured == [("run-1", "FLAG_example")]
+    assert json.loads(capsys.readouterr().out)["verified"] is True

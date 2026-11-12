@@ -250,7 +250,13 @@ class WebWorkflow:
         fingerprint = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
         with sqlite3.connect(self.database) as db:
             previous = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? AND digest=?", (run_id, fingerprint)).fetchone()
-            if previous and previous[0] not in {"ratelimited", "authentication_required", "not_sent"}:
+            retryable = {"ratelimited", "authentication_required", "not_sent"}
+            # ksnctf flag submissions are idempotent. A transport failure after the
+            # request was reserved must remain recoverable without changing the
+            # evidence-derived candidate.
+            if config["adapter"] == "ksnctf":
+                retryable.add("unknown")
+            if previous and previous[0] not in retryable:
                 raise ValueError("identical candidate already submitted; reconsider the hypothesis")
             if db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?", (run_id,)).fetchone()[0] >= config["max_submissions"]:
                 raise ValueError("submission limit reached")

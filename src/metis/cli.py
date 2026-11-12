@@ -182,7 +182,12 @@ def main() -> int:
                                                  flag_field=args.flag_field, selector=args.selector,
                                                  correct_text=args.correct_text, incorrect_text=args.incorrect_text)
             else:
-                candidate = sys.stdin.buffer.read(65_537).decode()
+                candidate_bytes = sys.stdin.buffer.read(65_537)
+                if candidate_bytes.endswith(b"\r\n"):
+                    candidate_bytes = candidate_bytes[:-2]
+                elif candidate_bytes.endswith(b"\n"):
+                    candidate_bytes = candidate_bytes[:-1]
+                candidate = candidate_bytes.decode()
                 output = workflow.submit(args.run_id, candidate)
             print(json.dumps(output))
             return 0

@@ -317,6 +317,31 @@ def test_ksnctf_rate_limit_persists_and_oversized_response_fails_closed(site, tm
     assert workflow.submit(second, FLAG)["verdict"] == "unknown"
 
 
+def test_ksnctf_unknown_transport_can_retry_same_candidate(site, tmp_path):
+    base, state = site
+    database = tmp_path / "session.sqlite"
+    workflow = WebWorkflow(database)
+    run_id = workflow.open(base + "/problem/2", adapter="ksnctf")["context"]["run_id"]
+    state.update(ksnctf_body="not-json")
+    first = workflow.submit(run_id, FLAG)
+    assert first["verdict"] == "unknown" and not first["verified"]
+    state.update(ksnctf_body=json.dumps({"result": True, "update": False}))
+    second = WebWorkflow(database).submit(run_id, FLAG)
+    assert second["verified"] and second["status"] == "solved"
+    assert state["posts"] == 2
+
+
+def test_generic_unknown_verdict_does_not_replay_same_candidate(site, tmp_path):
+    base, _ = site
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    run_id = workflow.open(base + "/problem")["context"]["run_id"]
+    workflow.configure_form(run_id, form_index=0, flag_field="answer", selector="#missing",
+                            correct_text="Correct", incorrect_text="Incorrect")
+    assert workflow.submit(run_id, FLAG)["verdict"] == "unknown"
+    with pytest.raises(ValueError, match="identical candidate"):
+        workflow.submit(run_id, FLAG)
+
+
 @pytest.mark.parametrize("path,challenge_id", [
     ("/", None), ("/problem/0", None), ("/problem/1000001", None),
     ("/problem/2?other=3", None), ("/problem/2", 3),

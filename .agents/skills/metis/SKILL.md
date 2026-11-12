@@ -19,6 +19,15 @@ official submissions, verdict handling, run budgets, and final synthesis in
 Daybreak. A simple sequential task does not justify a subagent merely to increase
 agent count.
 
+For a multi-challenge set, keep one canonical web run per problem and let `web
+open` capture recognized distributions in that run. Do not reopen the same
+problem into separate statement and artifact runs. Triage the portfolio first,
+then group only homogeneous work: mechanical decoding, archive/packet analysis,
+static source analysis, and live-service work. Submit each evidence-backed
+candidate as soon as it is ready instead of waiting for unrelated branches.
+Escalate an ambiguous exploit or obfuscation task to a stronger available model
+after one bounded lower-tier attempt; do not keep a disproved branch alive.
+
 ## Prepare
 
 Work in the repository checkout. If `.venv/bin/metis` is missing, run
@@ -94,6 +103,9 @@ Submit the exact candidate on stdin:
 ```sh
 printf '%s' 'EXACT_CANDIDATE' | .venv/bin/metis web submit RUN_ID
 ```
+
+The CLI removes one terminal LF or CRLF so interactive and `echo` submissions
+do not accidentally include a line ending. Other bytes remain exact.
 
 CTFd uses its official JSON verdict. The ksnctf adapter posts JSON to the
 same-origin `/api/submit` and accepts only HTTP 200 with boolean `result: true`;
