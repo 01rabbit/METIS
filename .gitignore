@@ -14,3 +14,8 @@ __pycache__/
 runs/
 artifacts/
 .DS_Store
+.metis-artifacts-*/
+.metis-state/
+.metis-cache/
+.metis-bootstrap/
+.metis-web-stage-*/

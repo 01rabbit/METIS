@@ -1,0 +1,121 @@
+"""Transactional lifecycle evidence; SQLite is authoritative, JSONL is an export."""
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+from metis.core.contracts import RunEvent, RunStatus
+
+TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
+    RunStatus.NEW: frozenset({RunStatus.VALIDATED}),
+    RunStatus.VALIDATED: frozenset({RunStatus.CLASSIFIED}),
+    RunStatus.CLASSIFIED: frozenset({RunStatus.PLANNING}),
+    RunStatus.PLANNING: frozenset({RunStatus.EXECUTING}),
+    RunStatus.EXECUTING: frozenset({RunStatus.OBSERVING}),
+    RunStatus.OBSERVING: frozenset({RunStatus.REPLANNING, RunStatus.VERIFYING}),
+    RunStatus.REPLANNING: frozenset({RunStatus.PLANNING}),
+    RunStatus.VERIFYING: frozenset({RunStatus.SOLVED, RunStatus.REPLANNING}),
+}
+STOP_STATES = frozenset({RunStatus.EXHAUSTED, RunStatus.POLICY_DENIED,
+                         RunStatus.ERROR, RunStatus.CANCELLED})
+
+
+class RunStore:
+    """Controller-only store. Never mount this database in a solver sandbox.
+
+    Hash chaining detects accidental corruption, not a malicious database owner.
+    Do not submit secrets, candidate flags or raw tool output as event details.
+    """
+
+    def __init__(self, path: Path, *, read_only: bool = False):
+        self.path = path
+        self.read_only = read_only
+        if read_only:
+            return
+        with self._connect() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS events (
+                run_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                payload TEXT NOT NULL, timestamp TEXT NOT NULL,
+                previous_hash TEXT NOT NULL, digest TEXT NOT NULL,
+                PRIMARY KEY (run_id, sequence))""")
+            for operation in ("UPDATE", "DELETE"):
+                db.execute(f"""CREATE TRIGGER IF NOT EXISTS deny_{operation.lower()}
+                    BEFORE {operation} ON events BEGIN
+                    SELECT RAISE(ABORT, 'events are append-only'); END""")
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        if self.read_only:
+            db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
+        else:
+            db = sqlite3.connect(self.path, timeout=10)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    @staticmethod
+    def _digest(payload: str, timestamp: str, previous: str) -> str:
+        return hashlib.sha256(json.dumps(
+            [previous, timestamp, payload], separators=(",", ":")
+        ).encode()).hexdigest()
+
+    def append(self, event: RunEvent) -> None:
+        payload = event.model_dump_json()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = self._read(db, event.run_id)
+            expected = len(previous)
+            if event.sequence != expected:
+                raise ValueError("event sequence must be contiguous")
+            if not previous:
+                if event.status != RunStatus.NEW:
+                    raise ValueError("run must begin in NEW")
+            else:
+                current = previous[-1].status
+                if current not in TRANSITIONS or (
+                    event.status not in TRANSITIONS[current] | STOP_STATES
+                ):
+                    raise ValueError(f"invalid transition: {current} -> {event.status}")
+            last = db.execute(
+                "SELECT digest FROM events WHERE run_id=? ORDER BY sequence DESC LIMIT 1",
+                (event.run_id,),
+            ).fetchone()
+            parent = last[0] if last else ""
+            timestamp = datetime.now(UTC).isoformat()
+            db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)", (
+                event.run_id, event.sequence, payload, timestamp, parent,
+                self._digest(payload, timestamp, parent),
+            ))
+
+    def _read(self, db: sqlite3.Connection, run_id: str) -> list[RunEvent]:
+        rows = db.execute(
+            "SELECT sequence, payload, timestamp, previous_hash, digest FROM events "
+            "WHERE run_id=? ORDER BY sequence", (run_id,),
+        ).fetchall()
+        events = []
+        parent = ""
+        for expected, (sequence, payload, timestamp, previous, digest) in enumerate(rows):
+            if (sequence != expected or previous != parent
+                    or digest != self._digest(payload, timestamp, parent)):
+                raise ValueError("event chain is corrupt")
+            event = RunEvent.model_validate_json(payload)
+            if event.run_id != run_id or event.sequence != sequence:
+                raise ValueError("event identity is corrupt")
+            events.append(event)
+            parent = digest
+        return events
+
+    def read(self, run_id: str) -> list[RunEvent]:
+        with self._connect() as db:
+            return self._read(db, run_id)
+
+    def export_jsonl(self, run_id: str) -> str:
+        """Return a consistent validated export; caller chooses output destination."""
+        return "".join(event.model_dump_json() + "\n" for event in self.read(run_id))

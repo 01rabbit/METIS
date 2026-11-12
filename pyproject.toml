@@ -7,10 +7,16 @@ name = "metis-ctf"
 version = "0.0.1"
 description = "METIS: autonomous adversarial problem-solving intelligence for authorized CTFs"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.9,<3"]
+dependencies = [
+    "capstone>=5.0.6",
+    "cryptography>=46",
+    "pillow>=12",
+    "pydantic>=2.9,<3",
+    "pyelftools>=0.32",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "ruff>=0.7", "mypy>=1.13"]
+dev = ["pytest>=8.3", "ruff>=0.7", "mypy>=1.13", "build>=1.2"]
 agents = ["openai-agents>=0.1"]
 
 [project.scripts]
@@ -26,3 +32,7 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[[tool.mypy.overrides]]
+module = ["capstone", "capstone.*"]
+ignore_missing_imports = true
