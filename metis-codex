@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Prepare this checkout and start an interactive Codex CTF session."""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+START_PROMPT = """METISのCTFセッションを開始してください。
+最初にAGENTS.mdと.agents/skills/metis/SKILL.mdを読み、`.venv/bin/metis doctor`で準備状態を確認してください。
+その結果を短く示した後、まだ与えられていない情報だけを日本語で一度にユーザーへ確認してください。最低限必要なのは、明示的に参加・解析を許可された問題URL、またはローカル配布ファイルのパスです。
+分かる場合だけ、プラットフォーム種別（CTFd/一般HTML）、CTFdのchallenge ID、ログインの有無、別オリジンの配布先、既知のflag形式も尋ねてください。
+認証値そのものを会話へ貼るよう求めず、必要なら`metis web auth`のマスク入力か既存環境変数を案内してください。
+URLまたはファイルを受け取ったら、追加確認を最小限にして取得・解析・公式送信・誤答修正・抽象ナレッジ保存まで継続してください。"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--print-prompt", action="store_true",
+                        help="print the startup prompt without launching Codex")
+    parser.add_argument("--skip-setup", action="store_true",
+                        help="do not run project-local setup when .venv is absent")
+    args, codex_args = parser.parse_known_args()
+    root = Path(__file__).resolve().parent
+
+    if args.print_prompt:
+        print(START_PROMPT)
+        return 0
+    if not (root / ".venv/bin/metis").is_file() and not args.skip_setup:
+        subprocess.run([sys.executable, str(root / "scripts/setup.py")], cwd=root, check=True)
+    executable = shutil.which("codex")
+    if executable is None:
+        raise SystemExit("Codex CLIが見つかりません。Codex CLIをインストールして再実行してください。")
+    os.execv(executable, [executable, "-C", str(root), *codex_args, START_PROMPT])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

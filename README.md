@@ -11,13 +11,17 @@ API key nor Docker.
 ## Start
 
 ```sh
-python3 scripts/setup.py
-.venv/bin/metis doctor
+./metis-codex
 ```
 
-Then open Codex in this directory and ask it to solve an authorized problem URL.
-The repository skill describes the complete workflow. A standard CTFd problem
-can also be opened directly:
+This launcher installs missing project-local dependencies, starts Codex in the
+repository, checks readiness, and asks for the problem URL or distribution files
+plus any platform details that are actually needed.
+
+For manual preparation, run `python3 scripts/setup.py` followed by
+`.venv/bin/metis doctor`.
+
+A standard CTFd problem can also be opened directly:
 
 ```sh
 .venv/bin/metis web open https://ctf.example/challenges --adapter ctfd --challenge-id 12

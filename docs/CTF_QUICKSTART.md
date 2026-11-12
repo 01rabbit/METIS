@@ -8,11 +8,12 @@
 git clone --branch metis-full-implementation https://github.com/01rabbit/METIS.git
 cd METIS
 python3 scripts/setup.py
-codex
+./metis-codex
 ```
 
-Codexへ「この許可されたCTF問題を解いて: 問題URL」と伝えます。標準的な利用では
-別のモデルAPIキーもDockerも不要です。
+Codexが準備状態を確認し、問題URLまたはローカル配布ファイル、必要に応じて
+プラットフォームやchallenge IDを日本語で確認します。標準的な利用では別の
+モデルAPIキーもDockerも不要です。
 
 ## 2. 問題を取得
 
