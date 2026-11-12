@@ -4,16 +4,15 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 
-def read_artifact(root: Path, relative: str, *, max_bytes: int = 1_048_576) -> bytes:
-    """Read a bounded snapshot, with no symlink components (Linux/macOS).
-
-    The controller chooses a trusted root. The resulting bytes, not a mutable
-    host path, are passed to the runtime. Directory renames cannot redirect the
-    descriptors. This is not safe archive extraction or a sandbox by itself.
-    """
+@contextmanager
+def artifact_stream(root: Path, relative: str, *, max_bytes: int) -> Iterator[BinaryIO]:
+    """Open a scoped regular file through non-symlink directory descriptors."""
     path = PurePosixPath(relative)
     if (not relative or relative == "." or path.is_absolute()
             or ".." in path.parts or "\\" in relative or ":" in relative
@@ -32,12 +31,18 @@ def read_artifact(root: Path, relative: str, *, max_bytes: int = 1_048_576) -> b
             metadata = os.fstat(stream.fileno())
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
                 raise ValueError("artifact must be a bounded regular file")
-            content = stream.read(max_bytes + 1)
-            if len(content) > max_bytes:
-                raise ValueError("artifact exceeds byte limit")
-            return content
+            yield stream
     finally:
         os.close(directory)
+
+
+def read_artifact(root: Path, relative: str, *, max_bytes: int = 1_048_576) -> bytes:
+    """Read bounded bytes without following symlink components or special files."""
+    with artifact_stream(root, relative, max_bytes=max_bytes) as stream:
+        content = stream.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise ValueError("artifact exceeds byte limit")
+        return content
 
 
 def artifact_digest(content: bytes) -> str:

@@ -1,31 +1,59 @@
-# Codex-native working slice
+# Codex-native CTF workflow
 
-The user clarified that Codex hosts the agent itself. The new default is the
-repository METIS skill plus `metis codex`, not an independently hosted model loop.
-There are no API calls, Docker operations or challenge program execution in this
-backend. Only three bounded builtin data transforms run on the host.
+## Result
 
-Actual demonstration in this Codex session:
+METIS now supports a generic authorized CTF loop inside Codex: acquire a
+statement and distributions from a URL, analyze bounded inputs, submit to an
+official verifier, revise an incorrect hypothesis, and preserve abstract
+evidence-backed techniques for later problems. Codex itself supplies reasoning;
+no separate model API or Docker service is required.
 
-| Puzzle | Codex-selected tool | Controller verdict |
-| --- | --- | --- |
-| Generated crypto data | base64_decode | verified, solved |
-| Generated misc data | hex_decode | verified, solved |
+## Local end-to-end rehearsal
 
-Codex read each problem statement, selected and called the tool, inspected the
-observation, and submitted the returned candidate through stdin. It did not use
-FixtureProvider, an external model API, Docker, or a plaintext oracle store.
-The pre-existing SHA-256 commitment verified the result. This is an actual local
-data-puzzle demonstration, not a benchmark of unseen CTF problems.
+A local CTFd-shaped server generated private random answers and exposed only
+problem statements, Base64 distributions, and the official attempt endpoint.
+The following behavior was observed through the same public CLI used for a CTF:
 
-Four dedicated tests cover both demos with subprocess creation forbidden for
-the native backend, rejected candidates, no plaintext answer persistence,
-terminal-state enforcement, scope rejection, budgets, cancellation, bounded
-invalid inputs and real CLI invocations across processes. Full-suite results:
-90 passed, 8 optional Docker cases skipped due to missing cgroups. Ruff and mypy
-passed (14 source files). The native path is usable despite those optional skips.
+1. Problem 1 and its distribution were acquired by URL.
+2. The attachment was decoded with a bounded native tool.
+3. An intentionally overlong answer containing the explanatory label was
+   rejected by the official endpoint.
+4. METIS recorded the observed failure, a revised hypothesis, and a materially
+   different next action.
+5. The exact extracted token was accepted and the run became verified/solved.
+6. Abstract success and failure cards were stored without answer material.
+7. Problem 2 intake retrieved both cards; the applicable technique was checked,
+   and the second official submission succeeded on its first attempt.
 
-Limits: native commands do not execute challenge binaries, read artifacts or
-contact endpoints. Supplied inline puzzles without a trusted answer commitment
-can produce only unverified candidates. A host/database owner can tamper with
-state; no hostile-agent isolation or complete P0–P8 delivery is claimed.
+This validates state transitions and knowledge transfer on synthetic fixtures.
+It is not a benchmark of unseen tasks or a claim about general solve rate.
+
+## Validation
+
+Executed on the cloud Linux checkout:
+
+```text
+python3 scripts/setup.py --dev                         passed; doctor ready
+pytest -ra                                             156 passed, 8 skipped
+ruff check src tests scripts                          passed
+mypy src/metis                                        passed (22 files)
+```
+
+The eight skipped tests belong to the optional Docker runner and require a
+locally pinned image plus enforced cgroups. They do not cover the default
+Codex-native path.
+
+## Security and practical limits
+
+HTTP access uses an explicit origin scope, bounded redirects and bodies, DNS
+rebinding checks, normal proxy settings, and TLS validation. Credentials and
+cookies are kept in a private local database and omitted from observations.
+Attachments are opened through descriptor-based path checks and are parsed
+statically within size/time bounds. Candidates and raw private observations are
+not stored in reusable technique cards.
+
+Untrusted programs are never executed on the host. Dynamic pwn/reverse tasks
+therefore require a separately enforced sandbox. Generic HTML verification also
+requires an explicit form field and trusted correct/incorrect result marker;
+unknown output fails closed. JavaScript-only pages and non-CTFd APIs may require
+a new adapter.

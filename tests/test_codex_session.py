@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from metis.core.codex_session import CodexSession, transform
-from metis.core.contracts import ChallengeManifest
+from metis.core.contracts import ChallengeManifest, RunStatus
 from metis.core.runtime import ToolRequest
 
 
@@ -52,8 +52,9 @@ def test_native_scope_budget_and_unverified_candidate(tmp_path):
     assert session.cancel(cancelled["run_id"])["status"] == "cancelled"
     bad = manifest.model_dump()
     bad["scope"]["allowed_endpoints"] = [{"hostname": "localhost", "port": 80}]
-    with pytest.raises(ValueError, match="inline local"):
-        session.start(ChallengeManifest.model_validate(bad))
+    scoped = session.start(ChallengeManifest.model_validate(bad))
+    assert scoped["challenge"]["scope"]["allowed_endpoints"]
+    assert scoped["network_tools"] == []
 
 
 def test_native_invalid_inputs_cannot_be_executed():
@@ -77,3 +78,20 @@ def test_codex_cli_across_processes(tmp_path):
     result = subprocess.run([*command, "submit", context["run_id"]], input=answer,
                             capture_output=True, text=True, check=True)
     assert json.loads(result.stdout)["verified"]
+
+
+def test_recovery_preserves_budget_and_never_fabricates_verification(tmp_path):
+    session = CodexSession(tmp_path / "session.sqlite")
+    context = session.demo()[0]
+    run_id = context["run_id"]
+    session._reserve(run_id, "native_data_transform")
+    assert session.context(run_id)["status"] == "executing"
+    restored = CodexSession(tmp_path / "session.sqlite")
+    recovered = restored.recover(run_id)
+    assert recovered["status"] == "planning"
+    assert recovered["actions_remaining"] == 39
+    assert not any(event.status == RunStatus.SOLVED for event in restored.store.read(run_id))
+    assert any(row["run_id"] == run_id for row in restored.board())
+    restored._reserve(run_id, "native_data_transform")
+    assert restored.cancel(run_id)["status"] == "cancelled"
+    assert restored.recover(run_id)["status"] == "cancelled"

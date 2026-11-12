@@ -1,51 +1,65 @@
 # METIS
 
-**Autonomous Adversarial Problem-Solving Intelligence**
+METIS is a Codex-native workflow for authorized CTF challenges. Given a problem
+URL or local distributions, it acquires bounded inputs, helps Codex inspect and
+solve them, submits an exact candidate to the official verifier, revises failed
+hypotheses, and saves abstract techniques for later challenges.
 
-*Observe. Reason. Exploit. Evolve.*
+Codex supplies the reasoning. The normal workflow needs neither a separate model
+API key nor Docker.
 
-METIS is a research-oriented autonomous Capture-the-Flag problem-solving agent. Its MUNIN experience subsystem preserves evidence, successful strategies, failed hypotheses, and applicable conditions for future authorized CTF challenges.
-
-## Project status
-
-### Use METIS inside Codex
-
-Codex itself supplies the reasoning. **No API key or Docker is required** for
-the Codex-native local-puzzle workflow.
-
-Tell Codex: **“METISでローカルデモを解いて”**, or provide an authorized inline
-challenge manifest. Codex follows the repository's [METIS skill](.agents/skills/metis/SKILL.md).
-
-To create two immediately runnable demo puzzles:
+## Start
 
 ```sh
-uv sync --locked --extra dev
-.venv/bin/metis codex --database /tmp/metis-codex.sqlite demo
+python3 scripts/setup.py
+.venv/bin/metis doctor
 ```
 
-The result contains two run IDs and their problem statements. Codex chooses and
-calls `act RUN_ID base64_decode|hex_decode|sha256`, examines the observation, then
-uses `submit RUN_ID` with the candidate on stdin. A pre-existing local answer
-commitment verifies the result. `context RUN_ID` restores session context and
-`cancel RUN_ID` stops it. All commands use the same `codex --database ...` prefix.
-The current native tools handle inline local data puzzles; they do not execute
-challenge binaries or contact targets. The standalone model/Docker experiment
-below is optional and does not block this workflow.
+Then open Codex in this directory and ask it to solve an authorized problem URL.
+The repository skill describes the complete workflow. A standard CTFd problem
+can also be opened directly:
 
-Early development. No autonomous solve-rate or exploit capability is claimed without verification. The [master implementation plan](docs/MASTER_IMPLEMENTATION.md) defines P0–P8, milestone dependencies, acceptance gates, and Codex execution instructions. See [AGENTS.md](AGENTS.md) for repository-wide engineering rules.
+```sh
+.venv/bin/metis web open https://ctf.example/challenges --adapter ctfd --challenge-id 12
+```
 
-## Scope and authorization
+METIS downloads recognized same-origin distributions into a private snapshot,
+returns triage and prior MUNIN knowledge, and exposes bounded static analysis and
+data tools. Submit candidates on stdin with `metis web submit RUN_ID`. The result
+is a verified solve only when the official adapter confirms it.
 
-METIS is for local training fixtures, explicitly authorized competitions, and isolated challenge infrastructure. Never use the harness to scan or attack unrelated systems. Treat every challenge attachment and tool output as untrusted. Network is denied by default; challenge network endpoints must be configured explicitly. Keep the independent verifier and hidden answers outside solver reach.
+See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
+[METIS skill](.agents/skills/metis/SKILL.md) for Codex instructions.
+
+## Current capabilities
+
+- Generic HTML and CTFd acquisition, scoped redirects/downloads, optional local
+  token or cookie authentication, and private cookie persistence.
+- Encodings, hashes, classical ciphers, XOR, integer/RSA helpers, AES with known
+  keys, packing, cyclic patterns, and candidate extraction.
+- Bounded static inspection for archives, images, audio, packet captures,
+  SQLite, PDF text, Java classes, PE, ELF, and several CPU disassemblies.
+- Official CTFd verdicts and explicitly configured HTML-form verdicts; reflected
+  candidates and HTTP status alone are rejected as proof.
+- Duplicate-answer prevention, rate-limit handling, post-failure hypothesis
+  revision, resumable state, and evidence-backed reusable technique cards.
+- Six synthetic offline category exercises and a local CTFd-shaped rehearsal
+  server for repeatable tests.
+
+Uploaded programs are never executed on the host. This environment cannot
+safely run hostile binaries, so dynamic exploitation requires a separately
+enforced sandbox. JavaScript-rendered pages and unusual competition APIs may
+need an adapter or a manually supplied distribution. These limits do not block
+the static and network submission workflow above.
 
 ## Development
 
-See [Development and current CLI](docs/DEVELOPMENT.md) for installation, checks,
-fixture preparation and read-only run inspection.
+Run `python3 scripts/setup.py --dev`, then `pytest`, `ruff check src tests scripts`,
+and `mypy src/metis`. The optional standalone provider/container experiments are
+kept for research but are not part of the default solve path. The broader
+[master implementation plan](docs/MASTER_IMPLEMENTATION.md) remains a research
+roadmap rather than a claim of completion.
 
-1. Follow the [master plan](docs/MASTER_IMPLEMENTATION.md) and GitHub phase issues.
-2. Implement a tested vertical slice before increasing agent count.
-3. Run tests locally and record evidence; do not claim CI passes without CI results.
-4. Make changes on feature branches via reviewable pull requests.
-
-License, public release, and deployment policy remain undecided.
+Use METIS only for competitions, local fixtures, and infrastructure that the
+user is authorized to test. Keep credentials and private flags out of Git and
+reusable memory.
