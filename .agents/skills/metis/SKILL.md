@@ -19,14 +19,22 @@ official submissions, verdict handling, run budgets, and final synthesis in
 Daybreak. A simple sequential task does not justify a subagent merely to increase
 agent count.
 
-For a multi-challenge set, keep one canonical web run per problem and let `web
-open` capture recognized distributions in that run. Do not reopen the same
-problem into separate statement and artifact runs. Triage the portfolio first,
-then group only homogeneous work: mechanical decoding, archive/packet analysis,
-static source analysis, and live-service work. Submit each evidence-backed
-candidate as soon as it is ready instead of waiting for unrelated branches.
-Escalate an ambiguous exploit or obfuscation task to a stronger available model
-after one bounded lower-tier attempt; do not keep a disproved branch alive.
+After challenge intake, do not pause for routine confirmations or after each
+subagent finishes. Reconcile results and continue through the next useful action.
+Group truly required user inputs into one request; progress updates are not
+approval gates.
+
+After intake, run `.venv/bin/metis plan RUN_ID`. Treat its assignments as
+one bounded wave: spawn distinct tasks with no history and a lower-tier model
+when available, then return only hypothesis, evidence, and next action to
+Daybreak. Synthesize before starting another wave. Start another wave only when
+an unresolved, materially different hypothesis remains.
+
+Each assignment returns a compact JSON report with `hypothesis`, `evidence`,
+`falsifier`, `next_action`, `event_sequences`, and `status`. Pipe it to
+`metis agent report RUN_ID WAVE_ID ASSIGNMENT_ID`, then run
+`metis agent synthesize RUN_ID WAVE_ID`. Missing or rejected reports do not pass
+the synthesis gate.
 
 ## Prepare
 
@@ -41,17 +49,18 @@ expand the user-authorized scope, bypass a proxy, or weaken TLS verification.
 
 ## Acquire a challenge
 
+For an event with many challenges, create a contest board before deep analysis.
+For CTFd, use `metis web catalog URL`, pipe its challenge list to
+`metis contest add`, and use `metis contest dispatch` to fill available work
+slots. Re-dispatch after every solve, blocker, score change, or confidence
+update. Timebox each packet and preserve its blocker instead of allowing one
+hard problem to consume the event. In attack-defense mode, service recovery and
+patch regression checks take priority when availability is degraded.
+
 For a standard CTFd challenge:
 
 ```sh
 .venv/bin/metis web open URL --adapter ctfd --challenge-id ID
-```
-
-For an official ksnctf `/problem/ID` URL, omit the adapter to auto-detect it,
-or specify `--adapter ksnctf`. The ID is inferred from the URL:
-
-```sh
-.venv/bin/metis web open https://ksnctf.sweetduet.info/problem/2
 ```
 
 For a normal HTML problem page:
@@ -104,15 +113,14 @@ Submit the exact candidate on stdin:
 printf '%s' 'EXACT_CANDIDATE' | .venv/bin/metis web submit RUN_ID
 ```
 
-The CLI removes one terminal LF or CRLF so interactive and `echo` submissions
-do not accidentally include a line ending. Other bytes remain exact.
-
-CTFd uses its official JSON verdict. The ksnctf adapter posts JSON to the
-same-origin `/api/submit` and accepts only HTTP 200 with boolean `result: true`;
-it does not follow submission redirects. Generic HTML requires a known form and an
+CTFd uses its official JSON verdict. Generic HTML requires a known form and an
 explicit trusted result marker configured with `metis web configure-form`; HTTP
 200, reflected input, regex matches, and local extraction never count as
 success. An unknown response fails closed.
+
+In tournament mode, link the web run ID to its contest challenge. The contest
+board records `solved` only when that linked run is already officially verified;
+then update the score and dispatch the next packet.
 
 After an official incorrect verdict, inspect the feedback and evidence, record
 a `revised` or `rejected` hypothesis with `metis memory reason`, derive a new

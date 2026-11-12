@@ -92,6 +92,41 @@ class WebWorkflow:
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
                        (json.dumps(client.export_state()), run_id))
 
+    def catalog(self, url: str, *, token_env: str | None = None,
+                cookie_env: str | None = None) -> dict[str, Any]:
+        """Return a bounded CTFd challenge catalog suitable for contest intake."""
+        url = clean_url(url)
+        base = url.rstrip("/")
+        config = {"origins": [origin(url)], "auth_origin": origin(url),
+                  "token_env": token_env, "cookie_env": cookie_env}
+        client = self._client(config, {})
+        response = client.request(base + "/api/v1/challenges", max_bytes=8 * 1024 * 1024)
+        if response.status != 200:
+            raise ValueError("CTFd catalog retrieval failed; check URL and authentication")
+        payload = json.loads(response.body)
+        items = payload.get("data") if payload.get("success") is True else None
+        if not isinstance(items, list) or len(items) > 500:
+            raise ValueError("unrecognized or oversized CTFd catalog")
+        challenges = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise TypeError("invalid CTFd catalog item")
+            identity = item.get("id")
+            title = item.get("name")
+            if not isinstance(identity, int) or not 1 <= identity <= 1_000_000 \
+                    or not isinstance(title, str) or not title:
+                raise ValueError("invalid CTFd challenge identity")
+            solves = item.get("solves", 0)
+            value = item.get("value", 1)
+            if not isinstance(solves, int) or solves < 0 or not isinstance(value, (int, float)):
+                raise ValueError("invalid CTFd score metadata")
+            category = str(item.get("category", "misc"))[:40].lower() or "misc"
+            challenges.append({"challenge_id": str(identity), "title": title[:200],
+                               "category": category, "points": float(value), "solves": solves,
+                               "estimated_minutes": 30, "confidence": 0.35})
+        return {"source": "ctfd", "base_url": display_url(url), "challenges": challenges,
+                "count": len(challenges), "credentials_exposed": False}
+
     def open(self, url: str, *, adapter: str = "auto", challenge_id: int | None = None,
              allowed_origins: list[str] | None = None, token_env: str | None = None,
              cookie_env: str | None = None, download: bool = True) -> dict:

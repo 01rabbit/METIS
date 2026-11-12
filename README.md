@@ -11,16 +11,30 @@ API key nor Docker.
 ## Start
 
 ```sh
-./metis-codex
+./start
 ```
 
-This launcher installs missing project-local dependencies, starts Codex in the
-repository, checks readiness, and asks for the problem URL or distribution files
-plus any platform details that are actually needed. It enables the Codex
-`cli_daybreak` and `multi_agent` features and instructs Daybreak to coordinate
-the solve while focused lower-tier agents handle independent work in parallel.
-The instructions cap unnecessary fan-out and context duplication to conserve
-tokens.
+This launcher installs missing project-local dependencies and starts an installed
+AI coding CLI in the repository. With Codex it enables `cli_daybreak`,
+`multi_agent`, and automatic approval review. Other agents use the same local
+METIS commands, verifier, state, and knowledge store. The instructions cap
+unnecessary fan-out and context duplication to conserve tokens.
+
+`./start` detects Codex, Claude, Gemini, OpenCode, or Aider. Select explicitly
+with `./start --agent NAME`; see the
+[compatibility guide](docs/AGENT_COMPATIBILITY.md) for validated boundaries.
+
+After intake, `metis plan RUN_ID` creates a bounded specialist wave with distinct
+roles, minimal context, turn limits, and centralized official verification.
+`metis agent report` persists compact evidence without candidates, and
+`metis agent synthesize` blocks unknown evidence, duplicate actions, secrets,
+and incomplete waves. Reports survive restarts and work with any agent CLI.
+
+For large events, `metis web catalog`, `metis contest add`, and
+`metis contest dispatch` maintain a persistent tournament queue. The scheduler
+balances expected points per minute with category coverage and dependencies.
+Attack-defense mode prioritizes service recovery and patch regression checks.
+See [tournament mode](docs/TOURNAMENT_MODE.md).
 
 For manual preparation, run `python3 scripts/setup.py` followed by
 `.venv/bin/metis doctor`.
@@ -36,16 +50,6 @@ returns triage and prior MUNIN knowledge, and exposes bounded static analysis an
 data tools. Submit candidates on stdin with `metis web submit RUN_ID`. The result
 is a verified solve only when the official adapter confirms it.
 
-Official ksnctf problem URLs are recognized automatically (or use `--adapter ksnctf`):
-
-```sh
-.venv/bin/metis web open https://ksnctf.sweetduet.info/problem/2
-```
-
-The problem ID comes from the URL. `metis web submit RUN_ID` sends the stdin
-candidate to the same-origin JSON API and accepts only its boolean `result: true`.
-Successful submissions update the run to `solved` and permit success technique cards.
-
 See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
 [METIS skill](.agents/skills/metis/SKILL.md) for Codex instructions.
 
@@ -57,7 +61,7 @@ See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
   keys, packing, cyclic patterns, and candidate extraction.
 - Bounded static inspection for archives, images, audio, packet captures,
   SQLite, PDF text, Java classes, PE, ELF, and several CPU disassemblies.
-- Official CTFd and ksnctf JSON verdicts and explicitly configured HTML-form verdicts; reflected
+- Official CTFd verdicts and explicitly configured HTML-form verdicts; reflected
   candidates and HTTP status alone are rejected as proof.
 - Duplicate-answer prevention, rate-limit handling, post-failure hypothesis
   revision, resumable state, and evidence-backed reusable technique cards.
