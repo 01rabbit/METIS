@@ -24,10 +24,8 @@ unnecessary fan-out and context duplication to conserve tokens.
 with `./start --agent NAME`; see the
 [compatibility guide](docs/AGENT_COMPATIBILITY.md) for validated boundaries.
 
-After intake, `metis plan RUN_ID` creates a bounded specialist wave using
-patterns adapted from public CTF and cyber-agent research. The reviewed sources,
-licenses, and adopted boundaries are documented in the
-[open-source design review](docs/OPEN_SOURCE_DESIGN_REVIEW.md).
+After intake, `metis plan RUN_ID` creates a bounded specialist wave with distinct
+roles, minimal context, turn limits, and centralized official verification.
 
 For manual preparation, run `python3 scripts/setup.py` followed by
 `.venv/bin/metis doctor`.

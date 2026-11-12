@@ -1,8 +1,7 @@
-"""Bounded planner/executor wave specifications for Codex subagents.
+"""Bounded planner/executor wave specifications for AI subagents.
 
-The design adapts the planner-to-fresh-executor summary pattern described by the
-MIT-licensed NYU D-CIPHER project. It emits plans only; Codex remains the agent
-runtime and the official verifier remains controller-owned.
+This module emits plans only; the selected AI remains the agent runtime and the
+official verifier remains controller-owned.
 """
 from __future__ import annotations
 
