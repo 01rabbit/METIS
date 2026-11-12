@@ -16,7 +16,11 @@ API key nor Docker.
 
 This launcher installs missing project-local dependencies, starts Codex in the
 repository, checks readiness, and asks for the problem URL or distribution files
-plus any platform details that are actually needed.
+plus any platform details that are actually needed. It enables the Codex
+`cli_daybreak` and `multi_agent` features and instructs Daybreak to coordinate
+the solve while focused lower-tier agents handle independent work in parallel.
+The instructions cap unnecessary fan-out and context duplication to conserve
+tokens.
 
 For manual preparation, run `python3 scripts/setup.py` followed by
 `.venv/bin/metis doctor`.

@@ -8,6 +8,17 @@ description: Acquire and solve an authorized CTF challenge from a URL or local f
 Codex supplies the reasoning. Use this workflow for an explicitly authorized CTF
 challenge. It needs no separate model API key and no Docker service.
 
+Daybreak is the orchestrator. For independent, useful lines of investigation,
+delegate focused tasks to available lower-tier subagent models and run them in
+parallel. Begin with two to four distinct assignments when the problem supports
+it. Use the smallest capable model and minimal context, avoid duplicate work,
+and reuse agents for follow-ups. For self-contained work, use a no-history fork,
+an available lower-tier model override, and a compact brief; inherit full context
+only when the task cannot be understood safely without it. Keep credentials,
+official submissions, verdict handling, run budgets, and final synthesis in
+Daybreak. A simple sequential task does not justify a subagent merely to increase
+agent count.
+
 ## Prepare
 
 Work in the repository checkout. If `.venv/bin/metis` is missing, run
