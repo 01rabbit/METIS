@@ -24,7 +24,7 @@ subagent finishes. Reconcile results and continue through the next useful action
 Group truly required user inputs into one request; progress updates are not
 approval gates.
 
-After intake, run `.venv/bin/metis codex plan RUN_ID`. Treat its assignments as
+After intake, run `.venv/bin/metis plan RUN_ID`. Treat its assignments as
 one bounded wave: spawn distinct tasks with no history and a lower-tier model
 when available, then return only hypothesis, evidence, and next action to
 Daybreak. Synthesize before starting another wave. Start another wave only when

@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Start METIS with an installed AI coding agent."""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SUPPORTED = ("codex", "claude", "gemini", "opencode", "aider")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent", choices=("auto", *SUPPORTED), default="auto")
+    parser.add_argument("--list", action="store_true", help="show detected agent CLIs")
+    args, agent_args = parser.parse_known_args()
+    root = Path(__file__).resolve().parent
+    detected = {name: shutil.which(name) for name in SUPPORTED}
+    if args.list:
+        for name, path in detected.items():
+            print(f"{name}: {path or 'not installed'}")
+        return 0
+    selected = args.agent
+    if selected == "auto":
+        selected = next((name for name in SUPPORTED if detected[name]), "")
+    if not selected or not detected[selected]:
+        raise SystemExit("対応AI CLIが見つかりません。--agentで選ぶかCLIをインストールしてください。")
+    if not (root / ".venv/bin/metis").is_file():
+        subprocess.run([sys.executable, str(root / "scripts/setup.py")], cwd=root, check=True)
+    os.chdir(root)
+    if selected == "codex":
+        launcher = str(root / "metis-codex")
+        os.execv(launcher, [launcher, *agent_args])
+    print(f"METISを{selected}で開始します。リポジトリのエージェント指示を読み、準備確認から開始してください。",
+          flush=True)
+    executable = detected[selected]
+    assert executable is not None
+    os.execv(executable, [executable, *agent_args])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

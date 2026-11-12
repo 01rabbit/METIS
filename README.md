@@ -11,19 +11,20 @@ API key nor Docker.
 ## Start
 
 ```sh
-./metis-codex
+./start
 ```
 
-This launcher installs missing project-local dependencies, starts Codex in the
-repository, checks readiness, and asks for the problem URL or distribution files
-plus any platform details that are actually needed. It enables the Codex
-`cli_daybreak` and `multi_agent` features and instructs Daybreak to coordinate
-the solve while focused lower-tier agents handle independent work in parallel.
-The instructions cap unnecessary fan-out and context duplication to conserve
-tokens. The launcher also uses Codex automatic approval review so ordinary
-workspace operations do not repeatedly stop for confirmation.
+This launcher installs missing project-local dependencies and starts an installed
+AI coding CLI in the repository. With Codex it enables `cli_daybreak`,
+`multi_agent`, and automatic approval review. Other agents use the same local
+METIS commands, verifier, state, and knowledge store. The instructions cap
+unnecessary fan-out and context duplication to conserve tokens.
 
-After intake, `metis codex plan RUN_ID` creates a bounded specialist wave using
+`./start` detects Codex, Claude, Gemini, OpenCode, or Aider. Select explicitly
+with `./start --agent NAME`; see the
+[compatibility guide](docs/AGENT_COMPATIBILITY.md) for validated boundaries.
+
+After intake, `metis plan RUN_ID` creates a bounded specialist wave using
 patterns adapted from public CTF and cyber-agent research. The reviewed sources,
 licenses, and adopted boundaries are documented in the
 [open-source design review](docs/OPEN_SOURCE_DESIGN_REVIEW.md).

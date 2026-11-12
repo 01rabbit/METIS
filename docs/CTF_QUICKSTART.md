@@ -8,14 +8,15 @@
 git clone --branch metis-full-implementation https://github.com/01rabbit/METIS.git
 cd METIS
 python3 scripts/setup.py
-./metis-codex
+./start
 ```
 
-Codexが準備状態を確認し、問題URLまたはローカル配布ファイル、必要に応じて
-プラットフォームやchallenge IDを日本語で確認します。標準的な利用では別の
-モデルAPIキーもDockerも不要です。
+インストール済みのAI CLIを自動検出して起動します。Codex以外を選ぶ場合は
+`./start --agent claude` のように指定します。AIが準備状態を確認し、問題URLまたは
+ローカル配布ファイル、必要に応じてプラットフォームやchallenge IDを確認します。
+METIS自体には別のモデルAPIキーもDockerも不要です。
 
-起動コマンドはDaybreakとマルチエージェント機能を有効にします。Daybreakが
+Codexを選んだ場合、起動コマンドはDaybreakとマルチエージェント機能を有効にします。Daybreakが
 全体を管理し、独立した解析だけを利用可能な下位モデルへ通常2〜4担当で並列化
 します。単純作業には小さいモデルと必要最小限の文脈を使い、重複調査や目的の
 ない大量起動を避けます。公式解答の送信と判定はDaybreakが一元管理します。

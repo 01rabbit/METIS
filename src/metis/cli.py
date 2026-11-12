@@ -36,6 +36,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="metis")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="check native CTF tools without API keys or Docker")
+    agent_plan = sub.add_parser("plan", help="create a provider-neutral bounded agent wave")
+    agent_plan.add_argument("run_id")
+    agent_plan.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web = sub.add_parser("web", help="generic scoped CTF problem intake and official submission")
     web.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web_commands = web.add_subparsers(dest="web_command", required=True)
@@ -167,6 +170,12 @@ def main() -> int:
             return 0
         except (OSError, ValueError, TypeError, sqlite3.Error):
             parser.exit(2, "Knowledge command rejected: use abstract, evidence-backed methods without flags or credentials\n")
+    if args.command == "plan":
+        try:
+            print(json.dumps(plan_agent_wave(CodexSession(args.database).context(args.run_id))))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
+            parser.exit(2, "Agent plan rejected: check the run ID and local session state\n")
     if args.command == "web":
         try:
             workflow = WebWorkflow(args.database)

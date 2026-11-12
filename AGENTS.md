@@ -57,7 +57,7 @@ only when target authorization, authentication, challenge selection, or an
 external action cannot be determined safely from the session. A status message
 is informational and must not become an implicit confirmation gate.
 
-After challenge intake, call `metis codex plan RUN_ID` and use its bounded wave
+After challenge intake, call `metis plan RUN_ID` and use its bounded wave
 as the default delegation plan. Require each executor to return only hypothesis,
 evidence, and next action. Synthesize the wave before spawning more work, reject
 duplicate actions, and open another wave only for a materially different
