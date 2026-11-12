@@ -36,6 +36,15 @@ Each assignment returns a compact JSON report with `hypothesis`, `evidence`,
 `metis agent synthesize RUN_ID WAVE_ID`. Missing or rejected reports do not pass
 the synthesis gate.
 
+For a multi-challenge set, keep one canonical web run per problem and let `web
+open` capture recognized distributions in that run. Do not reopen the same
+problem into separate statement and artifact runs. Triage the portfolio first,
+then group only homogeneous work: mechanical decoding, archive/packet analysis,
+static source analysis, and live-service work. Submit each evidence-backed
+candidate as soon as it is ready instead of waiting for unrelated branches.
+Escalate an ambiguous exploit or obfuscation task to a stronger available model
+after one bounded lower-tier attempt; do not keep a disproved branch alive.
+
 ## Prepare
 
 Work in the repository checkout. If `.venv/bin/metis` is missing, run
@@ -61,6 +70,13 @@ For a standard CTFd challenge:
 
 ```sh
 .venv/bin/metis web open URL --adapter ctfd --challenge-id ID
+```
+
+For an official ksnctf `/problem/ID` URL, omit the adapter to auto-detect it,
+or specify `--adapter ksnctf`. The ID is inferred from the URL:
+
+```sh
+.venv/bin/metis web open https://ksnctf.sweetduet.info/problem/2
 ```
 
 For a normal HTML problem page:
@@ -113,7 +129,12 @@ Submit the exact candidate on stdin:
 printf '%s' 'EXACT_CANDIDATE' | .venv/bin/metis web submit RUN_ID
 ```
 
-CTFd uses its official JSON verdict. Generic HTML requires a known form and an
+The CLI removes one terminal LF or CRLF so interactive and `echo` submissions
+do not accidentally include a line ending. Other bytes remain exact.
+
+CTFd uses its official JSON verdict. The ksnctf adapter posts JSON to the
+same-origin `/api/submit` and accepts only HTTP 200 with boolean `result: true`;
+it does not follow submission redirects. Generic HTML requires a known form and an
 explicit trusted result marker configured with `metis web configure-form`; HTTP
 200, reflected input, regex matches, and local extraction never count as
 success. An unknown response fails closed.
