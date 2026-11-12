@@ -30,6 +30,12 @@ when available, then return only hypothesis, evidence, and next action to
 Daybreak. Synthesize before starting another wave. Start another wave only when
 an unresolved, materially different hypothesis remains.
 
+Each assignment returns a compact JSON report with `hypothesis`, `evidence`,
+`falsifier`, `next_action`, `event_sequences`, and `status`. Pipe it to
+`metis agent report RUN_ID WAVE_ID ASSIGNMENT_ID`, then run
+`metis agent synthesize RUN_ID WAVE_ID`. Missing or rejected reports do not pass
+the synthesis gate.
+
 ## Prepare
 
 Work in the repository checkout. If `.venv/bin/metis` is missing, run

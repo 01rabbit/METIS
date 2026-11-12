@@ -18,7 +18,7 @@ from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS, MAX_ARTIFACT, MAX_FILE
 from metis.core.ctf_knowledge import KnowledgeBase, TechniqueCard
-from metis.core.ctf_orchestration import plan_agent_wave
+from metis.core.ctf_orchestration import AgentLedger
 from metis.core.ctf_practice import practice
 from metis.core.ctf_tools import DATA_TOOLS
 from metis.core.ctf_web import WebWorkflow
@@ -39,6 +39,16 @@ def main() -> int:
     agent_plan = sub.add_parser("plan", help="create a provider-neutral bounded agent wave")
     agent_plan.add_argument("run_id")
     agent_plan.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    agent = sub.add_parser("agent", help="record and synthesize bounded subagent evidence")
+    agent.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    agent_commands = agent.add_subparsers(dest="agent_command", required=True)
+    report = agent_commands.add_parser("report", help="read one compact evidence report from stdin")
+    report.add_argument("run_id")
+    report.add_argument("wave_id")
+    report.add_argument("assignment_id")
+    synthesis = agent_commands.add_parser("synthesize", help="combine one completed agent wave")
+    synthesis.add_argument("run_id")
+    synthesis.add_argument("wave_id")
     web = sub.add_parser("web", help="generic scoped CTF problem intake and official submission")
     web.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web_commands = web.add_subparsers(dest="web_command", required=True)
@@ -172,10 +182,28 @@ def main() -> int:
             parser.exit(2, "Knowledge command rejected: use abstract, evidence-backed methods without flags or credentials\n")
     if args.command == "plan":
         try:
-            print(json.dumps(plan_agent_wave(CodexSession(args.database).context(args.run_id))))
+            print(json.dumps(AgentLedger(args.database).create_wave(args.run_id)))
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
             parser.exit(2, "Agent plan rejected: check the run ID and local session state\n")
+    if args.command == "agent":
+        try:
+            ledger = AgentLedger(args.database)
+            if args.agent_command == "report":
+                raw = sys.stdin.buffer.read(16_385)
+                if len(raw) > 16_384:
+                    raise ValueError("agent report exceeds limit")
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    raise ValueError("agent report must be an object")
+                output = ledger.record_report(args.run_id, args.wave_id,
+                                              args.assignment_id, payload)
+            else:
+                output = ledger.synthesize(args.run_id, args.wave_id)
+            print(json.dumps(output))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
+            parser.exit(2, "Agent evidence rejected: use an assigned role, known event references, and abstract text\n")
     if args.command == "web":
         try:
             workflow = WebWorkflow(args.database)
@@ -230,7 +258,7 @@ def main() -> int:
                           "artifact_parser_limit_bytes": MAX_ARTIFACT, "artifact_file_limit_bytes": MAX_FILE,
                           "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536}
             elif args.codex_command == "plan":
-                output = plan_agent_wave(session.context(args.run_id))
+                output = AgentLedger(args.database).create_wave(args.run_id)
             elif args.codex_command == "intake":
                 output = session.intake(title=args.title, description=args.description,
                                         paths=args.artifact, categories=args.category,

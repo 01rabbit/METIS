@@ -26,6 +26,9 @@ with `./start --agent NAME`; see the
 
 After intake, `metis plan RUN_ID` creates a bounded specialist wave with distinct
 roles, minimal context, turn limits, and centralized official verification.
+`metis agent report` persists compact evidence without candidates, and
+`metis agent synthesize` blocks unknown evidence, duplicate actions, secrets,
+and incomplete waves. Reports survive restarts and work with any agent CLI.
 
 For manual preparation, run `python3 scripts/setup.py` followed by
 `.venv/bin/metis doctor`.
