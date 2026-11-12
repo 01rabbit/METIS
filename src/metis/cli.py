@@ -18,6 +18,7 @@ from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS, MAX_ARTIFACT, MAX_FILE
 from metis.core.ctf_knowledge import KnowledgeBase, TechniqueCard
+from metis.core.ctf_orchestration import plan_agent_wave
 from metis.core.ctf_practice import practice
 from metis.core.ctf_tools import DATA_TOOLS
 from metis.core.ctf_web import WebWorkflow
@@ -117,6 +118,8 @@ def main() -> int:
     start.add_argument("--wall-seconds", type=int, default=1200)
     start.add_argument("--artifact-root", type=Path)
     commands.add_parser("tools", help="list inline and read-only artifact tools")
+    plan = commands.add_parser("plan", help="create a bounded Daybreak subagent wave")
+    plan.add_argument("run_id")
     intake = commands.add_parser("intake", help="start from supplied text/files without writing a manifest")
     intake.add_argument("--title", default="User-provided CTF challenge")
     intake.add_argument("--description", default="Analyze the explicitly supplied local challenge files.")
@@ -217,6 +220,8 @@ def main() -> int:
                 output = {"inline_tools": sorted(DATA_TOOLS), "artifact_tools": sorted(ARTIFACT_TOOLS),
                           "artifact_parser_limit_bytes": MAX_ARTIFACT, "artifact_file_limit_bytes": MAX_FILE,
                           "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536}
+            elif args.codex_command == "plan":
+                output = plan_agent_wave(session.context(args.run_id))
             elif args.codex_command == "intake":
                 output = session.intake(title=args.title, description=args.description,
                                         paths=args.artifact, categories=args.category,

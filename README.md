@@ -23,6 +23,11 @@ The instructions cap unnecessary fan-out and context duplication to conserve
 tokens. The launcher also uses Codex automatic approval review so ordinary
 workspace operations do not repeatedly stop for confirmation.
 
+After intake, `metis codex plan RUN_ID` creates a bounded specialist wave using
+patterns adapted from public CTF and cyber-agent research. The reviewed sources,
+licenses, and adopted boundaries are documented in the
+[open-source design review](docs/OPEN_SOURCE_DESIGN_REVIEW.md).
+
 For manual preparation, run `python3 scripts/setup.py` followed by
 `.venv/bin/metis doctor`.
 
