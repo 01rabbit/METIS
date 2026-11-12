@@ -38,6 +38,13 @@ For a standard CTFd challenge:
 .venv/bin/metis web open URL --adapter ctfd --challenge-id ID
 ```
 
+For an official ksnctf `/problem/ID` URL, omit the adapter to auto-detect it,
+or specify `--adapter ksnctf`. The ID is inferred from the URL:
+
+```sh
+.venv/bin/metis web open https://ksnctf.sweetduet.info/problem/2
+```
+
 For a normal HTML problem page:
 
 ```sh
@@ -88,7 +95,9 @@ Submit the exact candidate on stdin:
 printf '%s' 'EXACT_CANDIDATE' | .venv/bin/metis web submit RUN_ID
 ```
 
-CTFd uses its official JSON verdict. Generic HTML requires a known form and an
+CTFd uses its official JSON verdict. The ksnctf adapter posts JSON to the
+same-origin `/api/submit` and accepts only HTTP 200 with boolean `result: true`;
+it does not follow submission redirects. Generic HTML requires a known form and an
 explicit trusted result marker configured with `metis web configure-form`; HTTP
 200, reflected input, regex matches, and local extraction never count as
 success. An unknown response fails closed.

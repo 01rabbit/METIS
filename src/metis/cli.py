@@ -40,7 +40,8 @@ def main() -> int:
     web_commands = web.add_subparsers(dest="web_command", required=True)
     web_open = web_commands.add_parser("open", help="retrieve problem text and same-origin distribution files")
     web_open.add_argument("url")
-    web_open.add_argument("--adapter", choices=("html", "ctfd"), default="html")
+    web_open.add_argument("--adapter", choices=("auto", "html", "ctfd", "ksnctf"), default="auto",
+                          help="auto recognizes official ksnctf problem URLs; otherwise uses HTML")
     web_open.add_argument("--challenge-id", type=int)
     web_open.add_argument("--allow-origin", action="append", default=[])
     web_open.add_argument("--token-env")

@@ -207,7 +207,8 @@ class SafeHTTP:
 
     def request(self, url: str, *, method: str = "GET", body: bytes | None = None,
                 headers: dict[str, str] | None = None, max_bytes: int = 2_097_152,
-                sink: BinaryIO | None = None, sensitive: bool = False) -> HTTPResult:
+                sink: BinaryIO | None = None, sensitive: bool = False,
+                follow_redirects: bool = True) -> HTTPResult:
         if method not in {"GET", "POST", "HEAD"} or not 1 <= max_bytes <= 256 * 1024 * 1024:
             raise ValueError("invalid bounded HTTP request")
         if body is not None and len(body) > 131072:
@@ -225,7 +226,8 @@ class SafeHTTP:
             try:
                 status = response.status if hasattr(response, "status") else response.code
                 response_headers = {key.lower(): value for key, value in response.headers.items()}
-                if status in (301, 302, 303, 307, 308) and response_headers.get("location"):
+                if (follow_redirects and status in (301, 302, 303, 307, 308)
+                        and response_headers.get("location")):
                     destination = clean_url(urllib.parse.urljoin(url, response_headers["location"]))
                     if origin(destination) not in self.allowed or (sensitive and origin(destination) != initial_origin):
                         raise ValueError("redirect destination is outside scope")

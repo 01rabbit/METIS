@@ -36,6 +36,16 @@ returns triage and prior MUNIN knowledge, and exposes bounded static analysis an
 data tools. Submit candidates on stdin with `metis web submit RUN_ID`. The result
 is a verified solve only when the official adapter confirms it.
 
+Official ksnctf problem URLs are recognized automatically (or use `--adapter ksnctf`):
+
+```sh
+.venv/bin/metis web open https://ksnctf.sweetduet.info/problem/2
+```
+
+The problem ID comes from the URL. `metis web submit RUN_ID` sends the stdin
+candidate to the same-origin JSON API and accepts only its boolean `result: true`.
+Successful submissions update the run to `solved` and permit success technique cards.
+
 See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
 [METIS skill](.agents/skills/metis/SKILL.md) for Codex instructions.
 
@@ -47,7 +57,7 @@ See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
   keys, packing, cyclic patterns, and candidate extraction.
 - Bounded static inspection for archives, images, audio, packet captures,
   SQLite, PDF text, Java classes, PE, ELF, and several CPU disassemblies.
-- Official CTFd verdicts and explicitly configured HTML-form verdicts; reflected
+- Official CTFd and ksnctf JSON verdicts and explicitly configured HTML-form verdicts; reflected
   candidates and HTTP status alone are rejected as proof.
 - Duplicate-answer prevention, rate-limit handling, post-failure hypothesis
   revision, resumable state, and evidence-backed reusable technique cards.

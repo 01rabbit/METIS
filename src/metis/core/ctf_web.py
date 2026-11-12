@@ -1,4 +1,4 @@
-"""Generic URL intake and official CTFd/configured-form verdicts for Codex."""
+"""Scoped URL intake and official CTFd, ksnctf and configured-form verdicts."""
 from __future__ import annotations
 
 import hashlib
@@ -21,6 +21,7 @@ from metis.core.contracts import RunStatus
 from metis.core.ctf_html import Page, display_url
 from metis.core.ctf_http import SafeHTTP, clean_url, origin
 from metis.core.ctf_knowledge import KnowledgeBase
+from metis.core.ctf_ksnctf import KsnctfVerdict, is_official_problem, problem_id
 
 NETWORK_ERRORS = (OSError, ValueError, KeyError, TypeError, RuntimeError, http.client.HTTPException)
 ATTACHMENTS = {".zip", ".tar", ".gz", ".xz", ".bz2", ".7z", ".rar", ".bin", ".elf", ".exe",
@@ -91,12 +92,19 @@ class WebWorkflow:
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
                        (json.dumps(client.export_state()), run_id))
 
-    def open(self, url: str, *, adapter: str = "html", challenge_id: int | None = None,
+    def open(self, url: str, *, adapter: str = "auto", challenge_id: int | None = None,
              allowed_origins: list[str] | None = None, token_env: str | None = None,
              cookie_env: str | None = None, download: bool = True) -> dict:
         url = clean_url(url)
-        if adapter not in {"html", "ctfd"}:
-            raise ValueError("adapter must be html or ctfd")
+        if adapter == "auto":
+            adapter = "ksnctf" if is_official_problem(url) else "html"
+        if adapter not in {"html", "ctfd", "ksnctf"}:
+            raise ValueError("adapter must be auto, html, ctfd or ksnctf")
+        if adapter == "ksnctf":
+            inferred_id = problem_id(url)
+            if challenge_id is not None and challenge_id != inferred_id:
+                raise ValueError("ksnctf challenge ID does not match the problem URL")
+            challenge_id = inferred_id
         allowed = list(dict.fromkeys([origin(url), *[origin(item) for item in allowed_origins or []]]))
         if len(allowed) > 16:
             raise ValueError("too many allowed origins")
@@ -113,6 +121,10 @@ class WebWorkflow:
         response = client.request(request_url)
         if response.status != 200:
             raise ValueError("problem retrieval failed; check URL and CTF authentication")
+        if adapter == "ksnctf" and (
+            origin(response.url) != origin(url) or problem_id(response.url) != challenge_id
+        ):
+            raise ValueError("ksnctf problem retrieval redirected to another problem or origin")
         body = response.body.decode("utf-8", errors="replace")
         files = []
         if adapter == "ctfd":
@@ -191,6 +203,7 @@ class WebWorkflow:
             attempts = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? ORDER BY created", (run_id,)).fetchall()
         return {"context": self.session.context(run_id), "web": {
             "adapter": config["adapter"], "page_url": display_url(config["page_url"]),
+            "challenge_id": config["challenge_id"],
             "origins": config["origins"], "forms": [
                 {"index": index, "action": display_url(form["action"]), "method": form["method"],
                  "fields": [{"name": field["name"], "type": field["type"], "has_default": bool(field["value"])}
@@ -200,7 +213,7 @@ class WebWorkflow:
                        if urllib.parse.urlsplit(link["url"]).scheme in {"http", "https"} else False}
                       for index, link in enumerate(links)],
             "verdicts": [row[0] for row in attempts], "paused_until": paused,
-            "verification_configured": config["adapter"] == "ctfd" or bool(config.get("submission")),
+            "verification_configured": config["adapter"] in {"ctfd", "ksnctf"} or bool(config.get("submission")),
             "cookie_count": sum(len(values) for values in state.get("cookies", {}).values()),
         }}
 
@@ -273,6 +286,21 @@ class WebWorkflow:
                     if reported in {"correct", "incorrect", "already_solved", "ratelimited"}:
                         verdict = reported
                     message = str(data.get("message", verdict))
+            elif config["adapter"] == "ksnctf":
+                endpoint = config["auth_origin"] + "/api/submit"
+                submitted = True
+                response = client.request(
+                    endpoint, method="POST",
+                    body=json.dumps({"id": config["challenge_id"], "flag": candidate}).encode(),
+                    headers={"Content-Type": "application/json"}, sensitive=True,
+                    max_bytes=16_384, follow_redirects=False,
+                )
+                if (response.status == 200 and response.url == endpoint
+                        and response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        == "application/json"):
+                    accepted = KsnctfVerdict.model_validate_json(response.body).result
+                    verdict = "correct" if accepted else "incorrect"
+                    message = "Official ksnctf verdict: " + verdict
             else:
                 submission = config["submission"]
                 fresh = client.request(config["page_url"])
