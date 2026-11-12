@@ -33,5 +33,6 @@ def test_launcher_enables_daybreak_and_multi_agent(monkeypatch):
     with pytest.raises(RuntimeError, match="captured exec"):
         runpy.run_path(str(root / "metis-codex"), run_name="__main__")
     assert called["executable"] == "/usr/bin/codex"
-    assert ["--enable", "cli_daybreak"] == called["arguments"][3:5]
-    assert ["--enable", "multi_agent"] == called["arguments"][5:7]
+    assert "--approve-for-me" in called["arguments"]
+    assert ["--enable", "cli_daybreak"] == called["arguments"][4:6]
+    assert ["--enable", "multi_agent"] == called["arguments"][6:8]

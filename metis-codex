@@ -12,6 +12,7 @@ from pathlib import Path
 START_PROMPT = """METISのCTFセッションを開始してください。
 最初にAGENTS.mdと.agents/skills/metis/SKILL.mdを読み、`.venv/bin/metis doctor`で準備状態を確認してください。
 Daybreakをオーケストレーターとして、独立して進められる調査は利用可能な下位モデルのサブエージェントへ分担してください。単純な作業には最小限のモデルとコンテキストを使い、同じ調査の重複、目的のない多数起動、不要な会話履歴の複製を避けてください。並列化できる有益な作業が複数ある場合は、通常2〜4担当を同時に動かしてください。公式解答の送信、認証、最終判定はオーケストレーターが一元管理してください。
+問題を受け取った後は、進捗報告や通常の実装判断でユーザーの返答を待たず、取得、解析、仮説検証、必要な修正、公式送信、知識保存まで自律的に継続してください。サブエージェントの完了ごとに停止せず、結果を回収して次の作業を指示してください。ユーザー入力がなければ安全に決められない対象範囲、認証、問題選択、または外部サービス側の操作だけをまとめて一度に確認してください。
 その結果を短く示した後、まだ与えられていない情報だけを日本語で一度にユーザーへ確認してください。最低限必要なのは、明示的に参加・解析を許可された問題URL、またはローカル配布ファイルのパスです。
 分かる場合だけ、プラットフォーム種別（CTFd/一般HTML）、CTFdのchallenge ID、ログインの有無、別オリジンの配布先、既知のflag形式も尋ねてください。
 認証値そのものを会話へ貼るよう求めず、必要なら`metis web auth`のマスク入力か既存環境変数を案内してください。
@@ -35,8 +36,9 @@ def main() -> int:
     executable = shutil.which("codex")
     if executable is None:
         raise SystemExit("Codex CLIが見つかりません。Codex CLIをインストールして再実行してください。")
-    os.execv(executable, [executable, "-C", str(root), "--enable", "cli_daybreak",
-                           "--enable", "multi_agent", *codex_args, START_PROMPT])
+    os.execv(executable, [executable, "-C", str(root), "--approve-for-me",
+                           "--enable", "cli_daybreak", "--enable", "multi_agent",
+                           *codex_args, START_PROMPT])
     return 0
 
 

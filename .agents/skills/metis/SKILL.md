@@ -19,6 +19,11 @@ official submissions, verdict handling, run budgets, and final synthesis in
 Daybreak. A simple sequential task does not justify a subagent merely to increase
 agent count.
 
+After challenge intake, do not pause for routine confirmations or after each
+subagent finishes. Reconcile results and continue through the next useful action.
+Group truly required user inputs into one request; progress updates are not
+approval gates.
+
 ## Prepare
 
 Work in the repository checkout. If `.venv/bin/metis` is missing, run
