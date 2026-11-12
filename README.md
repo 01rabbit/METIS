@@ -30,6 +30,12 @@ roles, minimal context, turn limits, and centralized official verification.
 `metis agent synthesize` blocks unknown evidence, duplicate actions, secrets,
 and incomplete waves. Reports survive restarts and work with any agent CLI.
 
+For large events, `metis web catalog`, `metis contest add`, and
+`metis contest dispatch` maintain a persistent tournament queue. The scheduler
+balances expected points per minute with category coverage and dependencies.
+Attack-defense mode prioritizes service recovery and patch regression checks.
+See [tournament mode](docs/TOURNAMENT_MODE.md).
+
 For manual preparation, run `python3 scripts/setup.py` followed by
 `.venv/bin/metis doctor`.
 

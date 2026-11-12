@@ -34,6 +34,13 @@ def site(monkeypatch):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path == "/api/v1/challenges":
+                if self.headers.get("Authorization") != "Token test-token":
+                    return self.send('{"success":false}', 401, "application/json")
+                return self.send(json.dumps({"success": True, "data": [{
+                    "id": 1, "name": "Mock encoded challenge", "category": "crypto",
+                    "value": 500, "solves": 7,
+                }]}), content_type="application/json")
             if self.path == "/api/v1/challenges/1":
                 if self.headers.get("Authorization") != "Token test-token":
                     return self.send('{"success":false}', 401, "application/json")
@@ -126,6 +133,19 @@ def test_ctfd_intake_wrong_answer_replan_correct_answer_and_reopen(site, tmp_pat
     assert FLAG not in reopened.session.store.export_jsonl(run_id)
     assert FLAG not in correct["feedback"]
     assert "test-token" not in json.dumps(reopened.context(run_id))
+
+
+def test_ctfd_catalog_is_bounded_and_contest_ready(site, tmp_path, monkeypatch):
+    base, _ = site
+    monkeypatch.setenv("TEST_CTF_TOKEN", "test-token")
+    result = WebWorkflow(tmp_path / "session.sqlite").catalog(
+        base, token_env="TEST_CTF_TOKEN")
+    assert result["count"] == 1
+    assert result["credentials_exposed"] is False
+    assert result["challenges"][0] == {
+        "challenge_id": "1", "title": "Mock encoded challenge", "category": "crypto",
+        "points": 500.0, "solves": 7, "estimated_minutes": 30, "confidence": 0.35,
+    }
 
 
 def test_generic_form_refreshes_csrf_keeps_cookies_and_ignores_reflected_marker(site, tmp_path):

@@ -17,6 +17,7 @@ from metis.core.artifacts import read_artifact
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS, MAX_ARTIFACT, MAX_FILE
+from metis.core.ctf_contest import ContestBoard
 from metis.core.ctf_knowledge import KnowledgeBase, TechniqueCard
 from metis.core.ctf_orchestration import AgentLedger
 from metis.core.ctf_practice import practice
@@ -39,6 +40,19 @@ def main() -> int:
     agent_plan = sub.add_parser("plan", help="create a provider-neutral bounded agent wave")
     agent_plan.add_argument("run_id")
     agent_plan.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    contest = sub.add_parser("contest", help="prioritize and track a large CTF")
+    contest.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    contest_commands = contest.add_subparsers(dest="contest_command", required=True)
+    contest_commands.add_parser("create", help="read contest configuration JSON from stdin")
+    contest_add = contest_commands.add_parser("add", help="read a challenge array from stdin")
+    contest_add.add_argument("contest_id")
+    contest_update = contest_commands.add_parser("update", help="read challenge changes from stdin")
+    contest_update.add_argument("contest_id")
+    contest_update.add_argument("challenge_id")
+    contest_dispatch = contest_commands.add_parser("dispatch", help="allocate available AI work slots")
+    contest_dispatch.add_argument("contest_id")
+    contest_board = contest_commands.add_parser("board", help="show score, lifecycle and queue state")
+    contest_board.add_argument("contest_id")
     agent = sub.add_parser("agent", help="record and synthesize bounded subagent evidence")
     agent.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     agent_commands = agent.add_subparsers(dest="agent_command", required=True)
@@ -52,6 +66,10 @@ def main() -> int:
     web = sub.add_parser("web", help="generic scoped CTF problem intake and official submission")
     web.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web_commands = web.add_subparsers(dest="web_command", required=True)
+    catalog = web_commands.add_parser("catalog", help="retrieve a bounded CTFd challenge list")
+    catalog.add_argument("url")
+    catalog.add_argument("--token-env")
+    catalog.add_argument("--cookie-env")
     web_open = web_commands.add_parser("open", help="retrieve problem text and same-origin distribution files")
     web_open.add_argument("url")
     web_open.add_argument("--adapter", choices=("html", "ctfd"), default="html")
@@ -186,6 +204,36 @@ def main() -> int:
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
             parser.exit(2, "Agent plan rejected: check the run ID and local session state\n")
+    if args.command == "contest":
+        try:
+            contest_state = ContestBoard(args.database)
+            payload: Any = None
+            if args.contest_command in {"create", "add", "update"}:
+                raw = sys.stdin.buffer.read(262_145)
+                if len(raw) > 262_144:
+                    raise ValueError("contest input exceeds limit")
+                payload = json.loads(raw)
+            if args.contest_command == "create":
+                if not isinstance(payload, dict):
+                    raise ValueError("contest configuration must be an object")
+                output = contest_state.create(payload)
+            elif args.contest_command == "add":
+                items = payload.get("challenges") if isinstance(payload, dict) else payload
+                if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                    raise ValueError("challenge input must be an array of objects")
+                output = contest_state.add(args.contest_id, items)
+            elif args.contest_command == "update":
+                if not isinstance(payload, dict):
+                    raise ValueError("challenge update must be an object")
+                output = contest_state.update(args.contest_id, args.challenge_id, payload)
+            elif args.contest_command == "dispatch":
+                output = contest_state.dispatch(args.contest_id)
+            else:
+                output = contest_state.board(args.contest_id)
+            print(json.dumps(output))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
+            parser.exit(2, "Contest command rejected: check IDs, lifecycle values, limits and JSON input\n")
     if args.command == "agent":
         try:
             ledger = AgentLedger(args.database)
@@ -207,7 +255,10 @@ def main() -> int:
     if args.command == "web":
         try:
             workflow = WebWorkflow(args.database)
-            if args.web_command == "open":
+            if args.web_command == "catalog":
+                output = workflow.catalog(args.url, token_env=args.token_env,
+                                          cookie_env=args.cookie_env)
+            elif args.web_command == "open":
                 output = workflow.open(args.url, adapter=args.adapter, challenge_id=args.challenge_id,
                                        allowed_origins=args.allow_origin, token_env=args.token_env,
                                        cookie_env=args.cookie_env, download=not args.no_download)

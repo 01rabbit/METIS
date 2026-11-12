@@ -26,6 +26,12 @@ inspection, format identification, documentation lookup, and bounded decoding;
 reserve stronger models for ambiguous exploit reasoning or synthesis. Do not
 hardcode a model name that is absent from the active Codex model catalog.
 
+For a multi-challenge event, Daybreak owns one `metis contest` board. Import a
+CTFd catalog when available, dispatch only to the configured parallel limit, and
+reassess after every solve, blocker, score change, or service-health change.
+Prefer expected points per minute while retaining category diversity. A linked
+run must have an official solved verdict before the board records a solve.
+
 Parallelize when two or more useful tasks are independent. Typical assignments
 are statement/platform analysis, artifact triage, category-specific hypotheses,
 and independent candidate verification. Start with two to four focused agents,

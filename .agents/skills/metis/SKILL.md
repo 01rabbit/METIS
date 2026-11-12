@@ -49,6 +49,14 @@ expand the user-authorized scope, bypass a proxy, or weaken TLS verification.
 
 ## Acquire a challenge
 
+For an event with many challenges, create a contest board before deep analysis.
+For CTFd, use `metis web catalog URL`, pipe its challenge list to
+`metis contest add`, and use `metis contest dispatch` to fill available work
+slots. Re-dispatch after every solve, blocker, score change, or confidence
+update. Timebox each packet and preserve its blocker instead of allowing one
+hard problem to consume the event. In attack-defense mode, service recovery and
+patch regression checks take priority when availability is degraded.
+
 For a standard CTFd challenge:
 
 ```sh
@@ -109,6 +117,10 @@ CTFd uses its official JSON verdict. Generic HTML requires a known form and an
 explicit trusted result marker configured with `metis web configure-form`; HTTP
 200, reflected input, regex matches, and local extraction never count as
 success. An unknown response fails closed.
+
+In tournament mode, link the web run ID to its contest challenge. The contest
+board records `solved` only when that linked run is already officially verified;
+then update the score and dispatch the next packet.
 
 After an official incorrect verdict, inspect the feedback and evidence, record
 a `revised` or `rejected` hypothesis with `metis memory reason`, derive a new
