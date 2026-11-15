@@ -86,6 +86,11 @@ the static and network submission workflow above.
 
 ## Development
 
+Implementation handoff: [CTF tool environment and specialist orchestration design](docs/CTF_ENVIRONMENT_AND_ORCHESTRATION.md)
+(Japanese). Read it with `AGENTS.md` before extending category specialists,
+subagent execution, or tournament coordination; it distinguishes existing
+capabilities from the remaining implementation work.
+
 Run `python3 scripts/setup.py --dev`, then `pytest`, `ruff check src tests scripts`,
 and `mypy src/metis`. The optional standalone provider/container experiments are
 kept for research but are not part of the default solve path. The broader
