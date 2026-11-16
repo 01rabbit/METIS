@@ -28,6 +28,7 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 - 実際の Info-ZIP zip 3.0（Debian glibc 2.41）で作った 7 メンバーの zip（`tests/fixtures/infozip-glibc-vector.zip`、パスワード `testpass`、内容は合成の乱数）で、種を 1.7 秒で復元した。予測した 70 バイトの乱数は、パスワードで 2 段の暗号化を戻した値とすべて一致した。
 - 既知平文攻撃: 60 バイトの既知平文で、正しい鍵を 145 秒・210 秒で復元した（15 ワーカー）。CI では、候補を絞ったパイプラインのテストのみを実行する。網羅的な探索は `METIS_TEST_SLOW=1` のときだけ実行する。
 - 専門家 intent の合成テストは `zipcrypto_attack` → 同じ鍵で全メンバーを復号して CRC を検証 → encoded メンバーを `zipcrypto_decrypt` で導出 → XOR まで進む。これは真の key2 候補と decoys に縮小したテストで、探索空間全体の成功を示すものではない。実行: `.venv/bin/pytest tests/test_ctf_zipcrypto.py -q`。
+- 極小の wall-clock 予算で `work_exceeds_budget` と `z-reduction` 段階の理由コードを返すテストを追加した。
 - ksnctf #39: 種を 0.8 秒で復元した（7 メンバーすべて一致。`time ^ pid`）。鍵の復元には至らず、#39 は未解決のまま。
 
 ## 実 Codex の測定（ksnctf #39、新しい DB、note なし、codex-cli 0.169.0）

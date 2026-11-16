@@ -121,6 +121,13 @@ def test_attack_refuses_too_little_plaintext():
     assert zc.known_plaintext_attack(b"\0" * 20, b"x" * 12, 12)["reason"] == "plaintext_outside_ciphertext"
 
 
+def test_attack_time_budget_returns_reason_code():
+    result = zc.known_plaintext_attack(b"\0" * 128, b"x" * 40, 12, seconds=1e-9)
+    assert result["found"] is False
+    assert result["reason"] == "work_exceeds_budget"
+    assert result["stage"] == "z-reduction"
+
+
 @pytest.mark.skipif(not os.environ.get("METIS_TEST_SLOW"), reason="exhaustive search takes minutes; METIS_TEST_SLOW=1")
 def test_full_known_plaintext_attack():
     keys = zc.Keys.from_password(os.urandom(8))
