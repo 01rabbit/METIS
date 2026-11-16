@@ -214,7 +214,6 @@ class CodexCLI:
         if cyber_program not in {None, "standard", "daybreak_blue", "daybreak_red"}:
             raise ValueError("cyber access program must be standard, daybreak_blue or daybreak_red")
         self.cyber_program = cyber_program  # the operator's enrolment, passed as Codex's documented flag
-        self._version_checked = False
         self.features = known_features(found) if features is None else features
         missing = [name for name in REQUIRED_DISABLES if name not in self.features]
         if missing:
@@ -249,7 +248,6 @@ class CodexCLI:
         if self.isolation == "required" and not isolation_available():
             raise RuntimeError("OS isolation (macOS sandbox-exec) is unavailable on this host; refusing to run. "
                                "Use --isolation none only as a recorded, explicit opt-out")
-        self._version_checked = True
         return version
 
     def protected_roots(self, temp_root: Path) -> list[Path]:
@@ -263,8 +261,10 @@ class CodexCLI:
             images: list[tuple[str, bytes]] | None = None) -> CodexTurn:
         """One turn. ``should_stop`` is checked every couple of seconds; when it turns true
         (Daybreak cancelled the attempt) the whole process group is killed at once."""
-        if not self._version_checked:
-            self.check()
+        # The CLI executable can be updated or replaced while a specialist run is
+        # alive. Revalidate before every turn instead of trusting a process-wide
+        # cached version check.
+        self.check()
         with tempfile.TemporaryDirectory(prefix="metis-codex-") as temporary, ExitStack() as stack:
             base = Path(temporary).resolve()
             workdir = base / "work"

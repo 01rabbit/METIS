@@ -135,6 +135,15 @@ def test_untested_codex_version_is_refused(tmp_path):
         cli.run("x", model=None, timeout=5)
 
 
+def test_codex_version_is_rechecked_for_each_turn(tmp_path, monkeypatch):
+    cli = CodexCLI(_fake_codex(tmp_path, "0.166.0"), isolation="none")
+    assert cli.check() == "0.166.0"
+
+    monkeypatch.setattr(codex_specialist, "codex_version", lambda _executable: "9.9.9")
+    with pytest.raises(RuntimeError, match="not a tested version"):
+        cli.run("x", model=None, timeout=5)
+
+
 def test_missing_isolation_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_specialist, "isolation_available", lambda: False)
     cli = CodexCLI(_fake_codex(tmp_path, "0.166.0"))

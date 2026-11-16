@@ -147,7 +147,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   `failed`（`policy_violation`）にする。
 - cancel: ドライバは 2 秒ごとに job 状態を確認し、取り消されたら Codex のプロセスグループを停止して
   `codex_killed` を記録する。
-- OS 隔離（#16、`core/codex_isolation.py`）。各ターンを macOS の `sandbox-exec` 下で実行する。
+- OS 隔離（#16、`core/codex_isolation.py`）。各ターンを macOS の `sandbox-exec` または Linux の bubblewrap 下で実行する。
   - ホーム・`/private/tmp`・`/private/var/tmp`・`/Volumes`・一時ディレクトリの読み書きを拒否する。例外は
     Codex パッケージの読み取りと、そのターン専用ディレクトリの読み書きだけ。
   - `CODEX_HOME` はターンごとに作る。中身は `auth.json` の写しだけで、ユーザーの sessions・memories・
@@ -155,8 +155,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
     書き戻す。
   - 外向き通信は、ローカルの CONNECT プロキシ（443 番、`chatgpt.com`・`auth.openai.com`・`api.openai.com`
     のみ）以外を拒否する。拒否した宛先はターンごとに記録する。
+  - Linux は bubblewrap の名前空間と capability 制限に加え、Codex の実行系に seccomp を適用する。`fork`、`vfork`、プロセスを作る `clone` と `clone3` を拒否する。スレッド生成は許可し、`exec` 自体は制限しない。macOS Seatbelt と同じ保証ではない。
   - 隔離が使えない環境では起動を拒否する。`--isolation none` は明示的な opt-out で、記録が残る。
-  - 試験済みでない Codex CLI の版も拒否する（`--allow-untested-codex` で解除）。
+  - 試験済みでない Codex CLI の版も拒否する（`--allow-untested-codex` で解除）。版は各 turn の直前に再確認する。
 - 専門家は `view` intent で登録済みの画像を次のターンに添付させられる。答えは `candidate` で非公開に渡す（0600 のファイル、
   DB には digest のみ）。Daybreak は `metis agent candidates RUN` でファイルのパスを受け取り、`metis web submit --candidate-file` で提出する。
 - `metis agent codex-probe --ping` は、隔離のセルフテスト、実ターン 1 回、spawn カナリア 1 回を実行し、
@@ -170,13 +171,14 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   では spawn が失敗する（「rollout が無い」）が、これは観測された挙動で文書化された保証ではない。
   `--ephemeral` を外した試験では spawn が成功し、しかも JSONL に item が出なかった。防止は CLI の挙動
   頼み、検知は stderr 頼みであり、「不可能」ではなく「現版では失敗し、試みは検知される」水準。
-  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。#16 で OS 隔離を加えたため、spawn された
-  sub-agent も同じプロセス内で同じ Seatbelt とプロキシの下にある。ただし、spawn ツールそのものを
-  モデルから隠すことは、まだできていない。
+  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。macOS Seatbelt は fork を禁止し、Linux seccomp
+  はプロセス生成を禁止するが、Codex 内部の `collaboration.spawn_agent` は OS 子プロセスと別の機構である。
+  OS 隔離が spawn ツール自体を確実に拒否する保証はない。モデルから spawn ツールを隠す、または呼び出しを
+  確実に拒否するサポート済み機構は未確認であり、#16 の受け入れ条件は未達。
 - `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。網羅的なツール一覧を
   取得する手段はないが、#16 以後、ファイルの読み書きは OS 側で制限している。
 - OS 隔離は macOS が Seatbelt（fork を禁止し、exec は Codex 本体だけ）、Linux が bubblewrap（名前空間・capability 0・
-  NoNewPrivs、通信は Unix ソケット経由のプロキシのみ）。Windows は未実装で、起動を拒否する。Linux 上の実 Codex は未検証
+  NoNewPrivs、プロセス生成を禁止、通信は Unix ソケット経由のプロキシのみ）。Windows は未実装で、起動を拒否する。Linux 上の実 Codex は未検証
   （`docs/reports/issue16-isolation-backends-2026-11-16.md`）。Seatbelt や
   カーネル自体の脆弱性による脱出、許可した宛先（モデル API）へ送られる内容は、対象外。
 - E2E 時点の重複判定は、生の action identity の一致だけを見ていた。そのため `length` を 1 変える、無関係な
