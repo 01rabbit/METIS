@@ -169,6 +169,7 @@ def test_ctfd_catalog_is_bounded_and_contest_ready(site, tmp_path, monkeypatch):
     assert result["challenges"][0] == {
         "challenge_id": "1", "title": "Mock encoded challenge", "category": "crypto",
         "points": 500.0, "solves": 7, "estimated_minutes": 30, "confidence": 0.35,
+        "url": base, "adapter": "ctfd",
     }
 
 
@@ -442,3 +443,18 @@ def test_ksnctf_submission_limit_and_cancel_prevent_further_posts(site, tmp_path
     with pytest.raises(ValueError, match="budget exhausted"):
         workflow.submit(third, FLAG)
     assert state["posts"] == 10
+
+
+def test_distribution_detection_covers_ksnctf_problem_files():
+    from metis.core.ctf_web import is_distribution
+    page = "https://ksnctf.sweetduet.info/problem/23"
+
+    def link(url):
+        return {"url": url, "text": "", "download": False}
+    assert is_distribution(link("https://ksnctf.sweetduet.info/q/23/villager"), page, "ksnctf", 23)
+    assert is_distribution(link("https://ksnctf.sweetduet.info/q/23/libc.so.6"), page, "ksnctf", 23)
+    assert is_distribution(link("https://ksnctf.sweetduet.info/q/15/Jewel.apk"), page, "html", None)
+    assert not is_distribution(link("https://ksnctf.sweetduet.info/q/31/kangacha.php"), page, "ksnctf", 31)
+    assert not is_distribution(link("https://ksnctf.sweetduet.info/q/4/villager"), page, "ksnctf", 23)
+    assert not is_distribution(link("https://ksnctf.sweetduet.info/problem/4"), page, "ksnctf", 23)
+    assert is_distribution(link("https://cdn.example/x/libc.so.6"), page, "html", None)

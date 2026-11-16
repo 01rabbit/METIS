@@ -1,0 +1,215 @@
+import json
+import os
+import stat
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from metis.cli import main
+from metis.core.codex_session import CodexSession
+from metis.core.ctf_sandbox import Sandbox, SandboxRequest, configure, status
+
+IMAGE = "sha256:" + "a" * 64
+
+FAKE_ENGINE = textwrap.dedent('''\
+    #!{python}
+    """Test double for a container engine: records argv, emulates /work in a temp dir."""
+    import json, os, subprocess, sys, tempfile
+    log = os.environ["FAKE_ENGINE_LOG"]
+    with open(log, "a") as stream:
+        stream.write(json.dumps(sys.argv[1:]) + "\\n")
+    if sys.argv[1] == "version":
+        print('"27.0"')
+        raise SystemExit(0)
+    if sys.argv[1] == "rm":
+        raise SystemExit(0)
+    script = sys.argv[sys.argv.index("-c") + 1]
+    work = tempfile.mkdtemp()
+    script = script.replace("/work", work)
+    raise SystemExit(subprocess.run([sys.executable, "-I", "-c", script]).returncode)
+''')
+
+
+@pytest.fixture
+def engine(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "docker"
+    fake.write_text(FAKE_ENGINE.format(python=sys.executable))
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "engine.log"
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_ENGINE_LOG", str(log))
+    return log
+
+
+def _run(tmp_path: Path) -> tuple[Path, str]:
+    database = tmp_path / "state" / "metis.sqlite"
+    target = tmp_path / "chall"
+    target.write_text("#!/bin/sh\nread name\necho \"hello $name\"\necho \"args:$*\" 1>&2\n")
+    library = tmp_path / "libc.so.6"
+    library.write_bytes(b"\x7fELF fake library")
+    context = CodexSession(database).intake(title="Binary", description="Run it",
+                                            paths=[target, library], categories=["pwn"])
+    return database, context["run_id"]
+
+
+def test_sandbox_requires_immutable_image(tmp_path):
+    database = tmp_path / "state" / "metis.sqlite"
+    with pytest.raises(ValueError):
+        configure(database, engine="docker", image="debian:latest", platform=None)
+    with pytest.raises(ValueError, match="not configured"):
+        Sandbox(database)
+    assert status(database)["configured"] is False
+
+
+def test_sandbox_isolation_flags_and_execution(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform="linux/amd64")
+    session = CodexSession(database)
+    artifacts = session.context(run_id)["challenge"]["artifacts"]
+    sandbox = Sandbox(database)
+    result = sandbox.execute(run_id, SandboxRequest(target=artifacts[0], extra=[artifacts[1]],
+                                                     args=["-x"], stdin=b"metis\n"))
+    assert result["ok"] is True, result
+    assert result["stdout"]["text"] == "hello metis\n"
+    assert "args:-x" in result["stderr"]["text"]
+    assert result["files_in_sandbox"] == ["chall", "libc.so.6"]
+    argv = [json.loads(line) for line in engine.read_text().splitlines()][-1]
+    for flag in ("--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                 "--user=65534:65534", "--pull=never", "--rm"):
+        assert flag in argv
+    assert not any(item.startswith(("-v", "--volume", "--mount")) for item in argv)
+    assert IMAGE in argv and "linux/amd64" in argv
+    assert session.context(run_id)["status"] == "planning"
+
+
+def test_sandbox_script_mode_and_scope(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    sandbox = Sandbox(database)
+    result = sandbox.execute(run_id, SandboxRequest(
+        target=target, mode="script",
+        script="import os, subprocess\nprint(subprocess.run([os.environ['METIS_TARGET']], input=b'x\\n',"
+               " capture_output=True).stdout.decode().strip())\n"))
+    assert result["stdout"]["text"].strip() == "hello x"
+    with pytest.raises(ValueError, match="declared"):
+        sandbox.execute(run_id, SandboxRequest(target="../../etc/passwd"))
+    with pytest.raises(ValueError):
+        SandboxRequest(target=target, mode="shell")
+
+
+def test_sandbox_reports_timeout_and_nonzero_exit(tmp_path, engine):
+    database = tmp_path / "state" / "metis.sqlite"
+    slow = tmp_path / "slow"
+    slow.write_text("#!/bin/sh\nsleep 5\n")
+    crash = tmp_path / "crash"
+    crash.write_text("#!/bin/sh\nexit 3\n")
+    run_id = CodexSession(database).intake(title="t", description="d", paths=[slow, crash])["run_id"]
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    artifacts = CodexSession(database).context(run_id)["challenge"]["artifacts"]
+    sandbox = Sandbox(database)
+    timed = sandbox.execute(run_id, SandboxRequest(target=artifacts[0], timeout=1))
+    assert timed["timed_out"] is True and timed["ok"] is False
+    failed = sandbox.execute(run_id, SandboxRequest(target=artifacts[1]))
+    assert failed["exit_code"] == 3 and failed["ok"] is False
+
+
+def test_cli_sandbox(tmp_path, engine, monkeypatch, capsys):
+    database, run_id = _run(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["metis", "sandbox", "--database", str(database), "configure",
+                                      "--image", IMAGE])
+    assert main() == 0
+    capsys.readouterr()
+    artifacts = CodexSession(database).context(run_id)["challenge"]["artifacts"]
+    stdin = tmp_path / "input.txt"
+    stdin.write_text("cli\n")
+    monkeypatch.setattr(sys, "argv", ["metis", "sandbox", "--database", str(database), "run", run_id,
+                                      artifacts[0], "--stdin-file", str(stdin)])
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["stdout"]["text"] == "hello cli\n"
+
+
+def test_real_engine_isolation_smoke(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    sandbox = Sandbox(database)
+    assert sandbox.execute(run_id, SandboxRequest(target=target, stdin=b"real\n"))["stdout"]["text"] \
+        == "hello real\n"
+    probe = sandbox.execute(run_id, SandboxRequest(target=target, mode="script", script=(
+        "import os, socket\n"
+        "try:\n    socket.create_connection(('1.1.1.1', 80), timeout=2); print('net-open')\n"
+        "except OSError: print('net-blocked')\n"
+        "try:\n    open('/etc/metis', 'w'); print('rootfs-writable')\n"
+        "except OSError: print('rootfs-readonly')\n"
+        "print('uid', os.getuid())\n")))
+    assert probe["stdout"]["text"].split() == ["net-blocked", "rootfs-readonly", "uid", "65534"]
+
+
+def _elf(machine: int) -> bytes:
+    header = bytearray(64)
+    header[:4] = b"\x7fELF"
+    header[4], header[5] = 2, 1
+    header[18:20] = machine.to_bytes(2, "little")
+    return bytes(header)
+
+
+def test_elf_arch_and_platform_defaults(monkeypatch):
+    from metis.core import ctf_sandbox
+    assert ctf_sandbox.elf_arch(_elf(0x3E)) == "x86_64"
+    assert ctf_sandbox.elf_arch(_elf(0xB7)) == "aarch64"
+    assert ctf_sandbox.elf_arch(b"#!/bin/sh\n" + bytes(64)) is None
+    monkeypatch.setattr(ctf_sandbox.platform_module, "machine", lambda: "arm64")
+    assert ctf_sandbox.default_platform() == "linux/arm64"
+    monkeypatch.setattr(ctf_sandbox.platform_module, "machine", lambda: "x86_64")
+    assert ctf_sandbox.default_platform() == "linux/amd64"
+
+
+def test_foreign_architecture_target_is_emulated(tmp_path, engine):
+    database = tmp_path / "state" / "metis.sqlite"
+    x86 = tmp_path / "x86"
+    x86.write_bytes(_elf(0x3E))
+    arm = tmp_path / "arm"
+    arm.write_bytes(_elf(0xB7))
+    run_id = CodexSession(database).intake(title="t", description="d", paths=[x86, arm])["run_id"]
+    configure(database, engine="docker", image=IMAGE, platform="linux/arm64")
+    artifacts = CodexSession(database).context(run_id)["challenge"]["artifacts"]
+    sandbox = Sandbox(database)
+    foreign = sandbox.execute(run_id, SandboxRequest(target=artifacts[0]))
+    assert foreign["target_arch"] == "x86_64" and foreign["emulation"] == "qemu-x86_64"
+    native = sandbox.execute(run_id, SandboxRequest(target=artifacts[1]))
+    assert native["target_arch"] == "aarch64" and native["emulation"] is None
+    forced_off = sandbox.execute(run_id, SandboxRequest(target=artifacts[0], emulate="off"))
+    assert forced_off["emulation"] is None
+    with pytest.raises(ValueError):
+        SandboxRequest(target=artifacts[0], emulate="mips")
+
+
+def test_build_reports_stopped_engine(tmp_path, monkeypatch, capsys):
+    from metis.core import ctf_sandbox
+    monkeypatch.setattr(ctf_sandbox, "engine_available", lambda engine: False)
+    monkeypatch.setattr(sys, "argv", ["metis", "sandbox", "--database", str(tmp_path / "s" / "m.sqlite"),
+                                      "build"])
+    with pytest.raises(SystemExit):
+        main()
+    assert "not running" in capsys.readouterr().err
+
+
+def test_missing_cross_libc_and_ltrace_are_reported(tmp_path, engine):
+    database = tmp_path / "state" / "metis.sqlite"
+    x86 = tmp_path / "x86"
+    x86.write_bytes(_elf(0x3E))
+    run_id = CodexSession(database).intake(title="t", description="d", paths=[x86])["run_id"]
+    configure(database, engine="docker", image=IMAGE, platform="linux/arm64")
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    result = Sandbox(database).execute(run_id, SandboxRequest(target=target))
+    # The fake engine has no /usr/x86_64-linux-gnu, so the bootstrap must say so plainly.
+    assert result["ok"] is False and "cross libc for x86_64" in result["stderr"]["text"]

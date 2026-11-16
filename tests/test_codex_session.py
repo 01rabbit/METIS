@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import subprocess
 import sys
 
@@ -95,3 +96,95 @@ def test_recovery_preserves_budget_and_never_fabricates_verification(tmp_path):
     restored._reserve(run_id, "native_data_transform")
     assert restored.cancel(run_id)["status"] == "cancelled"
     assert restored.recover(run_id)["status"] == "cancelled"
+
+
+def test_intake_accepts_explicit_path_through_symlinked_directory(tmp_path):
+    # macOS exposes /tmp as a symlink to /private/tmp.
+    real = tmp_path / "private-tmp"
+    real.mkdir()
+    (real / "hello.sh").write_text("#!/bin/sh\necho hi\n")
+    link = tmp_path / "tmp"
+    link.symlink_to(real, target_is_directory=True)
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    context = session.intake(title="t", description="d", paths=[link / "hello.sh"])
+    assert context["challenge"]["artifacts"] == ["00-hello.sh"]
+    fifo = real / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError):
+        session.intake(title="t", description="d", paths=[link / "pipe"])
+
+
+def test_wall_clock_starts_at_first_action_and_extend_resumes(tmp_path, monkeypatch):
+    import time as time_module
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    note = tmp_path / "n.txt"
+    note.write_text("x")
+    run_id = session.intake(title="t", description="d", paths=[note], wall_seconds=60)["run_id"]
+    base = time_module.time()
+    monkeypatch.setattr("metis.core.codex_session.time.time", lambda: base + 3600)
+    # An hour after intake with no action taken, the full budget is still available.
+    context = session.context(run_id)
+    assert context["seconds_remaining"] == 60 and context["budget"]["clock_started"] is False
+    session.act(run_id, ToolRequest(tool="sha256", data="a"))
+    monkeypatch.setattr("metis.core.codex_session.time.time", lambda: base + 3600 + 61)
+    with pytest.raises(ValueError, match="exhausted"):
+        session.act(run_id, ToolRequest(tool="sha256", data="b"))
+    assert session.context(run_id)["status"] == "exhausted"
+    resumed = session.extend(run_id, seconds=600, actions=10)
+    assert resumed["status"] == "planning" and resumed["seconds_remaining"] > 500
+    assert session.act(run_id, ToolRequest(tool="sha256", data="c"))["ok"] is True
+    with pytest.raises(ValueError):
+        session.extend(run_id, seconds=10 * 86_400)
+    session.cancel(run_id)
+    with pytest.raises(ValueError):
+        session.extend(run_id, seconds=60)
+
+
+def test_extend_after_long_expiry_counts_from_now(tmp_path, monkeypatch):
+    import time as time_module
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    note = tmp_path / "n.txt"
+    note.write_text("x")
+    run_id = session.intake(title="t", description="d", paths=[note], wall_seconds=7200)["run_id"]
+    base = time_module.time()
+    monkeypatch.setattr("metis.core.codex_session.time.time", lambda: base)
+    session.act(run_id, ToolRequest(tool="sha256", data="a"))
+    # 3.46 hours after the first action the 2-hour budget is long gone.
+    monkeypatch.setattr("metis.core.codex_session.time.time", lambda: base + 12_456)
+    with pytest.raises(ValueError, match="exhausted"):
+        session.act(run_id, ToolRequest(tool="sha256", data="b"))
+    resumed = session.extend(run_id, seconds=3600)
+    assert resumed["status"] == "planning" and 3590 <= resumed["seconds_remaining"] <= 3600
+
+
+def test_state_survives_moving_the_checkout(tmp_path):
+    import shutil as shutil_module
+    import sqlite3
+    old = tmp_path / "old" / ".metis-state"
+    session = CodexSession(old / "metis.sqlite")
+    note = tmp_path / "cipher.txt"
+    note.write_text("Uryyb")
+    run_id = session.intake(title="t", description="d", paths=[note])["run_id"]
+    with sqlite3.connect(old / "metis.sqlite") as db:
+        stored = db.execute("SELECT artifact_root FROM codex_sessions").fetchone()[0]
+    assert not stored.startswith("/")  # stored relative to the state directory
+    shutil_module.move(str(tmp_path / "old"), str(tmp_path / "new"))
+    moved = CodexSession(tmp_path / "new" / ".metis-state" / "metis.sqlite")
+    assert moved.artifact(run_id, "00-cipher.txt", "text")["ok"] is True
+
+
+def test_legacy_absolute_artifact_roots_are_migrated(tmp_path):
+    import shutil as shutil_module
+    import sqlite3
+    old = tmp_path / "old" / ".metis-state"
+    session = CodexSession(old / "metis.sqlite")
+    note = tmp_path / "cipher.txt"
+    note.write_text("Uryyb")
+    run_id = session.intake(title="t", description="d", paths=[note])["run_id"]
+    root = session.artifact_root(run_id)
+    with sqlite3.connect(old / "metis.sqlite") as db:  # simulate a database written by an older METIS
+        db.execute("UPDATE codex_sessions SET artifact_root=?", (str(root),))
+    shutil_module.move(str(tmp_path / "old"), str(tmp_path / "new"))
+    moved = CodexSession(tmp_path / "new" / ".metis-state" / "metis.sqlite")
+    assert moved.artifact_root(run_id) == (tmp_path / "new" / ".metis-state" / root.name).resolve()
+    assert moved.artifact(run_id, "00-cipher.txt", "text")["ok"] is True
