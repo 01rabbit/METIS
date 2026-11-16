@@ -273,7 +273,7 @@ class CodexSession:
     @locked
     def derive(self, run_id: str, name: str, tool: str, options: dict | None = None) -> dict:
         if tool not in {"zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz",
-                        "base64_decode", "base32_decode", "hex_decode", "tls_http_body"}:
+                        "base64_decode", "base32_decode", "hex_decode", "tls_http_body", "zipcrypto_decrypt"}:
             raise ValueError("only bounded archive decoding can derive an artifact")
         observation = self.artifact(run_id, name, tool, options)
         if not observation["ok"]:

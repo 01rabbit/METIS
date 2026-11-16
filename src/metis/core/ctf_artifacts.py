@@ -36,7 +36,7 @@ ARTIFACT_TOOLS = frozenset({
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
-    "tls_decrypt", "tls_http_body",
+    "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt",
 })
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
@@ -475,6 +475,9 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "x509": {"limit"}, "tls_certificates": {"packets", "connections", "limit"},
     "tls_decrypt": {"factor", "packets", "connections", "preview"},
     "tls_http_body": {"factor", "packets", "connections", "connection", "side", "message", "max_bytes"},
+    "zipcrypto_info": set(), "infozip_seed": {"generator", "time_from", "time_to", "pid_bits", "seconds"},
+    "zipcrypto_attack": {"member", "plaintext_hex", "offset", "seconds"},
+    "zipcrypto_decrypt": {"member", "keys", "max_bytes"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
     "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
@@ -556,6 +559,8 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
+    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt"}:
+        return _zipcrypto(data, tool, options)
     if tool in {"tls_decrypt", "tls_http_body"}:
         from metis.core.ctf_tls import http_body, tls_decrypt
         packets = bounded_integer(options, "packets", 1024, 1, 4096)
@@ -799,3 +804,45 @@ def _sqlite(data: bytes, options: dict) -> dict:
                 "rows": output, "truncated": truncated, "read_only": True}
     finally:
         database.close()
+
+
+def _zipcrypto(data: bytes, tool: str, options: dict) -> dict:
+    """ZipCrypto analysis (Issue #28): structure, Info-ZIP seed, known-plaintext attack, decryption."""
+    import base64
+
+    from metis.core import ctf_zipcrypto as zc
+
+    if tool == "zipcrypto_info":
+        return zc.zipcrypto_info(data)
+    seconds = bounded_integer(options, "seconds", 60, 1, 300)
+    if tool == "infozip_seed":
+        generator = options.get("generator", "glibc")
+        if generator not in {"glibc", "msvc"}:
+            raise ValueError("generator must be glibc or msvc")
+        bounds = {key: bounded_integer(options, key, 0, 0, (1 << 32) - 1) for key in ("time_from", "time_to")
+                  if key in options}
+        return zc.infozip_seed(data, generator=generator, time_from=bounds.get("time_from"),
+                               time_to=bounds.get("time_to"), pid_bits=bounded_integer(options, "pid_bits", 22, 1, 22),
+                               seconds=seconds)
+    entries = {entry["name"]: entry for entry in zc.members(data) if entry["encrypted"]}
+    name = options.get("member")
+    if not isinstance(name, str) or name not in entries:
+        raise ValueError("member must name an encrypted entry (see zipcrypto_info)")
+    entry = entries[name]
+    if tool == "zipcrypto_attack":
+        hexed = options.get("plaintext_hex")
+        if not isinstance(hexed, str) or len(hexed) > 4096:
+            raise ValueError("plaintext_hex: known plaintext bytes as hex (at most 2048 bytes)")
+        plaintext = bytes.fromhex(hexed)
+        offset = bounded_integer(options, "offset", 0, 0, max(0, entry["compressed_size"] - 12))
+        ciphertext = zc.member_bytes(data, entry)
+        check = zc.check_bytes(entry)
+        return zc.known_plaintext_attack(ciphertext, plaintext, 12 + offset, extra={11: check[11]}, seconds=seconds)
+    keys = options.get("keys")
+    if not isinstance(keys, str):
+        raise TypeError("keys: 'x,y,z' hex words from zipcrypto_attack")
+    result = zc.decrypt_member(data, name, zc.parse_keys(keys))
+    plain = result.pop("plaintext")
+    if len(plain) > bounded_integer(options, "max_bytes", 1_048_576, 1, 1_048_576):
+        raise ValueError("decrypted member exceeds max_bytes")
+    return {**result, "base64": base64.b64encode(plain).decode()}
