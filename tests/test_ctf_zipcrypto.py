@@ -224,6 +224,10 @@ def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
     assert attack["ok"] and attack["result"]["found"]
     recovered = attack["result"]["keys"]
     assert recovered == keys.hex()
+    recovered_keys = zc.parse_keys(",".join(recovered[k] for k in ("x", "y", "z")))
+    for member in ("known.txt", "encoded.txt"):
+        decrypted_member = zc.decrypt_member(archive, member, recovered_keys)
+        assert decrypted_member["crc_ok"]
     derived = intent("derive", "zipcrypto_decrypt", artifact=name,
                      options={"member": "encoded.txt", "keys": ",".join(recovered[k] for k in ("x", "y", "z"))})
     assert derived["ok"]

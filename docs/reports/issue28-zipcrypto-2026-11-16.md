@@ -27,6 +27,7 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 - 実際の glibc（Debian、ctypes）の `rand()` の出力と、小さい種・大きい種の両方で一致した。移植の途中、`__srandom_r` の int32 の切り詰めを誤っていた不具合をこの照合で見つけて直した。
 - 実際の Info-ZIP zip 3.0（Debian glibc 2.41）で作った 7 メンバーの zip（`tests/fixtures/infozip-glibc-vector.zip`、パスワード `testpass`、内容は合成の乱数）で、種を 1.7 秒で復元した。予測した 70 バイトの乱数は、パスワードで 2 段の暗号化を戻した値とすべて一致した。
 - 既知平文攻撃: 60 バイトの既知平文で、正しい鍵を 145 秒・210 秒で復元した（15 ワーカー）。CI では、候補を絞ったパイプラインのテストのみを実行する。網羅的な探索は `METIS_TEST_SLOW=1` のときだけ実行する。
+- 専門家 intent の合成テストは `zipcrypto_attack` → 同じ鍵で全メンバーを復号して CRC を検証 → encoded メンバーを `zipcrypto_decrypt` で導出 → XOR まで進む。これは真の key2 候補と decoys に縮小したテストで、探索空間全体の成功を示すものではない。実行: `.venv/bin/pytest tests/test_ctf_zipcrypto.py -q`。
 - ksnctf #39: 種を 0.8 秒で復元した（7 メンバーすべて一致。`time ^ pid`）。鍵の復元には至らず、#39 は未解決のまま。
 
 ## 実 Codex の測定（ksnctf #39、新しい DB、note なし、codex-cli 0.169.0）
@@ -45,4 +46,5 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 ## 未達（#28 は Open のまま）
 
 - Stay の鍵復元（2^39）。ネイティブ実装と `metis sandbox` での実行が必要。
-- 専門家が intent だけで「鍵の復元 → 復号 → XOR」まで進むこと。
+- 攻撃 worker の上限には wall-clock 秒と候補数の制限があるが、OS が強制するメモリ上限はまだない。メモリ枯渇時の管理された理由コードも未検証。
+- 専門家 intent の合成試験は候補削減したパイプラインを確認するもので、通常の再現テストでは全候補探索からの鍵回復を証明していない。
