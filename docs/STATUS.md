@@ -65,6 +65,13 @@ autonomously produced the answer: Daybreak performed the bounded collision
 search for Happy Birthday, and the result does not close the P1 autonomous
 solver or other open acceptance gates.
 
+After hardware-key reauthentication, the 2026-11-17 KSNCTF #33 offline
+regression reached `view` and private candidate handoff without reproducing
+the authentication error. A Daybreak metadata audit also checked all four
+decrypted server responses without reading their bodies. It was not submitted
+to the official verifier; details and limits are in
+`docs/reports/issue24-reauth-regression-2026-11-17.md`.
+
 ## Boundaries and remaining work
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
@@ -73,7 +80,8 @@ build itself was not run in validation because registries were unreachable
 there. Platforms other than CTFd, rCTF and ksnctf, and site-specific verdict
 formats, need the generic form verifier or a new adapter.
 
-The broader P0-P8 master plan remains a research roadmap. This increment does
-not claim universal CTF solving, live competition success, macOS validation,
-browser automation, or safe hostile-code execution. The optional standalone
+The broader P0-P8 master plan remains a research roadmap. The evidence above
+does not establish autonomous solving, broad benchmark performance, the
+in-process Codex sub-agent denial required by Issue #16, Linux real-Codex
+compatibility, or production deployment. The optional standalone
 model/container experiments remain separate from the default Codex workflow.
