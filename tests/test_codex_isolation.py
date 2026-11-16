@@ -7,7 +7,6 @@ where sandbox-exec is unavailable; the proxy, home and gating tests run everywhe
 import json
 import socket
 import subprocess
-import os
 import sys
 import threading
 from pathlib import Path

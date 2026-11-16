@@ -62,6 +62,9 @@ class CodexSession:
                 # The wall-clock budget starts at the first action, not at intake, so a
                 # portfolio opened at once does not expire together.
                 db.execute("ALTER TABLE codex_sessions ADD COLUMN activated REAL")
+            if "evaluation_split" not in columns:
+                # Unknown/unlisted sessions are treated conservatively by MUNIN retrieval.
+                db.execute("ALTER TABLE codex_sessions ADD COLUMN evaluation_split TEXT NOT NULL DEFAULT 'unlisted'")
 
     def _emit(self, run_id: str, status: RunStatus, **detail: str) -> None:
         events = self.store.read(run_id)
@@ -70,7 +73,8 @@ class CodexSession:
 
     def start(self, manifest: ChallengeManifest, *, commitment: str | None = None,
               max_actions: int = 40, wall_seconds: int = 1200,
-              artifact_root: Path | None = None) -> dict:
+              artifact_root: Path | None = None,
+              evaluation_split: str = "unlisted") -> dict:
         manifest = ChallengeManifest.model_validate(manifest.model_dump())
         if manifest.artifacts and artifact_root is None:
             raise ValueError("artifact root is required for file challenges")
@@ -81,15 +85,17 @@ class CodexSession:
             root = Path(root).relative_to(self.database.parent.resolve()).as_posix()
         if commitment is not None and not re.fullmatch(r"[0-9a-f]{64}", commitment):
             raise ValueError("invalid SHA-256 verification commitment")
+        if evaluation_split not in {"practice", "competition", "heldout", "unlisted"}:
+            raise ValueError("evaluation_split must be practice, competition, heldout or unlisted")
         if not 1 <= max_actions <= 1000 or not 1 <= wall_seconds <= 86_400:
             raise ValueError("invalid session budget")
         run_id = uuid4().hex
         with sqlite3.connect(self.database) as db:
             db.execute("INSERT INTO codex_sessions "
-                       "(run_id, manifest, commitment, started, max_actions, wall_seconds, artifact_root) "
-                       "VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                       "(run_id, manifest, commitment, started, max_actions, wall_seconds, artifact_root, "
+                       "evaluation_split) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
                 run_id, manifest.model_dump_json(), commitment, time.time(),
-                max_actions, wall_seconds, root,
+                max_actions, wall_seconds, root, evaluation_split,
             ))
         for state in (RunStatus.NEW, RunStatus.VALIDATED, RunStatus.CLASSIFIED, RunStatus.PLANNING):
             self._emit(run_id, state)
@@ -109,10 +115,14 @@ class CodexSession:
         used = sum(event.status == RunStatus.EXECUTING for event in events)
         with sqlite3.connect(self.database) as db:
             activated = db.execute("SELECT activated FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()[0]
+            evaluation_split = db.execute(
+                "SELECT evaluation_split FROM codex_sessions WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
         clock = activated if activated is not None else time.time()
         return {
             "run_id": run_id, "status": events[-1].status.value,
             "challenge": json.loads(manifest), "tools": sorted(NATIVE_TOOLS),
+            "evaluation_split": evaluation_split,
             "artifact_tools": sorted(ARTIFACT_TOOLS),
             "triage": triage(ChallengeManifest.model_validate_json(manifest)),
             "network_tools": self._network_tools(run_id),
@@ -234,7 +244,8 @@ class CodexSession:
 
     def intake(self, *, title: str, description: str, paths: list[Path],
                categories: list[str] | None = None, commitment: str | None = None,
-               max_actions: int = 80, wall_seconds: int = 3600) -> dict:
+               max_actions: int = 80, wall_seconds: int = 3600,
+               evaluation_split: str = "unlisted") -> dict:
         if len(paths) > 32 or len(description.encode()) > 65_536:
             raise ValueError("intake limit exceeded")
         workspace = Path(tempfile.mkdtemp(prefix=".metis-artifacts-", dir=self.database.parent))
@@ -265,7 +276,8 @@ class CodexSession:
                           "challenge_id": identity},
             })
             return self.start(manifest, artifact_root=workspace, commitment=commitment,
-                              max_actions=max_actions, wall_seconds=wall_seconds)
+                              max_actions=max_actions, wall_seconds=wall_seconds,
+                              evaluation_split=evaluation_split)
         except (OSError, ValueError):
             shutil.rmtree(workspace)
             raise
@@ -445,7 +457,8 @@ class CodexSession:
                 "scope": {"authorized": True, "granted_by": "local-demo-generator",
                           "challenge_id": identity},
             })
-            contexts.append(self.start(manifest, commitment=hashlib.sha256(answer.encode()).hexdigest()))
+            contexts.append(self.start(manifest, commitment=hashlib.sha256(answer.encode()).hexdigest(),
+                                       evaluation_split="practice"))
         return contexts
 
 

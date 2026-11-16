@@ -188,3 +188,17 @@ def test_legacy_absolute_artifact_roots_are_migrated(tmp_path):
     moved = CodexSession(tmp_path / "new" / ".metis-state" / "metis.sqlite")
     assert moved.artifact_root(run_id) == (tmp_path / "new" / ".metis-state" / root.name).resolve()
     assert moved.artifact(run_id, "00-cipher.txt", "text")["ok"] is True
+
+
+def test_legacy_database_split_defaults_to_unlisted(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "legacy.sqlite"
+    session = CodexSession(database)
+    note = tmp_path / "cipher.txt"
+    note.write_text("synthetic")
+    run_id = session.intake(title="t", description="d", paths=[note])["run_id"]
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE codex_sessions DROP COLUMN evaluation_split")
+    migrated = CodexSession(database)
+    assert migrated.context(run_id)["evaluation_split"] == "unlisted"

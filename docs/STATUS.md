@@ -23,7 +23,9 @@ Implemented:
   verdict.
 - MUNIN technique cards with evidence/run provenance, successful-solve gating,
   failure-evidence gating, held-out exclusion, secret/flag guards, search, and
-  retrieval during later intake.
+  split-aware retrieval during later intake and specialist briefs. Existing
+  sessions migrate to `unlisted` and receive no cards; retrieval can be disabled
+  for ablation.
 - A project-local setup script, six synthetic category exercises, and a local
   CTFd-shaped rehearsal server.
 
@@ -104,3 +106,11 @@ does not establish autonomous solving, broad benchmark performance, the
 in-process Codex sub-agent denial required by Issue #16, Linux real-Codex
 compatibility, or production deployment. The optional standalone
 model/container experiments remain separate from the default Codex workflow.
+
+The 2026-11-17 MUNIN increment adds three deterministic synthetic transfer trials
+and an ablation comparing one fixed retrieval-guided tool action with two fixed
+no-retrieval actions. This covers integration mechanics; it does not measure
+model behavior or establish a solve-rate improvement. Run-level split labels are
+intake metadata and must be classified correctly. The same increment adds
+bounded-autopilot activity counters; cost stays unknown when the provider does
+not report it. See `docs/ORCHESTRATION_RUNTIME.md` for operational limits.

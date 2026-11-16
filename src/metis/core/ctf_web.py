@@ -421,8 +421,10 @@ class WebWorkflow:
                     if total > 512 * 1024 * 1024:
                         raise ValueError("distribution files exceed total limit")
                     paths.append(path)
+            evaluation = split_for(Path("writeups"), config["adapter"], config.get("challenge_id"))
             context = self.session.intake(title=title, description=description[:65_000], paths=paths,
-                                           categories=categories, max_actions=120, wall_seconds=7200)
+                                           categories=categories, max_actions=120, wall_seconds=7200,
+                                           evaluation_split=evaluation["split"])
         run_id = context["run_id"]
         with sqlite3.connect(self.database) as db:
             db.execute("INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
@@ -431,9 +433,10 @@ class WebWorkflow:
         return {"context": context, "web": self.context(run_id)["web"],
                 "downloaded_files": len(paths) - 1, "skipped_files": skipped,
                 **({"render": rendered} if rendered else {}),
-                "prior_knowledge": self.knowledge.search(description[:256],
-                                                          category=categories[0] if categories else None, limit=3),
-                "evaluation": split_for(Path("writeups"), config["adapter"], config.get("challenge_id")),
+                "prior_knowledge": self.knowledge.search_for_run(
+                    run_id, f"{title} {description[:256]}",
+                    category=categories[0] if categories else None, limit=3),
+                "evaluation": evaluation,
                 "page_text_is_untrusted": True}
 
     def context(self, run_id: str) -> dict:

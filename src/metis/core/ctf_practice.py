@@ -52,7 +52,8 @@ def practice(session: CodexSession) -> list[dict]:
             paths.append(path)
         contexts.append(session.intake(title=title, description=description, paths=paths,
                                        categories=[category],
-                                       commitment=hashlib.sha256(answer.encode()).hexdigest()))
+                                       commitment=hashlib.sha256(answer.encode()).hexdigest(),
+                                       evaluation_split="practice"))
 
     answer = "CTF{" + secrets.token_hex(12) + "}"
     source = ("the competition flag is " + answer).encode()

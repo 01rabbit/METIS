@@ -124,6 +124,24 @@ class KnowledgeBase:
                            (identity, card.title, card.summary, card.conditions, card.failure_reason))
         return {"id": identity, "stored": True, "digest": digest}
 
+    def search_for_run(self, run_id: str, query: str, *, category: str | None = None,
+                       limit: int = 5) -> list[dict]:
+        """Retrieve only for runs explicitly classified practice or competition.
+
+        Held-out and unlisted runs receive no prior cards. The challenge text is
+        untrusted search input, so answer-shaped values, credentials and long
+        encoded blobs are removed before keyword search.
+        """
+        context = self.session.context(run_id)
+        if context.get("evaluation_split") not in {"practice", "competition"}:
+            return []
+        safe_query = re.sub(r"[A-Za-z0-9_]{1,32}\{[^{}\r\n]{1,200}\}|(?:FLAG|flag)_[^\s<>\"']{4,200}",
+                            " ", query)
+        safe_query = re.sub(r"\b(?:Bearer\s+\S+|(?:password|token|cookie|api_key)\s*[:=]\s*\S+)",
+                            " ", safe_query, flags=re.IGNORECASE)
+        safe_query = re.sub(r"[A-Za-z0-9_+/=-]{48,}", " ", safe_query)
+        return self.search(safe_query[:1000], category=category, limit=limit)
+
     def search(self, query: str, *, category: str | None = None, limit: int = 5) -> list[dict]:
         if len(query) > 1000 or not 1 <= limit <= 20:
             raise ValueError("invalid memory search bounds")

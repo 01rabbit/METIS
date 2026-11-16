@@ -263,3 +263,28 @@ an inconclusive report's `next_action` and must not repeat a previous wave reaso
 checks provenance and literal repetition, not semantic difference: Daybreak remains
 responsible for that judgment. Missing or invalid selections stop the driver. A selection
 for a later wave can be supplied when resuming after its report exists.
+
+Each invocation persists an answer-free row in `agent_autopilot_runs`: elapsed time,
+wave count, stop reason, Daybreak handoff, scheduler operations, specialist turns, and
+token usage when the provider reports it. Unknown token counts and dollar cost remain
+explicitly unknown. These counters measure controller activity; they do not establish
+improved solve rate or reduced human work.
+
+### P3: MUNIN retrieval and split controls
+
+`codex_sessions.evaluation_split` classifies local runs as `practice`, `competition`,
+`heldout`, or `unlisted`. Existing databases migrate to `unlisted`, which is deliberately
+ineligible for retrieval. The practice generator labels its exercises; web intake uses
+the existing evaluation classifier; CLI `codex start` and `codex intake` accept an
+explicit split. MUNIN lookup for specialist briefs and web intake is available only for
+practice and competition runs. Held-out and unlisted runs receive no prior cards.
+Specialist briefs present retrieved cards as untrusted experience with applicability
+conditions, never as evidence or answers. `metis agent slots --no-memory-retrieval`
+supports a retrieval-off ablation.
+
+`tests/test_munin_integration.py` uses a synthetic ROT13 source solve and three distinct
+synthetic target strings. A deterministic policy uses one tool action with retrieval and
+two without retrieval in each trial. This validates split gating and transfer plumbing;
+it is a mechanism test with fixed policies, not a model experiment, statistical claim,
+or evidence of improved live challenge performance. Evaluation split labels are supplied
+by intake metadata and are not cryptographically enforced against a mislabeled run.

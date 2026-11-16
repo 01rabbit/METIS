@@ -101,10 +101,12 @@ class AgentScheduler:
             stored = {key: json.loads(value) for key, value in db.execute("SELECT key, value FROM agent_config")}
         return {"global_slots": stored.get("global_slots", 4), "per_run_slots": stored.get("per_run_slots", 2),
                 "catalog": stored.get("catalog", []), "current_model": stored.get("current_model"),
+                "memory_retrieval": stored.get("memory_retrieval", True),
                 "host": self.host.capabilities().model_dump()}
 
     def configure(self, *, global_slots: int | None = None, per_run_slots: int | None = None,
-                  catalog: list[dict[str, Any]] | None = None, current_model: str | None = None) -> dict[str, Any]:
+                  catalog: list[dict[str, Any]] | None = None, current_model: str | None = None,
+                  memory_retrieval: bool | None = None) -> dict[str, Any]:
         changes: dict[str, Any] = {}
         if global_slots is not None:
             if not 1 <= global_slots <= 16:
@@ -122,6 +124,8 @@ class AgentScheduler:
             changes["catalog"] = catalog
         if current_model is not None:
             changes["current_model"] = current_model[:120] or None
+        if memory_retrieval is not None:
+            changes["memory_retrieval"] = bool(memory_retrieval)
         with self._db() as db:
             for key, value in changes.items():
                 db.execute("INSERT INTO agent_config(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET "
@@ -228,6 +232,17 @@ class AgentScheduler:
     def brief(self, run_id: str, assignment: dict[str, Any], attempt_id: str) -> dict[str, Any]:
         """Minimal no-history brief (spec 5.1): only references, never raw data or candidates."""
         context = self.session.context(run_id)
+        prior_knowledge: list[dict[str, Any]] = []
+        if self.config()["memory_retrieval"]:
+            from metis.core.ctf_knowledge import KnowledgeBase
+
+            challenge = context["challenge"]
+            categories = challenge.get("categories", [])
+            query = " ".join([challenge.get("title", ""), *[str(item) for item in categories],
+                              challenge.get("description", "")[:512]])
+            prior_knowledge = KnowledgeBase(self.database).search_for_run(
+                run_id, query, category=str(categories[0]) if categories else None, limit=3,
+            )
         observations = [event.sequence for event in self.session.store.read(run_id)
                         if event.status == RunStatus.OBSERVING][-10:]
         with self._db() as db:
@@ -254,6 +269,7 @@ class AgentScheduler:
             "artifacts": context["challenge"].get("artifacts", [])[:32],
             "evidence_refs": observations, "hypotheses": hypotheses, "rejected_actions": rejected,
             "prior_reports": prior_reports,
+            "prior_knowledge": prior_knowledge,
             "tools": profile.recommended_tools, "max_turns": assignment.get("max_turns", profile.max_turns),
             "seconds": assignment.get("deadline_seconds"), "max_output_chars": 8000,
             "forbidden": ["official submission", "scope or endpoint grants", "credentials", "re-delegation",

@@ -95,3 +95,9 @@ def test_web_submit_removes_one_terminal_line_ending(monkeypatch, tmp_path, caps
     assert main() == 0
     assert captured == [("run-1", "FLAG_example")]
     assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
+def test_agent_slots_can_disable_munin_retrieval(tmp_path):
+    result = cli("agent", "--database", tmp_path / "agent.sqlite", "slots", "--no-memory-retrieval")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["memory_retrieval"] is False
