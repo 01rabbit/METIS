@@ -36,6 +36,7 @@ ARTIFACT_TOOLS = frozenset({
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
+    "tls_decrypt", "tls_http_body",
 })
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
@@ -472,6 +473,8 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "zip_list": set(), "zip_read": {"member", "max_bytes", "password"}, "gzip": {"max_bytes"},
     "image": set(), "image_lsb": {"channels", "bit", "max_bytes"}, "pcap": {"packets"},
     "x509": {"limit"}, "tls_certificates": {"packets", "connections", "limit"},
+    "tls_decrypt": {"factor", "packets", "connections", "preview"},
+    "tls_http_body": {"factor", "packets", "connections", "connection", "side", "message", "max_bytes"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
     "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
@@ -553,6 +556,21 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
+    if tool in {"tls_decrypt", "tls_http_body"}:
+        from metis.core.ctf_tls import http_body, tls_decrypt
+        packets = bounded_integer(options, "packets", 1024, 1, 4096)
+        if file_kind(data) == "PCAPNG":
+            data, _more = _pcapng_to_classic(data, packets)
+        if len(data) < 24 or file_kind(data) != "PCAP":
+            raise ValueError("PCAP or supported PCAPNG required")
+        connections = bounded_integer(options, "connections", 16, 1, 32)
+        if tool == "tls_http_body":
+            return http_body(data, options, packets=packets, connections_limit=connections,
+                             max_bytes=bounded_integer(options, "max_bytes", 1_048_576, 1, 1_048_576))
+        result = tls_decrypt(data, options, packets=packets, connections_limit=connections,
+                             preview=bounded_integer(options, "preview", 600, 0, 4000))
+        result.pop("_plaintexts", None)
+        return result
     if tool == "tls_certificates":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, MAX_CONNECTIONS, tls_certificates
         packets = bounded_integer(options, "packets", 1024, 1, 4096)

@@ -27,7 +27,9 @@ class ScriptedRunner:
         self.prompts: list[str] = []
         self.models: list[str | None] = []
 
-    def run(self, prompt, *, model, timeout, should_stop=None):
+    def run(self, prompt, *, model, timeout, should_stop=None, images=None):
+        self.images = getattr(self, "images", [])
+        self.images.append(images)
         self.prompts.append(prompt)
         self.models.append(model)
         turn = self.turns.pop(0)
@@ -233,7 +235,7 @@ def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):
             self.runner = ScriptedRunner([_say({"action": "fail", "intent": None, "report": None,
                                                 "reason": "not my category"})])
 
-        def run(self, prompt, *, model, timeout, should_stop=None):
+        def run(self, prompt, *, model, timeout, should_stop=None, images=None):
             return self.runner.run(prompt, model=model, timeout=timeout)
 
     monkeypatch.setattr("metis.core.codex_specialist.CodexCLI", FakeCLI)
@@ -307,3 +309,87 @@ def test_isolation_summary_is_written_to_the_audit_log(setup):
     with sqlite3.connect(database) as db:
         detail = db.execute("SELECT detail FROM agent_job_log WHERE event='codex_turn'").fetchone()[0]
     assert json.loads(detail)["isolation"] == "seatbelt:refused=1:unchanged"
+
+
+def test_view_attaches_the_image_and_candidate_stays_private(tmp_path):
+    import os
+    import stat
+
+    from PIL import Image
+
+    database = tmp_path / ".metis-state" / "metis.sqlite"
+    picture = tmp_path / "flag.png"
+    Image.new("RGB", (8, 8), "white").save(picture)
+    other = tmp_path / "notes.txt"
+    other.write_text("look at the picture")
+    run_id = CodexSession(database).intake(title="Synthetic", description="Read the picture.",
+                                           paths=[picture, other], categories=["forensics", "misc"],
+                                           max_actions=40)["run_id"]
+    wave = AgentLedger(database).create_wave(run_id, mode="delegated")
+    scheduler = AgentScheduler(database, BridgeHost())
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    name = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    secret = "FLAG_privateCandidate42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    runner = ScriptedRunner([
+        _say(_intent("view", "view", artifact=name)),
+        lambda prompts: _say({"action": "candidate", "intent": None, "report": None, "reason": None,
+                              "candidate": {"value": secret, "basis_events": [steps(prompts)[0]["result"]["event_sequence"]]}}),
+        lambda prompts: _say(_report(steps(prompts)[0]["result"]["event_sequence"])),
+    ])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "completed"
+    assert runner.images[0] is None and runner.images[1][0][0] == ".png"  # attached from the next turn on
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and listed[0]["state"] == "pending"
+    path = Path(listed[0]["candidate_file"])
+    assert path.read_text() == secret and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump and secret not in json.dumps(result) and secret not in json.dumps(listed)
+    assert scheduler.candidates(run_id, purge="all")[0]["state"] == "purged" and not path.exists()
+
+
+def test_candidate_needs_basis_and_is_limited(setup):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    with pytest.raises(ValueError, match="cite"):
+        scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], "FLAG_x1", [])
+    with pytest.raises(ValueError, match="one line"):
+        scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], "a\nb", [1])
+    for number in range(3):
+        scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], f"FLAG_try{number}", [1])
+    with pytest.raises(ValueError, match="limit"):
+        scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], "FLAG_try9", [1])
+
+
+def test_long_option_values_are_digests_in_driver_output():
+    from metis.core.codex_specialist import _public_step
+
+    factor = "1" * 300
+    step = _public_step({"intent": {"kind": "artifact", "tool": "tls_decrypt", "artifact": "a.pcap", "data": None,
+                                    "options_json": json.dumps({"factor": factor, "preview": 0})}})
+    assert factor not in json.dumps(step) and '"preview": 0' in step["intent"]["options_json"]
+
+
+def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
+    import metis.core.codex_specialist as driver
+
+    monkeypatch.setattr(driver, "TRANSIENT_BACKOFF", 0.0)
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    flaky = CodexTurn(returncode=1, message=None, stderr_tail="not authenticated with one of your authorized "
+                                                              "hardware keys")
+    runner = ScriptedRunner([flaky, _say({"action": "fail", "intent": None, "report": None, "reason": "done"})])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "failed" and result["failure"] == "done" and len(runner.prompts) == 2
+    hard = ScriptedRunner([CodexTurn(returncode=1, message=None, stderr_tail="schema error"),
+                           CodexTurn(returncode=0, message="{}")])
+    second = started[1]
+    result = run_assignment(scheduler, run_id, second["assignment_id"], second["attempt_id"], hard)
+    assert "codex exited 1" in result["failure"] and len(hard.prompts) == 1

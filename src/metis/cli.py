@@ -111,9 +111,13 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
         from metis.core.codex_specialist import CodexCLI, run_assignment
         return run_assignment(scheduler, args.run_id, args.assignment_id, args.attempt,
                               CodexCLI(args.codex, isolation=args.isolation,
-                                       allow_untested=args.allow_untested_codex),
+                                       allow_untested=args.allow_untested_codex,
+                                       cyber_program=args.cyber_access_program),
                               model=args.model, turn_timeout=args.turn_timeout,
                               note=_note(args))
+    if command == "candidates":
+        return {"candidates": scheduler.candidates(args.run_id, purge=args.purge),
+                "submit": "metis web submit RUN_ID --candidate-file <candidate_file> (Daybreak only)"}
     if command == "codex-probe":
         return codex_probe(args)
     catalog = None
@@ -146,7 +150,8 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
     from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI
 
     try:
-        cli = CodexCLI(args.codex, isolation=args.isolation, allow_untested=args.allow_untested_codex)
+        cli = CodexCLI(args.codex, isolation=args.isolation, allow_untested=args.allow_untested_codex,
+                       cyber_program=args.cyber_access_program)
     except RuntimeError as exc:
         return {"codex_available": False, "reason": str(exc)}
     sentinel = default_codex_home() / "auth.json"
@@ -295,13 +300,21 @@ def main() -> int:
     agent_codex.add_argument("--note-file", type=Path, help="read the note from a file")
     agent_codex.add_argument("--isolation", choices=("required", "none"), default="required",
                              help="required: OS isolation (macOS sandbox-exec + egress allow-list); none: flags only")
+    agent_codex.add_argument("--cyber-access-program", choices=("standard", "daybreak_blue", "daybreak_red"),
+                             help="Codex access program the operator is enrolled in (some models require one)")
     agent_codex.add_argument("--allow-untested-codex", action="store_true",
                              help="run a Codex CLI version that is not in the tested list")
+    agent_candidates = agent_commands.add_parser(
+        "candidates", help="private candidates handed over by specialists (paths and digests, never values)")
+    agent_candidates.add_argument("run_id")
+    agent_candidates.add_argument("--purge", help="delete one candidate file (ID) or 'all'")
     agent_probe = agent_commands.add_parser("codex-probe", help="check that Codex can run as a tool-less specialist")
     agent_probe.add_argument("--ping", action="store_true", help="also run one real, tool-less Codex turn")
     agent_probe.add_argument("--model")
     agent_probe.add_argument("--codex")
     agent_probe.add_argument("--isolation", choices=("required", "none"), default="required")
+    agent_probe.add_argument("--cyber-access-program", choices=("standard", "daybreak_blue", "daybreak_red"),
+                             help="Codex access program the operator is enrolled in (some models require one)")
     agent_probe.add_argument("--allow-untested-codex", action="store_true")
     agent_slots = agent_commands.add_parser("slots", help="show or set global/per-run slots, model catalog")
     agent_slots.add_argument("--global", dest="global_slots", type=int)

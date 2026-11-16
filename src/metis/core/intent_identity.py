@@ -28,7 +28,7 @@ from metis.core.ctf_artifacts import MAX_FILE
 from metis.core.ctf_tools import number
 
 # Defaults copied from the tools (ctf_artifacts); a missing option equals its default.
-DEFAULTS: dict[str, dict[str, int]] = {
+DEFAULTS: dict[str, dict[str, int | str]] = {
     "text": {"offset": 0, "length": 16_384},
     "hex": {"offset": 0, "length": 256},
     "strings": {"offset": 0, "length": 1_048_576, "minimum": 4, "limit": 100},
@@ -39,6 +39,9 @@ DEFAULTS: dict[str, dict[str, int]] = {
     "image_lsb": {"bit": 0, "max_bytes": 4096}, "wav_lsb": {"channel": 0, "bit": 0, "max_bytes": 4096},
     "pdf_text": {"pages": 5}, "sqlite": {"limit": 20},
     "x509": {"limit": 8}, "tls_certificates": {"packets": 1024, "connections": 16, "limit": 4},
+    "tls_decrypt": {"packets": 1024, "connections": 16, "preview": 600},
+    "tls_http_body": {"packets": 1024, "connections": 16, "connection": 0, "side": "server", "message": 0,
+                      "max_bytes": 1_048_576},
 }
 WINDOWED = {"text", "hex", "strings", "disassemble"}
 STRUCTURED_DATA = {"bytes_decode", "zlib_decompress", "aes_decrypt", "fermat_factor", "rsa_common_modulus",

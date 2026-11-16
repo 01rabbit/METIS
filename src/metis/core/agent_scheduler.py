@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -36,6 +37,10 @@ MAX_ATTEMPTS = 3
 LEASE_GRACE = 120
 # An identical (canonical) action may run once more per run, and only on new evidence.
 MAX_RETESTS = 1
+# Executions of one canonical action across all attempts of a run (replays for stateless specialists).
+RUN_REPLAY_LIMIT = 8
+VIEWABLE = {"JPEG", "PNG", "GIF", "WEBP"}
+MAX_CANDIDATES = 3
 # Option variants of one tool on one artifact per attempt before the specialist must change approach.
 FAMILY_LIMIT = 3
 FORBIDDEN_INTENTS = {"submit": "official submission", "attest": "official submission", "grant": "scope expansion",
@@ -44,7 +49,7 @@ FORBIDDEN_INTENTS = {"submit": "official submission", "attest": "official submis
 
 
 class ToolIntent(Contract):
-    kind: Literal["data", "artifact", "derive"]
+    kind: Literal["data", "artifact", "derive", "view"]
     tool: str = Field(min_length=1, max_length=40)
     data: str | None = Field(default=None, max_length=65_536)
     artifact: str | None = Field(default=None, max_length=200)
@@ -79,6 +84,10 @@ class AgentScheduler:
                 run_id TEXT NOT NULL, identity TEXT NOT NULL, assignment_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL, sequence INTEGER NOT NULL, ok INTEGER NOT NULL, time REAL NOT NULL)""")
             db.execute("CREATE TABLE IF NOT EXISTS agent_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_candidates (
+                candidate_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, assignment_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL, digest TEXT NOT NULL, basis TEXT NOT NULL, path TEXT NOT NULL,
+                state TEXT NOT NULL, created REAL NOT NULL)""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(agent_actions)")}
             if "family" not in columns:  # added after Issue #11 E2E; old rows keep NULL
                 db.execute("ALTER TABLE agent_actions ADD COLUMN family TEXT")
@@ -227,6 +236,11 @@ class AgentScheduler:
                 hypotheses = [{"status": status, "summary": summary} for status, summary in db.execute(
                     "SELECT status, summary FROM ctf_hypotheses WHERE run_id=? ORDER BY created DESC LIMIT 5",
                     (run_id,))]
+            prior_reports = [{key: (str(value)[:300] if isinstance(value, str) else value)
+                              for key, value in json.loads(row[0]).items()
+                              if key in {"hypothesis", "next_action", "status", "event_sequences"}}
+                             for row in db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? "
+                                                   "ORDER BY created DESC LIMIT 4", (run_id,))]
             rejected = [json.loads(row[0])["next_action"] for row in db.execute(
                 "SELECT payload FROM ctf_agent_reports WHERE run_id=? ORDER BY created DESC LIMIT 20", (run_id,))
                 if json.loads(row[0])["status"] == "rejected"][:5]
@@ -239,6 +253,7 @@ class AgentScheduler:
             "evidence_required": profile.evidence_required,
             "artifacts": context["challenge"].get("artifacts", [])[:32],
             "evidence_refs": observations, "hypotheses": hypotheses, "rejected_actions": rejected,
+            "prior_reports": prior_reports,
             "tools": profile.recommended_tools, "max_turns": assignment.get("max_turns", profile.max_turns),
             "seconds": assignment.get("deadline_seconds"), "max_output_chars": 8000,
             "forbidden": ["official submission", "scope or endpoint grants", "credentials", "re-delegation",
@@ -397,6 +412,15 @@ class AgentScheduler:
                     raise ValueError("data intents need data")
                 result = self.session.act(run_id, ToolRequest(tool=intent.tool, data=intent.data))
                 ok = bool(result.get("ok"))
+            elif intent.kind == "view":
+                if not intent.artifact:
+                    raise ValueError("view intents need an image artifact name")
+                result = self.session.artifact(run_id, intent.artifact, "image", {})
+                details = result.get("result") or {}
+                ok = bool(result.get("ok")) and str(details.get("format", "")).upper() in VIEWABLE
+                result = {**result, "view": {"artifact": intent.artifact, "attached_next_turn": ok}}
+                if not ok:
+                    result["view"]["reason"] = "only registered JPEG/PNG/GIF/WebP images can be viewed"
             else:
                 if not intent.artifact:
                     raise ValueError("artifact intents need an artifact name")
@@ -419,11 +443,16 @@ class AgentScheduler:
                       new_evidence: list[int]) -> None:
         """Duplicate and retry control on the canonical identity (caller holds the run lock).
 
-        * An identical action already in the run is refused unless ``new_evidence`` cites an
-          observation that is newer than its last run *and* came from a different action; it may
-          be re-tested at most ``MAX_RETESTS`` times per run.
+        Specialists are stateless and cannot read each other's observations, so the duplicate
+        scope is the attempt: an attempt may observe the result of an action another attempt
+        already ran (a replay), but the same canonical action runs at most ``RUN_REPLAY_LIMIT``
+        times per run.
+
+        * Inside one attempt, an identical action is refused unless ``new_evidence`` cites an
+          observation newer than its last run *and* from a different action; it may be re-tested
+          at most ``MAX_RETESTS`` times.
         * One attempt may try at most ``FAMILY_LIMIT`` option variants of one tool on one artifact.
-        Refusals are logged and name the earlier evidence so the specialist can cite it instead.
+        Refusals are logged and name the earlier evidence.
         """
         events = self.session.store.read(run_id)
         known = {event.sequence for event in events}
@@ -431,29 +460,89 @@ class AgentScheduler:
             raise ValueError("new_evidence references unknown run events")
         observed = {event.sequence for event in events if event.status == RunStatus.OBSERVING}
         with self._db() as db:
-            prior = db.execute("SELECT sequence, assignment_id FROM agent_actions WHERE run_id=? AND identity=? "
+            prior = db.execute("SELECT sequence, attempt_id FROM agent_actions WHERE run_id=? AND identity=? "
                                "ORDER BY sequence", (run_id, identity)).fetchall()
             variants = db.execute("SELECT COUNT(DISTINCT identity) FROM agent_actions WHERE attempt_id=? AND "
                                   "family=?", (attempt_id, family)).fetchone()[0] if family else 0
+        mine = [row for row in prior if row[1] == attempt_id]
         refusal: tuple[str, str, str] | None = None
-        if prior:
-            last, owner = prior[-1]
+        if mine:
+            last = mine[-1][0]
             same = {row[0] for row in prior}
             fresh = [item for item in new_evidence if item > last and item in observed and item not in same]
-            if len(prior) > MAX_RETESTS:
+            if len(mine) > MAX_RETESTS:
                 refusal = ("intent_duplicate", f"retest limit; event {last}",
-                           (f"duplicate action: already observed at event {last} and re-tested; the re-test limit "
-                           "is reached, change the approach"))
+                           (f"duplicate action: you already observed this at event {last} and re-tested it; the "
+                            "re-test limit is reached, change the approach"))
             elif not fresh:
                 refusal = ("intent_duplicate", f"event {last}",
-                           (f"duplicate action: the same canonical request already ran at event {last} "
-                           f"({'this' if owner == assignment_id else 'another'} assignment); cite it, or cite a "
-                           "newer observation from a different action in new_evidence to re-test"))
+                           (f"duplicate action: you already ran the same canonical request at event {last}; use "
+                            "that observation, or cite a newer observation from a different action in "
+                            "new_evidence to re-test"))
+        elif len(prior) >= RUN_REPLAY_LIMIT:
+            refusal = ("intent_duplicate", f"run replay limit; event {prior[-1][0]}",
+                       (f"duplicate action: this canonical request already ran {len(prior)} times in this run "
+                        f"(last at event {prior[-1][0]}); use a different action"))
         elif family and variants >= FAMILY_LIMIT:
             refusal = ("intent_variant_limit", f"{variants} variants",
                        (f"variant limit: {variants} option variants of this tool on this artifact already ran in "
-                       "this attempt; use a different tool or report what is known"))
+                        "this attempt; use a different tool or report what is known"))
         if refusal:
             with self._db() as db:  # committed before raising so the refusal stays in the audit log
                 self._log(db, assignment_id, attempt_id, refusal[0], refusal[1])
             raise ValueError(refusal[2])
+
+    # -- private candidate hand-off (spec 6.1: never in reports, only to Daybreak) -----------------
+    def candidate_dir(self, run_id: str) -> Path:
+        return self.database.parent / ".metis-candidates" / run_id
+
+    def candidate(self, run_id: str, assignment_id: str, attempt_id: str, value: str,
+                  basis: list[int]) -> dict[str, Any]:
+        """Store a specialist's candidate privately (0600 file, digest in the DB, nothing in logs)."""
+        job = self._running(assignment_id, attempt_id)
+        if job["run_id"] != run_id:
+            raise ValueError("assignment belongs to another run")
+        if not 1 <= len(value) <= 512 or "\n" in value or "\r" in value:
+            raise ValueError("a candidate is one line of 1..512 characters")
+        known = {event.sequence for event in self.session.store.read(run_id)}
+        if not basis or not set(basis) <= known or len(basis) > 20:
+            raise ValueError("a candidate must cite the run events that produce it")
+        with self._db() as db:
+            count = db.execute("SELECT COUNT(*) FROM agent_candidates WHERE attempt_id=?", (attempt_id,)).fetchone()[0]
+            if count >= MAX_CANDIDATES:
+                raise ValueError("candidate limit for this attempt reached")
+            salt = db.execute("SELECT value FROM agent_config WHERE key='candidate_salt'").fetchone()
+            if salt is None:
+                salt_value = json.dumps(uuid4().hex + uuid4().hex)
+                db.execute("INSERT INTO agent_config(key,value) VALUES ('candidate_salt',?)", (salt_value,))
+                salt = (salt_value,)
+        digest = hashlib.sha256((json.loads(salt[0]) + value).encode()).hexdigest()
+        identity = "C" + uuid4().hex[:10]
+        directory = self.candidate_dir(run_id)
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
+        path = directory / f"{identity}.txt"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(value)
+        with self._db() as db:
+            db.execute("INSERT INTO agent_candidates VALUES (?,?,?,?,?,?,?,?,?)",
+                       (identity, run_id, assignment_id, attempt_id, digest, json.dumps(sorted(set(basis))),
+                        str(path), "pending", time.time()))
+            self._log(db, assignment_id, attempt_id, "candidate_received", f"{identity} digest={digest[:12]}")
+        return {"candidate_id": identity, "stored": "private", "digest": digest[:12]}
+
+    def candidates(self, run_id: str, *, purge: str | None = None) -> list[dict[str, Any]]:
+        """List candidates for Daybreak (paths and digests only). ``purge`` deletes one or 'all'."""
+        with self._db() as db:
+            db.row_factory = sqlite3.Row
+            rows = [dict(row) for row in db.execute("SELECT * FROM agent_candidates WHERE run_id=? ORDER BY created",
+                                                     (run_id,))]
+            for row in rows:
+                if purge in {"all", row["candidate_id"]} and row["state"] != "purged":
+                    Path(row["path"]).unlink(missing_ok=True)
+                    db.execute("UPDATE agent_candidates SET state='purged' WHERE candidate_id=?", (row["candidate_id"],))
+                    row["state"] = "purged"
+        return [{"candidate_id": row["candidate_id"], "assignment_id": row["assignment_id"],
+                 "basis_events": json.loads(row["basis"]), "digest": row["digest"][:12], "state": row["state"],
+                 "candidate_file": row["path"] if row["state"] == "pending" else None} for row in rows]

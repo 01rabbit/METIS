@@ -225,6 +225,8 @@ class CodexSession:
         except ARTIFACT_ERRORS as exc:
             output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",
                       "error_type": type(exc).__name__}
+            if type(exc) in (ValueError, TypeError):  # METIS's own bounded messages explain how to fix the call
+                output["detail"] = str(exc).splitlines()[0][:200] if str(exc) else ""
         self._emit(run_id, RunStatus.OBSERVING, tool_ok=str(output["ok"]).lower())
         self._emit(run_id, RunStatus.REPLANNING)
         self._emit(run_id, RunStatus.PLANNING)
@@ -271,7 +273,7 @@ class CodexSession:
     @locked
     def derive(self, run_id: str, name: str, tool: str, options: dict | None = None) -> dict:
         if tool not in {"zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz",
-                        "base64_decode", "base32_decode", "hex_decode"}:
+                        "base64_decode", "base32_decode", "hex_decode", "tls_http_body"}:
             raise ValueError("only bounded archive decoding can derive an artifact")
         observation = self.artifact(run_id, name, tool, options)
         if not observation["ok"]:
@@ -279,7 +281,7 @@ class CodexSession:
         content = base64.b64decode(observation["result"]["base64"], validate=True)
         if len(content) > 1_048_576:
             raise ValueError("derived artifact exceeds one MiB")
-        relative = self.store_artifact(run_id, content)
+        relative = self.store_artifact(run_id, content, suffix=_suffix(content))
         return {"run_id": run_id, "ok": True, "artifact": relative,
                 "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
 
@@ -445,3 +447,12 @@ class CodexSession:
             })
             contexts.append(self.start(manifest, commitment=hashlib.sha256(answer.encode()).hexdigest()))
         return contexts
+
+
+def _suffix(content: bytes) -> str:
+    """Keep a recognisable extension so viewers and parsers pick the right format."""
+    for magic, suffix in ((b"\xff\xd8\xff", ".jpg"), (b"\x89PNG\r\n\x1a\n", ".png"), (b"GIF8", ".gif"),
+                          (b"PK\x03\x04", ".zip"), (b"%PDF", ".pdf"), (b"\x1f\x8b", ".gz")):
+        if content.startswith(magic):
+            return suffix
+    return ".bin"

@@ -57,10 +57,10 @@ def test_window_longer_than_the_file_is_the_same_request(env):
     _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "text", "artifact": page,
                                          "options": {"offset": 0, "length": 12000}})
     with pytest.raises(ValueError, match="duplicate action"):  # E2E case: 12000 -> 11999 on an 8 KiB page
-        _intent(scheduler, run_id, jobs[1], {"kind": "artifact", "tool": "text", "artifact": page,
+        _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "text", "artifact": page,
                                              "options": {"offset": 0, "length": 11999}})
     with pytest.raises(ValueError, match="duplicate action"):  # omitted options equal the defaults
-        _intent(scheduler, run_id, jobs[1], {"kind": "artifact", "tool": "text", "artifact": page})
+        _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "text", "artifact": page})
 
 
 def test_more_packets_than_the_capture_holds_is_the_same_request(env):
@@ -70,9 +70,9 @@ def test_more_packets_than_the_capture_holds_is_the_same_request(env):
                                          "options": {"packets": 200}})
     for packets in (199, "0xc7", 5, 128):  # all read the same five records
         with pytest.raises(ValueError, match="duplicate action"):
-            _intent(scheduler, run_id, jobs[1], {"kind": "artifact", "tool": "pcap", "artifact": capture,
+            _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "pcap", "artifact": capture,
                                                  "options": {"packets": packets}})
-    fewer = _intent(scheduler, run_id, jobs[1], {"kind": "artifact", "tool": "pcap", "artifact": capture,
+    fewer = _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "pcap", "artifact": capture,
                                                  "options": {"packets": 4}})
     assert fewer["observation"]["ok"]
 
@@ -101,19 +101,20 @@ def test_identity_normalises_types_key_order_and_hex_spelling(env):
 
 def test_retest_needs_an_observation_from_a_different_action_and_is_limited(env):
     scheduler, run_id, jobs, names, _root = env
+    jobs = [max(jobs, key=lambda job: job["brief"]["max_turns"])]  # five intents fit a six-turn job
     page, big = names[0], names[2]
     request = {"kind": "artifact", "tool": "overview", "artifact": page}
     first = _intent(scheduler, run_id, jobs[0], request)
     # E2E case: citing events that are older than the earlier run does not count.
     with pytest.raises(ValueError, match="duplicate action"):
-        _intent(scheduler, run_id, jobs[1], {**request, "new_evidence": [first["evidence_sequence"] - 1]})
+        _intent(scheduler, run_id, jobs[0], {**request, "new_evidence": [first["evidence_sequence"] - 1]})
     # Citing the earlier run of the same request itself does not count either.
     with pytest.raises(ValueError, match="duplicate action"):
-        _intent(scheduler, run_id, jobs[1], {**request, "new_evidence": [first["evidence_sequence"]]})
-    other = _intent(scheduler, run_id, jobs[1], {"kind": "artifact", "tool": "overview", "artifact": big})
-    retest = _intent(scheduler, run_id, jobs[1], {**request, "new_evidence": [other["evidence_sequence"]]})
+        _intent(scheduler, run_id, jobs[0], {**request, "new_evidence": [first["evidence_sequence"]]})
+    other = _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "overview", "artifact": big})
+    retest = _intent(scheduler, run_id, jobs[0], {**request, "new_evidence": [other["evidence_sequence"]]})
     assert retest["action_identity"] == first["action_identity"]
-    newer = _intent(scheduler, run_id, jobs[1], {"kind": "artifact", "tool": "strings", "artifact": big})
+    newer = _intent(scheduler, run_id, jobs[0], {"kind": "artifact", "tool": "strings", "artifact": big})
     with pytest.raises(ValueError, match="re-test limit"):
         _intent(scheduler, run_id, jobs[0], {**request, "new_evidence": [newer["evidence_sequence"]]})
 
@@ -140,10 +141,10 @@ def test_refusals_are_logged(env):
     request = {"kind": "artifact", "tool": "overview", "artifact": names[0]}
     _intent(scheduler, run_id, jobs[0], request)
     with pytest.raises(ValueError):
-        _intent(scheduler, run_id, jobs[1], request)
+        _intent(scheduler, run_id, jobs[0], request)
     with sqlite3.connect(scheduler.database) as db:
         events = [row[0] for row in db.execute("SELECT event FROM agent_job_log WHERE assignment_id=?",
-                                               (jobs[1]["assignment_id"],))]
+                                               (jobs[0]["assignment_id"],))]
     assert "intent_duplicate" in events
 
 
@@ -160,3 +161,19 @@ def test_old_agent_actions_table_is_migrated(tmp_path):
     AgentScheduler(database, FakeHost())
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT family FROM agent_actions").fetchall() == [(None,)]
+
+
+def test_other_attempts_may_replay_but_a_run_caps_identical_actions(env, monkeypatch):
+    """Stateless specialists cannot read each other's observations: a new attempt may re-run an
+    action once, but one canonical action runs at most RUN_REPLAY_LIMIT times per run."""
+    from metis.core import agent_scheduler
+
+    monkeypatch.setattr(agent_scheduler, "RUN_REPLAY_LIMIT", 3)  # production value: 8
+    RUN_REPLAY_LIMIT = 3
+    scheduler, run_id, jobs, names, _root = env
+    request = {"kind": "artifact", "tool": "overview", "artifact": names[0]}
+    assert len(jobs) > RUN_REPLAY_LIMIT
+    for job in jobs[:RUN_REPLAY_LIMIT]:
+        _intent(scheduler, run_id, job, request)
+    with pytest.raises(ValueError, match=f"already ran {RUN_REPLAY_LIMIT} times"):
+        _intent(scheduler, run_id, jobs[RUN_REPLAY_LIMIT], request)

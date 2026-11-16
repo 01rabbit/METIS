@@ -225,13 +225,16 @@ def test_duplicate_actions_need_newer_evidence(state, tmp_path):
     jobs = scheduler.dispatch(run_id)["started"]
     intent = {"kind": "data", "tool": "base64_decode", "data": "aGVsbG8="}
     first = scheduler.intent(run_id, jobs[0]["assignment_id"], jobs[0]["attempt_id"], intent)
-    with pytest.raises(ValueError, match="duplicate action"):
-        scheduler.intent(run_id, jobs[1]["assignment_id"], jobs[1]["attempt_id"], intent)
-    other = scheduler.intent(run_id, jobs[1]["assignment_id"], jobs[1]["attempt_id"],
+    with pytest.raises(ValueError, match="duplicate action"):  # the same attempt cannot simply repeat it
+        scheduler.intent(run_id, jobs[0]["assignment_id"], jobs[0]["attempt_id"], intent)
+    other = scheduler.intent(run_id, jobs[0]["assignment_id"], jobs[0]["attempt_id"],
                              {**intent, "data": "d29ybGQ="})
-    again = scheduler.intent(run_id, jobs[1]["assignment_id"], jobs[1]["attempt_id"],
+    again = scheduler.intent(run_id, jobs[0]["assignment_id"], jobs[0]["attempt_id"],
                              {**intent, "new_evidence": [other["evidence_sequence"]]})
     assert again["action_identity"] == first["action_identity"]
+    # A stateless specialist in another attempt may observe it once (replay); see test_intent_identity.
+    replay = scheduler.intent(run_id, jobs[1]["assignment_id"], jobs[1]["attempt_id"], intent)
+    assert replay["action_identity"] == first["action_identity"]
 
 
 def test_concurrent_intents_respect_the_run_budget(state, tmp_path):

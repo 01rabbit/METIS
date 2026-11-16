@@ -72,6 +72,11 @@ PASSIVE_ITEMS = {"agent_message", "reasoning", "error", "todo_list"}
 SPAWN_MARKERS = ("collab", "spawn_agent", "spawn agent")
 ROUTER_MARKER = "tools::router"
 OBSERVATION_CHARS = 12_000
+MAX_IMAGES = 4
+# Failures of the model service, not of the specialist: the same turn is retried once.
+TRANSIENT_MARKERS = ("hardware key", "rate limit", "connection failed", "temporarily unavailable", "503", "502")
+TRANSIENT_BACKOFF = 5.0
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
 STOP_POLL = 2.0
 TRANSCRIPT_CHARS = 40_000
 ENV_KEEP = ("PATH", "HOME", "CODEX_HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "LOGNAME",
@@ -90,14 +95,29 @@ DATA_TOOL_ARGS = {
                           "rsa_common_modulus{n,e1,e2,c1,c2} pack|unpack{value?,data?,bits?,endian?,signed?} "
                           "cyclic|cyclic_find{length?,width?,value?,encoding?}",
 }
+TOOL_HINTS = (
+    "overview: file type, size, entropy, first strings. pcap{packets<=1024}: packet list with payload text.",
+    ("x509{limit}: DER/PEM certificate FILES only (not captures). tls_certificates{packets<=4096,connections<=32,"
+    "limit<=16} on a PCAP: per TLS connection the version, cipher suite and certificates with RSA n (decimal) and e."),
+    "gcd (data tool, JSON {a,b}): a nontrivial gcd of two RSA moduli is a shared prime factor p.",
+    ("tls_decrypt{factor,packets,connections,preview} on a PCAP: factor = decimal STRING of a prime factor p of a "
+    "server modulus (from gcd). Decrypts TLS 1.0-1.2 RSA key-exchange sessions (RC4/AES-CBC/AES-GCM; not "
+    "TLS 1.3 or ECDHE), verifies MACs and lists HTTP messages per connection index and side."),
+    ("derive tool tls_http_body{factor,connection,side,message} on the PCAP registers one decrypted HTTP body as a "
+    "new artifact (name returned); then inspect it (overview/text/image) or view it if it is a picture."),
+)
 ARTIFACT_OPTIONS = "; ".join(f"{tool}{{{','.join(sorted(names))}}}" for tool, names in sorted(ALLOWED_OPTIONS.items())
                              if names)
 
 DECISION_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
-    "required": ["action", "intent", "report", "reason"],
+    "required": ["action", "intent", "report", "reason", "candidate"],
     "properties": {
-        "action": {"type": "string", "enum": ["intent", "report", "fail"]},
+        "action": {"type": "string", "enum": ["intent", "report", "fail", "candidate"]},
+        "candidate": {"anyOf": [{"type": "null"}, {
+            "type": "object", "additionalProperties": False, "required": ["value", "basis_events"],
+            "properties": {"value": {"type": "string"},
+                           "basis_events": {"type": "array", "items": {"type": "integer"}}}}]},
         "intent": {"anyOf": [{"type": "null"}, {
             "type": "object", "additionalProperties": False,
             "required": ["kind", "tool", "data", "artifact", "options_json", "new_evidence"],
@@ -145,7 +165,8 @@ class CodexTurn:
 
 class CodexRunner(Protocol):
     def run(self, prompt: str, *, model: str | None, timeout: float,
-            should_stop: Callable[[], bool] | None = None) -> CodexTurn: ...
+            should_stop: Callable[[], bool] | None = None,
+            images: list[tuple[str, bytes]] | None = None) -> CodexTurn: ...
 
 
 def known_features(executable: str) -> set[str]:
@@ -169,7 +190,8 @@ class CodexCLI:
 
     def __init__(self, executable: str | None = None, *, features: set[str] | None = None,
                  isolation: str = "required", allow_untested: bool = False,
-                 protected: list[Path] | None = None, hosts: tuple[str, ...] = MODEL_HOSTS):
+                 protected: list[Path] | None = None, hosts: tuple[str, ...] = MODEL_HOSTS,
+                 cyber_program: str | None = None):
         found = executable or shutil.which("codex")
         if not found:
             raise RuntimeError("Codex CLI not found on PATH")
@@ -180,6 +202,9 @@ class CodexCLI:
         self.allow_untested = allow_untested
         self.protected = protected
         self.hosts = hosts
+        if cyber_program not in {None, "standard", "daybreak_blue", "daybreak_red"}:
+            raise ValueError("cyber access program must be standard, daybreak_blue or daybreak_red")
+        self.cyber_program = cyber_program  # the operator's enrolment, passed as Codex's documented flag
         self._version_checked = False
         self.features = known_features(found) if features is None else features
         missing = [name for name in REQUIRED_DISABLES if name not in self.features]
@@ -197,6 +222,8 @@ class CodexCLI:
                 command += ["--disable", name]
         if model:
             command += ["--model", model]
+        if getattr(self, "cyber_program", None):
+            command += ["--cyber-access-program", str(self.cyber_program)]
         return [*command, "-"]
 
     @staticmethod
@@ -223,7 +250,8 @@ class CodexCLI:
         return [root for root in roots if root.exists()]
 
     def run(self, prompt: str, *, model: str | None, timeout: float,
-            should_stop: Callable[[], bool] | None = None) -> CodexTurn:
+            should_stop: Callable[[], bool] | None = None,
+            images: list[tuple[str, bytes]] | None = None) -> CodexTurn:
         """One turn. ``should_stop`` is checked every couple of seconds; when it turns true
         (Daybreak cancelled the attempt) the whole process group is killed at once."""
         if not self._version_checked:
@@ -236,6 +264,15 @@ class CodexCLI:
             schema.write_text(json.dumps(DECISION_SCHEMA))
             env = self.environment()
             command = self.argv(workdir, schema, output, model)
+            if images:  # registered image artifacts the specialist asked to view (copied into the turn dir)
+                folder = base / "images"
+                folder.mkdir(mode=0o700)
+                attach = []
+                for number, (suffix, content) in enumerate(images[:MAX_IMAGES]):
+                    target = folder / f"view{number}{suffix}"
+                    target.write_bytes(content)
+                    attach.append(f"--image={target}")
+                command = [*command[:-1], *attach, command[-1]]
             isolation: dict[str, Any] = {"mode": "none"}
             home: TurnHome | None = None
             proxy: AllowlistProxy | None = None
@@ -322,7 +359,8 @@ def render_prompt(brief: dict[str, Any], transcript: list[dict[str, Any]], note:
     """Stateless prompt: the brief, the tool reference and this attempt's own steps only."""
     public_brief = {key: brief[key] for key in ("run_id", "assignment_id", "role", "objective", "deliverable",
                                                  "evidence_required", "artifacts", "evidence_refs", "hypotheses",
-                                                 "rejected_actions", "tools", "max_turns", "forbidden")
+                                                 "rejected_actions", "prior_reports", "tools", "max_turns",
+                                                 "forbidden")
                     if key in brief}
     steps = json.dumps(transcript, ensure_ascii=False)
     focus = ""
@@ -343,16 +381,23 @@ You have no shell, files, network or other agents. You act only by returning ONE
     Accepted options (any other option is refused): {ARTIFACT_OPTIONS}.
     Observations longer than {OBSERVATION_CHARS} characters are truncated: read a byte window with
     text{{offset,length}} or hex{{offset,length}} (offsets from the overview/pcap record offsets) instead.
+  Key tools: {" ".join(TOOL_HINTS)}
   Data tools with plain-text data: {DATA_TOOL_ARGS["plain text"]}
   Data tools whose data is a {"JSON object string"}: {DATA_TOOL_ARGS["JSON object string"]}
-  Repeating a request is refused, also when only options that do not change the result differ; the refusal
-  names the event to cite instead. A re-test needs new_evidence citing a newer observation from a different
-  action and is allowed once per run. At most 3 option variants of one tool on one artifact per attempt.
+  You may re-run an action another specialist already ran (prior_reports cite its events; you cannot see their
+  observations). Repeating your own request is refused, also when only options that do not change the result
+  differ. A re-test needs new_evidence citing a newer observation from a different action and is allowed once.
+  At most 3 option variants of one tool on one artifact per attempt; one action runs at most 3 times per run.
 - {{"action":"report", "report":{{...}}}}: your final compact report. event_sequences must cite event numbers
   returned to you; artifact_refs only registered artifact names. Status supported|rejected|inconclusive.
   NEVER put a flag or flag candidate in the report: describe the exact recorded transformation (tool, input,
   event number) that produces it, so Daybreak can reproduce and verify it.
 - {{"action":"fail", "reason":"..."}}: stop when the assignment cannot be done with these tools.
+- kind "view" intent: artifact=<registered JPEG/PNG/GIF/WebP>, tool "view". The image is attached to your
+  next turns so you can read text or details in it (use derive to register images found inside other data).
+- {{"action":"candidate", "candidate":{{"value":"<exact answer>", "basis_events":[event numbers]}}}}: hand
+  your exact answer privately to Daybreak (never shown in reports or logs). Daybreak verifies it officially.
+  Send it once you are confident, then send your report (which must still not contain the value).
 Set unused fields to null. Official submission, endpoint grants, credentials, network, running programs and
 starting other agents are Daybreak-only and will be refused. Work only from the challenge statement and
 observations below, not from remembered write-ups or flags. Be concise; you have at most
@@ -370,7 +415,7 @@ def _decision(message: str | None) -> dict[str, Any]:
     if not message:
         raise ValueError("Codex returned no final message")
     value = json.loads(message)
-    if not isinstance(value, dict) or value.get("action") not in {"intent", "report", "fail"}:
+    if not isinstance(value, dict) or value.get("action") not in {"intent", "report", "fail", "candidate"}:
         raise ValueError("decision must be an object with action intent|report|fail")
     return value
 
@@ -414,6 +459,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     brief = scheduler.brief(run_id, assignment, attempt_id)
     transcript: list[dict[str, Any]] = []
     turns: list[dict[str, Any]] = []
+    attached: dict[str, tuple[str, bytes]] = {}
     budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
     outcome: dict[str, Any] = {"state": "running"}
     for _ in range(budget_calls):
@@ -431,7 +477,14 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             return latest["attempt_id"] != attempt_id or latest["state"] != "running"
 
         turn = runner.run(render_prompt(brief, transcript, note), model=selected, timeout=min(turn_timeout, remaining),
-                          should_stop=stopped)
+                          should_stop=stopped, images=list(attached.values()) or None)
+        if (not turn.stopped and turn.returncode != 0 and not turn.timed_out
+                and any(marker in turn.stderr_tail.lower() for marker in TRANSIENT_MARKERS)):
+            _log(scheduler, assignment_id, attempt_id, "codex_turn_retry", turn.stderr_tail[-160:])
+            time.sleep(TRANSIENT_BACKOFF)
+            turn = runner.run(render_prompt(brief, transcript, note), model=selected,
+                              timeout=min(turn_timeout, max(5.0, remaining - TRANSIENT_BACKOFF)),
+                              should_stop=stopped, images=list(attached.values()) or None)
         if turn.stopped:
             _log(scheduler, assignment_id, attempt_id, "codex_killed", "attempt cancelled during a Codex turn")
             outcome = {"state": "stopped", "reason": "attempt cancelled; Codex process group killed mid-turn"}
@@ -462,6 +515,15 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if decision["action"] == "fail":
             outcome = scheduler.fail(assignment_id, attempt_id, str(decision.get("reason") or "specialist gave up"))
             break
+        if decision["action"] == "candidate":
+            proposal = decision.get("candidate") or {}
+            try:
+                stored = scheduler.candidate(run_id, assignment_id, attempt_id, str(proposal.get("value", "")),
+                                             [int(item) for item in proposal.get("basis_events") or []])
+                transcript.append({"candidate": f"stored privately as {stored['candidate_id']}; now send your report"})
+            except (ValueError, TypeError) as exc:
+                transcript.append({"candidate_refused": str(exc)[:200]})
+            continue
         if decision["action"] == "report":
             report = dict(decision.get("report") or {})
             try:
@@ -476,6 +538,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             result = scheduler.intent(run_id, assignment_id, attempt_id, _intent_payload(raw))
             step["result"] = {"event_sequence": result["evidence_sequence"], "turns_left": result["turns_left"],
                               "observation": _truncate(result["observation"])}
+            view = (result["observation"] or {}).get("view") or {}
+            if view.get("attached_next_turn") and len(attached) < MAX_IMAGES:
+                attached[view["artifact"]] = _image(scheduler, run_id, view["artifact"])
         except (ValueError, json.JSONDecodeError) as exc:
             step["refused"] = str(exc)[:300]
         transcript.append(step)
@@ -519,6 +584,16 @@ def _public_step(step: dict[str, Any]) -> dict[str, Any]:
         data = intent["data"]
         public["intent"] = {**intent, "data": {"sha256": hashlib.sha256(data.encode()).hexdigest()[:16],
                                                "length": len(data)}}
+    intent = public.get("intent")
+    if isinstance(intent, dict) and intent.get("options_json"):
+        try:  # key material such as a prime factor travels in options; show long values as digests
+            options = json.loads(intent["options_json"])
+            if isinstance(options, dict):
+                public["intent"] = {**intent, "options_json": json.dumps(
+                    {key: (f"<sha256:{hashlib.sha256(str(value).encode()).hexdigest()[:12]} len={len(str(value))}>"
+                           if len(str(value)) > 24 else value) for key, value in options.items()})}
+        except json.JSONDecodeError:
+            public["intent"] = {**intent, "options_json": "<unparsable>"}
     if "result" in step:
         public["event_sequence"] = step["result"]["event_sequence"]
     return public
@@ -542,3 +617,19 @@ def _usage(scheduler: AgentScheduler, assignment_id: str, turns: list[dict[str, 
         totals[key] = sum(int((turn.get("usage") or {}).get(key) or 0) for turn in turns)
     with scheduler._db() as db:
         db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id=?", (json.dumps(totals), assignment_id))
+
+
+def _image(scheduler: AgentScheduler, run_id: str, name: str) -> tuple[str, bytes]:
+    """Read a registered image artifact (bounded) to attach to the specialist's next turn."""
+    from metis.core.artifacts import artifact_stream
+
+    root = scheduler.session.artifact_root(run_id)
+    if root is None:
+        raise ValueError("no artifact root")
+    with artifact_stream(root, name, max_bytes=MAX_IMAGE_BYTES) as stream:
+        content = stream.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise ValueError("image too large to view")
+    suffix = ".png" if content.startswith(b"\x89PNG") else ".gif" if content.startswith(b"GIF8") else \
+        ".webp" if content[8:12] == b"WEBP" else ".jpg"
+    return suffix, content
