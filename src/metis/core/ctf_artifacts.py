@@ -463,22 +463,26 @@ def _pcap(data: bytes, options: dict) -> dict:
             "tcp_reassembly": False}
 
 
+# Options each artifact tool accepts (also shown to delegated specialists).
+ALLOWED_OPTIONS: dict[str, set[str]] = {
+    "overview": set(), "strings": {"minimum", "limit"},
+    "text": {"offset", "length"},
+    "hex": {"offset", "length"}, "elf": set(),
+    "disassemble": {"architecture", "offset", "length", "count", "address"},
+    "zip_list": set(), "zip_read": {"member", "max_bytes", "password"}, "gzip": {"max_bytes"},
+    "image": set(), "image_lsb": {"channels", "bit", "max_bytes"}, "pcap": {"packets"},
+    "pe": set(), "java_class": set(), "wav": set(),
+    "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
+    "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
+    "zlib": {"max_bytes"},
+    "tar_list": set(), "tar_read": {"member", "max_bytes"},
+    "bzip2": {"max_bytes"}, "xz": {"max_bytes"}, "pdf_text": {"pages"},
+}
+
+
 def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
     options = options or {}
-    allowed = {
-        "overview": set(), "strings": {"minimum", "limit"},
-        "text": {"offset", "length"},
-        "hex": {"offset", "length"}, "elf": set(),
-        "disassemble": {"architecture", "offset", "length", "count", "address"},
-        "zip_list": set(), "zip_read": {"member", "max_bytes", "password"}, "gzip": {"max_bytes"},
-        "image": set(), "image_lsb": {"channels", "bit", "max_bytes"}, "pcap": {"packets"},
-        "pe": set(), "java_class": set(), "wav": set(),
-        "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
-        "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
-        "zlib": {"max_bytes"},
-        "tar_list": set(), "tar_read": {"member", "max_bytes"},
-        "bzip2": {"max_bytes"}, "xz": {"max_bytes"}, "pdf_text": {"pages"},
-    }
+    allowed = ALLOWED_OPTIONS
     if tool not in allowed or not isinstance(options, dict) or set(options) - allowed[tool]:
         raise ValueError("unknown artifact tool or options")
     if len(data) > MAX_ARTIFACT:

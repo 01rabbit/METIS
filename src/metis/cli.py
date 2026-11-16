@@ -107,6 +107,12 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
         return scheduler.retry(args.assignment_id)
     if command == "release":
         return scheduler.release(args.assignment_id)
+    if command == "codex":
+        from metis.core.codex_specialist import CodexCLI, run_assignment
+        return run_assignment(scheduler, args.run_id, args.assignment_id, args.attempt,
+                              CodexCLI(args.codex), model=args.model, turn_timeout=args.turn_timeout)
+    if command == "codex-probe":
+        return codex_probe(args)
     catalog = None
     if args.catalog_file:
         loaded = json.loads(args.catalog_file.read_text())
@@ -115,6 +121,46 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
         catalog = loaded
     return scheduler.configure(global_slots=args.global_slots, per_run_slots=args.per_run_slots,
                                catalog=catalog, current_model=args.current_model)
+
+
+def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
+    """Can this host start a tool-less Codex specialist? Optionally run one real ping turn."""
+    import subprocess
+    import tempfile
+
+    from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI
+
+    try:
+        cli = CodexCLI(args.codex)
+    except RuntimeError as exc:
+        return {"codex_available": False, "reason": str(exc)}
+    version = subprocess.run([cli.executable, "--version"], capture_output=True, text=True, timeout=20,
+                             check=False).stdout.strip()
+    with tempfile.TemporaryDirectory() as temporary:
+        base = Path(temporary)
+        argv = cli.argv(base / "work", base / "schema.json", base / "last.json", args.model)
+    result: dict[str, Any] = {
+        "codex_available": True, "executable": cli.executable, "version": version,
+        "disabled_features": [name for name in DISABLED_FEATURES if name in cli.features],
+        "unknown_features": [name for name in DISABLED_FEATURES if name not in cli.features],
+        "argv": [item if not item.startswith(str(base)) else "<tmp>" + item[len(str(base)):] for item in argv],
+    }
+    if args.ping:
+        turn = cli.run('Return {"action":"fail","intent":null,"report":null,"reason":"ping"} and nothing else.',
+                       model=args.model, timeout=120)
+        result["ping"] = {"returncode": turn.returncode, "thread_id": turn.thread_id, "items": turn.item_types,
+                          "message": turn.message, "usage": turn.usage, "timed_out": turn.timed_out,
+                          "violations": turn.violations()}
+        # Canary: the collaboration tools stay visible, so prove that a spawn attempt is detected.
+        canary = cli.run('Call collaboration.spawn_agent with the task "say hi" and then return '
+                         '{"action":"fail","intent":null,"report":null,"reason":"<exact tool result>"}.',
+                         model=args.model, timeout=180)
+        result["spawn_canary"] = {"returncode": canary.returncode, "items": canary.item_types,
+                                  "message": canary.message, "violations": canary.violations(),
+                                  "detected": "sub_agent_attempt" in canary.violations()
+                                  or "collab_tool_call" in canary.violations()}
+        result["ready"] = (turn.returncode == 0 and not turn.violations() and result["spawn_canary"]["detected"])
+    return result
 
 
 def main() -> int:
@@ -215,6 +261,18 @@ def main() -> int:
                        ("release", "free the slot of an 'unknown' job after confirming it stopped")):
         agent_sub = agent_commands.add_parser(name, help=text)
         agent_sub.add_argument("assignment_id")
+    agent_codex = agent_commands.add_parser(
+        "codex", help="run one started attempt with a tool-less Codex CLI specialist (Daybreak-side driver)")
+    agent_codex.add_argument("run_id")
+    agent_codex.add_argument("assignment_id")
+    agent_codex.add_argument("--attempt", required=True)
+    agent_codex.add_argument("--model", help="model id from the active catalog (default: the job's selection)")
+    agent_codex.add_argument("--turn-timeout", type=float, default=300.0)
+    agent_codex.add_argument("--codex", help="path to the Codex CLI (default: codex on PATH)")
+    agent_probe = agent_commands.add_parser("codex-probe", help="check that Codex can run as a tool-less specialist")
+    agent_probe.add_argument("--ping", action="store_true", help="also run one real, tool-less Codex turn")
+    agent_probe.add_argument("--model")
+    agent_probe.add_argument("--codex")
     agent_slots = agent_commands.add_parser("slots", help="show or set global/per-run slots, model catalog")
     agent_slots.add_argument("--global", dest="global_slots", type=int)
     agent_slots.add_argument("--per-run", dest="per_run_slots", type=int)

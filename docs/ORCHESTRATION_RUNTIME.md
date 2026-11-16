@@ -41,8 +41,15 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 
 - `kind` は `data` / `artifact` / `derive` のみ。`submit` `attest` `grant` `auth` `remote` `web` `sandbox`
   `delegate` `extend` は「Daybreak 専用」として拒否し、ログに残す。
-- 同じ run で同じ action identity（tool・入力 digest・options・artifact）の再実行は拒否。新しい証拠の
-  イベント番号を `new_evidence` に挙げた再試験だけ許す。
+- 同じ run で同じ action identity の再実行は拒否する。identity は `core/intent_identity.py` で正準化する。
+  具体的には、整数 option の型を揃え（`"0x10"` と `16` を同一視）、既定値を補い、byte 窓を artifact サイズで、
+  PCAP のパケット数を実レコード数で打ち切り、構造化 data の JSON をキー順で正準化し、hex 入力の空白と
+  大小文字を無視する。identity は重複判定にだけ使い、ツールは要求どおりに実行する。
+- 再試験は run ごとに 1 回（`MAX_RETESTS`）まで。`new_evidence` には、前回の実行より新しく、かつ別の
+  action が生んだ観測イベントを挙げる必要がある（古いイベントや同じ action 自身のイベントは数えない）。
+- 1 attempt の中で、同じ artifact に同じツールを option を変えて使えるのは 3 通り（`FAMILY_LIMIT`）まで。
+- 拒否は `agent_job_log` に `intent_duplicate` / `intent_variant_limit` として残り、メッセージは引用すべき
+  既存のイベント番号を示す。
 - 実行は run lock の下で `CodexSession` を通るため、予算超過・イベント番号衝突は起きない。
 - 1 intent = 1 turn。`max_turns` を超える要求は拒否し、その attempt を `timed_out` にする。
 
@@ -118,6 +125,46 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - 旧 wave（schema_version なし）は全担当を必須として扱い、migration で complete に変えない。
 - **挙動の変更**: 単純な問題では `metis plan` が担当を作らない（sequential）。以前の全担当計画が必要なら
   `--mode delegated`。2つ目以降の wave は `--reason` と前 wave の解決が必要。
+
+## 6.1 Codex CLI 専門家ドライバ（Claude Code → Codex）
+
+`metis agent codex RUN_ID ASSIGNMENT_ID --attempt ATT`（`core/codex_specialist.py`）は、dispatch 済みの
+1 attempt を Codex CLI で実行する Daybreak 側のドライバ。`BridgeHost` の設計（METIS は brief を返し、
+起動は Daybreak が行う）はそのままで、Daybreak がホストのツール（Claude Code の Bash）からこの
+コマンドを起動する。
+
+- 各ターンは `codex exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only` で、空の作業
+  ディレクトリ、縮小した環境変数（トークン類を渡さない）、`approval_policy="never"`、`web_search="disabled"`、
+  shell・multi_agent・apps・plugins・hooks・browser/computer use・code mode などの feature 無効で動く。
+  `shell_tool` を無効化できない CLI では起動を拒否する（fail closed）。
+- Codex は出力スキーマに沿った JSON（intent / report / fail）を返すだけ。intent は
+  `AgentScheduler.intent` を通り、Daybreak 専用の種別は拒否・記録される。報告は `complete` の検証を通る。
+  各ターンは状態を持たず、brief とその attempt 自身の手順だけを渡す（Daybreak の会話履歴は渡さない）。
+- 検知（多層防御）: イベントにツール系 item（command_execution・file_change・mcp_tool_call・web_search・
+  collab_tool_call）が出る、または stderr の tool router にサブエージェント起動の痕跡がある場合、attempt を
+  `failed`（`policy_violation`）にする。
+- cancel: ドライバは 2 秒ごとに job 状態を確認し、取り消されたら Codex のプロセスグループを停止して
+  `codex_killed` を記録する。
+- `metis agent codex-probe --ping` は実ターン 1 回と spawn カナリア 1 回を実行し、`ready` を返す。
+- usage（トークン数）は Codex の報告値を `agent_jobs.usage` に記録する。費用は `unknown`。
+- モデルは `metis agent slots` に登録した active catalog の ID だけを使う。
+
+確認済みの制約（Codex CLI 0.166.0、2026-11-16）。サブエージェント起動の制限は、この版の挙動に依存する:
+
+- `--disable multi_agent` でも `collaboration.spawn_agent` などのツールがモデルに見え続ける。`--ephemeral`
+  では spawn が失敗する（「rollout が無い」）が、これは観測された挙動で文書化された保証ではない。
+  `--ephemeral` を外した試験では spawn が成功し、しかも JSONL に item が出なかった。防止は CLI の挙動
+  頼み、検知は stderr 頼みであり、「不可能」ではなく「現版では失敗し、試みは検知される」水準。
+  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。隔離の強化は #16 で扱う。
+- `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。書込みは read-only sandbox と
+  承認なしで、MCP はサーバ未設定で無効化しているが、モデル自己申告以外の網羅的な一覧取得手段はない。
+- E2E 時点の重複判定は、生の action identity の一致だけを見ていた。そのため `length` を 1 変える、無関係な
+  イベントを `new_evidence` に挙げる、といった操作で回避でき、Codex は実際にそうした。正準化、再試験の上限、
+  option の変種の上限で塞いだ（`tests/test_intent_identity.py`）。ただし意味の同値性を網羅しているわけでは
+  ない。例えば `strings` の `limit` を変えれば、結果が同じでも別の要求として扱われる。
+- METIS の artifact tool には X.509/TLS の構造解析が無く、観測は 12000 文字で切り詰める。2048 bit の
+  modulus を hex 窓から抽出する作業は、6 intent の上限内で完了しなかった（ksnctf #33 の実例）。証明書解析
+  tool の追加は #17。
 
 ## 7. 残る制約
 
