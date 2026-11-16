@@ -104,7 +104,9 @@ TOOL_HINTS = (
     "server modulus (from gcd). Decrypts TLS 1.0-1.2 RSA key-exchange sessions (RC4/AES-CBC/AES-GCM; not "
     "TLS 1.3 or ECDHE), verifies MACs and lists HTTP messages per connection index and side."),
     ("ZipCrypto archives: zipcrypto_info (members, check bytes, Info-ZIP leaked rand byte per member); "
-     "infozip_seed{time_from,time_to} recovers Info-ZIP's srand(time^pid) seed from 3+ members and returns every "
+     "infozip_seed{time_from,time_to,pid_bits,seconds}: start with pid_bits=22 and seconds=120 "
+     "(max 22 and 300; default time window uses member timestamps). A smaller pid_bits can exclude the seed; "
+     "work_exceeds_budget is inconclusive. It searches Info-ZIP srand(time^pid) from 3+ members and returns every "
      "member's ten random header bytes (not known plaintext: they were encrypted twice; key recovery from them "
      "alone is ~2^39 work and not available); zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
      "Biham-Kocher known-plaintext attack (>=12 known bytes of the member's data, 8 contiguous; offset 0 = first "

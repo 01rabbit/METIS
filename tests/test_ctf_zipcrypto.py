@@ -173,3 +173,61 @@ def test_ksnctf_39_seed_is_recovered():
     data = Path(os.environ["METIS_TEST_KSNCTF39_ZIP"]).read_bytes()
     result = zc.infozip_seed(data, seconds=120)
     assert result["found"] and result["matched_leaked_bytes"] == 7 and result["salt"] == "pid"
+
+
+def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
+    """Exercise the specialist controller chain with a reduced, deterministic attack candidate set.
+
+    This verifies the real attack worker and intent routing, not exhaustive key-space search.
+    """
+    from metis.core.agent_host import BridgeHost
+    from metis.core.agent_scheduler import AgentScheduler
+    from metis.core.codex_session import CodexSession
+    from metis.core.ctf_orchestration import AgentLedger
+
+    known = b"A known plaintext for synthetic ZipCrypto testing. " * 2
+    secret = b"synthetic xor result"
+    encoded = bytes(byte ^ 0x42 for byte in secret).hex().encode()
+    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, b"intent-test")
+    source = tmp_path / "input.zip"
+    source.write_bytes(archive)
+    database = tmp_path / "state" / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Synthetic", description="Recover and decode.", paths=[source],
+                            categories=["crypto"], max_actions=40)["run_id"]
+    wave = AgentLedger(database).create_wave(run_id, mode="delegated")
+    scheduler = AgentScheduler(database, BridgeHost())
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    name = session.context(run_id)["challenge"]["artifacts"][0]
+
+    entry = next(e for e in zc.members(archive) if e["name"] == "known.txt")
+    ciphertext = zc.member_bytes(archive, entry)
+    keys = zc.Keys.from_password(b"intent-test")
+    plain = keys.copy().decrypt(ciphertext)
+    stream = [a ^ b for a, b in zip(known[:40], ciphertext[12:52], strict=True)]
+    _, index = zc.z_reduction(stream, float("inf"))
+    state = keys.copy()
+    for byte in plain[:12 + index]:
+        state.update(byte)
+    true_z = state.z & 0xFFFFFFFC
+    monkeypatch.setattr(zc, "z_reduction", lambda _stream, _deadline: (
+        np.array([true_z ^ 0x100000, true_z], dtype=np.uint32), index))
+
+    def intent(kind, tool, *, artifact=None, options=None, data=None):
+        return scheduler.intent(run_id, job["assignment_id"], job["attempt_id"],
+                                {"kind": kind, "tool": tool, "artifact": artifact,
+                                 "options": options or {}, "data": data})["observation"]
+
+    attack = intent("artifact", "zipcrypto_attack", artifact=name,
+                    options={"member": "known.txt", "plaintext_hex": known[:40].hex(), "seconds": 120})
+    assert attack["ok"] and attack["result"]["found"]
+    recovered = attack["result"]["keys"]
+    assert recovered == keys.hex()
+    derived = intent("derive", "zipcrypto_decrypt", artifact=name,
+                     options={"member": "encoded.txt", "keys": ",".join(recovered[k] for k in ("x", "y", "z"))})
+    assert derived["ok"]
+    content = intent("artifact", "text", artifact=derived["artifact"])
+    assert content["ok"]
+    decoded = intent("data", "xor", data=json.dumps({"data": content["result"]["text"], "key": "42"}))
+    assert decoded["ok"] and json.loads(decoded["output"])["utf8"] == secret.decode()
