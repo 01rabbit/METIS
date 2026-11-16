@@ -28,11 +28,16 @@ from metis.core.agent_host import AgentHost
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
 from metis.core.ctf_orchestration import AgentLedger
+from metis.core.intent_identity import intent_identity
 from metis.core.run_lock import run_lock
 from metis.core.runtime import ToolRequest
 
 MAX_ATTEMPTS = 3
 LEASE_GRACE = 120
+# An identical (canonical) action may run once more per run, and only on new evidence.
+MAX_RETESTS = 1
+# Option variants of one tool on one artifact per attempt before the specialist must change approach.
+FAMILY_LIMIT = 3
 FORBIDDEN_INTENTS = {"submit": "official submission", "attest": "official submission", "grant": "scope expansion",
                      "auth": "credential handling", "remote": "network access", "web": "network access",
                      "sandbox": "dynamic execution", "delegate": "re-delegation", "extend": "budget increase"}
@@ -74,6 +79,9 @@ class AgentScheduler:
                 run_id TEXT NOT NULL, identity TEXT NOT NULL, assignment_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL, sequence INTEGER NOT NULL, ok INTEGER NOT NULL, time REAL NOT NULL)""")
             db.execute("CREATE TABLE IF NOT EXISTS agent_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(agent_actions)")}
+            if "family" not in columns:  # added after Issue #11 E2E; old rows keep NULL
+                db.execute("ALTER TABLE agent_actions ADD COLUMN family TEXT")
 
     def _db(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database, timeout=30)
@@ -380,18 +388,10 @@ class AgentScheduler:
             self._stop(job)
             self._end(assignment_id, attempt_id, "timed_out", "max turns reached")
             raise ValueError("assignment max turns reached")
-        identity = intent.identity()
+        identity, family = intent_identity(intent.kind, intent.tool, intent.artifact, intent.options, intent.data,
+                                           self.session.artifact_root(run_id))
         with run_lock(self.database, run_id):
-            with self._db() as db:
-                previous = db.execute("SELECT MAX(sequence) FROM agent_actions WHERE run_id=? AND identity=?",
-                                      (run_id, identity)).fetchone()[0]
-            if previous is not None and not any(item > previous for item in intent.new_evidence):
-                raise ValueError("duplicate action: identical tool, input and options already ran in this run; "
-                                 "cite newer evidence in new_evidence to re-test")
-            if intent.new_evidence:
-                known = {event.sequence for event in self.session.store.read(run_id)}
-                if not set(intent.new_evidence) <= known:
-                    raise ValueError("new_evidence references unknown run events")
+            self._check_repeat(run_id, assignment_id, attempt_id, identity, family, intent.new_evidence)
             if intent.kind == "data":
                 if intent.data is None:
                     raise ValueError("data intents need data")
@@ -406,11 +406,54 @@ class AgentScheduler:
             sequence = [event.sequence for event in self.session.store.read(run_id)
                         if event.status == RunStatus.OBSERVING][-1]
             with self._db() as db:
-                db.execute("INSERT INTO agent_actions(run_id,identity,assignment_id,attempt_id,sequence,ok,time) "
-                           "VALUES (?,?,?,?,?,?,?)", (run_id, identity, assignment_id, attempt_id, sequence, int(ok),
-                                                      time.time()))
+                db.execute("INSERT INTO agent_actions(run_id,identity,assignment_id,attempt_id,sequence,ok,time,"
+                           "family) VALUES (?,?,?,?,?,?,?,?)", (run_id, identity, assignment_id, attempt_id, sequence,
+                                                                int(ok), time.time(), family))
                 db.execute("UPDATE agent_jobs SET turns_used=turns_used+1 WHERE assignment_id=? AND attempt_id=?",
                            (assignment_id, attempt_id))
         return {"assignment_id": assignment_id, "attempt_id": attempt_id, "action_identity": identity,
                 "evidence_sequence": sequence, "turns_left": job["max_turns"] - job["turns_used"] - 1,
                 "observation": result}
+
+    def _check_repeat(self, run_id: str, assignment_id: str, attempt_id: str, identity: str, family: str | None,
+                      new_evidence: list[int]) -> None:
+        """Duplicate and retry control on the canonical identity (caller holds the run lock).
+
+        * An identical action already in the run is refused unless ``new_evidence`` cites an
+          observation that is newer than its last run *and* came from a different action; it may
+          be re-tested at most ``MAX_RETESTS`` times per run.
+        * One attempt may try at most ``FAMILY_LIMIT`` option variants of one tool on one artifact.
+        Refusals are logged and name the earlier evidence so the specialist can cite it instead.
+        """
+        events = self.session.store.read(run_id)
+        known = {event.sequence for event in events}
+        if not set(new_evidence) <= known:
+            raise ValueError("new_evidence references unknown run events")
+        observed = {event.sequence for event in events if event.status == RunStatus.OBSERVING}
+        with self._db() as db:
+            prior = db.execute("SELECT sequence, assignment_id FROM agent_actions WHERE run_id=? AND identity=? "
+                               "ORDER BY sequence", (run_id, identity)).fetchall()
+            variants = db.execute("SELECT COUNT(DISTINCT identity) FROM agent_actions WHERE attempt_id=? AND "
+                                  "family=?", (attempt_id, family)).fetchone()[0] if family else 0
+        refusal: tuple[str, str, str] | None = None
+        if prior:
+            last, owner = prior[-1]
+            same = {row[0] for row in prior}
+            fresh = [item for item in new_evidence if item > last and item in observed and item not in same]
+            if len(prior) > MAX_RETESTS:
+                refusal = ("intent_duplicate", f"retest limit; event {last}",
+                           (f"duplicate action: already observed at event {last} and re-tested; the re-test limit "
+                           "is reached, change the approach"))
+            elif not fresh:
+                refusal = ("intent_duplicate", f"event {last}",
+                           (f"duplicate action: the same canonical request already ran at event {last} "
+                           f"({'this' if owner == assignment_id else 'another'} assignment); cite it, or cite a "
+                           "newer observation from a different action in new_evidence to re-test"))
+        elif family and variants >= FAMILY_LIMIT:
+            refusal = ("intent_variant_limit", f"{variants} variants",
+                       (f"variant limit: {variants} option variants of this tool on this artifact already ran in "
+                       "this attempt; use a different tool or report what is known"))
+        if refusal:
+            with self._db() as db:  # committed before raising so the refusal stays in the audit log
+                self._log(db, assignment_id, attempt_id, refusal[0], refusal[1])
+            raise ValueError(refusal[2])
