@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:02 JST） |
-| Flag | `Alpaca{tsukemono_umasugidaro}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/tsukemono-lo-tsukemono-loader.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, pickle, rce, deserialization, python, utf-8 |
 | 問題URL | https://alpacahack.com/daily/challenges/tsukemono-loader |

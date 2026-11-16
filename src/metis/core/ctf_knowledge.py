@@ -36,6 +36,9 @@ class TechniqueCard(Contract):
     outcome: Literal["success", "failure", "inconclusive"]
     source_run_id: str = Field(min_length=1, max_length=80)
     source_split: Literal["practice", "competition", "heldout"] = "competition"
+    # Why the outcome holds (Issue #15): abstract basis, never the answer. METIS fills it from the
+    # run when the author leaves it empty (official verdict for success, failed attempt for failure).
+    evidence: str = Field(default="", max_length=1000)
 
 
 class KnowledgeBase:
@@ -85,7 +88,7 @@ class KnowledgeBase:
         card = TechniqueCard.model_validate(card.model_dump())
         if card.source_split == "heldout":
             raise ValueError("held-out evaluation material cannot enter reusable memory")
-        for value in (card.title, card.summary, card.conditions, card.failure_reason):
+        for value in (card.title, card.summary, card.conditions, card.failure_reason, card.evidence):
             abstract_text(value)
         events = self.session.store.read(card.source_run_id)
         if not events:
@@ -100,6 +103,11 @@ class KnowledgeBase:
             for event in events
         ):
             raise ValueError("failed technique cards require an observed failed attempt")
+        if not card.evidence:
+            basis = {"success": "official verdict: correct (verified solve recorded in the source run)",
+                     "failure": "observed failed attempt in the source run: " + card.failure_reason[:200],
+                     "inconclusive": "no verified outcome in the source run"}[card.outcome]
+            card = card.model_copy(update={"evidence": basis})
         payload = card.model_dump_json()
         digest = hashlib.sha256(payload.encode()).hexdigest()
         with sqlite3.connect(self.database) as db:

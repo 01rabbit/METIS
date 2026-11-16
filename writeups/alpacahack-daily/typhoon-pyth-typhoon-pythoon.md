@@ -7,7 +7,7 @@
 | カテゴリ | rev |
 | 配点 | 4.5 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:42 JST） |
-| Flag | `Alpaca{dis_is_the_eye_of_the_typhoon}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/typhoon-pyth-typhoon-pythoon.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | rev, python, pyc, xor |
 | 問題URL | https://alpacahack.com/daily/challenges/typhoon-pythoon |

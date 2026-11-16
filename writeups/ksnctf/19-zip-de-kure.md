@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 150 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:37 JST） |
-| Flag | `FLAG_PghfJf8X8mXEqWsk` |
+| Flag | `⟦answer:writeups/ksnctf/19-zip-de-kure.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, zip, zipcrypto, known-plaintext, biham-kocher, jpeg |
 | 問題URL | https://ksnctf.sweetduet.info/problem/19 |

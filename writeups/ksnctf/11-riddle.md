@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 200 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:57 JST） |
-| Flag | `FLAG_MEyR4Zf4A4HFW73k` |
+| Flag | `⟦answer:writeups/ksnctf/11-riddle.md#1⟧` |
 | タグ | rev, rc4, pe, mfc, static-analysis |
 | 問題URL | https://ksnctf.sweetduet.info/problem/11 |
 | METIS run | `5c1a9b751be34b48a1d81c5736e5446d` |

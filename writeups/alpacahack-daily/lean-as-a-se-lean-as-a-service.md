@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:58 JST） |
-| Flag | `Alpaca{proof_of_presence}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/lean-as-a-se-lean-as-a-service.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, lean, rce |
 | 問題URL | https://alpacahack.com/daily/challenges/lean-as-a-service |

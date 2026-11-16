@@ -42,3 +42,5 @@ Reply with exactly one JSON object and nothing else:
 
 `candidate` is a proposal for Daybreak to verify officially; it is never proof.
 Keep text abstract and short. Do not include credentials.
+
+Never read the answer vault (`$METIS_ANSWER_VAULT`, default `~/.local/share/metis/answers.json`). When `metis web open` reports `evaluation.split: practice`, do not open that problem's write-up under `writeups/`: solve from the statement and files only.

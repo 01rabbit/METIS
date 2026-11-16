@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 7.5 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:46 JST） |
-| Flag | `Alpaca{prprpr}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/the-3rd-the-3rd.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, elliptic-curve, pohlig-hellman, bsgs, crt |
 | 問題URL | https://alpacahack.com/daily/challenges/the-3rd |
@@ -19,7 +19,7 @@
 
 ## 解析
 
-chal.sage: E=EllipticCurve(Zmod(p*q*r),[2,3]), T=int(flag)*S。p,q は既知、r は秘密。T,S を p,q で縮約すると F_p, F_q 上の楕円曲線 DLP になり、r は不要。flag は Alpaca{+6バイト+} なので未知は48bitのみ。
+chal.sage: E=EllipticCurve(Zmod(p*q*r),[2,3]), T=int(flag)*S。p,q は既知、r は秘密。T,S を p,q で縮約すると F_p, F_q 上の楕円曲線 DLP になり、r は不要。flag は ⟦answer:writeups/alpacahack-daily/the-3rd-the-3rd.md#2⟧ なので未知は48bitのみ。
 
 ## 解法
 

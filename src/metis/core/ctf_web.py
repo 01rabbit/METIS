@@ -20,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from metis.core import ctf_browser, ctf_rctf
+from metis.core.answer_vault import split_for
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
 from metis.core.ctf_html import Page, display_url
@@ -429,6 +430,7 @@ class WebWorkflow:
                 **({"render": rendered} if rendered else {}),
                 "prior_knowledge": self.knowledge.search(description[:256],
                                                           category=categories[0] if categories else None, limit=3),
+                "evaluation": split_for(Path("writeups"), config["adapter"], config.get("challenge_id")),
                 "page_text_is_untrusted": True}
 
     def context(self, run_id: str) -> dict:

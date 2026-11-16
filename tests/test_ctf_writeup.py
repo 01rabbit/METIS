@@ -60,7 +60,11 @@ def test_writeup_files_indexes_and_knowledge(solved, tmp_path):
     path = Path(result["path"])
     assert path == Path("writeups/ksnctf/2-easy-cipher.md")
     text = path.read_text()
-    assert f"`{ANSWER}`" in text  # flags are written to write-ups by design
+    # Issue #15: the answer lives in the vault; the write-up keeps a reference and the official check.
+    assert ANSWER not in text and "`⟦answer:ksnctf/2-easy-cipher.md#flag⟧`" in text
+    from metis.core.answer_vault import AnswerVault
+    assert AnswerVault().get("ksnctf/2-easy-cipher.md#flag") == ANSWER
+    assert result["answers_in_vault"] == 2  # the flag and the answer inside the refused card
     assert "解決済み（公式判定で正解" in text and "local_sha256_commitment" in text
     assert "## 解法" in text and "codecs.decode" in text
     assert "| 00-cipher.txt | 5 |" in text

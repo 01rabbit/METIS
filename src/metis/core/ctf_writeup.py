@@ -13,10 +13,12 @@ Layout (relative to the repository root by default)::
 The agent supplies the narrative (summary, analysis, solution, flag, lessons,
 scripts, techniques). METIS adds what it observed itself: official verdict
 timeline, hypothesis history, distribution files with SHA-256, granted
-endpoints and budget use. Write-ups contain the flag as supplied by the agent
-(user decision). Technique cards derived from a write-up stay abstract: they
-are what later challenges retrieve, so flag-shaped values are still refused
-there.
+endpoints and budget use. Since Issue #15 the exact answer is not written into
+the Markdown: the flag (and any answer found in the narrative or copied scripts)
+goes to the answer vault outside the repository and the write-up shows a
+reference such as ``⟦answer:ksnctf/8-basic-is-secure.md#flag⟧`` plus the official
+match check. Technique cards stay abstract: they are what later challenges
+retrieve, so flag-shaped values are refused there.
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from metis.core.answer_vault import AnswerVault, redact
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeCategory, RunStatus
 from metis.core.ctf_contest import ContestBoard
@@ -51,6 +54,7 @@ class Technique(BaseModel):
     conditions: str = Field(min_length=5, max_length=1000)
     outcome: Literal["success", "failure", "inconclusive"] | None = None
     failure_reason: str = Field(default="", max_length=1000)
+    evidence: str = Field(default="", max_length=1000)
 
 
 class WriteupInput(BaseModel):
@@ -93,9 +97,10 @@ def _cell(value: Any) -> str:
 
 
 class WriteupBook:
-    def __init__(self, database: Path, root: Path = Path("writeups")):
+    def __init__(self, database: Path, root: Path = Path("writeups"), vault: AnswerVault | None = None):
         self.database = database
         self.root = root
+        self.vault = vault or AnswerVault()
         self.session = CodexSession(database)
         self.board = ContestBoard(database)
         self.knowledge = KnowledgeBase(database)
@@ -209,14 +214,50 @@ class WriteupBook:
                 result = self.knowledge.remember(TechniqueCard(
                     title=technique.title, category=technique.category, summary=technique.summary,
                     conditions=technique.conditions, failure_reason=technique.failure_reason,
-                    outcome=outcome, source_run_id=run_id, source_split=entry.source_split))
+                    outcome=outcome, source_run_id=run_id, source_split=entry.source_split,
+                    evidence=technique.evidence))
                 learned.append({"title": technique.title, **result})
             except ValueError as exc:
                 learned.append({"title": technique.title, "stored": False,
                                 "error": (str(exc).splitlines() or ["rejected"])[0][:200]})
 
         check = self.flag_check(facts, entry.flag)
-        path.write_text(self._render(contest, challenge, run_id, facts, entry, copied, check), encoding="utf-8")
+        # Answers go to the vault (verified) before any repository file is written.
+        prefix = f"{directory.name}/{path.name}"
+        answers: dict[str, dict[str, Any]] = {}
+        narrative: dict[str, str] = {}
+        for field_name in ("summary", "analysis", "solution", "lessons"):
+            narrative[field_name], found = redact(getattr(entry, field_name), f"{prefix}:{field_name}")
+            answers.update(found)
+        techniques = []
+        for number, technique in enumerate(entry.techniques, 1):
+            changes = {}
+            for field_name in ("title", "summary", "conditions", "failure_reason", "evidence"):
+                changes[field_name], found = redact(getattr(technique, field_name),
+                                                    f"{prefix}:technique{number}.{field_name}")
+                answers.update(found)
+            techniques.append(technique.model_copy(update=changes))
+        script_texts: list[tuple[Path, str]] = []
+        for relative in copied:
+            target = directory / relative
+            try:
+                text = target.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            updated, found = redact(text, f"{directory.name}/{relative}")
+            if found:
+                answers.update(found)
+                script_texts.append((target, updated))
+        if entry.flag:
+            answers[f"{prefix}#flag"] = {"value": entry.flag, "source": prefix, "line": 0, "recorded": time.time(),
+                                         "official_check": check}
+        if answers:
+            self.vault.put_many(answers)
+        for target, updated in script_texts:
+            target.write_text(updated, encoding="utf-8")
+        public = entry.model_copy(update={**narrative, "techniques": techniques,
+                                          "flag": f"⟦answer:{prefix}#flag⟧" if entry.flag else None})
+        path.write_text(self._render(contest, challenge, run_id, facts, public, copied, check), encoding="utf-8")
         with sqlite3.connect(self.database) as db:
             db.execute("INSERT INTO ctf_writeups(contest_id,challenge_id,run_id,path,updated) VALUES (?,?,?,?,?) "
                        "ON CONFLICT(contest_id,challenge_id) DO UPDATE SET run_id=excluded.run_id,"
@@ -225,6 +266,7 @@ class WriteupBook:
         index = self.index(contest_id)
         knowledge = self.export_knowledge()
         return {"path": str(path), "flag_check": check, "scripts": copied, "techniques": learned,
+                "answers_in_vault": len(answers), "vault": str(self.vault.path),
                 "ctf_index": index["path"], "knowledge_index": knowledge["path"]}
 
     def _render(self, contest: dict[str, Any], challenge: dict[str, Any], run_id: str | None,
@@ -377,6 +419,8 @@ class WriteupBook:
                           card["summary"], "", f"- 適用条件: {card['conditions']}"]
                 if card.get("failure_reason"):
                     lines.append(f"- 失敗理由: {card['failure_reason']}")
+                if card.get("evidence"):
+                    lines.append(f"- 根拠: {card['evidence']}")
                 lines.append("")
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / "KNOWLEDGE.md"

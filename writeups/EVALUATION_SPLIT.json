@@ -1,0 +1,356 @@
+{
+ "policy": "Problems with a write-up are practice, never heldout. Answers are in the vault, not here.",
+ "practice": [
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "almost-share-almost-shared-prime",
+   "writeup": "alpacahack-daily/almost-share-almost-shared-prime.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "auxiliary-ve-auxiliary-vectors-are-our-friends",
+   "writeup": "alpacahack-daily/auxiliary-ve-auxiliary-vectors-are-our-friends.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "b-side-is-ba-b-side-is-back",
+   "writeup": "alpacahack-daily/b-side-is-ba-b-side-is-back.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "baby-alpaca-baby-alpaca",
+   "writeup": "alpacahack-daily/baby-alpaca-baby-alpaca.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "base-16-32-6-base-16-32-64",
+   "writeup": "alpacahack-daily/base-16-32-6-base-16-32-64.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "bitflip-rsa-bitflip-rsa",
+   "writeup": "alpacahack-daily/bitflip-rsa-bitflip-rsa.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "cowsay-jail-cowsay-jail",
+   "writeup": "alpacahack-daily/cowsay-jail-cowsay-jail.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "csharp-file--c-file-based-app",
+   "writeup": "alpacahack-daily/csharp-file--c-file-based-app.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "decreasing-decreasing",
+   "writeup": "alpacahack-daily/decreasing-decreasing.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "fsbase-modif-fsbase-modification",
+   "writeup": "alpacahack-daily/fsbase-modif-fsbase-modification.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "integer-division",
+   "writeup": "alpacahack-daily/integer-division.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "lean-as-a-se-lean-as-a-service",
+   "writeup": "alpacahack-daily/lean-as-a-se-lean-as-a-service.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "lets-shut-down-linux-let-s-shut-down-linux",
+   "writeup": "alpacahack-daily/lets-shut-down-linux-let-s-shut-down-linux.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "neighborhood-neighborhood_distance",
+   "writeup": "alpacahack-daily/neighborhood-neighborhood_distance.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "nested-eval",
+   "writeup": "alpacahack-daily/nested-eval.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "no-parentheses-o",
+   "writeup": "alpacahack-daily/no-parentheses-o.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "quiz-alpacas-quiz-alpacashock",
+   "writeup": "alpacahack-daily/quiz-alpacas-quiz-alpacashock.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "remnant-remnant",
+   "writeup": "alpacahack-daily/remnant-remnant.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "settable-counter",
+   "writeup": "alpacahack-daily/settable-counter.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "shared-prime-shared-prime",
+   "writeup": "alpacahack-daily/shared-prime-shared-prime.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "sigma-secret-secret-sigma",
+   "writeup": "alpacahack-daily/sigma-secret-secret-sigma.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "sin-function-vs-fsin-instruction-sin-function-vs.-fsin-instruction",
+   "writeup": "alpacahack-daily/sin-function-vs-fsin-instruction-sin-function-vs.-fsin-instruction.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "the-3rd-the-3rd",
+   "writeup": "alpacahack-daily/the-3rd-the-3rd.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "tsukemono-lo-tsukemono-loader",
+   "writeup": "alpacahack-daily/tsukemono-lo-tsukemono-loader.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "typhoon-pyth-typhoon-pythoon",
+   "writeup": "alpacahack-daily/typhoon-pyth-typhoon-pythoon.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "vending-machine-revised-version",
+   "writeup": "alpacahack-daily/vending-machine-revised-version.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "what-is-my-p-what-is-my-pointer-2",
+   "writeup": "alpacahack-daily/what-is-my-p-what-is-my-pointer-2.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "what-is-my-p-what-is-my-pointer-4",
+   "writeup": "alpacahack-daily/what-is-my-p-what-is-my-pointer-4.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "x32-abi-flag-x32-abi-flag-checker",
+   "writeup": "alpacahack-daily/x32-abi-flag-x32-abi-flag-checker.md"
+  },
+  {
+   "ctf": "alpacahack-daily",
+   "problem": "yell-yell",
+   "writeup": "alpacahack-daily/yell-yell.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "1",
+   "writeup": "ksnctf/1-test-problem.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "10",
+   "writeup": "ksnctf/10-untitled.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "11",
+   "writeup": "ksnctf/11-riddle.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "12",
+   "writeup": "ksnctf/12-hypertext-preprocessor.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "13",
+   "writeup": "ksnctf/13-proverb.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "14",
+   "writeup": "ksnctf/14-john.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "15",
+   "writeup": "ksnctf/15-jewel.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "16",
+   "writeup": "ksnctf/16-math-i.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "17",
+   "writeup": "ksnctf/17-math-ii.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "18",
+   "writeup": "ksnctf/18-usb-flash-drive.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "19",
+   "writeup": "ksnctf/19-zip-de-kure.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "2",
+   "writeup": "ksnctf/2-easy-cipher.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "20",
+   "writeup": "ksnctf/20-g00913.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "21",
+   "writeup": "ksnctf/21-perfect-cipher.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "22",
+   "writeup": "ksnctf/22-square-cipher.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "23",
+   "writeup": "ksnctf/23-villager-b.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "24",
+   "writeup": "ksnctf/24-rights-out.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "25",
+   "writeup": "ksnctf/25-reserved.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "26",
+   "writeup": "ksnctf/26-sherlock-holmes.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "27",
+   "writeup": "ksnctf/27-lives-out.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "28",
+   "writeup": "ksnctf/28-lo-tech-cipher.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "29",
+   "writeup": "ksnctf/29-double-blind.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "3",
+   "writeup": "ksnctf/3-crawling-chaos.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "30",
+   "writeup": "ksnctf/30-alpha-mixed-cipher.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "31",
+   "writeup": "ksnctf/31-kangacha.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "32",
+   "writeup": "ksnctf/32-simple-auth.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "33",
+   "writeup": "ksnctf/33-https-is-secure.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "34",
+   "writeup": "ksnctf/34-are-you-human.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "35",
+   "writeup": "ksnctf/35-simple-auth-ii.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "36",
+   "writeup": "ksnctf/36-are-you-esper.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "37",
+   "writeup": "ksnctf/37-competitive-programming.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "38",
+   "writeup": "ksnctf/38-canned-can-opener.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "4",
+   "writeup": "ksnctf/4-villager-a.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "40",
+   "writeup": "ksnctf/40-deep-flag-network.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "41",
+   "writeup": "ksnctf/41-private-bbs.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "5",
+   "writeup": "ksnctf/5-onion.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "6",
+   "writeup": "ksnctf/6-login.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "7",
+   "writeup": "ksnctf/7-programming.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "8",
+   "writeup": "ksnctf/8-basic-is-secure.md"
+  },
+  {
+   "ctf": "ksnctf",
+   "problem": "9",
+   "writeup": "ksnctf/9-digest-is-secure.md"
+  }
+ ],
+ "heldout": []
+}

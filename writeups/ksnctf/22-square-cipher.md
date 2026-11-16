@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 60 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:00 JST） |
-| Flag | `FLAG_KC9ABe643Jx8Ckmf` |
+| Flag | `⟦answer:writeups/ksnctf/22-square-cipher.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | ksnctf, crypto, qr, steganography, case-encoding |
 | 問題URL | https://ksnctf.sweetduet.info/problem/22 |
@@ -27,7 +27,7 @@
 M0=[[1 if rows[y+1][x+1].isupper() else 0 for x in range(29)] for y in range(29)]
 # format bits -> (ecl=Q, mask=1); unmask; zigzag read; deinterleave blocks cw[0:34:2]+cw[1:34:2]
 ```
-結果(バイトモード17バイト): `FLAG_KC9ABe643Jx8Ckmf`
+結果(バイトモード17バイト): `⟦answer:writeups/ksnctf/22-square-cipher.md#1⟧`
 
 ## 使用したスクリプト
 

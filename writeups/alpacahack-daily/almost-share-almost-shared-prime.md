@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:39 JST） |
-| Flag | `Alpaca{approximate_common_disaster!}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/almost-share-almost-shared-prime.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, rsa, continued-fraction |
 | 問題URL | https://alpacahack.com/daily/challenges/almost-shared-prime |

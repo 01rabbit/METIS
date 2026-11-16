@@ -485,6 +485,15 @@ def main() -> int:
     writeup_commands.add_parser("knowledge", help="regenerate KNOWLEDGE.md from technique cards")
     writeup_missing = writeup_commands.add_parser("missing", help="list solved problems without a write-up")
     writeup_missing.add_argument("contest_id")
+    writeup_commands.add_parser("split", help="regenerate EVALUATION_SPLIT.json (problems with write-ups = practice)")
+    for name, text in (("vault-migrate", "move answers from write-ups into the answer vault (dry run by default)"),
+                       ("vault-restore", "put vault answers back into the write-ups (dry run by default)")):
+        vault_cmd = writeup_commands.add_parser(name, help=text)
+        vault_cmd.add_argument("--path", type=Path, action="append", default=[],
+                               help="file or directory (default: --root); repeatable")
+        vault_cmd.add_argument("--vault", type=Path, help="vault file (default: $METIS_ANSWER_VAULT or "
+                                                          "~/.local/share/metis/answers.json)")
+        vault_cmd.add_argument("--apply", action="store_true")
     memory = sub.add_parser("memory", help="MUNIN: reusable techniques and evidence-based revisions")
     memory.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     memory_commands = memory.add_subparsers(dest="memory_command", required=True)
@@ -629,6 +638,18 @@ def main() -> int:
             parser.exit(2, "Swarm command rejected: " + swarm_reason + "\n")
     if args.command == "writeup":
         try:
+            if args.writeup_command == "split":
+                from metis.core.answer_vault import write_split
+                print(json.dumps(write_split(args.root), ensure_ascii=False))
+                return 0
+            if args.writeup_command in {"vault-migrate", "vault-restore"}:
+                from metis.core.answer_vault import AnswerVault, migrate, restore
+                vault = AnswerVault(args.vault)
+                roots = args.path or [args.root]
+                output = (migrate(roots, Path.cwd(), vault, apply=args.apply)
+                          if args.writeup_command == "vault-migrate" else restore(roots, vault, apply=args.apply))
+                print(json.dumps(output, ensure_ascii=False))
+                return 0
             book = WriteupBook(args.database, args.root)
             if args.writeup_command == "save":
                 raw = (args.file.read_bytes() if args.file is not None else sys.stdin.buffer.read(262_145))

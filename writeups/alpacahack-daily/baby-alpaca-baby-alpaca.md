@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:12 JST） |
-| Flag | `Alpaca{cria}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/baby-alpaca-baby-alpaca.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, quiz |
 | 問題URL | https://alpacahack.com/daily/challenges/baby-alpaca |

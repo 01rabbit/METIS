@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 50 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:50 JST） |
-| Flag | `FLAG_545783032743911043438387247245888260273` |
+| Flag | `⟦answer:writeups/ksnctf/17-math-ii.md#1⟧` |
 | タグ | crypto, math, integer-root |
 | 問題URL | https://ksnctf.sweetduet.info/problem/17 |
 | METIS run | `8ab86a63a7be43cd85b9dd1dd61542d2` |

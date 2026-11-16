@@ -7,7 +7,7 @@
 | カテゴリ | rev |
 | 配点 | 250 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 13:44 JST） |
-| Flag | `FLAG_9X4bfxgLTi5KtQss` |
+| Flag | `⟦answer:writeups/ksnctf/15-jewel.md#1⟧` |
 | タグ | rev, android, apk, dex, aes-cbc, sha256, bruteforce, png, metadata |
 | 問題URL | https://ksnctf.sweetduet.info/problem/15 |
 | METIS run | `82edc3bbc779472f8ddf300359a12d5b` |

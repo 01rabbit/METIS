@@ -7,7 +7,7 @@
 | カテゴリ | rev |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:39 JST） |
-| Flag | `Alpaca{broooooooooooooooooooooooooooooooooooooootli}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/csharp-file--c-file-based-app.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | rev, dotnet, brotli |
 | 問題URL | https://alpacahack.com/daily/challenges/csharp-file-based-app |

@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 180 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:37 JST） |
-| Flag | `FLAG_txkbcPbk2ZJagaXs` |
+| Flag | `⟦answer:writeups/ksnctf/33-https-is-secure.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, rsa, shared-prime, gcd, tls, pcap, rc4, forensics |
 | 問題URL | https://ksnctf.sweetduet.info/problem/33 |
@@ -23,7 +23,7 @@ pcapにはTCP 4本(chihiro:443, kei:443 各2本)があり、TLS1.0、暗号ス�
 
 ## 解法
 
-1) pcapを自前でパースしTCPをseq順に再構成、TLSレコードを分解。2) 証明書からn1,n2を取り出し p=gcd(n1,n2)、q=n/p で両秘密鍵を復元。3) ClientKeyExchangeのEncrypted PreMasterSecretをPKCS#1 v1.5で復号(先頭0x0301, 48byte)。4) TLS1.0 PRF(MD5 xor SHA1)でmaster secret→key expansionを行い、RC4鍵を導出して ChangeCipherSpec 以降のapplication dataを復号。5) 各セッションのHTTP応答は /flag.jpg(400x600 JPEG)で、1枚目に 'FLAG_txkbc' と右端で切れた文字、2枚目に左端から続く文字列 'Pbk2ZJagaXs' が描かれていた。左右に並べるとP付近で連続し、フラグは FLAG_txkbcPbk2ZJagaXs。再開セッション(favicon 404)はsession IDから同じmaster secretで復号でき内容確認のみ。
+1) pcapを自前でパースしTCPをseq順に再構成、TLSレコードを分解。2) 証明書からn1,n2を取り出し p=gcd(n1,n2)、q=n/p で両秘密鍵を復元。3) ClientKeyExchangeのEncrypted PreMasterSecretをPKCS#1 v1.5で復号(先頭0x0301, 48byte)。4) TLS1.0 PRF(MD5 xor SHA1)でmaster secret→key expansionを行い、RC4鍵を導出して ChangeCipherSpec 以降のapplication dataを復号。5) 各セッションのHTTP応答は /flag.jpg(400x600 JPEG)で、1枚目に 'FLAG_txkbc' と右端で切れた文字、2枚目に左端から続く文字列 'Pbk2ZJagaXs' が描かれていた。左右に並べるとP付近で連続し、フラグは ⟦answer:writeups/ksnctf/33-https-is-secure.md#1⟧。再開セッション(favicon 404)はsession IDから同じmaster secretで復号でき内容確認のみ。
 
 ## 使用したスクリプト
 

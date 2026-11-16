@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 30 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:00 JST） |
-| Flag | `FLAG_As5zgVSNukaoJvvZ` |
+| Flag | `⟦answer:writeups/ksnctf/25-reserved.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, perl, esoteric-language, static-analysis |
 | 問題URL | https://ksnctf.sweetduet.info/problem/25 |
@@ -23,7 +23,7 @@ Perl の予約語と組み込み関数だけで書かれた文字列を、クォ
 
 ## 解法
 
-1) HTML の <code> 内を取り出し、HTML エンティティを戻す。2) q/qq/qw の直後の空白の次の 1 文字を区切りとし、同じ文字まで内容を読む字句解析を行う。3) 各 `print chr` の後ろの関数列と末尾のクォート値を、内側から順に chr / ord / uc / oct / hex / length で評価する。4) 出力を連結すると FLAG_As5zgVSNukaoJvvZ で始まる文字列になる。Perl 本体は実行せず、Python で静的に再現した。
+1) HTML の <code> 内を取り出し、HTML エンティティを戻す。2) q/qq/qw の直後の空白の次の 1 文字を区切りとし、同じ文字まで内容を読む字句解析を行う。3) 各 `print chr` の後ろの関数列と末尾のクォート値を、内側から順に chr / ord / uc / oct / hex / length で評価する。4) 出力を連結すると ⟦answer:writeups/ksnctf/25-reserved.md#1⟧ で始まる文字列になる。Perl 本体は実行せず、Python で静的に再現した。
 
 ## 使用したスクリプト
 

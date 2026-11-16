@@ -7,7 +7,7 @@
 | カテゴリ | rev |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:39 JST） |
-| Flag | `Alpaca{Wh@7_aN_Interesting_&_3X071C_ABI!}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/x32-abi-flag-x32-abi-flag-checker.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | rev, x32, md5 |
 | 問題URL | https://alpacahack.com/daily/challenges/x32-abi-flag-checker |

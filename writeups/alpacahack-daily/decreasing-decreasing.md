@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:54 JST） |
-| Flag | `Alpaca{decrea5ing_is_e4si3r_than_incI2eas1ng}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/decreasing-decreasing.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, pyjail, python |
 | 問題URL | https://alpacahack.com/daily/challenges/decreasing |

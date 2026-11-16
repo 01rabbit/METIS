@@ -7,7 +7,7 @@
 | カテゴリ | pwn |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:08 JST） |
-| Flag | `Alpaca{33333333nnnnnnnnvvvvvvvv11111111rrrrrrrr00000000nnnnnnnn}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/what-is-my-p-what-is-my-pointer-2.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | pwn, libc, environ |
 | 問題URL | https://alpacahack.com/daily/challenges/what-is-my-pointer-2 |

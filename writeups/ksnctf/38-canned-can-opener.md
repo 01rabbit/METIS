@@ -7,7 +7,7 @@
 | カテゴリ | forensics |
 | 配点 | 80 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 15:41 JST） |
-| Flag | `FLAG_pY5t8qFfsSuNJS9P` |
+| Flag | `⟦answer:writeups/ksnctf/38-canned-can-opener.md#1⟧` |
 | タグ | forensics, openssl, aes-256-cbc, jpeg, known-plaintext, pbkdf2 |
 | 問題URL | https://ksnctf.sweetduet.info/problem/38 |
 | METIS run | `dbbe881179d1441b8121e7ef54a0c5f7` |
@@ -26,7 +26,7 @@ OpenSSL 1.1.1 の -pass file: は最初の1行のみ読み、NULで文字列終�
 2. JPEG 先頭は `FF D8 FF E1 xx xx 45 78 69 66 00 ...`(Exif)。ここで NUL(0x00)が現れるので、パスワードは `ff d8 ff e1 LL LL 45 78 69 66` の10バイトになる（LL LL は APP1 長）。
 3. 配布の `flag_canned.jpg` は同じ元画像の別版（撮影時刻が数秒違う）で、先頭ヘッダが同じ構造。APP1長 `LL LL` の2バイトのみ未知 -> 65025通り以内を全探索（0x0a,0x0d除外）。
 4. 各候補で PBKDF2-HMAC-SHA256(10000回, salt=`Salted__`の8バイト) から key/iv を導出し、最初の1ブロックだけ復号して `ff d8 ff` で始まるものを探す。
-5. ヒットしたパスワード `ffd8ffe1395045786966` で全体を復号 -> 有効な JPEG。画像下部に `FLAG_pY5t8qFfsSuNJS9P` が描かれている。
+5. ヒットしたパスワード `ffd8ffe1395045786966` で全体を復号 -> 有効な JPEG。画像下部に `⟦answer:writeups/ksnctf/38-canned-can-opener.md#1⟧` が描かれている。
 
 ```python
 PW = bytes.fromhex('ffd8ffe1395045786966')

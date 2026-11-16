@@ -7,7 +7,7 @@
 | カテゴリ | forensics |
 | 配点 | 50 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:37 JST） |
-| Flag | `FLAG_NTSCFTTKP5ZDDW` |
+| Flag | `⟦answer:writeups/ksnctf/29-double-blind.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | forensics, docx, metadata, ooxml |
 | 問題URL | https://ksnctf.sweetduet.info/problem/29 |

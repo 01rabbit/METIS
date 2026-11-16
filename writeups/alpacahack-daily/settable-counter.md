@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-16 09:11 JST） |
-| Flag | `Alpaca{alpaca_ga_1piki...alpaca_ga_2hiki...Zzz...}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/settable-counter.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, AES, CTR, counter-wraparound, keystream-reuse |
 | 問題URL | https://alpacahack.com/daily/challenges/settable-counter |

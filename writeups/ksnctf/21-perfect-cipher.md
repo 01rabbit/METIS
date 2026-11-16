@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 200 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:37 JST） |
-| Flag | `FLAG_G9A77N4nBW8gorxC` |
+| Flag | `⟦answer:writeups/ksnctf/21-perfect-cipher.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | ksnctf, crypto, mt19937, known-plaintext, jpeg |
 | 問題URL | https://ksnctf.sweetduet.info/problem/21 |
@@ -26,11 +26,11 @@ encrypt.zip には encrypt.cpp、mt19937ar、encrypt.enc、flag.enc がある。
 1. ks[i] = encrypt.enc[i] ^ encrypt.cpp[i]、untemper して先頭624語で `random.Random.setstate` に投入。残り26語で検証。
 2. flag.enc を続きの乱数で復号 → JPEG(1024x200)だがヘッダが壊れる。
 3. flag.jpg の零領域の誤差E[i](i=ブロック1出力index)から、i<227は e_old[i+397]、i>=227は D=e'[i]^e'[i-227] を y=(D bit31? ((D^0x9908b0df)<<1)|1 : D<<1) に分解して e_old[i+1]の下位31bit/e_old[i]のbit31を求める。
-4. 状態に補正を適用して再復号 → 末尾FFD9で正常なJPEG。画像に `FLAG_G9A77N4nBW8gorxC` が写る(数字はガラス質、英字は黒)。
+4. 状態に補正を適用して再復号 → 末尾FFD9で正常なJPEG。画像に `⟦answer:writeups/ksnctf/21-perfect-cipher.md#1⟧` が写る(数字はガラス質、英字は黒)。
 ```python
 def ydec(D): return (((D^A)<<1)&0xffffffff)|1 if D>>31 else (D<<1)&0xffffffff
 ```
-フラグ(画像目視): `FLAG_G9A77N4nBW8gorxC`
+フラグ(画像目視): `⟦answer:writeups/ksnctf/21-perfect-cipher.md#1⟧`
 
 ## 使用したスクリプト
 

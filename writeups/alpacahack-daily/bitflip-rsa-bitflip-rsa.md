@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 7 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:43 JST） |
-| Flag | `Alpaca{hit the road Bob and don't you encrypt no more}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/bitflip-rsa-bitflip-rsa.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, rsa, franklin-reiter |
 | 問題URL | https://alpacahack.com/daily/challenges/bitflip-rsa |

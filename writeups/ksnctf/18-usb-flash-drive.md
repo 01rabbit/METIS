@@ -7,7 +7,7 @@
 | カテゴリ | forensics |
 | 配点 | 80 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 13:39 JST） |
-| Flag | `FLAG_qazyetF6icoWCvjN` |
+| Flag | `⟦answer:writeups/ksnctf/18-usb-flash-drive.md#1⟧` |
 | タグ | forensics, ntfs, mft, alternate-data-stream, deleted-file |
 | 問題URL | https://ksnctf.sweetduet.info/problem/18 |
 | METIS run | `260f0c6cf21a4b019cb65d168bcb3163` |

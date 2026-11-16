@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 150 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:50 JST） |
-| Flag | `FLAG_NbZ6gQeKDMVFJMaU` |
+| Flag | `⟦answer:writeups/ksnctf/16-math-i.md#1⟧` |
 | タグ | crypto, rsa |
 | 問題URL | https://ksnctf.sweetduet.info/problem/16 |
 | METIS run | `fb29b909713d4e90a1824610dd599ede` |
