@@ -68,5 +68,5 @@
 
 ## 残る作業
 
-- マスターによる Codex の再認証（hardware key）の後に、`view` と `candidate` を含めて #33 を通しで再試行する。
+- 2026-11-17 に hardware-key 再認証後、Codex CLI 0.169.0 の実 driver でローカル PCAP を使った #33 回帰を実施した。TLS 復号、2 枚の JPEG の `view`、非公開 `candidate` handoff まで進み、再認証エラーは再現しなかった。公式提出はしていない。独立 critic は完全性を inconclusive とし、全 HTTP 応答と画像の順序・境界の確認を要するとした。詳細は `docs/reports/issue24-reauth-regression-2026-11-17.md`。
 - トークン消費は attempt ごとに上書きされている。attempt 単位で累積する記録は未実装。
