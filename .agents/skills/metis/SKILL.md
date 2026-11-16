@@ -24,17 +24,20 @@ subagent finishes. Reconcile results and continue through the next useful action
 Group truly required user inputs into one request; progress updates are not
 approval gates.
 
-After intake, run `.venv/bin/metis plan RUN_ID`. Treat its assignments as
-one bounded wave: spawn distinct tasks with no history and a lower-tier model
-when available, then return only hypothesis, evidence, and next action to
-Daybreak. Synthesize before starting another wave. Start another wave only when
-an unresolved, materially different hypothesis remains.
-
-Each assignment returns a compact JSON report with `hypothesis`, `evidence`,
-`falsifier`, `next_action`, `event_sequences`, and `status`. Pipe it to
-`metis agent report RUN_ID WAVE_ID ASSIGNMENT_ID`, then run
-`metis agent synthesize RUN_ID WAVE_ID`. Missing or rejected reports do not pass
-the synthesis gate.
+After intake, run `.venv/bin/metis plan RUN_ID`. `execution_mode: sequential`
+(simple problem) means no assignments: cover the listed `daybreak_covers` roles
+yourself. `delegated` lists two to four distinct assignments: run
+`metis agent dispatch RUN_ID WAVE_ID`, which starts what the slots allow and
+returns a minimal brief per job (with `attempt_id`). Spawn each brief with no
+history and a model from the active catalog (`metis agent slots` records it).
+Specialists request METIS tools through `metis agent intent ... --attempt` and
+report with `metis agent complete ... --attempt` (JSON: `hypothesis`, `evidence`,
+`falsifier`, `next_action`, `event_sequences`, `status`, optional
+`artifact_refs`). Run `metis agent tick` to enforce deadlines, then
+`metis agent synthesize RUN_ID WAVE_ID` and read its `decision`. A further wave
+needs `metis plan RUN_ID --reason "<different unresolved hypothesis>"` after the
+previous wave is ready for synthesis. Unscheduled legacy waves still accept
+`metis agent report`. Details: docs/ORCHESTRATION_RUNTIME.md.
 
 For a multi-challenge set, keep one canonical web run per problem and let `web
 open` capture recognized distributions in that run. Do not reopen the same
