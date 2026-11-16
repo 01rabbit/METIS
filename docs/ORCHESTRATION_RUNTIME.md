@@ -189,6 +189,30 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   を追加し、RSA の `n`・`e` を intent で取得できるようにした。TLS 1.3 の証明書は暗号化されているため
   取得できない（理由コード `tls13_certificates_encrypted`）。
 
+## 6.2 実ホスト受け入れの再実行手順
+
+PR #14 の受け入れ手順を、現行のコマンドに合わせて短くしたもの。結果は `docs/reports/` に日付付きで残す。
+値（flag、候補、鍵）は記録に書かない。
+
+1. `metis agent codex-probe --ping` で `ready: true` を確認する。隔離のセルフテスト、ツールを使わない ping、spawn カナリアが含まれる。
+   Codex CLI の版と隔離方式を記録する。
+2. 新しい状態 DB に合成の問題か練習問題を取り込む。`metis web open` の `evaluation.split` で practice か heldout かを記録する。
+3. `metis agent slots --catalog-file` で、ホストが示したモデルだけを登録する。`metis plan` で `delegated`、異なる 2〜4 担当、有限の turn と期限を確認する。
+4. `metis agent dispatch` の後、各担当を `metis agent codex RUN ASSIGNMENT --attempt ATT` で並列に起動する。
+   thread ID・トークン数・隔離の要約は `agent_job_log` に残る。
+5. 境界の確認: Daybreak 専用の intent（submit・grant・auth・remote・web・sandbox・delegate・extend）を CLI から送り、
+   すべて `intent_refused` になることを確かめる。重複・オプション変更・古い証拠の引用が `intent_duplicate` になることも確かめる。
+6. 実行中に `metis agent cancel` を送り、`codex_killed` が記録され、Codex のプロセスが残らないことを確かめる。
+   その後に送られた intent が `rejected_stale` になることも確かめる。
+7. `metis agent synthesize` で、未解決の担当が無いこと、`synthesis_is_not_permission: true` であることを確認する。
+   候補は `metis agent candidates` で受け取り、Daybreak だけが `metis web submit --candidate-file` で提出する。
+8. 公式判定の各種（correct・incorrect・unknown・429・auth）は、ローカル HTTP の単体テスト（`test_ctf_web.py`）で確認する。
+9. 機密の残存点検: 状態 DB の全テーブル、MUNIN、Git の差分、保管庫の外に、候補・トークン・鍵が無いことを照合する
+   （値は表示せず、件数だけを記録する）。
+
+実施例: `docs/reports/issue11-codex-e2e-2026-11-16.md`、`issue11-codex-retry-e2e-2026-11-16.md`、
+`issue23-tls-decrypt-2026-11-16.md`、`issue16-isolation-backends-2026-11-16.md`。
+
 ## 7. 残る制約
 
 - `BridgeHost` / `SequentialHost` は METIS 側の契約（slot・attempt・intent・報告）を強制するが、ホストの
