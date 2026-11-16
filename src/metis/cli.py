@@ -366,6 +366,9 @@ def main() -> int:
     web_request.add_argument("--preview", type=int, default=4096)
     web_request.add_argument("--batch", type=Path,
                              help='JSON list (or {"requests": [...]}) of up to 256 request objects')
+    web_prepare = web_commands.add_parser("prepare-browser", help="reserve one official browser submission before sending")
+    web_prepare.add_argument("run_id")
+    web_prepare.add_argument("--candidate-file", type=Path)
     web_attest = web_commands.add_parser(
         "attest", help="record an official verdict seen in the platform's web UI (candidate on stdin)")
     web_attest.add_argument("run_id")
@@ -801,6 +804,8 @@ def main() -> int:
                     output = workflow.auth(args.url, kind=args.kind, value=private_value, scheme=args.scheme)
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
+            elif args.web_command == "prepare-browser":
+                output = workflow.prepare_browser(args.run_id, read_candidate(args.candidate_file))
             elif args.web_command == "attest":
                 output = workflow.attest(args.run_id, read_candidate(args.candidate_file), verdict=args.verdict,
                                          evidence=args.evidence)

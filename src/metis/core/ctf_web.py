@@ -555,6 +555,38 @@ class WebWorkflow:
         return {"run_id": run_id, "verification_configured": True}
 
     @locked
+    def prepare_browser(self, run_id: str, candidate: str) -> dict:
+        """Reserve a browser send before UI interaction; unresolved sends never expire."""
+        if not candidate or len(candidate.encode()) > 65_536:
+            raise ValueError("invalid bounded candidate")
+        config, _, _, _, salt, paused = self._load(run_id)
+        if config["adapter"] != "html" or config.get("submission"):
+            raise ValueError("this run has an official API/form verifier; use submit")
+        if paused > time.time():
+            raise ValueError("submission cooldown is active")
+        digest = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
+        with sqlite3.connect(self.database) as db:
+            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND verdict='pending'", (run_id,)).fetchone():
+                raise ValueError("pending browser submission; inspect official UI and attest before another send")
+            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND digest=?", (run_id, digest)).fetchone():
+                raise ValueError("identical candidate already recorded")
+            used = db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?", (run_id,)).fetchone()[0]
+            if used >= config["max_submissions"]:
+                raise ValueError("submission limit reached")
+            latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",
+                                (run_id,)).fetchone()
+            if latest and latest[0] == "incorrect" and not db.execute(
+                "SELECT 1 FROM ctf_hypotheses WHERE run_id=? AND created>? AND status IN ('revised','rejected') LIMIT 1",
+                (run_id, latest[1]),
+            ).fetchone():
+                raise ValueError("record an evidence-based revised hypothesis before a new candidate")
+            self.session._reserve(run_id, "official_flag_submission_browser")
+            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,'pending',?)",
+                       (run_id, digest, time.time()))
+        return {"run_id": run_id, "verdict": "pending", "may_send_once": True,
+                "next": "submit once in the official browser UI, then attest the observed verdict"}
+
+    @locked
     def attest(self, run_id: str, candidate: str, *, verdict: str, evidence: str) -> dict:
         """Record an official verdict that was observed in the platform's own web UI.
 
@@ -579,9 +611,16 @@ class WebWorkflow:
             raise ValueError("this run has an official API/form verifier; use `metis web submit`")
         fingerprint = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
         with sqlite3.connect(self.database) as db:
-            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND digest=?", (run_id, fingerprint)).fetchone():
+            existing = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? AND digest=?",
+                                  (run_id, fingerprint)).fetchone()
+            prepared = existing is not None and existing[0] == "pending"
+            if existing and not prepared:
                 raise ValueError("identical candidate already recorded; reconsider the hypothesis")
-            if db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?",
+            if not prepared and db.execute(
+                "SELECT 1 FROM web_attempts WHERE run_id=? AND verdict='pending'", (run_id,)
+            ).fetchone():
+                raise ValueError("pending browser submission belongs to a different candidate")
+            if not prepared and db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?",
                           (run_id,)).fetchone()[0] >= config["max_submissions"]:
                 raise ValueError("submission limit reached")
             latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",
@@ -591,11 +630,13 @@ class WebWorkflow:
                 (run_id, latest[1]),
             ).fetchone():
                 raise ValueError("record an evidence-based revised hypothesis before recording a new candidate")
-        self.session._reserve(run_id, "official_flag_submission_browser")
+        if not prepared:
+            self.session._reserve(run_id, "official_flag_submission_browser")
         self.session._emit(run_id, RunStatus.OBSERVING, evidence=evidence)
         self.session._emit(run_id, RunStatus.VERIFYING)
         with sqlite3.connect(self.database) as db:
-            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,?,?)",
+            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,?,?) "
+                       "ON CONFLICT(run_id,digest) DO UPDATE SET verdict=excluded.verdict,created=excluded.created",
                        (run_id, fingerprint, verdict, time.time()))
         if verdict == "correct":
             self.session._emit(run_id, RunStatus.SOLVED, verification="official_browser_observed")
