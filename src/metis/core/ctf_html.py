@@ -25,10 +25,6 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
-        if tag == "meta" and values.get("property") == "alpacahack:category":
-            category = (values.get("content") or "").strip().lower()
-            if category in {"web", "crypto", "rev", "pwn", "forensics", "misc"}:
-                self.categories.append(category)
         if len(self.stack) > 64:
             raise ValueError("HTML nesting exceeds limit")
         if tag == "form":
@@ -46,6 +42,11 @@ class Page(HTMLParser):
                                             "type": (values.get("type") or tag).lower(),
                                             "value": (values.get("value") or "")[:8192]})
         if tag == "a" and values.get("href") and len(self.links) < 256:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(values["href"]).query)
+            for declared in query.get("q", []):
+                match = re.fullmatch(r"category:(web|crypto|rev|pwn|forensics|misc)", declared, re.IGNORECASE)
+                if match:
+                    self.categories.append(match.group(1).lower())
             self._link = {"url": urllib.parse.urljoin(self.url, values["href"]), "text": "",
                           "download": "download" in values}
             self.links.append(self._link)

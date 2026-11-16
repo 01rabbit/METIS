@@ -202,10 +202,10 @@ def test_unknown_form_never_guesses_acceptance(site, tmp_path):
 def test_html_intake_uses_only_declared_supported_category(site, tmp_path):
     from metis.core.ctf_html import Page
 
-    page = Page('<meta property="alpacahack:category" content="Rev">'
+    page = Page('<a href="/challenges?q=category%3ARev">Rev</a>'
                 '<title>Uses crypto words</title><p>crypto challenge</p>', "https://example.test/")
     assert page.categories == ["rev"]
-    unsupported = Page('<meta property="alpacahack:category" content="blockchain">'
+    unsupported = Page('<a href="/challenges?q=category%3ABlockchain">crypto</a>'
                        '<p>crypto</p>', "https://example.test/")
     assert unsupported.categories == []
 
@@ -215,7 +215,7 @@ def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_p
     workflow = WebWorkflow(tmp_path / "session.sqlite")
     # Explicit parser fixture is exercised through the same workflow branch with a mock response.
     from metis.core.ctf_http import HTTPResult
-    body = (b'<meta property="alpacahack:category" content="Rev">'
+    body = (b'<a href="/challenges?q=category%3AWeb">Web</a>'
             b'<title>Call me crypto</title><p>analyzing syscalls</p>')
     response = HTTPResult(url=base + "/problem", status=200,
                           headers={"content-type": "text/html"}, body=body,
@@ -225,7 +225,7 @@ def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_p
         "export_state": lambda self: {"cookies": {}},
     })()
     result = workflow.open(base + "/problem")
-    assert result["context"]["challenge"]["categories"] == ["rev"]
+    assert result["context"]["challenge"]["categories"] == ["web"]
 
 
 def test_network_scope_redirects_and_download_limits(site):
