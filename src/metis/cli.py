@@ -110,7 +110,8 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
     if command == "codex":
         from metis.core.codex_specialist import CodexCLI, run_assignment
         return run_assignment(scheduler, args.run_id, args.assignment_id, args.attempt,
-                              CodexCLI(args.codex), model=args.model, turn_timeout=args.turn_timeout)
+                              CodexCLI(args.codex), model=args.model, turn_timeout=args.turn_timeout,
+                              note=_note(args))
     if command == "codex-probe":
         return codex_probe(args)
     catalog = None
@@ -121,6 +122,12 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
         catalog = loaded
     return scheduler.configure(global_slots=args.global_slots, per_run_slots=args.per_run_slots,
                                catalog=catalog, current_model=args.current_model)
+
+
+def _note(args: argparse.Namespace) -> str | None:
+    if args.note_file:
+        return args.note_file.read_text()[:4000]
+    return args.note
 
 
 def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
@@ -269,6 +276,8 @@ def main() -> int:
     agent_codex.add_argument("--model", help="model id from the active catalog (default: the job's selection)")
     agent_codex.add_argument("--turn-timeout", type=float, default=300.0)
     agent_codex.add_argument("--codex", help="path to the Codex CLI (default: codex on PATH)")
+    agent_codex.add_argument("--note", help="Daybreak's focus for this attempt (shown to the specialist)")
+    agent_codex.add_argument("--note-file", type=Path, help="read the note from a file")
     agent_probe = agent_commands.add_parser("codex-probe", help="check that Codex can run as a tool-less specialist")
     agent_probe.add_argument("--ping", action="store_true", help="also run one real, tool-less Codex turn")
     agent_probe.add_argument("--model")
