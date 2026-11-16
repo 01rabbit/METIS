@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import Any, Self
 
 MODEL_HOSTS = ("chatgpt.com", "auth.openai.com", "api.openai.com")
-TESTED_CODEX_VERSIONS = frozenset({"0.166.0"})
+# 0.169.0 added 2026-11-16 after codex-probe --ping passed (self-test, ping, spawn canary).
+TESTED_CODEX_VERSIONS = frozenset({"0.166.0", "0.169.0"})
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 

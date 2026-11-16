@@ -103,6 +103,13 @@ TOOL_HINTS = (
     ("tls_decrypt{factor,packets,connections,preview} on a PCAP: factor = decimal STRING of a prime factor p of a "
     "server modulus (from gcd). Decrypts TLS 1.0-1.2 RSA key-exchange sessions (RC4/AES-CBC/AES-GCM; not "
     "TLS 1.3 or ECDHE), verifies MACs and lists HTTP messages per connection index and side."),
+    ("ZipCrypto archives: zipcrypto_info (members, check bytes, Info-ZIP leaked rand byte per member); "
+     "infozip_seed{time_from,time_to} recovers Info-ZIP's srand(time^pid) seed from 3+ members and returns every "
+     "member's ten random header bytes (not known plaintext: they were encrypted twice; key recovery from them "
+     "alone is ~2^39 work and not available); zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
+     "Biham-Kocher known-plaintext attack (>=12 known bytes of the member's data, 8 contiguous; offset 0 = first "
+     "data byte) and returns keys x,y,z; derive tool zipcrypto_decrypt{member,keys:'x,y,z'} registers the "
+     "plaintext."),
     ("derive tool tls_http_body{factor,connection,side,message} on the PCAP registers one decrypted HTTP body as a "
     "new artifact (name returned); then inspect it (overview/text/image) or view it if it is a picture."),
 )

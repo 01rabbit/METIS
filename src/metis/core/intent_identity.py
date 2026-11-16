@@ -42,6 +42,8 @@ DEFAULTS: dict[str, dict[str, int | str]] = {
     "tls_decrypt": {"packets": 1024, "connections": 16, "preview": 600},
     "tls_http_body": {"packets": 1024, "connections": 16, "connection": 0, "side": "server", "message": 0,
                       "max_bytes": 1_048_576},
+    "infozip_seed": {"generator": "glibc", "pid_bits": 22, "seconds": 60},
+    "zipcrypto_attack": {"offset": 0, "seconds": 60}, "zipcrypto_decrypt": {"max_bytes": 1_048_576},
 }
 WINDOWED = {"text", "hex", "strings", "disassemble"}
 STRUCTURED_DATA = {"bytes_decode", "zlib_decompress", "aes_decrypt", "fermat_factor", "rsa_common_modulus",
