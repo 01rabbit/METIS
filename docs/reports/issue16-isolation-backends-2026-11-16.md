@@ -40,9 +40,11 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
   確認した項目は、保護領域の読み取り・一覧・書き込みの拒否、直接通信の失敗、許可リスト外の宛先の拒否と記録、NoNewPrivs=1。
 - Docker Desktop 上では、非特権ユーザーの bubblewrap はネットワーク名前空間のループバックを設定できなかった。
   そのためコンテナの root に `SYS_ADMIN` と `NET_ADMIN` を付けて実行した（中のプロセスは capability 0 になる）。
-  一般的な Linux ホストで非特権ユーザーとして動くことは、この環境では確認していない。
-- CI（ubuntu-latest）に bubblewrap を導入し、`tests/test_codex_isolation.py` を独立したステップで実行する。
-  名前空間を作れない環境では、Linux の 2 件は skip になる。
+  非特権ユーザーでの動作は、下記の CI で確認した。
+- CI（GitHub Actions の ubuntu-latest、**一般ユーザー**）では bubblewrap が使え、Linux の 2 件を含む 9 件が合格した
+  （run 43869904885）。非特権ユーザーでの動作はこれで確認できた。名前空間を作れない環境では、この 2 件は skip になる。
+- 最初の CI では、setup-python のインタプリタ（`/opt/hostedtoolcache`）がサンドボックス内に無く、転送器が起動しなかった。
+  実行中のインタプリタのインストール先を読み取り専用でマウントするよう直した。
 - **Linux 上の実 Codex は試していない。** 手元にあるのは macOS 版の Codex だけで、Linux のコンテナに認証情報を持ち込む試験は行っていない。
 
 ## OS ごとの保証範囲
@@ -59,5 +61,5 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 ## 未解決
 
 - spawn ツールそのものをモデルから隠すこと（この CLI の版では不可能）。
-- Linux での子プロセスの禁止（seccomp フィルタ）、実 Codex での確認、Docker の外の非特権環境での確認。
+- Linux での子プロセスの禁止（seccomp フィルタ）と、実 Codex での確認。
 - Windows は未実装（起動を拒否する）。
