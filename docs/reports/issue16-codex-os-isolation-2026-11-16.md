@@ -51,9 +51,8 @@ codex-cli 0.166.0 で確認したこと。
 
 ## 保証しないこと
 
-- spawn ツールそのものをモデルから隠すこと。#16 の受け入れ条件のうち、この 1 項目は未達。
-  spawn された sub-agent は同じプロセス内にいるので、上記のファイル・ネットワーク制限の下にある
-  （推測を含む: sub-agent が別プロセスとして起動する実装でも、子プロセスなので Seatbelt を継承する）。
+- spawn ツール名をモデルから隠すこと。名前は見える。codex-cli 0.166.0 / 0.169.0 の試験済み構成では
+  `--ephemeral` に頼らずCLIが呼び出しを拒否するが、将来版にはこの結果を外挿しない。
 - （記録時点）Linux / Windows の隔離。未実装で、起動を拒否する。
 - Seatbelt やカーネル自体の脆弱性。`sandbox-exec` は Apple が非推奨としているが、現行の macOS で動作する。
 - 許可した宛先（モデル API）へ送られる内容。プロンプトと観測は、設計上この宛先へ送られる。
@@ -61,7 +60,8 @@ codex-cli 0.166.0 で確認したこと。
 
 ## 2026-11-17 時点の更新
 
-- Linux は bubblewrap の mount / user / pid / network namespaces と seccomp を実装済み。seccomp は fork/vfork とプロセスを作る clone を拒否する一方、スレッド生成と `exec` は許可する。fake Codex と OS セルフテスト、CI でファイル読取拒否等を確認した。Linux 実 Codex での確認は未実施。
-- Codex CLI 0.169.0 では、`agents.enabled=false` と MultiAgentV2 の feature 無効化・スレッド上限を指定した状態で、`--ephemeral` を外した spawn 呼び出しが `code-mode host is disabled` で拒否されたとの実機記録がある。現在のドライバはこれらの設定を適用する。ただし 0.166.0 で同じ設定を用いた拒否確認はなく、ツール名も依然としてモデルに提示される。よって #16 の spawn 受け入れ条件は、全ての許可 CLI 版に対して確実な拒否が示されるまで未達として扱う。
-- 現在の audit 環境は macOS arm64 で、Linux / `bwrap` が無い。Linux 実 Codex の認証済み検証をここから実施できず、認証情報を CI や challenge sandbox に複製して代替することもしていない。Linux 実 Codex で、(1) OS の fork/clone 拒否と (2) Codex の in-process spawn 拒否を別々に確認する必要がある。spawn 呼び出しが成功した場合、子 agent に作業を実行させず直ちに停止する。
-- Version gate は各 turn の直前に版を再確認し、0.166.0 / 0.169.0 以外を既定で拒否する。`--allow-untested-codex` は明示的な解除手段。
+- Linux 実行環境は Colima `rosetta` profile（Ubuntu 24.04、aarch64、4 CPU、約6 GiB、cgroup v2）。一時展開した Codex Linux arm64 CLI と METIS venv を使い、CI・challenge sandbox には認証を渡していない。
+- `metis agent codex-probe --ping` を codex-cli 0.166.0 と 0.169.0 の両方で実行。両方 `ready: true`、ping return code 0、`CODEX_HOME` 認証は `unchanged`。各版で bwrap セルフテストは protected read/list/write 拒否、turn-dir write 許可、直接通信拒否、allowlist 外proxy拒否、NoNewPrivs、fork拒否、thread許可の全項目に合格。
+- 両版とも `--ephemeral` を付けず、METIS の `agents.enabled=false`・MultiAgentV2無効化・thread上限の設定下で spawn カナリアを実行。実際の拒否 `code-mode host is disabled` を stderr router から検出し、`sub_agent_attempt` violation として分類した。ツール名自体はモデルに提示されるため、非提示とは主張しない。
+- 負の対照として 0.169.0 で `--ephemeral` とagent無効化設定を外すと、`collaboration.spawn_agent` は成功し、子タスクが `HELLO` を返した。これにより拒否が `--ephemeral` やseccompの効果ではなく、テスト対象のCodex設定から来ることを確認した。子タスクはこの短い応答後に終了した。
+- 受け入れに必要な2つのCLI版を実際に試した。今後は版ごとのfail-closed gateを維持し、未知版を明示的にprobeするまで許可しない。Windowsでは現状も隔離backendがなく、既定起動は拒否する。

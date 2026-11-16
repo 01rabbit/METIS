@@ -135,7 +135,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 起動は Daybreak が行う）はそのままで、Daybreak がホストのツール（Claude Code の Bash）からこの
 コマンドを起動する。
 
-- 各ターンは `codex exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only` で、空の作業
+- 各ターンは `codex exec --ignore-user-config --ignore-rules --sandbox read-only` で、空の作業
   ディレクトリ、縮小した環境変数（トークン類を渡さない）、`approval_policy="never"`、`web_search="disabled"`、
   shell・multi_agent・apps・plugins・hooks・browser/computer use・code mode などの feature 無効で動く。
   `shell_tool` を無効化できない CLI では起動を拒否する（fail closed）。
@@ -168,17 +168,13 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 確認済みの制約（Codex CLI 0.166.0 と 0.169.0、2026-11-16〜17）。サブエージェント起動の制限は、この版の挙動に依存する:
 
 - `--disable multi_agent` でも `collaboration.spawn_agent` などのツールがモデルに見え続ける。`--ephemeral`
-  では spawn が失敗する（「rollout が無い」）が、これは観測された挙動で文書化された保証ではない。
-  `--ephemeral` を外した試験では spawn が成功し、しかも JSONL に item が出なかった。防止は CLI の挙動
-  頼み、検知は stderr 頼みであり、「不可能」ではなく「現版では失敗し、試みは検知される」水準。
-  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。Codex CLI 0.169.0 では `agents.enabled=false` と
-  `features.multi_agent_v2.max_concurrent_threads_per_session=1` を付けると、ephemeral を外した実呼び出しでも
-  spawn は `code-mode host is disabled` で拒否された。`features.multi_agent_v2.enabled=false` を除いた場合も同じ拒否を確認した。
-  ただし、3つの設定を一つずつ完全に切り分けておらず、結果は0.169.0の実測に限る。0.166.0では同じ設定を試していない。
-  macOS Seatbelt と Linux seccomp はプロセス生成を制限するが、in-process の spawn 拒否は Codex CLI に依存する。
-  ツール名自体はモデルに提示される。Linux 実 Codex、別モデルや将来の CLI 版での拒否は未確認であり、#16 の受け入れ条件は未達。
+  0.166.0 と 0.169.0 のLinux実測では、`--ephemeral` を外した状態でも `agents.enabled=false` と
+  MultiAgentV2無効化設定によりspawn要求が `code-mode host is disabled` で拒否された。拒否文はstderr
+  のrouter記録からsub-agent試行として検知し、attemptをpolicy violationで終了する。ツール名自体は
+  モデルに提示される。seccompはOSプロセス生成を別途拒否するが、in-process spawn拒否はCodex CLIの
+  バージョン依存であり、未試験版はfail closed。
 - `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。網羅的なツール一覧を
-  取得する手段はないが、#16 以後、ファイルの読み書きは OS 側で制限している。
+  取得する手段はないが、ファイルの読み書きは OS 側で制限している。
 - OS 隔離は macOS が Seatbelt（fork を禁止し、exec は Codex 本体だけ）、Linux が bubblewrap（名前空間・capability 0・
   NoNewPrivs、プロセス生成を禁止、通信は Unix ソケット経由のプロキシのみ）。Windows は未実装で、起動を拒否する。Linux 上の実 Codex は未検証
   （`docs/reports/issue16-isolation-backends-2026-11-16.md`）。Seatbelt や
@@ -239,7 +235,9 @@ Linux の bubblewrap 内では、転送器を起動した後に seccomp を Code
 フィルタ設定に失敗した場合は Codex を起動しない。スレッドは許可する。`exec` 自体は制限しないため、
 既存プロセスの置き換えは可能であり、macOS の実行ファイル制限と同じ保証ではない。
 Codex の in-process `collaboration.spawn_agent` は OS のプロセス生成ではなく、このフィルタでは止められない。
-Linux 実 Codex での互換性検証は未実施である。
+Linux 実 Codex 0.166.0 / 0.169.0 の互換性試験と、METISのagent無効化設定によるspawn拒否を実機確認した。
+seccomp単独では拒否しない。拒否経路、陰性対照、auth扱いは
+`docs/reports/issue16-linux-real-codex-2026-11-17.md` を参照。
 
 ## 6.3 Bounded autopilot
 

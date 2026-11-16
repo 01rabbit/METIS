@@ -152,6 +152,12 @@ def test_missing_isolation_fails_closed(tmp_path, monkeypatch):
     assert CodexCLI(_fake_codex(tmp_path, "0.166.0"), isolation="none").check() == "0.166.0"
 
 
+@pytest.mark.parametrize("platform", ["win32", "cygwin"])
+def test_unsupported_platforms_have_no_isolation_backend(monkeypatch, platform):
+    monkeypatch.setattr(codex_isolation.sys, "platform", platform)
+    assert codex_isolation.isolation_backend() is None
+
+
 # -- the OS actually refuses (macOS) -----------------------------------------------------------------
 @macos
 def test_seatbelt_refuses_reads_writes_and_egress(tmp_path):

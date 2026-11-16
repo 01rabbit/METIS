@@ -117,6 +117,9 @@ def test_daybreak_only_intents_are_refused_and_the_attempt_continues(setup):
     (CodexTurn(returncode=0, message="{}", item_types=["agent_message", "command_execution"]), "command_execution"),
     (CodexTurn(returncode=0, message="{}", item_types=["agent_message"],
                tool_errors=["ERROR codex_core::tools::router: error=collab spawn failed"]), "sub_agent_attempt"),
+    (CodexTurn(returncode=0, message="{}", item_types=["agent_message"],
+               tool_errors=["ERROR codex_core::tools::router: error=code-mode host is disabled"]),
+     "sub_agent_attempt"),
     (CodexTurn(returncode=0, message="{}", item_types=["mcp_tool_call"]), "mcp_tool_call"),
 ])
 def test_tool_use_inside_codex_is_a_policy_violation(setup, turn, reason):
@@ -191,7 +194,8 @@ def test_prompt_has_no_daybreak_history_and_marks_untrusted_text(setup):
 def test_codex_cli_argv_is_tool_less_and_fails_closed(tmp_path):
     cli = CodexCLI("/bin/echo", features={"shell_tool", "multi_agent", "apps", "plugins", "hooks"})
     argv = cli.argv(tmp_path / "w", tmp_path / "s.json", tmp_path / "o.json", "model-a")
-    for flag in ("--ephemeral", "--ignore-user-config", "--ignore-rules"):
+    assert "--ephemeral" not in argv  # denial is tested without ephemeral mode
+    for flag in ("--ignore-user-config", "--ignore-rules"):
         assert flag in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"
     disabled = {argv[i + 1] for i, item in enumerate(argv) if item == "--disable"}

@@ -185,7 +185,8 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
         result["ping"] = {"returncode": turn.returncode, "thread_id": turn.thread_id, "items": turn.item_types,
                           "message": turn.message, "usage": turn.usage, "timed_out": turn.timed_out,
                           "violations": turn.violations()}
-        # Canary: the collaboration tools stay visible, so prove that a spawn attempt is detected.
+        # Canary: collaboration tool names may stay visible, so prove the configured host refusal
+        # is detected even when Codex does not emit a tool-call item.
         canary = cli.run('Call collaboration.spawn_agent with the task "say hi" and then return '
                          '{"action":"fail","intent":null,"report":null,"reason":"<exact tool result>"}.',
                          model=args.model, timeout=180)

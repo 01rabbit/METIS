@@ -1,6 +1,6 @@
 # Issue #16 Codex の隔離: spawn ツールの調査、子プロセスの禁止、Linux 版
 
-この記録の最初の節と表は 2026-11-16 時点の調査スナップショットである。後述の追記を含む現状では、Linux の seccomp による fork 等の拒否は実装済み。Linux 実 Codex の検証は未実施。
+この記録の最初の節と表は 2026-11-16 時点の調査スナップショットである。現在は Linux の seccomp による fork 等の拒否と、Codex CLI 0.166.0 / 0.169.0 のLinux実機検証を完了している。最新結果は末尾を参照。
 
 ## spawn ツールは設定で無効化できるか
 
@@ -57,14 +57,16 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 | 外部への通信 | プロキシの許可リストのみ | 名前空間の中からプロキシ経由のみ |
 | OS プロセス生成 | 禁止（fork、Codex 本体以外の exec） | seccomp で fork/vfork、プロセス生成 clone を拒否。thread clone は許可。exec は可能 |
 | 権限昇格 | exec を Codex 本体に限る | NoNewPrivs、capability 0 |
-| 実 Codex での確認 | 実施済み | 未実施（偽 Codex のみ） |
+| 実 Codex での確認 | 実施済み | codex-cli 0.166.0 / 0.169.0 で実施済み |
 | 隔離を用意できない場合 | 起動を拒否する | 起動を拒否する |
 
-## 未解決
+## 2026-11-17 Linux 実Codexの更新
 
-- spawn ツールそのものをモデルから隠すこと（この CLI の版では不可能）。
-- Linux 実 Codex での確認（bwrap + seccomp の互換性、認証済み一回ターン）。
-- Windows は未実装（起動を拒否する）。
+稼働中の Colima `rosetta` profile（Ubuntu 24.04 aarch64、4 CPU、約6 GiB、cgroup v2）で、Codex CLI のLinux arm64配布物を一時展開し、既存 hardware-key 再認証済みアカウントの `auth.json` を権限600の一時 `CODEX_HOME` に限定してprobeを実施した。CIやchallenge sandboxには認証を渡していない。一時homeはprobe後に削除した。
+
+Codex CLI 0.166.0 と 0.169.0 の双方で、隔離下pingがreturn code 0、bwrapセルフテスト全項目が合格し、認証ファイルは `unchanged`。`--ephemeral` を付けずに spawn カナリアを行うと、METISが設定する `agents.enabled=false` とMultiAgentV2無効化の下で、Codex routerが `code-mode host is disabled` と拒否した。router記録を `sub_agent_attempt` として検出する。
+
+負の対照として、0.169.0でagent無効化設定を取り除くとspawn要求が成功し、子タスクが `HELLO` を返した。よって分離根拠はOSのfork拒否ではなく、試験したCLI設定の拒否応答である。ツール名はモデルに見える。未試験のCLI版は既定で拒否する。Windowsは未実装で、隔離backendの不在により起動をfail closedする。
 
 
 ## 追加調査（2026-11-16）
@@ -76,11 +78,7 @@ Linux aarch64 コンテナの単独フィルタ試験ではスレッド作成成
 コンテナの既定制限下では bubblewrap の名前空間作成が失敗したため、統合試験は未確認。
 Linux 上の実 Codex と非特権環境の新フィルタは未確認である。
 
-ローカルの Codex CLI 0.169.0 の `features list` は `multi_agent` を deprecated、
-`multi_agent_v2` を stable と表示する。フラグの存在や値だけではツールの非提示は証明されない。
-上記の実機観測を超える、spawn を確実に無効化するサポート済み設定は確認できていない。
-新たな認証情報のコピーや実モデル呼び出しは行っていない。
+codex-cli 0.166.0 / 0.169.0 の実測を越える版では拒否を主張しない。Windows の sandbox はこの実装から使用しておらず、Job Object、AppContainer やネットワーク制御の組み合わせについて設計・実証していない。Windows では従来どおり fail closed であり、同等の隔離保証は主張できない。
 
-Windows は調査のみ。Windows の sandbox はこの実装から使用しておらず、Job Object、
-AppContainer やネットワーク制御の組み合わせについて設計・実証していない。
-Windows では従来どおり fail closed であり、同等の隔離保証は主張できない。
+実行コマンド、両CLIのprobe値、負の対照、現在の受け入れ判定は
+`docs/reports/issue16-linux-real-codex-2026-11-17.md` を参照。

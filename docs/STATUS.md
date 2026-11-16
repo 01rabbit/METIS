@@ -102,9 +102,10 @@ there. Platforms other than CTFd, rCTF and ksnctf, and site-specific verdict
 formats, need the generic form verifier or a new adapter.
 
 The broader P0-P8 master plan remains a research roadmap. The evidence above
-does not establish autonomous solving, broad benchmark performance, the
-in-process Codex sub-agent denial required by Issue #16, Linux real-Codex
-compatibility, or production deployment. The optional standalone
+does not establish autonomous solving, broad benchmark performance, comparative
+multi-agent gains, or production deployment. Issue #16 now has Linux real-Codex
+0.166.0 and 0.169.0 evidence under bwrap and seccomp; the collaborator tool
+remains visible but is refused by the tested CLI configuration. The optional standalone
 model/container experiments remain separate from the default Codex workflow.
 
 The 2026-11-17 MUNIN increment adds three deterministic synthetic transfer trials

@@ -4,9 +4,9 @@ Daybreak (any host, e.g. Claude Code) dispatches a wave with ``metis agent dispa
 then runs ``metis agent codex RUN_ID ASSIGNMENT_ID --attempt ATT`` for each started job.
 This module is the Daybreak-side driver for that one attempt:
 
-* Codex runs with **no tools of its own**: ``codex exec`` with the user config ignored
-  (no MCP servers, plugins, hooks or profiles), a read-only sandbox, the shell, sub-agent,
-  app, browser, computer-use and code-mode features disabled, web search off, an empty
+* Codex runs with a reduced tool surface: ``codex exec`` with the user config ignored
+  (no MCP servers, plugins, hooks or profiles), a read-only sandbox, the shell, app, browser,
+  computer-use and code-mode features disabled, web search off, an empty
   working directory and a reduced environment. Every turn answers with one JSON decision
   that matches a strict output schema.
 * The only way Codex observes the challenge is a *tool intent*. The driver forwards it to
@@ -15,8 +15,10 @@ This module is the Daybreak-side driver for that one attempt:
   and records the observation as run evidence.
 * A report goes through :meth:`AgentScheduler.complete` (CompactReport validation, evidence
   references, flag-shaped strings refused). Candidates never leave the run ledger.
-* Defence in depth: any tool item in Codex's event stream (command, file change, MCP call,
-  web search, sub-agent) ends the attempt as ``failed`` with ``policy_violation``.
+* Collaboration tools may remain visible despite feature flags. The tested CLI versions
+  refuse spawn when their agent host is disabled; the router refusal is detected. Any tool
+  item in Codex's event stream (command, file change, MCP call, web search, sub-agent) ends
+  the attempt as ``failed`` with ``policy_violation``.
 * Each turn is stateless: the prompt carries the brief plus the intents and (truncated)
   observations of this attempt only, so no Daybreak conversation history is copied.
 
@@ -55,7 +57,8 @@ from metis.core.codex_isolation import (
 )
 from metis.core.ctf_artifacts import ALLOWED_OPTIONS
 
-# Features turned off for every specialist turn when the installed CLI knows them.
+# Features turned off for every specialist turn when the installed CLI knows them. Some
+# collaboration tool names can remain visible; the configured host refusal is tested below.
 DISABLED_FEATURES = (
     "shell_tool", "multi_agent", "multi_agent_v2", "apps", "plugins", "remote_plugin", "hooks",
     "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
@@ -67,9 +70,9 @@ REQUIRED_DISABLES = ("shell_tool",)
 # Event item types that carry no action. Everything else is a policy violation.
 PASSIVE_ITEMS = {"agent_message", "reasoning", "error", "todo_list"}
 # Codex 0.166 still exposes collaboration tools with multi_agent disabled and does not always
-# emit an item for them; a spawn attempt shows up as a tool-router error on stderr. With
-# --ephemeral the spawn fails (observed, not documented), so the attempt is also detected here.
-SPAWN_MARKERS = ("collab", "spawn_agent", "spawn agent")
+# emit an item for them. Router errors are therefore part of the policy audit as well as JSONL.
+SPAWN_MARKERS = ("collab", "spawn_agent", "spawn agent", "code-mode host is disabled",
+                 "code-mode host failed to spawn")
 ROUTER_MARKER = "tools::router"
 OBSERVATION_CHARS = 12_000
 MAX_IMAGES = 4
@@ -190,7 +193,7 @@ def known_features(executable: str) -> set[str]:
 
 
 class CodexCLI:
-    """One stateless, tool-less ``codex exec`` turn per call.
+    """One stateless, tool-restricted ``codex exec`` turn per call.
 
     ``isolation="required"`` (default) runs every turn under the OS isolation of
     :mod:`metis.core.codex_isolation` and refuses to run where it is unavailable.
@@ -221,7 +224,7 @@ class CodexCLI:
                                "; refusing to run a specialist that could act outside METIS")
 
     def argv(self, workdir: Path, schema: Path, output: Path, model: str | None) -> list[str]:
-        command = [self.executable, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+        command = [self.executable, "exec", "--ignore-user-config", "--ignore-rules",
                    "--skip-git-repo-check", "--sandbox", "read-only", "--cd", str(workdir), "--json",
                    "--color", "never", "--output-schema", str(schema), "--output-last-message", str(output),
                    "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
