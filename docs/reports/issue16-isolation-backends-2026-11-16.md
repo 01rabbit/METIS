@@ -63,3 +63,22 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 - spawn ツールそのものをモデルから隠すこと（この CLI の版では不可能）。
 - Linux での子プロセスの禁止（seccomp フィルタ）と、実 Codex での確認。
 - Windows は未実装（起動を拒否する）。
+
+
+## 追加調査（2026-11-16）
+
+Linux の Codex 実行側に seccomp を追加し、fork/vfork とプロセスを作る clone を拒否する。
+clone3 は ENOSYS で拒否し、必要なスレッド用 clone は許可する。これは exec や Codex 内部の
+サブエージェントを禁止しない。x86-64 と aarch64 のみを対象とし、他のアーキテクチャでは起動に失敗する。
+Linux aarch64 コンテナの単独フィルタ試験ではスレッド作成成功と fork 拒否を確認した。
+コンテナの既定制限下では bubblewrap の名前空間作成が失敗したため、統合試験は未確認。
+Linux 上の実 Codex と非特権環境の新フィルタは未確認である。
+
+ローカルの Codex CLI 0.169.0 の `features list` は `multi_agent` を deprecated、
+`multi_agent_v2` を stable と表示する。フラグの存在や値だけではツールの非提示は証明されない。
+上記の実機観測を超える、spawn を確実に無効化するサポート済み設定は確認できていない。
+新たな認証情報のコピーや実モデル呼び出しは行っていない。
+
+Windows は調査のみ。Windows の sandbox はこの実装から使用しておらず、Job Object、
+AppContainer やネットワーク制御の組み合わせについて設計・実証していない。
+Windows では従来どおり fail closed であり、同等の隔離保証は主張できない。

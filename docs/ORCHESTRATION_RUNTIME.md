@@ -226,3 +226,14 @@ PR #14 の受け入れ手順を、現行のコマンドに合わせて短くし�
   コンテナ）は、この層の intent からは呼べない（Daybreak 専用）。担当が動的確認を要する場合は報告の
   `next_action` に書き、Daybreak が実行する。
 - 合成 fixture での結果は実大会の solve 率を意味しない。
+
+
+### Linux process creation restriction
+
+Linux の bubblewrap 内では、転送器を起動した後に seccomp を Codex の実行系へ適用する。
+`fork`、`vfork` と、`CLONE_THREAD` を持たない `clone` を拒否し、検査できない `clone3` は
+`ENOSYS` で拒否して libc の `clone` フォールバックを可能にする。対応 CPU は x86-64 と aarch64。
+フィルタ設定に失敗した場合は Codex を起動しない。スレッドは許可する。`exec` 自体は制限しないため、
+既存プロセスの置き換えは可能であり、macOS の実行ファイル制限と同じ保証ではない。
+Codex の in-process `collaboration.spawn_agent` は OS のプロセス生成ではなく、このフィルタでは止められない。
+Linux 実 Codex での互換性検証は未実施である。
