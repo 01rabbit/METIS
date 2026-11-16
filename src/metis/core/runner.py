@@ -47,6 +47,12 @@ class Runner:
                     elapsed_seconds=f"{time.monotonic() - tracker.started:.6f}",
                     provider=type(self.provider).__name__,
                 )
+                usage = getattr(self.provider, "usage_totals", None)
+                if isinstance(usage, dict):
+                    detail["model_usage_observed"] = str(bool(getattr(self.provider, "usage_observed", False))).lower()
+                    for key, value in usage.items():
+                        detail[f"model_{key}"] = str(value)
+                    detail["model_cost_usd"] = "unknown"
             self.store.append(RunEvent(run_id=run_id, sequence=sequence,
                                        status=status, detail=detail))
             sequence += 1

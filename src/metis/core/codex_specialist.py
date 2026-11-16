@@ -265,7 +265,8 @@ class CodexCLI:
 
     def run(self, prompt: str, *, model: str | None, timeout: float,
             should_stop: Callable[[], bool] | None = None,
-            images: list[tuple[str, bytes]] | None = None) -> CodexTurn:
+            images: list[tuple[str, bytes]] | None = None,
+            output_schema: dict[str, Any] | None = None) -> CodexTurn:
         """One turn. ``should_stop`` is checked every couple of seconds; when it turns true
         (Daybreak cancelled the attempt) the whole process group is killed at once."""
         # The CLI executable can be updated or replaced while a specialist run is
@@ -277,7 +278,7 @@ class CodexCLI:
             workdir = base / "work"
             workdir.mkdir(mode=0o700)
             schema, output = base / "decision.schema.json", base / "last.json"
-            schema.write_text(json.dumps(DECISION_SCHEMA))
+            schema.write_text(json.dumps(output_schema or DECISION_SCHEMA))
             env = self.environment()
             command = self.argv(workdir, schema, output, model)
             if images:  # registered image artifacts the specialist asked to view (copied into the turn dir)

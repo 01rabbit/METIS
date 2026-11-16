@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import time
@@ -175,6 +176,34 @@ def test_oracle_is_never_overwritten(tmp_path):
     with pytest.raises(FileExistsError):
         generate_fixtures(tmp_path / "solver", oracle)
     assert oracle.read_bytes() == before
+
+
+@pytest.mark.parametrize("category", ["crypto", "misc"])
+def test_deterministic_provider_solves_two_fixture_categories_without_docker(tmp_path, category):
+    oracle_path = tmp_path / "private/answers.json"
+    paths = generate_fixtures(tmp_path / "solver", oracle_path)
+    manifest = next(ChallengeManifest.model_validate_json(path.read_bytes()) for path in paths
+                    if f"generated-{category}-" in path.name)
+    oracle = FixtureOracle(oracle_path, solver_roots=(tmp_path / "solver",))
+
+    class DecoderRuntime:
+        def execute(self, request, *, timeout_seconds):
+            try:
+                output = (base64.b64decode(request.data, validate=True).decode()
+                          if request.tool == "base64_decode"
+                          else bytes.fromhex(request.data).decode()
+                          if request.tool == "hex_decode" else "")
+                return ToolResult(ok=True, output=output)
+            except (ValueError, UnicodeDecodeError):
+                return ToolResult(ok=False, output="invalid encoded input")
+
+    store = RunStore(tmp_path / f"{category}.sqlite")
+    run_id = Runner(store, FixtureProvider(), DecoderRuntime(), oracle, RunBudget()).run(manifest)
+    events = store.read(run_id)
+    assert events[-1].status == RunStatus.SOLVED
+    assert events[-1].detail["verification"] == "local_fixture_oracle"
+    assert all(answer not in store.export_jsonl(run_id)
+               for answer in json.loads(oracle_path.read_text()).values())
 
 
 @pytest.mark.parametrize("category", ["crypto", "misc"])

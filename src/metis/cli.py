@@ -555,8 +555,9 @@ def main() -> int:
     run.add_argument("--database", type=Path, required=True)
     run.add_argument("--oracle", type=Path, required=True)
     run.add_argument("--image", required=True, help="trusted digest-pinned Python Docker image")
-    run.add_argument("--provider", choices=("fixture", "openai"), default="fixture")
-    run.add_argument("--model", default="gpt-4.1-mini")
+    run.add_argument("--provider", choices=("fixture", "openai", "codex"), default="fixture")
+    run.add_argument("--model")
+    run.add_argument("--cyber-access-program", choices=("standard", "daybreak_blue", "daybreak_red"))
     run.add_argument("--max-call-cost-usd", type=float)
     run.add_argument("--max-actions", type=int, default=40)
     run.add_argument("--wall-time-seconds", type=int, default=1200)
@@ -1053,7 +1054,11 @@ def main() -> int:
                 if args.provider == "openai":
                     if args.max_call_cost_usd is None:
                         raise ValueError("explicit model call cost reservation required")
-                    provider = OpenAIProvider(args.model, max_call_cost_usd=args.max_call_cost_usd)
+                    provider = OpenAIProvider(args.model or "gpt-4.1-mini",
+                                              max_call_cost_usd=args.max_call_cost_usd)
+                elif args.provider == "codex":
+                    from metis.core.codex_provider import CodexProvider
+                    provider = CodexProvider(args.model, cyber_program=args.cyber_access_program)
                 oracle = FixtureOracle(args.oracle, solver_roots=(
                     args.manifest.resolve().parent, Path(__file__).resolve().parents[2],
                 ))

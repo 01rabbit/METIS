@@ -62,8 +62,18 @@ Misc. This demonstrates scoped challenge intake, one-instance remote
 workflow, browser submission, official verdict attestation, and category
 extraction against live pages. Password, Please was Daybreak-led, and Daybreak
 performed the bounded collision search for Happy Birthday. These are not
-evidence that an autonomous specialist produced the answers, so P1 and the
-other open acceptance gates remain open.
+evidence that an autonomous specialist produced the answers.
+
+Separately, Codex CLI 0.169.0 completed one generated local direct-answer fixture
+through the `CodexProvider`; the private external fixture oracle independently
+verified the candidate. The run observed 6,902 input and 41 output tokens, while
+dollar cost was unavailable. A Base64/tool-path attempt failed closed because
+the local Docker cgroup configuration could not confirm resource enforcement.
+This is one fixture result, not an AlpacaHack solve or a solve-rate benchmark.
+Issue #2's acceptance criteria are now covered by the real-model oracle run,
+always-run Crypto/Misc deterministic fixture tests, and existing budget/failure
+tests. Docker-backed category runs remain skipped on this host because cgroup v2
+resource enforcement is unavailable. Other acceptance gates remain open.
 
 After hardware-key reauthentication, the 2026-11-17 KSNCTF #33 offline
 regression reached `view` and private candidate handoff without reproducing
