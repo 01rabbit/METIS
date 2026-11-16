@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,10 +38,47 @@ def main() -> int:
     executable = shutil.which("codex")
     if executable is None:
         raise SystemExit("Codex CLIが見つかりません。Codex CLIをインストールして再実行してください。")
-    os.execv(executable, [executable, "-C", str(root), "--approve-for-me",
-                           "--enable", "cli_daybreak", "--enable", "multi_agent",
-                           *codex_args, START_PROMPT])
+    options = codex_options(executable)
+    os.execv(executable, [executable, "-C", str(root), *options, *codex_args, START_PROMPT])
     return 0
+
+
+WANTED_FEATURES = ("cli_daybreak", "multi_agent")
+
+
+def _probe(command: list[str]) -> str | None:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout + result.stderr if result.returncode == 0 else None
+
+
+def codex_options(executable: str) -> list[str]:
+    """Only pass flags and feature names this Codex CLI version knows.
+
+    Codex renames or retires experimental features between releases; an unknown
+    `--enable NAME` aborts startup ("Unknown feature flag"). METIS works without
+    them (Daybreak is a role in the prompt), so missing ones are skipped.
+    """
+    options: list[str] = []
+    help_text = _probe([executable, "--help"]) or ""
+    if "--approve-for-me" in help_text:
+        options.append("--approve-for-me")
+    listing = _probe([executable, "features", "list"])
+    known = {match.group(1) for match in re.finditer(r"^\s*([a-z][a-z0-9_]*)\b", listing or "", re.MULTILINE)}
+    override = os.environ.get("METIS_CODEX_FEATURES")
+    wanted = [item for item in (override.split(",") if override is not None else WANTED_FEATURES) if item]
+    skipped = []
+    for feature in wanted:
+        if feature in known:
+            options += ["--enable", feature]
+        else:
+            skipped.append(feature)
+    if skipped:
+        print("この Codex CLI では次の機能を有効化しません（未対応または名称変更）: " + ", ".join(skipped),
+              file=sys.stderr)
+    return options
 
 
 if __name__ == "__main__":
