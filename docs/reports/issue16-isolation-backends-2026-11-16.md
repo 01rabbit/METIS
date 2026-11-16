@@ -1,0 +1,63 @@
+# Issue #16 Codex の隔離: spawn ツールの調査、子プロセスの禁止、Linux 版（2026-11-16）
+
+## spawn ツールは設定で無効化できるか
+
+codex-cli 0.166.0 で、次の 4 通りを実 Codex で試した。どの場合も `collaboration.spawn_agent` などはモデルに提示されたままで、
+spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知された。
+
+- 既定（`--disable multi_agent` など、ドライバの既定のフラグ）
+- `-c collaboration_mode="none"`
+- `-c agents.max_concurrent_threads_per_session=1`
+- `--enable multi_agent_v2` と上記のスレッド上限の組み合わせ
+
+バイナリ内の設定キーにも、collaboration ツールを外す項目は見つからなかった。この版では、設定で無効化する方法は無いと判断する。
+
+## OS レベルでの対策
+
+### macOS（Seatbelt）
+
+- 既存のファイル隔離・ネットワーク隔離に加え、`(deny process-fork)` と `(deny process-exec)` を入れた。
+  例外は、そのターンの Codex バイナリの実行だけ。shell、補助プロセス、setuid プログラムはどれも起動できない。
+- 実 Codex で検証した。CLI 側の防御をすべて外した状態（shell 有効、Codex 自身の sandbox は `danger-full-access`、
+  `--ephemeral` と `--disable` を削除）で、shell コマンド 4 件と sub-agent 経由のコマンドを指示した。すべて
+  `code-mode host failed to spawn: Operation not permitted` で実行されなかった。sentinel は漏れず、書き込みも起きなかった。
+- `codex-probe` のセルフテストに `child_process_denied` を加えた。全項目が合格している。
+
+### Linux（bubblewrap、新規）
+
+- `--unshare-all`（user・pid・net・ipc・uts・cgroup の各名前空間）、`--die-with-parent`、`--new-session`、`--cap-drop ALL`、
+  `--clearenv` で起動する。マウントするのはシステムのディレクトリ（読み取り専用）、Codex パッケージ（読み取り専用）、
+  ターン専用ディレクトリだけで、ホームディレクトリと共有の一時ディレクトリはそもそも見えない。
+- 外部への通信は、新しいネットワーク名前空間の中から、127.0.0.1:18080 → 転送器 → Unix ソケット → ホスト側の許可リスト付き
+  プロキシ、という経路だけに限る。直接の通信は経路が無い。
+- bubblewrap は no-new-privileges を設定するので、setuid による権限昇格は効かない。
+- 子プロセスは禁止できない（seccomp フィルタは未導入）。ただし子プロセスも同じ名前空間・capability 0・no-new-privileges の下にいる。
+- 起動前に `bwrap` が実際に名前空間を作れるかを確かめる。作れない場合は隔離なしとみなし、起動を拒否する（fail closed）。
+
+検証:
+
+- Docker の Linux コンテナ（python:3.13-slim + bubblewrap、aarch64）で、セルフテストと偽 Codex の脱出試験が合格した。
+  確認した項目は、保護領域の読み取り・一覧・書き込みの拒否、直接通信の失敗、許可リスト外の宛先の拒否と記録、NoNewPrivs=1。
+- Docker Desktop 上では、非特権ユーザーの bubblewrap はネットワーク名前空間のループバックを設定できなかった。
+  そのためコンテナの root に `SYS_ADMIN` と `NET_ADMIN` を付けて実行した（中のプロセスは capability 0 になる）。
+  一般的な Linux ホストで非特権ユーザーとして動くことは、この環境では確認していない。
+- CI（ubuntu-latest）に bubblewrap を導入し、`tests/test_codex_isolation.py` を独立したステップで実行する。
+  名前空間を作れない環境では、Linux の 2 件は skip になる。
+- **Linux 上の実 Codex は試していない。** 手元にあるのは macOS 版の Codex だけで、Linux のコンテナに認証情報を持ち込む試験は行っていない。
+
+## OS ごとの保証範囲
+
+| 項目 | macOS（Seatbelt） | Linux（bubblewrap） |
+| --- | --- | --- |
+| ホームと共有の一時ディレクトリの読み書き | 拒否（プロファイル） | 見えない（マウントしない） |
+| 外部への通信 | プロキシの許可リストのみ | 名前空間の中からプロキシ経由のみ |
+| 子プロセス | 禁止（fork・exec） | 可能。ただし同じ名前空間・capability 0・NoNewPrivs |
+| 権限昇格 | exec を Codex 本体に限る | NoNewPrivs、capability 0 |
+| 実 Codex での確認 | 実施済み | 未実施（偽 Codex のみ） |
+| 隔離を用意できない場合 | 起動を拒否する | 起動を拒否する |
+
+## 未解決
+
+- spawn ツールそのものをモデルから隠すこと（この CLI の版では不可能）。
+- Linux での子プロセスの禁止（seccomp フィルタ）、実 Codex での確認、Docker の外の非特権環境での確認。
+- Windows は未実装（起動を拒否する）。
