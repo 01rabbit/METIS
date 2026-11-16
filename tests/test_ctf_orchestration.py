@@ -18,9 +18,13 @@ def test_wave_is_bounded_distinct_and_keeps_submission_with_daybreak():
     assert wave["synthesis_gate"]["official_submission_owner"] == "Daybreak"
 
 
-def test_wave_always_has_specialist_and_independent_critic():
+def test_empty_problem_is_sequential_and_forced_delegation_keeps_legacy_roles():
     wave = plan_agent_wave({"run_id": "run-2", "challenge": {"categories": [], "artifacts": []}})
-    roles = {item["role"] for item in wave["assignments"]}
+    assert wave["execution_mode"] == "sequential" and wave["assignments"] == []
+    assert set(wave["daybreak_covers"]) == {"misc-specialist", "independent-critic"}
+    legacy = plan_agent_wave({"run_id": "run-2", "challenge": {"categories": [], "artifacts": []}},
+                             force_mode="delegated")
+    roles = {item["role"] for item in legacy["assignments"]}
     assert roles == {"misc-specialist", "independent-critic"}
 
 
@@ -30,7 +34,7 @@ def test_agent_reports_persist_evidence_and_synthesize_without_submission(tmp_pa
     run_id = session.demo()[0]["run_id"]
     sequence = session.store.read(run_id)[-1].sequence
     ledger = AgentLedger(database)
-    wave = ledger.create_wave(run_id)
+    wave = ledger.create_wave(run_id, mode="delegated")
     initial = ledger.synthesize(run_id, wave["wave_id"])
     assert initial["missing_assignments"]
     for index, assignment in enumerate(wave["assignments"]):
@@ -56,7 +60,7 @@ def test_agent_reports_reject_unknown_evidence_duplicates_and_flags(tmp_path):
     run_id = session.demo()[0]["run_id"]
     sequence = session.store.read(run_id)[-1].sequence
     ledger = AgentLedger(database)
-    wave = ledger.create_wave(run_id)
+    wave = ledger.create_wave(run_id, mode="delegated")
     assignment = wave["assignments"][0]["assignment_id"]
     base = {
         "hypothesis": "The input likely uses a standard text encoding.",
@@ -70,12 +74,10 @@ def test_agent_reports_reject_unknown_evidence_duplicates_and_flags(tmp_path):
         ledger.record_report(run_id, wave["wave_id"], assignment,
                              {**base, "event_sequences": [9999]})
     ledger.record_report(run_id, wave["wave_id"], assignment, base)
-    second = ledger.create_wave(run_id)
+    other = wave["assignments"][1]["assignment_id"]
     with pytest.raises(ValueError, match="duplicate next action"):
-        ledger.record_report(run_id, second["wave_id"],
-                             second["assignments"][0]["assignment_id"], base)
+        ledger.record_report(run_id, wave["wave_id"], other, base)
     with pytest.raises(ValueError, match="flag-shaped"):
-        ledger.record_report(run_id, second["wave_id"],
-                             second["assignments"][1]["assignment_id"],
+        ledger.record_report(run_id, wave["wave_id"], other,
                              {**base, "hypothesis": "The answer is FLAG_privatevalue.",
                               "next_action": "Try a different bounded inspection method."})

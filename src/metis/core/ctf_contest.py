@@ -59,7 +59,8 @@ class ContestBoard:
             columns = {row[1] for row in db.execute("PRAGMA table_info(ctf_contest_challenges)")}
             # Swarm leasing and problem location (added later; migrate older boards in place).
             for name, kind in (("worker", "TEXT"), ("lease_until", "REAL"), ("sessions", "INTEGER NOT NULL DEFAULT 0"),
-                               ("url", "TEXT"), ("adapter", "TEXT"), ("notes", "TEXT")):
+                               ("url", "TEXT"), ("adapter", "TEXT"), ("notes", "TEXT"),
+                               ("timebox_until", "REAL")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE ctf_contest_challenges ADD COLUMN {name} {kind}")
             # Where the contest lives and the rules agents must respect (one row per contest).
@@ -254,6 +255,7 @@ class ContestBoard:
                 raise ValueError("invalid prerequisites")
         if "run_id" in changes and changes["run_id"] is not None:
             CodexSession(self.database).context(changes["run_id"])  # must be an existing run
+            self._check_binding(current, changes["run_id"])
         updated = dict(current)
         updated.update(changes)
         state = str(updated["state"])
@@ -348,7 +350,43 @@ class ContestBoard:
         return {"contest_id": contest_id, "solved": solved, "linked": linked,
                 "next": "dispatch again; resume linked runs instead of reopening problems"}
 
+    def _check_binding(self, challenge: dict[str, Any], run_id: str) -> None:
+        """A run opened from the web must be the board challenge's own problem."""
+        with sqlite3.connect(self.database) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='web_runs'").fetchone():
+                return
+            row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            return  # Local intake: nothing to compare.
+        config = json.loads(row[0])
+        page = str(config.get("page_url") or "").rstrip("/")
+        board_url = str(challenge.get("url") or "").rstrip("/")
+        remote_id = config.get("challenge_id")
+        id_matches = remote_id is not None and str(remote_id) == challenge["challenge_id"]
+        url_matches = bool(board_url) and page == board_url
+        url_known = bool(board_url) and config.get("adapter") not in {"ctfd", "rctf"}
+        if remote_id is not None and not id_matches and not url_matches:
+            raise ValueError("run belongs to another problem (challenge id differs)")
+        if remote_id is None and url_known and not url_matches:
+            raise ValueError("run belongs to another problem (problem URL differs)")
+
+    def enforce_timebox(self, contest_id: str, *, now: float | None = None) -> list[str]:
+        """Dispatched challenges past their timebox become ``blocked`` with a note; the
+        operator then requeues or abandons them explicitly. Swarm leases are separate."""
+        now = now or time.time()
+        overdue = [item for item in self._challenges(contest_id)
+                   if item["state"] == "investigating" and not item["worker"]
+                   and item.get("timebox_until") and item["timebox_until"] < now]
+        with sqlite3.connect(self.database, timeout=30) as db:
+            for item in overdue:
+                db.execute("UPDATE ctf_contest_challenges SET state='blocked', timebox_until=NULL, updated=?, "
+                           "notes=? WHERE contest_id=? AND challenge_id=? AND state='investigating'",
+                           (now, "timebox exceeded; record the blocker, then requeue or abandon explicitly",
+                            contest_id, item["challenge_id"]))
+        return [item["challenge_id"] for item in overdue]
+
     def dispatch(self, contest_id: str) -> dict[str, Any]:
+        expired = self.enforce_timebox(contest_id)
         contest = self._contest(contest_id)
         challenges = self._challenges(contest_id)
         solved = {item["challenge_id"] for item in challenges if item["state"] == "solved"}
@@ -378,14 +416,14 @@ class ContestBoard:
         now = time.time()
         with sqlite3.connect(self.database) as db:
             for item in selected:
-                db.execute("UPDATE ctf_contest_challenges SET state='investigating',updated=? "
-                           "WHERE contest_id=? AND challenge_id=?", (now, contest_id,
-                                                                    item["challenge_id"]))
+                db.execute("UPDATE ctf_contest_challenges SET state='investigating',updated=?,timebox_until=? "
+                           "WHERE contest_id=? AND challenge_id=?",
+                           (now, now + 60 * min(30, item["estimated_minutes"]), contest_id, item["challenge_id"]))
         work = active + [{**item, "state": "investigating"} for item in selected]
         return {"contest_id": contest_id, "format": contest["format"],
                 "active": [self._work_packet(contest, item) for item in work],
                 "slots_remaining": max(0, contest["max_parallel"] - len(work)),
-                "queue_remaining": len(eligible) - len(selected)}
+                "queue_remaining": len(eligible) - len(selected), "timebox_expired": expired}
 
     def contests(self) -> list[dict[str, Any]]:
         with sqlite3.connect(self.database) as db:
@@ -538,7 +576,7 @@ class ContestBoard:
         columns = ("challenge_id", "title", "category", "points", "solves",
                    "estimated_minutes", "confidence", "state", "run_id", "prerequisites",
                    "service_health", "patch_status", "official_verified", "updated",
-                   "worker", "lease_until", "sessions", "url", "adapter", "notes")
+                   "worker", "lease_until", "sessions", "url", "adapter", "notes", "timebox_until")
         with sqlite3.connect(self.database) as db:
             rows = db.execute("SELECT " + ",".join(columns) +
                               " FROM ctf_contest_challenges WHERE contest_id=? ORDER BY challenge_id",

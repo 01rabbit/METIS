@@ -70,6 +70,53 @@ def read_candidate(path: Path | None) -> str:
     return raw.decode()
 
 
+def _json_input(path: Path | None, limit: int = 65_536) -> dict[str, Any]:
+    raw = path.read_bytes()[:limit + 1] if path else sys.stdin.buffer.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("input exceeds limit")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise TypeError("input must be a JSON object")
+    return payload
+
+
+def agent_scheduler_command(args: argparse.Namespace) -> Any:
+    from metis.core.agent_host import host_by_name
+    from metis.core.agent_scheduler import AgentScheduler
+
+    scheduler = AgentScheduler(args.database, host_by_name(args.host))
+    command = args.agent_command
+    if command == "dispatch":
+        scheduler.enqueue(args.run_id, args.wave_id)
+        return scheduler.dispatch(args.run_id)
+    if command == "jobs":
+        return {"jobs": scheduler.jobs(args.run_id, args.wave)}
+    if command == "tick":
+        return {"changes": scheduler.tick()}
+    if command == "complete":
+        return scheduler.complete(args.run_id, args.assignment_id, args.attempt, _json_input(args.file, 16_384))
+    if command == "intent":
+        return scheduler.intent(args.run_id, args.assignment_id, args.attempt, _json_input(args.file))
+    if command == "fail":
+        return scheduler.fail(args.assignment_id, args.attempt, args.reason)
+    if command == "cancel":
+        if not (args.assignment or args.wave):
+            raise ValueError("give --assignment or --wave")
+        return {"cancelled": scheduler.cancel(assignment_id=args.assignment, wave_id=args.wave, reason=args.reason)}
+    if command == "retry":
+        return scheduler.retry(args.assignment_id)
+    if command == "release":
+        return scheduler.release(args.assignment_id)
+    catalog = None
+    if args.catalog_file:
+        loaded = json.loads(args.catalog_file.read_text())
+        if not isinstance(loaded, list):
+            raise TypeError("catalog file must be a JSON array")
+        catalog = loaded
+    return scheduler.configure(global_slots=args.global_slots, per_run_slots=args.per_run_slots,
+                               catalog=catalog, current_model=args.current_model)
+
+
 def main() -> int:
     output: dict[str, Any]
     parser = argparse.ArgumentParser(prog="metis")
@@ -79,6 +126,9 @@ def main() -> int:
     agent_plan = sub.add_parser("plan", help="create a provider-neutral bounded agent wave")
     agent_plan.add_argument("run_id")
     agent_plan.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    agent_plan.add_argument("--mode", choices=("auto", "sequential", "delegated"), default="auto",
+                            help="auto: sequential for simple problems, delegated when work is independent")
+    agent_plan.add_argument("--reason", help="required for a further wave: the different, unresolved hypothesis")
     contest = sub.add_parser("contest", help="prioritize and track a large CTF")
     contest.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     contest_commands = contest.add_subparsers(dest="contest_command", required=True)
@@ -137,6 +187,40 @@ def main() -> int:
     synthesis = agent_commands.add_parser("synthesize", help="combine one completed agent wave")
     synthesis.add_argument("run_id")
     synthesis.add_argument("wave_id")
+    agent.add_argument("--host", choices=("bridge", "sequential"), default="bridge",
+                       help="bridge: Daybreak runs briefs with its own subagents; sequential: one at a time")
+    agent_dispatch = agent_commands.add_parser("dispatch", help="queue a wave's assignments and start what slots allow")
+    agent_dispatch.add_argument("run_id")
+    agent_dispatch.add_argument("wave_id")
+    agent_jobs = agent_commands.add_parser("jobs", help="assignment jobs, attempts, states and deadlines")
+    agent_jobs.add_argument("run_id", nargs="?")
+    agent_jobs.add_argument("--wave")
+    agent_commands.add_parser("tick", help="enforce deadlines, collect finished jobs, recover leases")
+    for name, text in (("complete", "store a running attempt's compact report (from --file)"),
+                       ("intent", "run one tool intent through the controller (from --file)"),
+                       ("fail", "end a running attempt as failed")):
+        agent_sub = agent_commands.add_parser(name, help=text)
+        agent_sub.add_argument("run_id")
+        agent_sub.add_argument("assignment_id")
+        agent_sub.add_argument("--attempt", required=True)
+        if name == "fail":
+            agent_sub.add_argument("--reason", required=True)
+        else:
+            agent_sub.add_argument("--file", type=Path, help="JSON file (stdin when omitted)")
+    agent_cancel = agent_commands.add_parser("cancel", help="cancel queued/running jobs of an assignment or wave")
+    agent_cancel.add_argument("--assignment")
+    agent_cancel.add_argument("--wave")
+    agent_cancel.add_argument("--reason", default="cancelled by Daybreak")
+    for name, text in (("retry", "requeue a failed/timed-out/cancelled job (new attempt)"),
+                       ("release", "free the slot of an 'unknown' job after confirming it stopped")):
+        agent_sub = agent_commands.add_parser(name, help=text)
+        agent_sub.add_argument("assignment_id")
+    agent_slots = agent_commands.add_parser("slots", help="show or set global/per-run slots, model catalog")
+    agent_slots.add_argument("--global", dest="global_slots", type=int)
+    agent_slots.add_argument("--per-run", dest="per_run_slots", type=int)
+    agent_slots.add_argument("--catalog-file", type=Path,
+                             help='JSON [{"id": "<model id shown by the host>", "tier": "lower|standard|strong"}]')
+    agent_slots.add_argument("--current-model", help="model the host is running now (reused when no tier fits)")
     web = sub.add_parser("web", help="generic scoped CTF problem intake and official submission")
     web.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web_commands = web.add_subparsers(dest="web_command", required=True)
@@ -371,6 +455,8 @@ def main() -> int:
     commands.add_parser("tools", help="list inline and read-only artifact tools")
     plan = commands.add_parser("plan", help="create a bounded Daybreak subagent wave")
     plan.add_argument("run_id")
+    plan.add_argument("--mode", choices=("auto", "sequential", "delegated"), default="auto")
+    plan.add_argument("--reason")
     intake = commands.add_parser("intake", help="start from supplied text/files without writing a manifest")
     intake.add_argument("--title", default="User-provided CTF challenge")
     intake.add_argument("--description", default="Analyze the explicitly supplied local challenge files.")
@@ -493,10 +579,12 @@ def main() -> int:
             parser.exit(2, "Knowledge command rejected: use abstract, evidence-backed methods without flags or credentials\n")
     if args.command == "plan":
         try:
-            print(json.dumps(AgentLedger(args.database).create_wave(args.run_id)))
+            mode = None if args.mode == "auto" else args.mode
+            print(json.dumps(AgentLedger(args.database).create_wave(args.run_id, mode=mode, reason=args.reason)))
             return 0
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
-            parser.exit(2, "Agent plan rejected: check the run ID and local session state\n")
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
+            plan_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
+            parser.exit(2, "Agent plan rejected: " + plan_reason + "\n")
     if args.command == "contest":
         try:
             contest_state = ContestBoard(args.database)
@@ -563,12 +651,15 @@ def main() -> int:
                     raise ValueError("agent report must be an object")
                 output = ledger.record_report(args.run_id, args.wave_id,
                                               args.assignment_id, payload)
-            else:
+            elif args.agent_command == "synthesize":
                 output = ledger.synthesize(args.run_id, args.wave_id)
+            else:
+                output = agent_scheduler_command(args)
             print(json.dumps(output))
             return 0
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error):
-            parser.exit(2, "Agent evidence rejected: use an assigned role, known event references, and abstract text\n")
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
+            agent_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
+            parser.exit(2, "Agent command rejected: " + agent_reason + "\n")
     if args.command == "web":
         try:
             workflow = WebWorkflow(args.database)
@@ -749,7 +840,8 @@ def main() -> int:
                           "artifact_parser_limit_bytes": MAX_ARTIFACT, "artifact_file_limit_bytes": MAX_FILE,
                           "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536}
             elif args.codex_command == "plan":
-                output = AgentLedger(args.database).create_wave(args.run_id)
+                output = AgentLedger(args.database).create_wave(
+                    args.run_id, mode=None if args.mode == "auto" else args.mode, reason=args.reason)
             elif args.codex_command == "intake":
                 output = session.intake(title=args.title, description=args.description,
                                         paths=args.artifact, categories=args.category,

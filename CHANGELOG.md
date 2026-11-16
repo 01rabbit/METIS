@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — Issue #11 (specialist orchestration runtime)
+
+- Typed contracts (`agent_contracts.py`) and deterministic wave policy: `sequential` for simple
+  problems, `delegated` with 2-4 distinct roles; category source recorded.
+- Host adapters (`bridge`, `sequential`, test `fake`), model selection from the host-reported catalog.
+- Scheduler: global/per-run slots, attempts, deadlines and max turns, cancel/retry/release, tool
+  intents executed by the controller under a per-run lock (single writer).
+- Reports validated as `CompactReport`; `synthesize` adds a versioned `decision`; further waves need a
+  resolved wave, budget and a different hypothesis.
+- Submissions to one run are serialized; interrupted sends stay `unknown`.
+- Contest: run/problem identity check, dispatch timebox.
+
 ## 0.5.0 — 2026-11-16
 
 First version that covers a whole contest from start to finish.

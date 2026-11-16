@@ -44,8 +44,12 @@ problem as a second run.
 
 ## 2. Delegate a bounded wave
 
-Run `.venv/bin/metis plan RUN_ID`. For each assignment, launch the matching
-project subagent with the **Agent** tool, in parallel in one message:
+Run `.venv/bin/metis plan RUN_ID`. If `execution_mode` is `sequential`, do the
+work yourself (no subagents). If `delegated`, run
+`.venv/bin/metis agent dispatch RUN_ID WAVE_ID`; for each started job launch the
+matching project subagent with the **Agent** tool, in parallel in one message,
+passing its `brief` (it contains `attempt_id` and the exact intent/report commands).
+Jobs left `queued` start on the next `dispatch` when a slot frees:
 
 | Plan role | Subagent |
 | --- | --- |
@@ -63,9 +67,11 @@ names or evidence it needs, and the expected JSON report. Do not paste the whole
 conversation. Skip delegation for a one-step task (e.g. a single decode) — just
 do it.
 
-When reports return: pipe each JSON into
-`metis agent report RUN_ID WAVE_ID ASSIGNMENT_ID`, then
-`metis agent synthesize RUN_ID WAVE_ID`. Decide the next action yourself. Open
+Subagents report with `metis agent complete ... --attempt ATT --file report.json`
+(legacy unscheduled waves: `metis agent report`). Run `metis agent tick`, then
+`metis agent synthesize RUN_ID WAVE_ID` and follow its `decision` (failed,
+cancelled or timed-out jobs are listed, never counted as reports; retry with
+`metis agent retry`). A further wave needs `metis plan RUN_ID --reason ...`. Decide the next action yourself. Open
 another wave only for a materially different unresolved hypothesis. Escalate a
 stalled lower-tier branch once (re-launch with `model: "opus"` or do it
 yourself); kill disproved branches.

@@ -20,6 +20,7 @@ from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_ERRORS, ARTIFACT_TOOLS, MAX_FILE, inspect_file
 from metis.core.ctf_tools import DATA_TOOLS, transform
 from metis.core.ctf_triage import triage
+from metis.core.run_lock import locked
 from metis.core.runtime import ToolRequest
 from metis.core.store import RunStore
 
@@ -144,6 +145,7 @@ class CodexSession:
                        (time.time(), run_id))
         self._emit(run_id, RunStatus.EXECUTING, operation=operation, **detail)
 
+    @locked
     def extend(self, run_id: str, *, actions: int = 0, seconds: int = 0) -> dict:
         """Operator-approved budget extension; also resumes a budget-exhausted run.
 
@@ -176,6 +178,7 @@ class CodexSession:
             self._emit(run_id, RunStatus.PLANNING, reason="operator_budget_extension")
         return self.context(run_id)
 
+    @locked
     def act(self, run_id: str, request: ToolRequest) -> dict:
         request = ToolRequest.model_validate(request.model_dump())
         request.data.encode()  # Reject invalid Unicode before changing session state.
@@ -189,6 +192,7 @@ class CodexSession:
         # Return data to Codex, but never persist decoded answers in evidence.
         return {"run_id": run_id, **result.model_dump()}
 
+    @locked
     def submit(self, run_id: str, candidate: str) -> dict:
         if len(candidate.encode()) > 65_536:
             raise ValueError("candidate exceeds limit")
@@ -206,6 +210,7 @@ class CodexSession:
             self._emit(run_id, RunStatus.PLANNING)
         return {"run_id": run_id, "verified": accepted, "status": self.context(run_id)["status"]}
 
+    @locked
     def artifact(self, run_id: str, name: str, tool: str, options: dict | None = None) -> dict:
         manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
         if name not in manifest.artifacts or tool not in ARTIFACT_TOOLS:
@@ -263,6 +268,7 @@ class CodexSession:
             shutil.rmtree(workspace)
             raise
 
+    @locked
     def derive(self, run_id: str, name: str, tool: str, options: dict | None = None) -> dict:
         if tool not in {"zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz",
                         "base64_decode", "base32_decode", "hex_decode"}:
@@ -325,6 +331,7 @@ class CodexSession:
                        (updated.model_dump_json(), run_id))
         return relative
 
+    @locked
     def add_file(self, run_id: str, supplied: Path) -> dict:
         """Add a user-supplied file (e.g. downloaded in the browser) to a run's snapshot."""
         path = supplied.resolve(strict=True)
@@ -369,6 +376,7 @@ class CodexSession:
         return {"run_id": run_id, "ok": True, "artifact": relative, "size": size,
                 "sha256": digest.hexdigest()}
 
+    @locked
     def cancel(self, run_id: str) -> dict:
         context = self.context(run_id)
         if context["status"] not in {RunStatus.SOLVED.value, RunStatus.EXHAUSTED.value,
@@ -377,6 +385,7 @@ class CodexSession:
             self._emit(run_id, RunStatus.CANCELLED)
         return self.context(run_id)
 
+    @locked
     def recover(self, run_id: str) -> dict:
         self._session(run_id)
         events = self.store.read(run_id)

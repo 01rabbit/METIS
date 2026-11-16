@@ -12,6 +12,16 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from metis.core.agent_contracts import (
+    PROFILES,
+    SCHEMA_VERSION,
+    TERMINAL_JOB_STATES,
+    CompactReport,
+    ExecutionMode,
+    decide_wave,
+)
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_knowledge import abstract_text
 
@@ -23,61 +33,60 @@ CATEGORY_OBJECTIVES = {
     "forensics": "Identify containers and metadata, then test the most likely hidden-data layer.",
     "misc": "Classify the representation and reduce it to a more specific, testable problem.",
 }
+SECONDS_PER_TURN = 150
 
 
-def plan_agent_wave(context: dict[str, Any]) -> dict[str, Any]:
-    """Return two to four distinct, minimal-context assignments for one solve wave."""
+def plan_agent_wave(context: dict[str, Any], *, force_mode: ExecutionMode | None = None) -> dict[str, Any]:
+    """Deterministic wave plan: sequential for simple problems, 2-4 distinct roles otherwise.
+
+    Pure policy (no model calls, no database). ``assignments`` lists only the roles that
+    must report; in sequential mode it is empty and ``daybreak_covers`` names the roles
+    Daybreak handles itself, so nothing is left "missing".
+    """
+    decision = decide_wave(context, force_mode=force_mode)
     challenge = context.get("challenge", {})
-    categories = [str(item) for item in challenge.get("categories", [])]
-    artifacts = [str(item) for item in challenge.get("artifacts", [])]
+    artifacts = [str(item) for item in challenge.get("artifacts", [])][:32]
+    remaining = int(context.get("seconds_remaining") or 3600)
     assignments: list[dict[str, Any]] = []
-    if artifacts:
+    for role in decision.required_roles:
+        profile = PROFILES[role]
+        deadline = max(60, min(profile.max_turns * SECONDS_PER_TURN, remaining or 60))
+        inputs: dict[str, Any] = {"run_id": context.get("run_id")}
+        if role == "artifact-triage":
+            inputs = {"artifacts": artifacts}
+        elif profile.category:
+            inputs["category"] = profile.category
         assignments.append({
-            "role": "artifact-triage",
-            "objective": "Classify declared artifacts and return the highest-value next parser or transform.",
-            "inputs": {"artifacts": artifacts[:32]},
-            "deliverable": "Observed formats, concrete evidence, and one ranked next action.",
-            "max_turns": 4,
-        })
-    for category in categories[:2] or ["misc"]:
-        assignments.append({
-            "role": f"{category}-specialist",
-            "objective": CATEGORY_OBJECTIVES.get(category, CATEGORY_OBJECTIVES["misc"]),
-            "inputs": {"run_id": context.get("run_id"), "category": category},
-            "deliverable": "Hypothesis, supporting observation, falsifier, and one next tool action.",
-            "max_turns": 6,
-        })
-    assignments.append({
-        "role": "independent-critic",
-        "objective": "Challenge the leading hypothesis and check that a candidate is not mistaken for proof.",
-        "inputs": {"run_id": context.get("run_id")},
-        "deliverable": "One material risk or contradiction, plus verification required to resolve it.",
-        "max_turns": 4,
-    })
-    unique: list[dict[str, Any]] = []
-    roles: set[str] = set()
-    for assignment in assignments:
-        if assignment["role"] not in roles:
-            roles.add(assignment["role"])
-            unique.append(assignment)
-    unique = unique[:4]
-    for assignment in unique:
-        assignment.update({
-            "model_policy": "smallest-capable-lower-tier",
+            "role": role,
+            "objective": CATEGORY_OBJECTIVES.get(profile.category or "", profile.objective),
+            "inputs": inputs,
+            "deliverable": profile.deliverable,
+            "max_turns": profile.max_turns,
+            "deadline_seconds": deadline,
+            "tier": profile.tier,
+            "recommended_tools": profile.recommended_tools,
+            "model_policy": "smallest-capable-lower-tier" if profile.tier == "lower" else "active-catalog-standard",
             "context_policy": "no-history; provide only referenced evidence",
             "may_submit": False,
             "may_expand_scope": False,
+            "may_handle_credentials": False,
+            "may_delegate": False,
         })
     return {
+        "schema_version": SCHEMA_VERSION,
         "run_id": context.get("run_id"),
         "architecture": "planner-fresh-executors-compact-summaries",
-        "assignments": unique,
+        "execution_mode": decision.execution_mode,
+        "decision": decision.model_dump(),
+        "daybreak_covers": decision.daybreak_covers,
+        "assignments": assignments,
         "synthesis_gate": {
             "required_fields": ["hypothesis", "evidence", "next_action"],
-            "reject": ["duplicate_action", "unsupported_candidate", "scope_expansion"],
+            "reject": ["duplicate_action", "unsupported_candidate", "scope_expansion", "stale_attempt"],
             "official_submission_owner": "Daybreak",
         },
-        "next_wave_rule": "Start another wave only for unresolved, materially different hypotheses.",
+        "next_wave_rule": "Start another wave only for unresolved, materially different hypotheses "
+                          "with budget left, after this wave is ready for synthesis.",
     }
 
 
@@ -95,12 +104,34 @@ class AgentLedger:
                 report_id TEXT PRIMARY KEY, wave_id TEXT NOT NULL, run_id TEXT NOT NULL,
                 assignment_id TEXT NOT NULL, payload TEXT NOT NULL, action_key TEXT NOT NULL,
                 created REAL NOT NULL, UNIQUE(wave_id, assignment_id))""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(ctf_agent_reports)")}
+            for name in ("attempt_id", "action_identity"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE ctf_agent_reports ADD COLUMN {name} TEXT")
 
-    def create_wave(self, run_id: str) -> dict[str, Any]:
+    def create_wave(self, run_id: str, *, mode: ExecutionMode | None = None,
+                    reason: str | None = None) -> dict[str, Any]:
+        """Plan a wave. A further wave needs the previous one ready for synthesis, budget
+        left, and a stated, materially different hypothesis (``reason``)."""
         context = self.session.context(run_id)
-        plan = plan_agent_wave(context)
+        with sqlite3.connect(self.database) as db:
+            previous = db.execute("SELECT wave_id FROM ctf_agent_waves WHERE run_id=? ORDER BY created DESC LIMIT 1",
+                                  (run_id,)).fetchone()
+        if previous:
+            decision = self.synthesize(run_id, previous[0])["decision"]
+            if not decision["ready_for_synthesis"]:
+                raise ValueError("previous wave still has unresolved required assignments; collect, cancel "
+                                 "or time them out first")
+            if not context["actions_remaining"] or not context["seconds_remaining"]:
+                raise ValueError("no budget left for another wave")
+            if not reason or len(reason.strip()) < 10:
+                raise ValueError("a new wave needs --reason naming the unresolved, different hypothesis")
+            abstract_text(reason)
+        plan = plan_agent_wave(context, force_mode=mode)
         wave_id = uuid4().hex
         plan["wave_id"] = wave_id
+        if reason:
+            plan["reason"] = reason.strip()[:500]
         for index, assignment in enumerate(plan["assignments"], 1):
             assignment["assignment_id"] = f"{wave_id}:{index}"
         with sqlite3.connect(self.database) as db:
@@ -109,11 +140,12 @@ class AgentLedger:
         return plan
 
     def record_report(self, run_id: str, wave_id: str, assignment_id: str,
-                      report: dict[str, Any]) -> dict[str, Any]:
+                      report: dict[str, Any], *, attempt_id: str | None = None) -> dict[str, Any]:
         plan = self._plan(run_id, wave_id)
         assignments = {item["assignment_id"] for item in plan["assignments"]}
         if assignment_id not in assignments:
             raise ValueError("assignment does not belong to this wave")
+        self._check_attempt(assignment_id, attempt_id)
         required = ("hypothesis", "evidence", "falsifier", "next_action")
         values: dict[str, str] = {}
         for field in required:
@@ -126,28 +158,53 @@ class AgentLedger:
             raise ValueError("invalid report status")
         sequences = report.get("event_sequences")
         if (not isinstance(sequences, list) or not sequences or len(sequences) > 20
-                or any(not isinstance(item, int) or item < 0 for item in sequences)):
+                or any(not isinstance(item, int) or isinstance(item, bool) or item < 0 for item in sequences)):
             raise ValueError("event_sequences must reference observed run evidence")
+        try:
+            parsed = CompactReport.model_validate({key: value for key, value in report.items()})
+        except ValidationError as exc:
+            raise ValueError("report has unknown or invalid fields: " +
+                             "; ".join(sorted({".".join(map(str, e["loc"])) for e in exc.errors()}))) from None
         existing_sequences = {event.sequence for event in self.session.store.read(run_id)}
         if not set(sequences).issubset(existing_sequences):
             raise ValueError("report references unknown run evidence")
+        declared = set(self.session.context(run_id)["challenge"].get("artifacts", []))
+        if set(parsed.artifact_refs) - declared:
+            raise ValueError("report references artifacts that are not registered in this run")
         action_key = hashlib.sha256(" ".join(values["next_action"].lower().split()).encode()).hexdigest()
+        newest = max(sequences)
         with sqlite3.connect(self.database) as db:
-            duplicate = db.execute(
-                "SELECT 1 FROM ctf_agent_reports WHERE run_id=? AND action_key=? LIMIT 1",
-                (run_id, action_key),
-            ).fetchone()
-            if duplicate:
+            rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND (action_key=? OR "
+                              "action_identity=?)", (run_id, action_key, parsed.action_identity or "-")).fetchall()
+            # Same action again is allowed only when it rests on newer evidence (a real re-test).
+            if any(newest <= max(json.loads(row[0])["event_sequences"]) for row in rows):
                 raise ValueError("duplicate next action")
             report_id = uuid4().hex
-            payload = {**values, "status": status, "event_sequences": sequences}
+            payload = {**values, "status": status, "event_sequences": sequences,
+                       "artifact_refs": parsed.artifact_refs, "schema_version": SCHEMA_VERSION}
             db.execute("""INSERT INTO ctf_agent_reports
-                (report_id,wave_id,run_id,assignment_id,payload,action_key,created)
-                VALUES (?,?,?,?,?,?,?)""",
-                (report_id, wave_id, run_id, assignment_id,
-                 json.dumps(payload, sort_keys=True), action_key, time.time()))
+                (report_id,wave_id,run_id,assignment_id,payload,action_key,created,attempt_id,action_identity)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (report_id, wave_id, run_id, assignment_id, json.dumps(payload, sort_keys=True), action_key,
+                 time.time(), attempt_id, parsed.action_identity))
         return {"report_id": report_id, "wave_id": wave_id, "assignment_id": assignment_id,
                 "stored": True, "candidate_stored": False}
+
+    def _check_attempt(self, assignment_id: str, attempt_id: str | None) -> None:
+        """Scheduled assignments only accept the report of their current running attempt."""
+        with sqlite3.connect(self.database) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_jobs'").fetchone():
+                return
+            row = db.execute("SELECT attempt_id, state FROM agent_jobs WHERE assignment_id=?",
+                             (assignment_id,)).fetchone()
+            if row is None:
+                return  # Unscheduled (legacy/manual) assignment.
+            current, state = row
+            if attempt_id != current or state != "running":
+                db.execute("INSERT INTO agent_job_log(assignment_id,attempt_id,event,detail,time) VALUES (?,?,?,?,?)",
+                           (assignment_id, attempt_id or "-", "report_rejected",
+                            f"current={current} state={state}", time.time()))
+                raise ValueError("stale or unknown attempt; report rejected")
 
     def synthesize(self, run_id: str, wave_id: str) -> dict[str, Any]:
         plan = self._plan(run_id, wave_id)
@@ -156,28 +213,61 @@ class AgentLedger:
                 "SELECT report_id,assignment_id,payload FROM ctf_agent_reports "
                 "WHERE run_id=? AND wave_id=? ORDER BY created", (run_id, wave_id),
             ).fetchall()
+            jobs: dict[str, str] = {}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_jobs'").fetchone():
+                jobs = dict(db.execute("SELECT assignment_id, state FROM agent_jobs WHERE wave_id=?",
+                                       (wave_id,)).fetchall())
         reports = [{"report_id": identity, "assignment_id": assignment,
                     **json.loads(payload)} for identity, assignment, payload in rows]
         expected = {item["assignment_id"] for item in plan["assignments"]}
         received = {item["assignment_id"] for item in reports}
         missing = sorted(expected - received)
-        status = self.session.context(run_id)["status"]
+        context = self.session.context(run_id)
+        status = context["status"]
+        ended = {assignment: state for assignment, state in jobs.items()
+                 if assignment in missing and state in TERMINAL_JOB_STATES - {"completed"}}
+        unresolved = [assignment for assignment in missing if assignment not in ended]
+        supported = [item for item in reports if item["status"] == "supported"]
+        open_hypotheses = [item["hypothesis"] for item in reports if item["status"] == "inconclusive"]
+        contradicted = bool(supported) and any(item["status"] == "rejected" for item in reports)
+        budget = bool(context["actions_remaining"] and context["seconds_remaining"])
+        new_wave_reasons = []
+        if unresolved:
+            new_wave_reasons.append("required assignments unresolved")
+        if not budget:
+            new_wave_reasons.append("budget exhausted")
+        if not open_hypotheses and not contradicted:
+            new_wave_reasons.append("no open or contradicted hypothesis")
         return {
             "run_id": run_id,
             "wave_id": wave_id,
             "complete": not missing,
             "missing_assignments": missing,
             "reports": reports,
-            "supported_hypotheses": [item["hypothesis"] for item in reports
-                                     if item["status"] == "supported"],
+            "supported_hypotheses": [item["hypothesis"] for item in supported],
             "contradictions": [item["falsifier"] for item in reports
                                if item["status"] == "rejected"],
             "next_actions": [item["next_action"] for item in reports],
             "submission": {"owner": "orchestrator", "allowed": status == "solved",
                            "reason": "official_verifier_required" if status != "solved"
                            else "already_verified"},
-            "start_another_wave": not missing and not any(
-                item["status"] == "supported" for item in reports),
+            "start_another_wave": not missing and not supported,
+            # Version 2 decision (legacy fields above keep their meaning).
+            "decision": {
+                "schema_version": SCHEMA_VERSION,
+                "execution_mode": plan.get("execution_mode", "delegated"),
+                "required": sorted(expected),
+                "unresolved": unresolved,
+                "ended_without_report": ended,
+                "ready_for_synthesis": not unresolved,
+                "complete": not missing,
+                "open_hypotheses": open_hypotheses,
+                "new_wave": {"allowed": not new_wave_reasons, "blocked_by": new_wave_reasons,
+                             "requires": "--reason naming a materially different hypothesis"},
+                "submission": {"route": "Daybreak re-derives the candidate privately and sends it with "
+                                        "`metis web submit --candidate-file` (or browser + attest)",
+                               "synthesis_is_not_permission": True},
+            },
         }
 
     def _plan(self, run_id: str, wave_id: str) -> dict[str, Any]:

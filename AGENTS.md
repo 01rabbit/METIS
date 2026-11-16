@@ -48,6 +48,12 @@ scope, and expected output. Inherit the parent history only when the assignment
 cannot be understood safely from a compact brief. If no lower-tier override is
 available, use the inherited model sparingly rather than fabricating a model ID.
 
+`metis plan` decides `sequential` (simple problem: Daybreak covers the roles,
+nothing is spawned) or `delegated` (2-4 distinct roles). Delegated waves run
+through `metis agent dispatch` (slots, attempts, deadlines, max turns), specialist
+tool use goes through `metis agent intent`, and reports through
+`metis agent complete`; see docs/ORCHESTRATION_RUNTIME.md.
+
 Daybreak owns the run state, scope, budgets, credential handling, official
 submissions, verdict interpretation, and final synthesis. Subagents may propose
 candidates but must not race submissions or independently broaden network scope.

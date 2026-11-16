@@ -26,6 +26,7 @@ from metis.core.ctf_html import Page, display_url
 from metis.core.ctf_http import SafeHTTP, clean_url, origin
 from metis.core.ctf_knowledge import KnowledgeBase
 from metis.core.ctf_ksnctf import KsnctfVerdict, is_official_problem, problem_id
+from metis.core.run_lock import locked
 
 NETWORK_ERRORS = (OSError, ValueError, KeyError, TypeError, RuntimeError, http.client.HTTPException)
 # Live application pages are never treated as distribution files.
@@ -551,6 +552,7 @@ class WebWorkflow:
             db.execute("UPDATE web_runs SET config=? WHERE run_id=?", (json.dumps(config), run_id))
         return {"run_id": run_id, "verification_configured": True}
 
+    @locked
     def attest(self, run_id: str, candidate: str, *, verdict: str, evidence: str) -> dict:
         """Record an official verdict that was observed in the platform's own web UI.
 
@@ -604,6 +606,7 @@ class WebWorkflow:
                 "next": "record the write-up" if verdict == "correct"
                         else "record a revised hypothesis; do not resubmit the same candidate"}
 
+    @locked
     def submit(self, run_id: str, candidate: str) -> dict:
         if not candidate or len(candidate.encode()) > 65_536:
             raise ValueError("invalid bounded candidate")
@@ -623,6 +626,12 @@ class WebWorkflow:
                 retryable.add("unknown")
             if previous and previous[0] not in retryable:
                 raise ValueError("identical candidate already submitted; reconsider the hypothesis")
+            # A send that was reserved but never got a verdict (crash/kill mid-request) may
+            # have reached the server: keep it as "unknown", never as a free retry slot.
+            db.execute("UPDATE web_attempts SET verdict='unknown' WHERE run_id=? AND verdict='pending' "
+                       "AND created < ?", (run_id, time.time() - 120))
+            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND verdict='pending'", (run_id,)).fetchone():
+                raise ValueError("another submission for this run is still in flight")
             if db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?", (run_id,)).fetchone()[0] >= config["max_submissions"]:
                 raise ValueError("submission limit reached")
             latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",

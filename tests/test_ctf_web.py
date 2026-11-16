@@ -458,3 +458,40 @@ def test_distribution_detection_covers_ksnctf_problem_files():
     assert not is_distribution(link("https://ksnctf.sweetduet.info/q/4/villager"), page, "ksnctf", 23)
     assert not is_distribution(link("https://ksnctf.sweetduet.info/problem/4"), page, "ksnctf", 23)
     assert is_distribution(link("https://cdn.example/x/libc.so.6"), page, "html", None)
+
+
+def test_parallel_submissions_are_serialized_and_pending_sends_are_kept(site, tmp_path, monkeypatch):
+    base, state = site
+    monkeypatch.setenv("TEST_CTF_TOKEN", "test-token")
+    database = tmp_path / "session.sqlite"
+    run_id = WebWorkflow(database).open(base, adapter="ctfd", challenge_id=1,
+                                        token_env="TEST_CTF_TOKEN")["context"]["run_id"]
+    outcomes = []
+
+    def submit(candidate):
+        try:
+            outcomes.append(WebWorkflow(database).submit(run_id, candidate)["verdict"])
+        except ValueError as exc:
+            outcomes.append(str(exc))
+
+    threads = [threading.Thread(target=submit, args=(f"wrong-{index}",)) for index in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert state["posts"] == 1 and outcomes.count("incorrect") == 1
+    assert sum("revised hypothesis" in item for item in outcomes) == 3
+    workflow = WebWorkflow(database)
+    workflow.knowledge.reason(run_id, summary="The guesses ignored the supplied file encoding.",
+                              evidence="The official checker rejected the first attempt.",
+                              next_step="Decode the distribution file before the next submission.")
+    with sqlite3.connect(database) as db:  # a send interrupted mid-request
+        db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,?,?)",
+                   (run_id, "ab" * 32, "pending", __import__("time").time()))
+    with pytest.raises(ValueError, match="in flight"):
+        workflow.submit(run_id, FLAG)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE web_attempts SET created=created-600 WHERE verdict='pending'")
+    assert workflow.submit(run_id, FLAG)["verified"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT verdict FROM web_attempts WHERE digest=?", ("ab" * 32,)).fetchone()[0] == "unknown"
