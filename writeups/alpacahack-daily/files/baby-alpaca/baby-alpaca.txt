@@ -1,0 +1,1 @@
+# Baby Alpaca (quiz): baby alpaca = 'cria' (Spanish, 4 letters). Flag: Alpaca{cria}

