@@ -145,7 +145,18 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   `failed`（`policy_violation`）にする。
 - cancel: ドライバは 2 秒ごとに job 状態を確認し、取り消されたら Codex のプロセスグループを停止して
   `codex_killed` を記録する。
-- `metis agent codex-probe --ping` は実ターン 1 回と spawn カナリア 1 回を実行し、`ready` を返す。
+- OS 隔離（#16、`core/codex_isolation.py`）。各ターンを macOS の `sandbox-exec` 下で実行する。
+  - ホーム・`/private/tmp`・`/private/var/tmp`・`/Volumes`・一時ディレクトリの読み書きを拒否する。例外は
+    Codex パッケージの読み取りと、そのターン専用ディレクトリの読み書きだけ。
+  - `CODEX_HOME` はターンごとに作る。中身は `auth.json` の写しだけで、ユーザーの sessions・memories・
+    config・skills は見えない。ターン中に更新されたトークンは、原本がその間に変わっていない場合に限り
+    書き戻す。
+  - 外向き通信は、ローカルの CONNECT プロキシ（443 番、`chatgpt.com`・`auth.openai.com`・`api.openai.com`
+    のみ）以外を拒否する。拒否した宛先はターンごとに記録する。
+  - 隔離が使えない環境では起動を拒否する。`--isolation none` は明示的な opt-out で、記録が残る。
+  - 試験済みでない Codex CLI の版も拒否する（`--allow-untested-codex` で解除）。
+- `metis agent codex-probe --ping` は、隔離のセルフテスト、実ターン 1 回、spawn カナリア 1 回を実行し、
+  `ready` を返す。
 - usage（トークン数）は Codex の報告値を `agent_jobs.usage` に記録する。費用は `unknown`。
 - モデルは `metis agent slots` に登録した active catalog の ID だけを使う。
 
@@ -155,9 +166,13 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   では spawn が失敗する（「rollout が無い」）が、これは観測された挙動で文書化された保証ではない。
   `--ephemeral` を外した試験では spawn が成功し、しかも JSONL に item が出なかった。防止は CLI の挙動
   頼み、検知は stderr 頼みであり、「不可能」ではなく「現版では失敗し、試みは検知される」水準。
-  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。隔離の強化は #16 で扱う。
-- `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。書込みは read-only sandbox と
-  承認なしで、MCP はサーバ未設定で無効化しているが、モデル自己申告以外の網羅的な一覧取得手段はない。
+  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。#16 で OS 隔離を加えたため、spawn された
+  sub-agent も同じプロセス内で同じ Seatbelt とプロキシの下にある。ただし、spawn ツールそのものを
+  モデルから隠すことは、まだできていない。
+- `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。網羅的なツール一覧を
+  取得する手段はないが、#16 以後、ファイルの読み書きは OS 側で制限している。
+- OS 隔離は macOS の Seatbelt だけで、Linux と Windows は未実装（起動を拒否する）。Seatbelt や
+  カーネル自体の脆弱性による脱出、許可した宛先（モデル API）へ送られる内容は、対象外。
 - E2E 時点の重複判定は、生の action identity の一致だけを見ていた。そのため `length` を 1 変える、無関係な
   イベントを `new_evidence` に挙げる、といった操作で回避でき、Codex は実際にそうした。正準化、再試験の上限、
   option の変種の上限で塞いだ（`tests/test_intent_identity.py`）。ただし意味の同値性を網羅しているわけでは

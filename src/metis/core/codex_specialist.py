@@ -34,11 +34,25 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 from metis.core.agent_scheduler import AgentScheduler
+from metis.core.codex_isolation import (
+    MODEL_HOSTS,
+    TESTED_CODEX_VERSIONS,
+    AllowlistProxy,
+    TurnHome,
+    codex_version,
+    default_codex_home,
+    isolation_available,
+    native_codex,
+    sandbox_command,
+    seatbelt_profile,
+    upstream_proxy,
+)
 from metis.core.ctf_artifacts import ALLOWED_OPTIONS
 
 # Features turned off for every specialist turn when the installed CLI knows them.
@@ -120,6 +134,7 @@ class CodexTurn:
     stopped: bool = False
     stderr_tail: str = ""
     tool_errors: list[str] = field(default_factory=list)
+    isolation: dict[str, Any] = field(default_factory=dict)
 
     def violations(self) -> list[str]:
         found = set(self.item_types) - PASSIVE_ITEMS
@@ -145,13 +160,27 @@ def known_features(executable: str) -> set[str]:
 
 
 class CodexCLI:
-    """One stateless, tool-less ``codex exec`` turn per call."""
+    """One stateless, tool-less ``codex exec`` turn per call.
 
-    def __init__(self, executable: str | None = None, *, features: set[str] | None = None):
+    ``isolation="required"`` (default) runs every turn under the OS isolation of
+    :mod:`metis.core.codex_isolation` and refuses to run where it is unavailable.
+    ``isolation="none"`` is an explicit opt-out that keeps only the CLI flags; it is recorded.
+    """
+
+    def __init__(self, executable: str | None = None, *, features: set[str] | None = None,
+                 isolation: str = "required", allow_untested: bool = False,
+                 protected: list[Path] | None = None, hosts: tuple[str, ...] = MODEL_HOSTS):
         found = executable or shutil.which("codex")
         if not found:
             raise RuntimeError("Codex CLI not found on PATH")
+        if isolation not in {"required", "none"}:
+            raise ValueError("isolation must be required or none")
         self.executable = found
+        self.isolation = isolation
+        self.allow_untested = allow_untested
+        self.protected = protected
+        self.hosts = hosts
+        self._version_checked = False
         self.features = known_features(found) if features is None else features
         missing = [name for name in REQUIRED_DISABLES if name not in self.features]
         if missing:
@@ -174,19 +203,60 @@ class CodexCLI:
     def environment() -> dict[str, str]:
         return {key: os.environ[key] for key in ENV_KEEP if key in os.environ}
 
+    def check(self) -> str | None:
+        """Version gate: an untested Codex CLI runs only with ``allow_untested``."""
+        version = None if self.allow_untested else codex_version(self.executable)
+        if not self.allow_untested and version not in TESTED_CODEX_VERSIONS:
+            raise RuntimeError(f"Codex CLI {version or 'unknown'} is not a tested version "
+                               f"({', '.join(sorted(TESTED_CODEX_VERSIONS))}); run `metis agent codex-probe --ping` "
+                               "and pass --allow-untested-codex only if its canary passes")
+        if self.isolation == "required" and not isolation_available():
+            raise RuntimeError("OS isolation (macOS sandbox-exec) is unavailable on this host; refusing to run. "
+                               "Use --isolation none only as a recorded, explicit opt-out")
+        self._version_checked = True
+        return version
+
+    def protected_roots(self, temp_root: Path) -> list[Path]:
+        if self.protected is not None:
+            return self.protected
+        roots = [Path.home(), Path("/private/tmp"), Path("/private/var/tmp"), Path("/Volumes"), temp_root]
+        return [root for root in roots if root.exists()]
+
     def run(self, prompt: str, *, model: str | None, timeout: float,
             should_stop: Callable[[], bool] | None = None) -> CodexTurn:
         """One turn. ``should_stop`` is checked every couple of seconds; when it turns true
         (Daybreak cancelled the attempt) the whole process group is killed at once."""
-        with tempfile.TemporaryDirectory(prefix="metis-codex-") as temporary:
-            base = Path(temporary)
+        if not self._version_checked:
+            self.check()
+        with tempfile.TemporaryDirectory(prefix="metis-codex-") as temporary, ExitStack() as stack:
+            base = Path(temporary).resolve()
             workdir = base / "work"
             workdir.mkdir(mode=0o700)
             schema, output = base / "decision.schema.json", base / "last.json"
             schema.write_text(json.dumps(DECISION_SCHEMA))
-            process = subprocess.Popen(self.argv(workdir, schema, output, model), stdin=subprocess.PIPE,
+            env = self.environment()
+            command = self.argv(workdir, schema, output, model)
+            isolation: dict[str, Any] = {"mode": "none"}
+            home: TurnHome | None = None
+            proxy: AllowlistProxy | None = None
+            if self.isolation == "required":
+                binary, package = native_codex(self.executable)
+                home = TurnHome(base, default_codex_home() / "auth.json")
+                proxy = stack.enter_context(AllowlistProxy(self.hosts, upstream=upstream_proxy()))
+                profile = base / "turn.sb"
+                profile.write_text(seatbelt_profile(turn_dir=base, readable=[package],
+                                                    protected=self.protected_roots(base.parent),
+                                                    proxy_port=proxy.port))
+                for key in [key for key in env if key.lower().endswith("_proxy")]:
+                    env.pop(key)
+                proxy_url = f"http://127.0.0.1:{proxy.port}"
+                env.update(CODEX_HOME=str(home.path), HTTPS_PROXY=proxy_url, HTTP_PROXY=proxy_url,
+                           ALL_PROXY=proxy_url, TMPDIR=str(base) + "/")
+                command = sandbox_command(profile, [binary, *command[1:]])
+                isolation = {"mode": "seatbelt", "proxy_hosts": sorted(self.hosts)}
+            process = subprocess.Popen(command, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                       cwd=workdir, env=self.environment(), start_new_session=True)
+                                       cwd=workdir, env=env, start_new_session=True)
             timed_out = stopped = False
             deadline = time.monotonic() + max(5.0, timeout)
             pending: str | None = prompt
@@ -223,6 +293,12 @@ class CodexCLI:
                         turn.item_types.append(item_type)
             if output.is_file():
                 turn.message = output.read_text()[:20_000]
+            if home is not None:
+                isolation["auth"] = home.write_back()
+            if proxy is not None:
+                isolation["allowed_connections"] = len(proxy.log.allowed)
+                isolation["refused"] = proxy.log.refused[:20]
+            turn.isolation = isolation
             return turn
 
 
@@ -361,11 +437,13 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             outcome = {"state": "stopped", "reason": "attempt cancelled; Codex process group killed mid-turn"}
             break
         record = {"thread_id": turn.thread_id, "returncode": turn.returncode, "usage": turn.usage,
-                  "items": turn.item_types, "timed_out": turn.timed_out, "tool_errors": len(turn.tool_errors)}
+                  "items": turn.item_types, "timed_out": turn.timed_out, "tool_errors": len(turn.tool_errors),
+                  "isolation": turn.isolation}
         turns.append(record)
-        _log(scheduler, assignment_id, attempt_id, "codex_turn",
-             json.dumps({key: record[key] for key in ("thread_id", "returncode", "timed_out", "items",
-                                                        "tool_errors")}))
+        iso = turn.isolation or {}
+        summary = {key: record[key] for key in ("thread_id", "returncode", "timed_out", "items", "tool_errors")}
+        summary["isolation"] = f"{iso.get('mode', 'none')}:refused={len(iso.get('refused', []))}:{iso.get('auth', '-')}"
+        _log(scheduler, assignment_id, attempt_id, "codex_turn", json.dumps(summary))
         _usage(scheduler, assignment_id, turns, selected)
         violations = turn.violations()
         if violations:
