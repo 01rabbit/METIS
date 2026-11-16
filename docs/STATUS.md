@@ -85,6 +85,12 @@ decrypted server responses without reading their bodies. This satisfied Issue
 challenge was not submitted to its official verifier; details and limits are in
 `docs/reports/issue24-reauth-regression-2026-11-17.md`.
 
+Issue #16 is now closed after Linux real-Codex probes on CLI 0.166.0 and 0.169.0
+verified OS isolation and configured spawn refusal without `--ephemeral`; see
+`docs/reports/issue16-linux-real-codex-2026-11-17.md`. The refusal depends on
+the tested CLI configuration, the tool can remain visible, and Linux was tested
+from the VM's root account. Unsupported platforms remain fail closed.
+
 Issue #28 has bounded Biham–Kocher and Info-ZIP seed tools. Its synthetic intent
 test now covers recovered-key decryption with CRC checks for every member, then
 XOR, using a reduced candidate set. Wall-time exhaustion has a tested reason
