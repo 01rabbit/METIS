@@ -224,10 +224,17 @@ class CodexCLI:
         command = [self.executable, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
                    "--skip-git-repo-check", "--sandbox", "read-only", "--cd", str(workdir), "--json",
                    "--color", "never", "--output-schema", str(schema), "--output-last-message", str(output),
-                   "-c", 'approval_policy="never"', "-c", 'web_search="disabled"']
+                   "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
+                   "-c", "agents.enabled=false"]
         for name in DISABLED_FEATURES:
             if name in self.features:
                 command += ["--disable", name]
+        # Model metadata can enable MultiAgentV2 even when the feature flag is
+        # disabled. Keep the runtime cap at one session thread (the root only),
+        # so an exposed spawn tool is rejected by the Codex runtime itself.
+        if "multi_agent_v2" in self.features:
+            command += ["-c", "features.multi_agent_v2.enabled=false", "-c",
+                        "features.multi_agent_v2.max_concurrent_threads_per_session=1"]
         if model:
             command += ["--model", model]
         if getattr(self, "cyber_program", None):

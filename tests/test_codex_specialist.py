@@ -203,6 +203,15 @@ def test_codex_cli_argv_is_tool_less_and_fails_closed(tmp_path):
     assert set(REQUIRED_DISABLES) == {"shell_tool"}
 
 
+def test_codex_cli_hard_disables_multi_agent_v2(tmp_path):
+    cli = CodexCLI("/bin/echo", features={"shell_tool", "multi_agent_v2"})
+    argv = cli.argv(tmp_path / "w", tmp_path / "s.json", tmp_path / "o.json", None)
+    assert "agents.enabled=false" in argv
+    assert "features.multi_agent_v2.enabled=false" in argv
+    assert "features.multi_agent_v2.enabled=false" in argv
+    assert "features.multi_agent_v2.max_concurrent_threads_per_session=1" in argv
+
+
 def test_codex_environment_drops_secrets(monkeypatch):
     monkeypatch.setenv("METIS_CTF_TOKEN", "secret-value")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
