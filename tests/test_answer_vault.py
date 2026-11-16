@@ -122,6 +122,7 @@ def test_munin_cards_record_the_basis_of_their_outcome(tmp_path):
     artifact.write_text("Uryyb")
     session = CodexSession(database)
     run_id = session.intake(title="Synthetic", description="rot13", paths=[artifact],
+                            evaluation_split="practice",
                             commitment=hashlib.sha256(b"FLAG_basisTest01").hexdigest())["run_id"]
     assert session.submit(run_id, "FLAG_basisTest01")["verified"] is True
     knowledge = KnowledgeBase(database)

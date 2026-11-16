@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from metis.core.agent_host import FakeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
@@ -132,3 +134,17 @@ def test_search_for_run_redacts_answer_and_credential_terms(tmp_path: Path):
                                      "rstuvwxyz012345678901234567890123456789012345678901234567890",
                                      category="crypto")
     assert found and "CTF{private-answer}" not in json.dumps(found)
+
+
+def test_unlisted_source_cannot_be_mislabeled_as_practice_memory(tmp_path: Path):
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    knowledge = KnowledgeBase(session.database)
+    context = session.start(ChallengeManifest.model_validate(
+        _manifest("munin-unlisted-source", "Source", "Unclassified source.")))
+    with pytest.raises(ValueError, match="unlisted source runs"):
+        knowledge.remember(TechniqueCard(
+            title="Unlisted method", category="crypto",
+            summary="This method was tested on an unclassified source.",
+            conditions="A synthetic-looking fixture may be present.", outcome="inconclusive",
+            source_run_id=context["run_id"], source_split="practice",
+        ))

@@ -35,7 +35,7 @@ class TechniqueCard(Contract):
     failure_reason: str = Field(default="", max_length=1000)
     outcome: Literal["success", "failure", "inconclusive"]
     source_run_id: str = Field(min_length=1, max_length=80)
-    source_split: Literal["practice", "competition", "heldout"] = "competition"
+    source_split: Literal["practice", "competition", "heldout"] | None = None
     # Why the outcome holds (Issue #15): abstract basis, never the answer. METIS fills it from the
     # run when the author leaves it empty (official verdict for success, failed attempt for failure).
     evidence: str = Field(default="", max_length=1000)
@@ -86,8 +86,15 @@ class KnowledgeBase:
 
     def remember(self, card: TechniqueCard) -> dict:
         card = TechniqueCard.model_validate(card.model_dump())
-        if card.source_split == "heldout":
+        source_context = self.session.context(card.source_run_id)
+        actual_split = source_context.get("evaluation_split")
+        if actual_split == "heldout" or card.source_split == "heldout":
             raise ValueError("held-out evaluation material cannot enter reusable memory")
+        if actual_split not in {"practice", "competition"}:
+            raise ValueError("unlisted source runs cannot enter reusable memory")
+        if card.source_split is not None and card.source_split != actual_split:
+            raise ValueError("knowledge source split must match its run classification")
+        card = card.model_copy(update={"source_split": actual_split})
         for value in (card.title, card.summary, card.conditions, card.failure_reason, card.evidence):
             abstract_text(value)
         events = self.session.store.read(card.source_run_id)

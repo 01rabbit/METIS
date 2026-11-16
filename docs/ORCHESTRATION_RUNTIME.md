@@ -281,6 +281,8 @@ practice and competition runs. Held-out and unlisted runs receive no prior cards
 Specialist briefs present retrieved cards as untrusted experience with applicability
 conditions, never as evidence or answers. `metis agent slots --no-memory-retrieval`
 supports a retrieval-off ablation.
+Cards inherit their source split from the run; mismatching declarations and unlisted
+source runs are rejected when writing reusable memory.
 
 `tests/test_munin_integration.py` uses a synthetic ROT13 source solve and three distinct
 synthetic target strings. A deterministic policy uses one tool action with retrieval and
