@@ -45,33 +45,24 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
         tokens[key] = sum(value for value in values if isinstance(value, int) and not isinstance(value, bool)) \
             if all(isinstance(value, int) and not isinstance(value, bool) for value in values) else "unknown"
     stop = result["stop"] or "unspecified"
-    handoff_stops = {
-        "candidate_for_daybreak", "sequential_work_for_daybreak", "other_wave_needs_reconciliation",
-        "existing_attempt_needs_reconciliation", "slots_unavailable_or_spawn_failed", "failed_attempt_for_daybreak",
-        "unresolved_attempts", "synthesis_for_daybreak", "continuation_for_daybreak",
-        "invalid_or_repeated_continuation",
-    }
-    metrics = {
-        "invocation_id": uuid.uuid4().hex,
-        "elapsed_seconds": round(max(0.0, finished - started), 3),
-        "max_waves": max_waves,
-        "waves_inspected": len(result["waves"]),
-        "stop_reason": stop,
-        "daybreak_handoffs": int(stop in handoff_stops),
-        "operations": result.get("operations", {}),
-        "specialist_turns": sum(job["usage"].get("turns", job["turns_used"])
-                                 for job in jobs
-                                 if isinstance(job["usage"].get("turns", job["turns_used"]), int)),
-        "tokens": tokens,
-        "cost": "unknown",
-    }
+    handoff_stops = {"candidate_for_daybreak", "sequential_work_for_daybreak", "other_wave_needs_reconciliation",
+                     "existing_attempt_needs_reconciliation", "slots_unavailable_or_spawn_failed",
+                     "failed_attempt_for_daybreak", "unresolved_attempts", "synthesis_for_daybreak",
+                     "continuation_for_daybreak", "invalid_or_repeated_continuation"}
+    metrics = {"invocation_id": uuid.uuid4().hex,
+               "elapsed_seconds": round(max(0.0, finished - started), 3), "max_waves": max_waves,
+               "waves_inspected": len(result["waves"]), "stop_reason": stop,
+               "daybreak_handoffs": int(stop in handoff_stops), "operations": result.get("operations", {}),
+               "specialist_turns": sum(job["usage"].get("turns", job["turns_used"]) for job in jobs
+                                        if isinstance(job["usage"].get("turns", job["turns_used"]), int)),
+               "tokens": tokens, "cost": "unknown"}
     with sqlite3.connect(scheduler.database) as db:
         db.execute("""CREATE TABLE IF NOT EXISTS agent_autopilot_runs (
             invocation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, started REAL NOT NULL, finished REAL NOT NULL,
             elapsed_seconds REAL NOT NULL, max_waves INTEGER NOT NULL, waves_inspected INTEGER NOT NULL,
             stop_reason TEXT NOT NULL, daybreak_handoffs INTEGER NOT NULL, operations TEXT NOT NULL,
             specialist_turns INTEGER NOT NULL, tokens TEXT NOT NULL, cost TEXT NOT NULL)""")
-        db.execute("""INSERT INTO agent_autopilot_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        db.execute("INSERT INTO agent_autopilot_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (metrics["invocation_id"], run_id, started, finished, metrics["elapsed_seconds"], max_waves,
                     metrics["waves_inspected"], stop, metrics["daybreak_handoffs"],
                     json.dumps(metrics["operations"], sort_keys=True), metrics["specialist_turns"],

@@ -135,7 +135,8 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
             raise TypeError("catalog file must be a JSON array")
         catalog = loaded
     return scheduler.configure(global_slots=args.global_slots, per_run_slots=args.per_run_slots,
-                               catalog=catalog, current_model=args.current_model)
+                               catalog=catalog, current_model=args.current_model,
+                               memory_retrieval=args.memory_retrieval)
 
 
 def _note(args: argparse.Namespace) -> str | None:
@@ -335,6 +336,8 @@ def main() -> int:
     agent_slots.add_argument("--catalog-file", type=Path,
                              help='JSON [{"id": "<model id shown by the host>", "tier": "lower|standard|strong"}]')
     agent_slots.add_argument("--current-model", help="model the host is running now (reused when no tier fits)")
+    agent_slots.add_argument("--memory-retrieval", action=argparse.BooleanOptionalAction, default=None,
+                             help="enable or disable MUNIN retrieval for split-eligible runs (use to ablate)")
     web = sub.add_parser("web", help="generic scoped CTF problem intake and official submission")
     web.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web_commands = web.add_subparsers(dest="web_command", required=True)
@@ -579,6 +582,8 @@ def main() -> int:
     start.add_argument("--max-actions", type=int, default=40)
     start.add_argument("--wall-seconds", type=int, default=1200)
     start.add_argument("--artifact-root", type=Path)
+    start.add_argument("--evaluation-split", choices=("practice", "competition", "heldout", "unlisted"),
+                       default="unlisted")
     commands.add_parser("tools", help="list inline and read-only artifact tools")
     plan = commands.add_parser("plan", help="create a bounded Daybreak subagent wave")
     plan.add_argument("run_id")
@@ -593,6 +598,8 @@ def main() -> int:
     intake.add_argument("--expected-sha256")
     intake.add_argument("--max-actions", type=int, default=80)
     intake.add_argument("--wall-seconds", type=int, default=3600)
+    intake.add_argument("--evaluation-split", choices=("practice", "competition", "heldout", "unlisted"),
+                        default="unlisted")
     artifact = commands.add_parser("artifact", help="inspect one declared artifact without executing it")
     artifact.add_argument("run_id")
     artifact.add_argument("name")
@@ -987,14 +994,16 @@ def main() -> int:
                 output = session.intake(title=args.title, description=args.description,
                                         paths=args.artifact, categories=args.category,
                                         commitment=args.expected_sha256,
-                                        max_actions=args.max_actions, wall_seconds=args.wall_seconds)
+                                        max_actions=args.max_actions, wall_seconds=args.wall_seconds,
+                                        evaluation_split=args.evaluation_split)
             elif args.codex_command == "start":
                 manifest = ChallengeManifest.model_validate_json(read_artifact(
                     args.manifest.parent, args.manifest.name,
                 ))
                 output = session.start(manifest, commitment=args.expected_sha256,
                                        max_actions=args.max_actions, wall_seconds=args.wall_seconds,
-                                       artifact_root=args.artifact_root)
+                                       artifact_root=args.artifact_root,
+                                       evaluation_split=args.evaluation_split)
             elif args.codex_command in {"artifact", "derive"}:
                 if len(args.options.encode()) > 65_536:
                     raise ValueError("options exceed limit")
