@@ -361,7 +361,10 @@ class WebWorkflow:
             files = [urllib.parse.urljoin(url, item) for item in raw_files]
         else:
             page = Page(body, response.url)
-            title, description, categories = page.title or "CTF web problem", page.text, []
+            title, description = page.title or "CTF web problem", page.text
+            # Platform metadata is authoritative; generic text keyword triage remains
+            # available downstream only when a page declares no supported category.
+            categories = page.categories[:1]
             files = [link["url"] for link in page.links if is_distribution(link, url, adapter, challenge_id)]
         links = list(page.links)
         for file_url in files:

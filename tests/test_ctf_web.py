@@ -199,6 +199,35 @@ def test_unknown_form_never_guesses_acceptance(site, tmp_path):
         workflow.submit(run_id, FLAG)
 
 
+def test_html_intake_uses_only_declared_supported_category(site, tmp_path):
+    from metis.core.ctf_html import Page
+
+    page = Page('<meta property="alpacahack:category" content="Rev">'
+                '<title>Uses crypto words</title><p>crypto challenge</p>', "https://example.test/")
+    assert page.categories == ["rev"]
+    unsupported = Page('<meta property="alpacahack:category" content="blockchain">'
+                       '<p>crypto</p>', "https://example.test/")
+    assert unsupported.categories == []
+
+
+def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_path):
+    base, _ = site
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    # Explicit parser fixture is exercised through the same workflow branch with a mock response.
+    from metis.core.ctf_http import HTTPResult
+    body = (b'<meta property="alpacahack:category" content="Rev">'
+            b'<title>Call me crypto</title><p>analyzing syscalls</p>')
+    response = HTTPResult(url=base + "/problem", status=200,
+                          headers={"content-type": "text/html"}, body=body,
+                          size=len(body), sha256="0" * 64)
+    workflow._client = lambda config, state: type("Client", (), {
+        "request": lambda self, *args, **kwargs: response,
+        "export_state": lambda self: {"cookies": {}},
+    })()
+    result = workflow.open(base + "/problem")
+    assert result["context"]["challenge"]["categories"] == ["rev"]
+
+
 def test_network_scope_redirects_and_download_limits(site):
     base, _ = site
     client = SafeHTTP([base], auth_origin=base)

@@ -17,6 +17,7 @@ class Page(HTMLParser):
         self.text_parts: list[str] = []
         self.text_size = 0
         self.title = ""
+        self.categories: list[str] = []
         self._form: dict | None = None
         self._link: dict | None = None
         self.feed(body)
@@ -24,6 +25,10 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
+        if tag == "meta" and values.get("property") == "alpacahack:category":
+            category = (values.get("content") or "").strip().lower()
+            if category in {"web", "crypto", "rev", "pwn", "forensics", "misc"}:
+                self.categories.append(category)
         if len(self.stack) > 64:
             raise ValueError("HTML nesting exceeds limit")
         if tag == "form":
