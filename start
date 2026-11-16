@@ -10,6 +10,19 @@ import sys
 from pathlib import Path
 
 SUPPORTED = ("codex", "claude", "gemini", "opencode", "aider")
+CLAUDE_PROMPT = ("METISのCTFセッションを開始してください。CLAUDE.mdと.claude/skills/metis/SKILL.mdに従い、"
+                 "`.venv/bin/metis doctor`で準備状態を短く報告した後、まだ与えられていない問題URL・nc接続先・"
+                 "ローカル配布ファイルなどを日本語で一度だけ確認してください。")
+
+
+def venv_moved(root: Path) -> bool:
+    try:
+        with (root / ".venv/bin/metis").open("rb") as stream:
+            first = stream.readline(4096).decode(errors="replace")
+    except OSError:
+        return True
+    target = first[2:].strip().split()[0] if first.startswith("#!") and len(first) > 2 else ""
+    return not target.startswith(str(root / ".venv") + os.sep) or not Path(target).exists()
 
 
 def main() -> int:
@@ -28,7 +41,8 @@ def main() -> int:
         selected = next((name for name in SUPPORTED if detected[name]), "")
     if not selected or not detected[selected]:
         raise SystemExit("対応AI CLIが見つかりません。--agentで選ぶかCLIをインストールしてください。")
-    if not (root / ".venv/bin/metis").is_file():
+    if not (root / ".venv/bin/metis").is_file() or venv_moved(root):
+        # Missing, or created at another path (the folder was moved/copied): repair it.
         subprocess.run([sys.executable, str(root / "scripts/setup.py")], cwd=root, check=True)
     os.chdir(root)
     if selected == "codex":
@@ -38,6 +52,9 @@ def main() -> int:
           flush=True)
     executable = detected[selected]
     assert executable is not None
+    if selected == "claude":
+        # Claude Code reads CLAUDE.md, .claude/skills and .claude/agents from the repository.
+        os.execv(executable, [executable, *agent_args, CLAUDE_PROMPT])
     os.execv(executable, [executable, *agent_args])
     return 0
 

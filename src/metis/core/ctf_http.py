@@ -7,6 +7,7 @@ import http.cookiejar
 import http.cookies
 import ipaddress
 import os
+import re
 import socket
 import ssl
 import time
@@ -15,6 +16,12 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, BinaryIO
+
+from metis import __version__
+
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}")
+FORBIDDEN_HEADERS = frozenset({"host", "content-length", "transfer-encoding", "connection", "upgrade", "te",
+                               "trailer", "keep-alive", "expect"})
 
 
 def clean_url(value: str) -> str:
@@ -133,11 +140,20 @@ class SafeHTTP:
         values.extend(cookie.value or "" for jar in self.jars.values() for cookie in jar)
         return [value for value in values if len(value) >= 4]
 
-    def _headers(self, url: str, supplied: dict[str, str]) -> dict[str, str]:
+    def _headers(self, url: str, supplied: dict[str, str], extended: bool = False) -> dict[str, str]:
         target = origin(url)
-        headers = {"User-Agent": "METIS/0.0.1 authorized-CTF-client", "Accept-Encoding": "identity"}
+        headers = {"User-Agent": f"METIS/{__version__} authorized-CTF-client", "Accept-Encoding": "identity"}
         for key, value in supplied.items():
-            if key.lower() not in {"content-type", "accept", "csrf-token"}:
+            lowered = key.lower()
+            if extended:
+                # Challenge interaction may craft arbitrary headers, but never hop-by-hop
+                # framing headers, and never the platform's own credentials.
+                if (not HEADER_NAME.fullmatch(key) or lowered in FORBIDDEN_HEADERS
+                        or lowered.startswith("proxy-") or len(value) > 8192
+                        or any(char in value for char in "\r\n\x00")
+                        or (lowered in {"authorization", "cookie"} and target == self.auth_origin)):
+                    raise ValueError("unsupported request header: " + key[:40])
+            elif lowered not in {"content-type", "accept", "csrf-token"}:
                 raise ValueError("unsupported request header")
             headers[key] = value
         if target == self.auth_origin:
@@ -208,24 +224,33 @@ class SafeHTTP:
     def request(self, url: str, *, method: str = "GET", body: bytes | None = None,
                 headers: dict[str, str] | None = None, max_bytes: int = 2_097_152,
                 sink: BinaryIO | None = None, sensitive: bool = False,
-                follow_redirects: bool = True) -> HTTPResult:
-        if method not in {"GET", "POST", "HEAD"} or not 1 <= max_bytes <= 256 * 1024 * 1024:
+                follow_redirects: bool = True, extended: bool = False,
+                deadline: float | None = None) -> HTTPResult:
+        methods = {"GET", "POST", "HEAD"} | ({"PUT", "DELETE", "PATCH", "OPTIONS"} if extended else set())
+        if method not in methods or not 1 <= max_bytes <= 256 * 1024 * 1024:
             raise ValueError("invalid bounded HTTP request")
         if body is not None and len(body) > 131072:
             raise ValueError("HTTP request body exceeds limit")
         url = clean_url(url)
         initial_origin = origin(url)
-        deadline = time.monotonic() + self.timeout
+        if deadline is not None and not self.timeout <= deadline <= 600:
+            raise ValueError("invalid HTTP operation deadline")
+        # Socket operations keep the short timeout; large bodies may take longer overall.
+        deadline = time.monotonic() + (deadline or self.timeout)
         for _ in range(6):
             if origin(url) not in self.allowed or (sensitive and origin(url) != initial_origin):
                 raise ValueError("URL or redirect is outside the authorized origin scope")
             if self.requests >= 128 or time.monotonic() >= deadline:
                 raise TimeoutError("bounded HTTP operation exhausted")
             self.requests += 1
-            response, connection = self._open(url, method, body, self._headers(url, headers or {}))
+            response, connection = self._open(url, method, body, self._headers(url, headers or {}, extended))
             try:
                 status = response.status if hasattr(response, "status") else response.code
-                response_headers = {key.lower(): value for key, value in response.headers.items()}
+                response_headers: dict[str, str] = {}
+                for key, value in response.headers.items():
+                    lowered = key.lower()
+                    response_headers[lowered] = (response_headers[lowered] + "\n" + value
+                                                 if lowered in response_headers else value)
                 if (follow_redirects and status in (301, 302, 303, 307, 308)
                         and response_headers.get("location")):
                     destination = clean_url(urllib.parse.urljoin(url, response_headers["location"]))
@@ -255,13 +280,19 @@ class SafeHTTP:
                         chunks.append(chunk)
                     else:
                         sink.write(chunk)
+                if method != "HEAD" and length is not None and size < int(length):
+                    raise http.client.IncompleteRead(b"", int(length) - size)
                 jar = self.jars[origin(url)]
                 if len(jar) > 64 or any(len(cookie.value or "") > 4096 for cookie in jar):
                     raise ValueError("cookie state exceeds limits")
-                # Do not return Set-Cookie or credential headers to solver context.
-                safe_headers = {key: value for key, value in response_headers.items() if key in {
-                    "content-type", "content-length", "retry-after", "location", "content-disposition",
-                }}
+                # Do not return the platform's Set-Cookie or credential headers to solver
+                # context. Challenge origins in extended mode return every header.
+                if extended and origin(url) != self.auth_origin:
+                    safe_headers = {key: value[:4096] for key, value in list(response_headers.items())[:64]}
+                else:
+                    safe_headers = {key: value for key, value in response_headers.items() if key in {
+                        "content-type", "content-length", "retry-after", "location", "content-disposition",
+                    }}
                 return HTTPResult(url, status, safe_headers, b"".join(chunks), size, digest.hexdigest())
             finally:
                 response.close()

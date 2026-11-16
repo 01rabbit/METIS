@@ -4,20 +4,23 @@ build-backend = "hatchling.build"
 
 [project]
 name = "metis-ctf"
-version = "0.0.1"
+version = "0.5.0"
 description = "METIS: autonomous adversarial problem-solving intelligence for authorized CTFs"
 requires-python = ">=3.12"
 dependencies = [
     "capstone>=5.0.6",
     "cryptography>=46",
+    "numpy>=2.0",
     "pillow>=12",
     "pydantic>=2.9,<3",
     "pyelftools>=0.32",
+    "paramiko>=3.4",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "ruff>=0.7", "mypy>=1.13", "build>=1.2"]
 agents = ["openai-agents>=0.1"]
+browser = ["playwright>=1.47"]
 
 [project.scripts]
 metis = "metis.cli:main"
@@ -34,5 +37,5 @@ line-length = 100
 target-version = "py312"
 
 [[tool.mypy.overrides]]
-module = ["capstone", "capstone.*"]
+module = ["capstone", "capstone.*", "paramiko", "paramiko.*"]
 ignore_missing_imports = true

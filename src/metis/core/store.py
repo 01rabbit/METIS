@@ -20,6 +20,8 @@ TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.OBSERVING: frozenset({RunStatus.REPLANNING, RunStatus.VERIFYING}),
     RunStatus.REPLANNING: frozenset({RunStatus.PLANNING}),
     RunStatus.VERIFYING: frozenset({RunStatus.SOLVED, RunStatus.REPLANNING}),
+    # Only `CodexSession.extend` (an explicit operator budget extension) emits this.
+    RunStatus.EXHAUSTED: frozenset({RunStatus.PLANNING}),
 }
 STOP_STATES = frozenset({RunStatus.EXHAUSTED, RunStatus.POLICY_DENIED,
                          RunStatus.ERROR, RunStatus.CANCELLED})

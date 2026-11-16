@@ -1,0 +1,486 @@
+"""Dynamic execution of challenge programs inside a disposable container.
+
+Challenge binaries never run on the host. The controller streams the declared
+run artifacts into a fresh container over stdin (no bind mounts, no ``docker
+cp``), runs one bounded operation, and returns bounded output. The container has
+no network, a read-only root filesystem, a size-limited executable tmpfs, no
+capabilities, no privilege escalation, an unprivileged user, and CPU, memory and
+PID limits. On macOS, Docker Desktop/Colima/OrbStack add a Linux VM boundary.
+
+Container isolation is defense in depth, not a proof against kernel exploits;
+use a dedicated VM for hostile competitions when that matters.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import platform as platform_module
+import re
+import shutil
+import struct
+import subprocess
+import tempfile
+import time
+from pathlib import Path, PurePosixPath
+from typing import Any
+from uuid import uuid4
+
+from pydantic import Field, field_validator
+
+from metis.core.artifacts import artifact_stream
+from metis.core.codex_session import CodexSession
+from metis.core.contracts import Contract, RunStatus
+
+MODES = ("run", "strace", "ltrace", "gdb", "script")
+MAX_INPUT = 64 * 1_048_576
+MAX_STDIN = 1_048_576
+MAX_STREAM = 262_144
+IMAGE_PATTERN = re.compile(r"(?:[a-z0-9./_:-]+@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64})")
+ROOT = Path(__file__).resolve().parents[3]
+PLATFORM_PATTERN = re.compile(r"linux/(amd64|arm64|386|arm/v7)")
+# ELF e_machine -> architecture name.
+ELF_MACHINES = {0x3E: "x86_64", 0x03: "i386", 0xB7: "aarch64", 0x28: "arm"}
+PLATFORM_ARCH = {"linux/amd64": "x86_64", "linux/386": "i386", "linux/arm64": "aarch64",
+                 "linux/arm/v7": "arm"}
+# QEMU user-mode emulator and cross sysroot installed in the bundled image.
+EMULATORS = {"x86_64": ("qemu-x86_64", "/usr/x86_64-linux-gnu"),
+             "i386": ("qemu-i386", "/usr/i686-linux-gnu"),
+             "aarch64": ("qemu-aarch64", "/usr/aarch64-linux-gnu"),
+             "arm": ("qemu-arm", "/usr/arm-linux-gnueabihf")}
+EMULATE_CHOICES = ("auto", "off", *EMULATORS)
+
+
+def elf_arch(content: bytes) -> str | None:
+    """Return the architecture of a little-endian ELF file, or None if unknown."""
+    if len(content) < 20 or content[:4] != b"\x7fELF" or content[5] != 1:
+        return None
+    return ELF_MACHINES.get(struct.unpack_from("<H", content, 18)[0])
+
+
+def host_arch() -> str:
+    machine = platform_module.machine().lower()
+    return {"arm64": "aarch64", "amd64": "x86_64", "i686": "i386"}.get(machine, machine)
+
+
+def default_platform() -> str:
+    """Build for the host CPU so native targets can be debugged with ptrace."""
+    return "linux/arm64" if host_arch() == "aarch64" else "linux/amd64"
+
+# Runs inside the container as the unprivileged user. Reads a framed bundle on
+# fd 0 with os.read (no buffering past the frame), writes files into /work, runs
+# the requested operation with a timeout, and prints one JSON result line.
+BOOTSTRAP = r'''
+import base64, json, os, struct, subprocess, sys, time
+def take(n):
+    out = bytearray()
+    while len(out) < n:
+        chunk = os.read(0, n - len(out))
+        if not chunk:
+            raise SystemExit("truncated bundle")
+        out.extend(chunk)
+    return bytes(out)
+header = json.loads(take(struct.unpack(">I", take(4))[0]))
+os.chdir("/work")
+for item in header["files"]:
+    data = take(item["size"])
+    path = os.path.join("/work", item["name"])
+    with open(path, "wb") as stream:
+        stream.write(data)
+    os.chmod(path, 0o755 if item.get("exec") else 0o644)
+with open("/work/.stdin", "wb") as stream:
+    stream.write(take(header["stdin_size"]))
+mode, target, args = header["mode"], "./" + header["target"], header["args"]
+trace = "/work/.trace"
+emu = header.get("emulate")
+prefix = [emu["qemu"], "-L", emu["sysroot"]] if emu else []
+missing = None
+if emu and not os.path.isdir(emu["sysroot"]):
+    missing = "cross libc for " + emu["arch"] + " is not installed in this image (" + emu["sysroot"] + ")"
+elif mode == "ltrace" and not emu and not os.path.exists("/usr/bin/ltrace"):
+    missing = "ltrace is not packaged for this image architecture; use strace or gdb mode"
+if missing:
+    mode = "unavailable"
+
+trace_from_stderr = False
+background = None
+program_log = "/work/.program"
+if mode == "unavailable":
+    command = ["sh", "-c", 'echo "$0" >&2; exit 2', missing]
+elif mode == "run":
+    command = [*prefix, target, *args]
+elif mode == "strace" and emu:
+    command = [*prefix, "-strace", target, *args]
+    trace_from_stderr = True
+elif mode == "strace":
+    command = ["strace", "-f", "-s", "128", "-o", trace, target, *args]
+elif mode == "ltrace" and emu:
+    command = ["sh", "-c", "echo 'ltrace is unavailable under QEMU emulation; use strace or gdb mode' >&2; exit 2"]
+elif mode == "ltrace":
+    command = ["ltrace", "-f", "-s", "128", "-o", trace, target, *args]
+elif mode == "gdb" and emu:
+    # Emulated targets cannot be ptraced; debug through QEMU's gdb stub instead.
+    port = "31337"
+    stdin_file = open("/work/.stdin", "rb")
+    log = open(program_log, "wb")
+    background = subprocess.Popen([*prefix, "-g", port, target, *args], stdin=stdin_file,
+                                  stdout=log, stderr=subprocess.STDOUT)
+    time.sleep(0.3)
+    command = ["gdb-multiarch", "-q", "-nx", "-batch", "-ex", "set pagination off",
+               "-ex", "set confirm off", "-ex", "set sysroot " + emu["sysroot"],
+               "-ex", "file " + target, "-ex", "target remote 127.0.0.1:" + port]
+    for line in header["gdb"]:
+        word = line.strip().split(" ", 1)[0]
+        if word in {"run", "r"}:
+            line = "continue"
+        elif word == "start":
+            command += ["-ex", "tbreak main"]
+            line = "continue"
+        command += ["-ex", line]
+elif mode == "gdb":
+    command = ["gdb", "-q", "-nx", "-batch", "-ex", "set pagination off",
+               "-ex", "set confirm off", "-ex", "set startup-with-shell off"]
+    for line in header["gdb"]:
+        command += ["-ex", line]
+    command += ["--args", target, *args]
+else:
+    command = [header["interpreter"], "./.metis-script", *args]
+env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/work",
+       "LANG": "C.UTF-8", "TERM": "dumb", "PWNLIB_NOTERM": "1", "METIS_TARGET": target,
+       "METIS_STDIN": "/work/.stdin", "METIS_RUNNER": " ".join(prefix),
+       "METIS_TARGET_ARCH": header.get("target_arch") or ""}
+started = time.monotonic()
+timed_out = False
+with open("/work/.stdin", "rb") as stdin:
+    try:
+        completed = subprocess.run(command, stdin=stdin, capture_output=True, timeout=header["timeout"], env=env)
+        code, out, err = completed.returncode, completed.stdout, completed.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out, code, out, err = True, None, exc.stdout or b"", exc.stderr or b""
+    except OSError as exc:
+        code, out, err = 127, b"", str(exc).encode()
+program = b""
+if background is not None:
+    try:
+        background.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        background.kill()
+        background.wait()
+    with open(program_log, "rb") as stream:
+        program = stream.read()
+limit = header["max_stream"]
+traced = b""
+if trace_from_stderr:
+    traced, err = err, b""
+elif os.path.exists(trace):
+    with open(trace, "rb") as stream:
+        traced = stream.read(limit + 1)
+def pack(data):
+    return {"b64": base64.b64encode(data[:limit]).decode(), "size": len(data), "truncated": len(data) > limit}
+sys.stdout.write("\n" + json.dumps({"exit_code": code, "timed_out": timed_out,
+    "elapsed": round(time.monotonic() - started, 3), "stdout": pack(out), "stderr": pack(err),
+    "trace": pack(traced), "program": pack(program)}) + "\n")
+'''
+
+
+class SandboxRequest(Contract):
+    target: str = Field(min_length=1, max_length=512)
+    mode: str = "run"
+    args: list[str] = Field(default_factory=list, max_length=64)
+    extra: list[str] = Field(default_factory=list, max_length=16)
+    stdin: bytes = Field(default=b"", max_length=MAX_STDIN)
+    gdb: list[str] = Field(default_factory=list, max_length=128)
+    script: str | None = Field(default=None, max_length=262_144)
+    interpreter: str = "python3"
+    timeout: int = Field(default=20, ge=1, le=300)
+    emulate: str = "auto"
+
+    @field_validator("emulate")
+    @classmethod
+    def known_emulation(cls, value: str) -> str:
+        if value not in EMULATE_CHOICES:
+            raise ValueError("unsupported emulation choice")
+        return value
+
+    @field_validator("mode")
+    @classmethod
+    def known_mode(cls, value: str) -> str:
+        if value not in MODES:
+            raise ValueError("unsupported sandbox mode")
+        return value
+
+    @field_validator("interpreter")
+    @classmethod
+    def known_interpreter(cls, value: str) -> str:
+        if value not in {"python3", "sh", "bash"}:
+            raise ValueError("unsupported script interpreter")
+        return value
+
+    @field_validator("args", "gdb")
+    @classmethod
+    def bounded_strings(cls, values: list[str]) -> list[str]:
+        if any(len(value) > 4096 or "\x00" in value for value in values):
+            raise ValueError("argument too long or contains NUL")
+        return values
+
+
+def _config_path(database: Path) -> Path:
+    return database.parent / "sandbox.json"
+
+
+def load_config(database: Path) -> dict[str, Any]:
+    path = _config_path(database)
+    if not path.is_file():
+        return {}
+    config = json.loads(path.read_text())
+    return config if isinstance(config, dict) else {}
+
+
+def _engine_environment() -> dict[str, str]:
+    # Allow the user's local Docker context but never a remote TCP daemon.
+    environment = dict(os.environ)
+    if environment.get("DOCKER_HOST", "").startswith(("tcp:", "ssh:", "http")):
+        environment.pop("DOCKER_HOST")
+    return environment
+
+
+def engine_check(engine: str) -> tuple[bool, str | None]:
+    """Return (reachable, reason). The reason explains a failure for diagnosis."""
+    if engine not in {"docker", "podman"}:
+        return False, "unsupported engine"
+    if shutil.which(engine) is None:
+        return False, engine + " CLI not found on PATH"
+    try:
+        result = subprocess.run([engine, "version", "--format", "{{json .Server.Version}}"],
+                                capture_output=True, timeout=20, check=False, env=_engine_environment())
+    except subprocess.TimeoutExpired:
+        return False, engine + " did not answer within 20s (engine starting or sleeping?)"
+    except OSError as exc:
+        return False, type(exc).__name__ + ": " + str(exc)[:200]
+    if result.returncode == 0:
+        return True, None
+    message = result.stderr.decode(errors="replace").strip().splitlines()
+    return False, (message[-1] if message else f"exit status {result.returncode}")[:300]
+
+
+def image_present(engine: str, image: str | None) -> bool | None:
+    """Whether the recorded image exists in this engine (None when it cannot be checked)."""
+    if not image:
+        return None
+    try:
+        result = subprocess.run([engine, "image", "inspect", "--format", "{{.Id}}", image],
+                                capture_output=True, timeout=20, check=False, env=_engine_environment())
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.returncode == 0
+
+
+def engine_available(engine: str) -> bool:
+    return engine_check(engine)[0]
+
+
+def build_image(database: Path, *, engine: str = "docker", platform: str | None = "auto",
+                context: Path | None = None) -> dict[str, Any]:
+    """Build the bundled sandbox image locally and record its immutable image ID.
+
+    ``auto`` builds for the host CPU: native targets get real ptrace (gdb/strace/
+    ltrace) and foreign-architecture targets run through QEMU user-mode emulation.
+    """
+    if engine not in {"docker", "podman"}:
+        raise ValueError("engine must be docker or podman")
+    if platform == "auto":
+        platform = default_platform()
+    if platform is not None and not PLATFORM_PATTERN.fullmatch(platform):
+        raise ValueError("unsupported platform")
+    context = context or ROOT / "sandbox"
+    if not (context / "Dockerfile").is_file():
+        raise ValueError("sandbox Dockerfile not found")
+    if not engine_available(engine):
+        raise ValueError(engine + " is not running or not installed; start Docker Desktop, OrbStack, "
+                         "Colima or Podman and retry")
+    tag = "metis-sandbox:local"
+    command = [engine, "build", "-t", tag, *(["--platform", platform] if platform else []), str(context)]
+    subprocess.run(command, check=True, env=_engine_environment(), timeout=3600)
+    inspected = subprocess.run([engine, "image", "inspect", "--format", "{{.Id}}", tag], check=True,
+                               capture_output=True, text=True, env=_engine_environment(), timeout=60)
+    image = inspected.stdout.strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+        raise ValueError("could not determine immutable image ID")
+    return configure(database, engine=engine, image=image, platform=platform)
+
+
+def configure(database: Path, *, engine: str, image: str, platform: str | None) -> dict[str, Any]:
+    if engine not in {"docker", "podman"} or not IMAGE_PATTERN.fullmatch(image):
+        raise ValueError("sandbox image must be an immutable sha256 image ID or digest reference")
+    if platform is not None and not PLATFORM_PATTERN.fullmatch(platform):
+        raise ValueError("unsupported platform")
+    database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config = {"engine": engine, "image": image, "platform": platform,
+              "arch": PLATFORM_ARCH.get(platform or "", host_arch())}
+    path = _config_path(database)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(config, stream)
+    return {"configured": True, **config}
+
+
+def status(database: Path) -> dict[str, Any]:
+    config = load_config(database)
+    engine = config.get("engine", "docker")
+    reachable, reason = engine_check(engine)
+    present = image_present(engine, config.get("image")) if reachable else None
+    hint = None
+    if not config.get("image") or present is False:
+        hint = "run `.venv/bin/metis sandbox build` (images are per machine and per engine)"
+    return {"configured": bool(config.get("image")) and present is not False, "engine": engine,
+            "engine_available": reachable, "engine_error": reason, "image": config.get("image"),
+            "image_present": present, "hint": hint,
+            "platform": config.get("platform"), "arch": config.get("arch"), "modes": list(MODES),
+            "emulation": "QEMU user-mode for foreign-architecture ELF targets (gdb via gdb stub)",
+            "host_execution": False, "network": "none"}
+
+
+def _bundle(header: dict[str, Any], files: list[tuple[str, bytes]], stdin: bytes) -> bytes:
+    encoded = json.dumps(header).encode()
+    parts = [struct.pack(">I", len(encoded)), encoded]
+    parts.extend(content for _, content in files)
+    parts.append(stdin)
+    return b"".join(parts)
+
+
+def _unpack(blob: dict[str, Any]) -> dict[str, Any]:
+    data = base64.b64decode(blob["b64"])
+    output: dict[str, Any] = {"size": blob["size"], "truncated": blob["truncated"],
+                              "sha256": hashlib.sha256(data).hexdigest()}
+    try:
+        output["text"] = data.decode("utf-8")
+    except UnicodeDecodeError:
+        output["text"] = data.decode("utf-8", errors="replace")
+        output["hex"] = data[:16_384].hex()
+    return output
+
+
+class Sandbox:
+    def __init__(self, database: Path, *, engine: str | None = None, image: str | None = None,
+                 platform: str | None = None):
+        config = load_config(database)
+        self.session = CodexSession(database)
+        self.engine = engine or config.get("engine", "docker")
+        self.image = image or config.get("image")
+        self.platform = platform if platform is not None else config.get("platform")
+        self.arch = config.get("arch") or PLATFORM_ARCH.get(self.platform or "", host_arch())
+        if self.engine not in {"docker", "podman"}:
+            raise ValueError("engine must be docker or podman")
+        if not isinstance(self.image, str) or not IMAGE_PATTERN.fullmatch(self.image):
+            raise ValueError("sandbox is not configured; run `metis sandbox build` or `metis sandbox configure`")
+        self.image_id: str = self.image
+
+    def command(self, name: str) -> list[str]:
+        return [self.engine, "run", "--rm", "-i", "--name", name, "--pull=never",
+                *(["--platform", self.platform] if self.platform else []),
+                "--network=none", "--read-only", "--cap-drop=ALL",
+                "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=512m",
+                "--memory-swap=512m", "--cpus=1", "--user=65534:65534", "--ipc=none",
+                "--tmpfs=/work:rw,exec,nosuid,nodev,size=256m,mode=1777",
+                "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+                "--workdir=/work", "--log-driver=none", "--env=HOME=/work",
+                "--entrypoint=python3", self.image_id, "-I", "-c", BOOTSTRAP]
+
+    def _files(self, run_id: str, request: SandboxRequest) -> list[tuple[str, bytes]]:
+        context = self.session.context(run_id)
+        declared = set(context["challenge"]["artifacts"])
+        root = self.session.artifact_root(run_id)
+        names = [request.target, *request.extra]
+        if root is None or any(name not in declared for name in names) or len(set(names)) != len(names):
+            raise ValueError("sandbox inputs must be distinct declared run artifacts")
+        files: list[tuple[str, bytes]] = []
+        total = 0
+        used: set[str] = set()
+        for name in names:
+            with artifact_stream(root, name, max_bytes=MAX_INPUT) as stream:
+                content = stream.read(MAX_INPUT + 1)
+            total += len(content)
+            if total > MAX_INPUT:
+                raise ValueError("sandbox input exceeds total limit")
+            basename = PurePosixPath(name).name
+            # Present distribution names without the intake index (e.g. libc.so.6).
+            visible = re.sub(r"^[0-9]{2}-", "", basename) or basename
+            visible = re.sub(r"[^\w.+-]", "_", visible)[:80]
+            if visible in used or visible.startswith(".metis"):
+                visible = uuid4().hex[:8] + "-" + visible
+            used.add(visible)
+            files.append((visible, content))
+        return files
+
+    def execute(self, run_id: str, request: SandboxRequest) -> dict[str, Any]:
+        request = SandboxRequest.model_validate(request.model_dump())
+        if request.mode == "script" and not request.script:
+            raise ValueError("script mode requires a script")
+        files = self._files(run_id, request)
+        target_arch = elf_arch(files[0][1][:64])
+        if request.emulate == "auto":
+            chosen = target_arch if target_arch and target_arch != self.arch else None
+        else:
+            chosen = None if request.emulate == "off" else request.emulate
+        emulate = ({"arch": chosen, "qemu": EMULATORS[chosen][0], "sysroot": EMULATORS[chosen][1]}
+                   if chosen else None)
+        if request.script is not None:
+            files.append((".metis-script", request.script.encode()))
+        header = {"files": [{"name": name, "size": len(content), "exec": index == 0}
+                            for index, (name, content) in enumerate(files)],
+                  "stdin_size": len(request.stdin), "mode": request.mode, "target": files[0][0],
+                  "args": request.args, "gdb": request.gdb, "interpreter": request.interpreter,
+                  "timeout": request.timeout, "max_stream": MAX_STREAM, "emulate": emulate,
+                  "target_arch": target_arch}
+        bundle = _bundle(header, files, request.stdin)
+        self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
+                              target=request.target,
+                              input_sha256=hashlib.sha256(bundle).hexdigest())
+        name = "metis-sandbox-" + uuid4().hex[:16]
+        started = time.monotonic()
+        result: dict[str, Any]
+        try:
+            with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
+                completed = subprocess.run(self.command(name), input=bundle, stdout=output, stderr=error,
+                                           timeout=request.timeout + 60, check=False,
+                                           env=_engine_environment())
+                output.seek(0)
+                raw = output.read(8 * MAX_STREAM)
+                error.seek(0)
+                engine_error = error.read(4096).decode(errors="replace")
+            line = raw.rstrip(b"\n").rsplit(b"\n", 1)[-1] if raw else b""
+            try:
+                payload = json.loads(line)
+                result = {"ok": payload["exit_code"] == 0 and not payload["timed_out"],
+                          "exit_code": payload["exit_code"], "timed_out": payload["timed_out"],
+                          "elapsed": payload["elapsed"], "stdout": _unpack(payload["stdout"]),
+                          "stderr": _unpack(payload["stderr"])}
+                if request.mode in {"strace", "ltrace"}:
+                    result["trace"] = _unpack(payload["trace"])
+                if payload.get("program", {}).get("size"):
+                    result["program_output"] = _unpack(payload["program"])
+                if payload["exit_code"] is not None and payload["exit_code"] < 0:
+                    result["signal"] = -payload["exit_code"]
+            except (ValueError, KeyError, TypeError):
+                result = {"ok": False, "error": "sandbox engine failed", "engine_exit_code": completed.returncode,
+                          "engine_stderr": engine_error[-1024:]}
+        except subprocess.TimeoutExpired:
+            subprocess.run([self.engine, "rm", "-f", name], capture_output=True, timeout=30, check=False,
+                           env=_engine_environment())
+            result = {"ok": False, "error": "sandbox timeout", "timed_out": True}
+        except OSError as exc:
+            result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
+        self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
+                           exit_code=str(result.get("exit_code")),
+                           elapsed=str(round(time.monotonic() - started, 3)))
+        self.session._emit(run_id, RunStatus.REPLANNING)
+        self.session._emit(run_id, RunStatus.PLANNING)
+        files_note = [name for name, _ in files if name != ".metis-script"]
+        return {"run_id": run_id, "mode": request.mode, "files_in_sandbox": files_note,
+                "isolation": {"engine": self.engine, "network": "none", "host_mounts": False,
+                              "image": self.image, "platform": self.platform},
+                "target_arch": target_arch,
+                "emulation": (emulate["qemu"] if emulate else None),
+                "output_is_untrusted": True, **result}
+

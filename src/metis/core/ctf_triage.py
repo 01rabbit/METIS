@@ -1,6 +1,8 @@
 """Evidence-oriented specialist checklists for the current Codex agent."""
 from __future__ import annotations
 
+import re
+
 from metis.core.contracts import ChallengeManifest
 
 PLAYBOOKS = {
@@ -12,8 +14,9 @@ PLAYBOOKS = {
     "web": {"tools": ["text", "http_parse", "url_decode", "html_decode", "jwt_decode"],
             "steps": ["Read supplied source, HTTP messages and session/token format.",
                       "JWT decoding is not signature verification; inspect authorization logic separately.",
-                      "Use only explicitly authorized targets for live requests; native tools remain offline."],
-            "limit": "No live network or competition submission client is built into these native tools."},
+                      "Use only explicitly authorized targets for live requests; native tools remain offline.",
+                      "JavaScript-built problem pages: reopen with `metis web open --render` (scoped Chromium)."],
+            "limit": "Live requests only to granted origins; raw TCP services via `metis remote` grants."},
     "forensics": {"tools": ["overview", "strings", "hex", "zip_list", "zip_read", "gzip", "image", "image_lsb", "pcap"],
                   "steps": ["Identify real magic and size; do not trust the extension.",
                             "Inspect metadata and structure before trying extraction or bit planes.",
@@ -22,13 +25,15 @@ PLAYBOOKS = {
     "rev": {"tools": ["overview", "strings", "elf", "disassemble", "xor", "rot13"],
             "steps": ["Identify architecture and file format.",
                       "Inspect strings, symbols and section offsets; map virtual addresses correctly.",
-                      "Decode relevant data and reconstruct the check; never execute the challenge on the host."],
-            "limit": "Static analysis only; ELF and x86/ARM disassembly, not a general decompiler."},
+                      "Decode relevant data and reconstruct the check; never execute the challenge on the host.",
+                      "Confirm behavior dynamically with `metis sandbox run --mode run|strace|ltrace|gdb`."],
+            "limit": "Static tools plus isolated container execution; not a general decompiler."},
     "pwn": {"tools": ["elf", "disassemble", "cyclic", "cyclic_find", "pack", "unpack"],
             "steps": ["Identify architecture, imports and mitigation indicators.",
                       "Inspect the vulnerable source/frame and distinguish known offsets from guesses.",
-                      "Dynamic execution requires a separately authorized working isolation boundary."],
-            "limit": "Static pwn analysis and data helpers; no host payload execution or automatic exploit launch."},
+                      "Develop the exploit locally with `metis sandbox run --mode gdb|script` (pwntools inside).",
+                      "Send the final payload only to a granted service via `metis remote exchange|pipe`."],
+            "limit": "Challenge binaries run only in the no-network sandbox; never on the host."},
     "misc": {"tools": ["overview", "strings", "base64_decode", "base32_decode", "hex_decode", "rot13", "reverse", "flag_candidates"],
              "steps": ["Classify the data and preserve the original.",
                        "Try justified bounded transforms, reconsider failures and avoid blind repetition.",
@@ -50,7 +55,10 @@ def triage(manifest: ChallengeManifest) -> dict:
     if not categories:
         categories = [category for category, keywords in hints.items() if any(word in text for word in keywords)]
     categories = categories or ["misc"]
+    remote = bool(re.search(r"\b(?:nc|ncat|netcat)\s+\S+\s+[0-9]{1,5}\b", manifest.description))
     return {"suggested_categories": categories,
+            "remote_service_hint": ("statement mentions a TCP service; run `metis remote suggest RUN_ID`, "
+                                    "then grant only the user-authorized endpoint") if remote else None,
             "basis": "declared" if manifest.categories else "keyword hints; verify from evidence",
             "playbooks": {category: PLAYBOOKS[category] for category in categories},
             "artifact_first_step": "overview" if manifest.artifacts else None}

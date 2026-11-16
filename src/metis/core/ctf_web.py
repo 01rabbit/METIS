@@ -1,4 +1,4 @@
-"""Scoped URL intake and official CTFd, ksnctf and configured-form verdicts."""
+"""Scoped URL intake and official CTFd, rCTF, ksnctf and configured-form verdicts."""
 from __future__ import annotations
 
 import hashlib
@@ -11,11 +11,15 @@ import secrets
 import sqlite3
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from metis.core import ctf_browser, ctf_rctf
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
 from metis.core.ctf_html import Page, display_url
@@ -24,8 +28,83 @@ from metis.core.ctf_knowledge import KnowledgeBase
 from metis.core.ctf_ksnctf import KsnctfVerdict, is_official_problem, problem_id
 
 NETWORK_ERRORS = (OSError, ValueError, KeyError, TypeError, RuntimeError, http.client.HTTPException)
-ATTACHMENTS = {".zip", ".tar", ".gz", ".xz", ".bz2", ".7z", ".rar", ".bin", ".elf", ".exe",
-               ".png", ".jpg", ".jpeg", ".wav", ".pcap", ".pcapng", ".pdf", ".txt", ".c", ".cpp", ".py", ".class", ".jar"}
+# Live application pages are never treated as distribution files.
+PAGE_SUFFIXES = {".php", ".html", ".htm", ".cgi", ".asp", ".aspx", ".jsp"}
+ATTACHMENTS = {".apk", ".dex", ".jar", ".so", ".dll", ".out", ".pyc", ".wasm", ".img", ".iso", ".dmp",
+               ".mem", ".raw", ".vmdk", ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt", ".bmp",
+               ".gif", ".mp3", ".mp4", ".flac", ".svg", ".js", ".json", ".csv", ".sqlite", ".db",
+               ".enc", ".key", ".pem", ".pub", ".cap", ".py", ".rb", ".go", ".rs", ".java", ".s", ".asm",
+               ".zip", ".tar", ".gz", ".xz", ".bz2", ".7z", ".rar", ".bin", ".elf", ".exe",
+               ".png", ".jpg", ".jpeg", ".wav", ".pcap", ".pcapng", ".pdf", ".txt", ".c", ".cpp", ".class"}
+
+
+class WebRequest(BaseModel):
+    """One scoped HTTP request against a granted challenge origin."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    url: str = Field(min_length=1, max_length=8192)
+    method: str = "GET"
+    headers: dict[str, str] = Field(default_factory=dict, max_length=32)
+    data: str | None = Field(default=None, max_length=131_072)
+    data_hex: str | None = Field(default=None, max_length=262_144)
+    form: dict[str, str] | None = Field(default=None, max_length=128)
+    json_body: Any = Field(default=None, alias="json")
+    follow: bool = False
+    extract: str | None = Field(default=None, max_length=512)
+    preview: int = Field(default=4096, ge=0, le=65_536)
+    save: bool = False
+
+    def body(self) -> tuple[bytes | None, dict[str, str]]:
+        given = [self.data is not None, self.data_hex is not None, self.form is not None,
+                 self.json_body is not None]
+        if sum(given) > 1:
+            raise ValueError("use one of data, data_hex, form or json")
+        headers = dict(self.headers)
+        lowered = {key.lower() for key in headers}
+        if self.form is not None:
+            if "content-type" not in lowered:
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+            return urllib.parse.urlencode(self.form).encode(), headers
+        if self.json_body is not None:
+            if "content-type" not in lowered:
+                headers["Content-Type"] = "application/json"
+            return json.dumps(self.json_body).encode(), headers
+        if self.data_hex is not None:
+            return bytes.fromhex(self.data_hex), headers
+        if self.data is not None:
+            return self.data.encode(), headers
+        return None, headers
+
+
+TRANSIENT_DOWNLOAD_ERRORS = (http.client.IncompleteRead, http.client.RemoteDisconnected,
+                             ConnectionResetError, TimeoutError, urllib.error.URLError)
+# Distribution files that a platform serves from its own storage on another origin.
+PLATFORM_FILE_ORIGINS = {
+    "https://alpacahack.com": ["https://alpacahack-prod.s3.ap-northeast-1.amazonaws.com"],
+}
+# Platforms whose flags are submitted in the user's logged-in browser, not by METIS.
+BROWSER_SUBMISSION_ORIGINS = {"https://alpacahack.com"}
+
+
+def is_distribution(link: dict, page_url: str, adapter: str, challenge_id: int | str | None) -> bool:
+    """Decide whether a problem-page link is a distribution file to snapshot."""
+    if link.get("download"):
+        return True
+    path = urllib.parse.urlsplit(link["url"]).path
+    name = Path(path).name.lower()
+    suffix = Path(name).suffix
+    if suffix in PAGE_SUFFIXES:
+        return False
+    # ksnctf serves each problem's files under /q/<id>/ (including extensionless
+    # binaries and versioned libraries such as libc.so.6).
+    if adapter == "ksnctf" and challenge_id is not None:
+        try:
+            same_origin = origin(link["url"]) == origin(page_url)
+        except ValueError:
+            same_origin = False
+        if same_origin and path.startswith(f"/q/{challenge_id}/") and name:
+            return True
+    return bool(suffix in ATTACHMENTS or re.fullmatch(r".+\.so(\.[0-9]+)+", name))
 
 
 def feedback_text(value: str, candidate: str, client: SafeHTTP) -> str:
@@ -92,14 +171,50 @@ class WebWorkflow:
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
                        (json.dumps(client.export_state()), run_id))
 
+    def rctf_login(self, url: str, team_token: str) -> dict:
+        """Exchange an rCTF team token for an auth token and store it privately as Bearer."""
+        if not team_token or len(team_token) > 4096 or any(char in team_token for char in "\r\n"):
+            raise ValueError("invalid rCTF team token")
+        key = origin(url)
+        client = SafeHTTP([key], auth_origin=key, timeout=15)
+        response = client.request(key + "/api/v1/auth/login", method="POST",
+                                  body=json.dumps({"teamToken": team_token}).encode(),
+                                  headers={"Content-Type": "application/json"}, sensitive=True,
+                                  max_bytes=65_536, follow_redirects=False)
+        payload = json.loads(response.body) if response.body else {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        token = data.get("authToken") if isinstance(data, dict) else None
+        if response.status != 200 or payload.get("kind") != "goodLogin" or not isinstance(token, str):
+            raise ValueError("rCTF login was not accepted")
+        return self.auth(url, kind="token", value=token, scheme="Bearer")
+
     def catalog(self, url: str, *, token_env: str | None = None,
-                cookie_env: str | None = None) -> dict[str, Any]:
-        """Return a bounded CTFd challenge catalog suitable for contest intake."""
+                cookie_env: str | None = None, adapter: str = "ctfd") -> dict[str, Any]:
+        """Return a bounded CTFd or rCTF challenge catalog suitable for contest intake."""
         url = clean_url(url)
         base = url.rstrip("/")
         config = {"origins": [origin(url)], "auth_origin": origin(url),
                   "token_env": token_env, "cookie_env": cookie_env}
         client = self._client(config, {})
+        if adapter == "rctf":
+            response = client.request(origin(url) + "/api/v1/challs", max_bytes=8 * 1024 * 1024)
+            if response.status != 200:
+                raise ValueError("rCTF catalog retrieval failed; check URL and Bearer authentication")
+            listing = []
+            for item in ctf_rctf.challenges(json.loads(response.body)):
+                points, solves = item.get("points", 1), item.get("solves", 0)
+                if not isinstance(points, (int, float)) or not isinstance(solves, int) or solves < 0:
+                    raise ValueError("invalid rCTF score metadata")
+                category = str(item.get("category", "misc"))[:40].lower() or "misc"
+                listing.append({"challenge_id": ctf_rctf.challenge_key(item.get("id")),
+                                "title": str(item.get("name", "challenge"))[:200], "category": category,
+                                "points": float(points), "solves": solves,
+                                "estimated_minutes": 30, "confidence": 0.35,
+                                "url": origin(url), "adapter": "rctf"})
+            return {"source": "rctf", "base_url": display_url(url), "challenges": listing,
+                    "count": len(listing), "credentials_exposed": False}
+        if adapter != "ctfd":
+            raise ValueError("catalog adapter must be ctfd or rctf")
         response = client.request(base + "/api/v1/challenges", max_bytes=8 * 1024 * 1024)
         if response.status != 200:
             raise ValueError("CTFd catalog retrieval failed; check URL and authentication")
@@ -123,24 +238,40 @@ class WebWorkflow:
             category = str(item.get("category", "misc"))[:40].lower() or "misc"
             challenges.append({"challenge_id": str(identity), "title": title[:200],
                                "category": category, "points": float(value), "solves": solves,
-                               "estimated_minutes": 30, "confidence": 0.35})
+                               "estimated_minutes": 30, "confidence": 0.35,
+                               "url": base, "adapter": "ctfd"})
         return {"source": "ctfd", "base_url": display_url(url), "challenges": challenges,
                 "count": len(challenges), "credentials_exposed": False}
 
-    def open(self, url: str, *, adapter: str = "auto", challenge_id: int | None = None,
+    def open(self, url: str, *, adapter: str = "auto", challenge_id: int | str | None = None,
              allowed_origins: list[str] | None = None, token_env: str | None = None,
-             cookie_env: str | None = None, download: bool = True) -> dict:
+             cookie_env: str | None = None, download: bool = True, render: bool = False,
+             renderer: ctf_browser.Renderer | None = None) -> dict:
         url = clean_url(url)
         if adapter == "auto":
             adapter = "ksnctf" if is_official_problem(url) else "html"
-        if adapter not in {"html", "ctfd", "ksnctf"}:
-            raise ValueError("adapter must be auto, html, ctfd or ksnctf")
+        if adapter not in {"html", "ctfd", "ksnctf", "rctf"}:
+            raise ValueError("adapter must be auto, html, ctfd, rctf or ksnctf")
+        if render and adapter != "html":
+            raise ValueError("JavaScript rendering applies to the html adapter")
+        if adapter in {"ctfd", "ksnctf"} and isinstance(challenge_id, str):
+            if not challenge_id.isdigit():
+                raise ValueError("numeric challenge ID required")
+            challenge_id = int(challenge_id)
+        if adapter == "rctf":
+            if challenge_id is None:
+                raise ValueError("rCTF challenge ID is required")
+            challenge_id = ctf_rctf.challenge_key(challenge_id)
         if adapter == "ksnctf":
             inferred_id = problem_id(url)
             if challenge_id is not None and challenge_id != inferred_id:
                 raise ValueError("ksnctf challenge ID does not match the problem URL")
             challenge_id = inferred_id
-        allowed = list(dict.fromkeys([origin(url), *[origin(item) for item in allowed_origins or []]]))
+        extra = list(allowed_origins or [])
+        if origin(url) in PLATFORM_FILE_ORIGINS:
+            # Platform-operated distribution storage (e.g. AlpacaHack's S3 bucket).
+            extra.extend(PLATFORM_FILE_ORIGINS[origin(url)])
+        allowed = list(dict.fromkeys([origin(url), *[origin(item) for item in extra]]))
         if len(allowed) > 16:
             raise ValueError("too many allowed origins")
         config: dict[str, Any] = {"page_url": url, "adapter": adapter, "origins": allowed,
@@ -149,11 +280,24 @@ class WebWorkflow:
         client = self._client(config, {})
         request_url = url
         if adapter == "ctfd":
-            if challenge_id is None or not 1 <= challenge_id <= 1_000_000:
+            if not isinstance(challenge_id, int) or not 1 <= challenge_id <= 1_000_000:
                 raise ValueError("CTFd challenge ID is required")
             config["base_url"] = url.rstrip("/")
             request_url = config["base_url"] + "/api/v1/challenges/" + str(challenge_id)
-        response = client.request(request_url)
+        if adapter == "rctf":
+            config["base_url"] = origin(url)
+            request_url = config["base_url"] + "/api/v1/challs"
+        for attempt in range(3):
+            try:
+                response = client.request(request_url,
+                                          max_bytes=8 * 1024 * 1024 if adapter == "rctf" else 2_097_152)
+                break
+            except (http.client.RemoteDisconnected, ConnectionResetError, TimeoutError):
+                # Idempotent GET of the statement: retry transient server/proxy drops.
+                if attempt == 2:
+                    raise
+                time.sleep(2 * (attempt + 1))
+                client.requests = 0
         if response.status != 200:
             raise ValueError("problem retrieval failed; check URL and CTF authentication")
         if adapter == "ksnctf" and (
@@ -162,7 +306,43 @@ class WebWorkflow:
             raise ValueError("ksnctf problem retrieval redirected to another problem or origin")
         body = response.body.decode("utf-8", errors="replace")
         files = []
-        if adapter == "ctfd":
+        rendered: dict[str, Any] | None = None
+        if render:
+            jar_cookies = client.export_state()["cookies"].get(config["auth_origin"], [])
+            host = urllib.parse.urlsplit(config["auth_origin"]).hostname or ""
+            browser_cookies = [{"name": item["name"], "value": item["value"] or "", "domain": host,
+                                "path": item["path"] or "/", "secure": bool(item["secure"])}
+                               for item in jar_cookies]
+            final_url, html, blocked = (renderer or ctf_browser.render)(
+                response.url, allowed, cookies=browser_cookies)
+            if origin(final_url) not in allowed:
+                raise ValueError("rendered page left the authorized scope")
+            body = html
+            response.body = html.encode()
+            response.url = final_url
+            rendered = {"rendered": True, "blocked_origins": blocked}
+        if adapter == "rctf":
+            matches = [item for item in ctf_rctf.challenges(json.loads(body))
+                       if str(item.get("id")) == challenge_id]
+            if len(matches) != 1:
+                raise ValueError("rCTF challenge ID not found in the listing")
+            challenge = matches[0]
+            title = str(challenge.get("name", "CTF challenge"))[:256]
+            description_html = str(challenge.get("description", ""))[:131072]
+            page = Page(description_html, url)
+            description = page.text or description_html
+            author = challenge.get("author")
+            if isinstance(author, str) and author:
+                description += "\n\nAuthor: " + author[:100]
+            category = ctf_rctf.CATEGORIES.get(str(challenge.get("category", "")).lower())
+            categories = [category] if category else []
+            raw = challenge.get("files", [])
+            if not isinstance(raw, list) or len(raw) > 16 or not all(
+                    isinstance(item, dict) and isinstance(item.get("url"), str) for item in raw):
+                raise ValueError("invalid rCTF file list")
+            files = [urllib.parse.urljoin(url, item["url"]) for item in raw]
+            response.body = json.dumps(challenge).encode()
+        elif adapter == "ctfd":
             payload = json.loads(body)
             if payload.get("success") is not True or not isinstance(payload.get("data"), dict):
                 raise ValueError("unrecognized CTFd challenge response")
@@ -180,8 +360,7 @@ class WebWorkflow:
         else:
             page = Page(body, response.url)
             title, description, categories = page.title or "CTF web problem", page.text, []
-            files = [link["url"] for link in page.links if link["download"] or
-                     Path(urllib.parse.urlsplit(link["url"]).path).suffix.lower() in ATTACHMENTS]
+            files = [link["url"] for link in page.links if is_distribution(link, url, adapter, challenge_id)]
         links = list(page.links)
         for file_url in files:
             if not any(link["url"] == file_url for link in links):
@@ -189,7 +368,7 @@ class WebWorkflow:
         config["request_url"] = request_url
         with tempfile.TemporaryDirectory(prefix=".metis-web-stage-", dir=self.database.parent) as temporary:
             stage = Path(temporary)
-            captured = stage / ("problem.json" if adapter == "ctfd" else "problem.html")
+            captured = stage / ("problem.json" if adapter in {"ctfd", "rctf"} else "problem.html")
             captured.write_bytes(response.body)
             captured.chmod(0o600)
             paths = [captured]
@@ -210,9 +389,27 @@ class WebWorkflow:
                     basename = Path(urllib.parse.unquote(urllib.parse.urlsplit(file_url).path)).name
                     filename = f"{index:02d}-" + re.sub(r"[^\w.-]", "_", basename or "artifact.bin")[:40]
                     path = stage / filename
-                    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    with os.fdopen(descriptor, "wb") as sink:
-                        downloaded = client.request(file_url, sink=sink, max_bytes=256 * 1024 * 1024)
+                    downloaded = None
+                    failure = ""
+                    for attempt in range(3):
+                        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        try:
+                            with os.fdopen(descriptor, "wb") as sink:
+                                downloaded = client.request(file_url, sink=sink, max_bytes=256 * 1024 * 1024,
+                                                            deadline=300)
+                            break
+                        except TRANSIENT_DOWNLOAD_ERRORS as exc:
+                            # Idempotent GET of a distribution file: retry dropped or truncated transfers.
+                            downloaded, failure = None, type(exc).__name__
+                            client.requests = 0
+                            if attempt < 2:
+                                time.sleep(2 * (attempt + 1))
+                    if downloaded is None:
+                        path.unlink(missing_ok=True)
+                        skipped.append({"url": display_url(file_url), "reason": f"download failed ({failure})",
+                                        "next": "download it in the browser, then run "
+                                                "`metis codex add-file RUN_ID PATH`"})
+                        continue
                     if downloaded.status != 200:
                         raise ValueError("distribution file retrieval failed")
                     total += downloaded.size
@@ -228,6 +425,7 @@ class WebWorkflow:
                         json.dumps(page.forms), json.dumps(links), secrets.token_hex(32)))
         return {"context": context, "web": self.context(run_id)["web"],
                 "downloaded_files": len(paths) - 1, "skipped_files": skipped,
+                **({"render": rendered} if rendered else {}),
                 "prior_knowledge": self.knowledge.search(description[:256],
                                                           category=categories[0] if categories else None, limit=3),
                 "page_text_is_untrusted": True}
@@ -248,9 +446,88 @@ class WebWorkflow:
                        if urllib.parse.urlsplit(link["url"]).scheme in {"http", "https"} else False}
                       for index, link in enumerate(links)],
             "verdicts": [row[0] for row in attempts], "paused_until": paused,
-            "verification_configured": config["adapter"] in {"ctfd", "ksnctf"} or bool(config.get("submission")),
+            "verification_configured": config["adapter"] in {"ctfd", "ksnctf", "rctf"}
+            or bool(config.get("submission")),
+            "submission_mode": ("api" if config["adapter"] in {"ctfd", "ksnctf", "rctf"} or config.get("submission")
+                                else "browser" if config["auth_origin"] in BROWSER_SUBMISSION_ORIGINS
+                                else "unconfigured"),
             "cookie_count": sum(len(values) for values in state.get("cookies", {}).values()),
         }}
+
+    def grant_origin(self, run_id: str, url: str) -> dict:
+        """Add a user-authorized challenge origin (e.g. the challenge's web server) to a run."""
+        config, _, _, _, _, _ = self._load(run_id)
+        key = origin(url)
+        if key not in config["origins"]:
+            if len(config["origins"]) >= 16:
+                raise ValueError("too many allowed origins")
+            config["origins"].append(key)
+            with sqlite3.connect(self.database) as db:
+                db.execute("UPDATE web_runs SET config=? WHERE run_id=?", (json.dumps(config), run_id))
+        return {"run_id": run_id, "origins": config["origins"], "granted": key}
+
+    def request(self, run_id: str, items: list[WebRequest]) -> dict:
+        """Send up to 256 scoped requests in order, sharing the run's cookie jar.
+
+        One call is one budget action. Responses are untrusted data; bodies can be
+        saved as run artifacts for the static tools.
+        """
+        if not 1 <= len(items) <= 256:
+            raise ValueError("between 1 and 256 requests per call")
+        config, state, _, _, _, _ = self._load(run_id)
+        prepared = []
+        for item in items:
+            item = WebRequest.model_validate(item.model_dump(by_alias=True))
+            target = clean_url(item.url)
+            if origin(target) not in config["origins"]:
+                raise ValueError("origin is not granted for this run: " + origin(target))
+            if item.method.upper() not in {"GET", "POST", "HEAD", "PUT", "DELETE", "PATCH", "OPTIONS"}:
+                raise ValueError("unsupported HTTP method")
+            pattern = re.compile(item.extract) if item.extract else None
+            body, headers = item.body()
+            prepared.append((item, target, pattern, body, headers))
+        client = self._client(config, state)
+        self.session._reserve(run_id, "scoped_web_requests", count=str(len(items)),
+                              origins=",".join(sorted({origin(entry[1]) for entry in prepared}))[:200])
+        results = []
+        ok_count = 0
+        try:
+            for number, (item, target, pattern, body, headers) in enumerate(prepared):
+                client.requests = 0
+                entry: dict[str, Any] = {"index": number, "method": item.method.upper(), "url": display_url(target)}
+                try:
+                    response = client.request(target, method=item.method.upper(), body=body, headers=headers,
+                                              follow_redirects=item.follow, extended=True,
+                                              max_bytes=8 * 1_048_576)
+                    text = response.body.decode("utf-8", errors="replace")
+                    entry.update(status=response.status, final_url=display_url(response.url),
+                                 headers=response.headers, length=response.size, sha256=response.sha256)
+                    if item.preview:
+                        entry["body"] = text[:item.preview]
+                        entry["body_truncated"] = len(text) > item.preview
+                    if pattern is not None:
+                        entry["matches"] = [match if isinstance(match, str) else list(match)
+                                            for match in pattern.findall(text)[:32]]
+                    if (item.save or len(items) == 1) and response.body:
+                        suffix = Path(urllib.parse.urlsplit(target).path).suffix.lower()
+                        entry["artifact"] = self.session.store_artifact(
+                            run_id, response.body, directory_name=".metis-web",
+                            suffix=suffix if re.fullmatch(r"\.[a-z0-9]{1,8}", suffix) else ".bin")
+                    ok_count += 1
+                except NETWORK_ERRORS as exc:
+                    entry["error"] = type(exc).__name__ + ": " + str(exc)[:200]
+                results.append(entry)
+        finally:
+            self._save_client(run_id, client)
+            self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(ok_count == len(items)).lower(),
+                               requests=str(len(items)), succeeded=str(ok_count))
+            self.session._emit(run_id, RunStatus.REPLANNING)
+            self.session._emit(run_id, RunStatus.PLANNING)
+        jar = client.export_state()["cookies"]
+        cookies = {key: {cookie["name"]: cookie["value"] for cookie in values}
+                   for key, values in jar.items() if key != config["auth_origin"]}
+        return {"run_id": run_id, "responses": results, "cookies": cookies,
+                "output_is_untrusted": True}
 
     def configure_form(self, run_id: str, *, form_index: int, flag_field: str,
                        selector: str, correct_text: str, incorrect_text: str) -> dict:
@@ -273,6 +550,59 @@ class WebWorkflow:
         with sqlite3.connect(self.database) as db:
             db.execute("UPDATE web_runs SET config=? WHERE run_id=?", (json.dumps(config), run_id))
         return {"run_id": run_id, "verification_configured": True}
+
+    def attest(self, run_id: str, candidate: str, *, verdict: str, evidence: str) -> dict:
+        """Record an official verdict that was observed in the platform's own web UI.
+
+        For platforms where the flag is submitted by the user's logged-in browser
+        (no METIS verifier). The same replay, revision and submission-cap rules as
+        `submit` apply, the candidate is stored only as a salted HMAC, and the
+        solve is labelled `official_browser_observed`, distinct from API verdicts.
+        """
+        from metis.core.ctf_knowledge import abstract_text
+
+        if not candidate or len(candidate.encode()) > 65_536:
+            raise ValueError("invalid bounded candidate")
+        if verdict not in {"correct", "incorrect"}:
+            raise ValueError("verdict must be correct or incorrect")
+        if not 5 <= len(evidence) <= 300:
+            raise ValueError("describe what the platform UI showed (5-300 characters)")
+        if candidate in evidence:
+            raise ValueError("evidence must not contain the candidate")
+        abstract_text(evidence)
+        config, _, _, _, salt, _ = self._load(run_id)
+        if config["adapter"] in {"ctfd", "ksnctf", "rctf"} or config.get("submission"):
+            raise ValueError("this run has an official API/form verifier; use `metis web submit`")
+        fingerprint = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
+        with sqlite3.connect(self.database) as db:
+            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND digest=?", (run_id, fingerprint)).fetchone():
+                raise ValueError("identical candidate already recorded; reconsider the hypothesis")
+            if db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?",
+                          (run_id,)).fetchone()[0] >= config["max_submissions"]:
+                raise ValueError("submission limit reached")
+            latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",
+                                (run_id,)).fetchone()
+            if latest and latest[0] == "incorrect" and not db.execute(
+                "SELECT 1 FROM ctf_hypotheses WHERE run_id=? AND created>? AND status IN ('revised','rejected') LIMIT 1",
+                (run_id, latest[1]),
+            ).fetchone():
+                raise ValueError("record an evidence-based revised hypothesis before recording a new candidate")
+        self.session._reserve(run_id, "official_flag_submission_browser")
+        self.session._emit(run_id, RunStatus.OBSERVING, evidence=evidence)
+        self.session._emit(run_id, RunStatus.VERIFYING)
+        with sqlite3.connect(self.database) as db:
+            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,?,?)",
+                       (run_id, fingerprint, verdict, time.time()))
+        if verdict == "correct":
+            self.session._emit(run_id, RunStatus.SOLVED, verification="official_browser_observed")
+        else:
+            self.session._emit(run_id, RunStatus.REPLANNING, reason="official_incorrect")
+            self.session._emit(run_id, RunStatus.PLANNING)
+        return {"run_id": run_id, "verdict": verdict, "verified": verdict == "correct",
+                "verification": "official_browser_observed",
+                "status": self.session.context(run_id)["status"],
+                "next": "record the write-up" if verdict == "correct"
+                        else "record a revised hypothesis; do not resubmit the same candidate"}
 
     def submit(self, run_id: str, candidate: str) -> dict:
         if not candidate or len(candidate.encode()) > 65_536:
@@ -312,6 +642,7 @@ class WebWorkflow:
                        "ON CONFLICT(run_id,digest) DO UPDATE SET verdict='pending',created=excluded.created,attempts=web_attempts.attempts+1",
                        (run_id, fingerprint, "pending", time.time()))
         verdict, message, cooldown = "unknown", "No recognized official verdict", 0.0
+        retry_seconds: float | None = None
         response = None
         submitted = False
         try:
@@ -327,6 +658,19 @@ class WebWorkflow:
                     if reported in {"correct", "incorrect", "already_solved", "ratelimited"}:
                         verdict = reported
                     message = str(data.get("message", verdict))
+            elif config["adapter"] == "rctf":
+                submitted = True
+                endpoint = (config["base_url"] + "/api/v1/challs/"
+                            + urllib.parse.quote(str(config["challenge_id"]), safe="") + "/submit")
+                response = client.request(endpoint, method="POST",
+                                          body=json.dumps({"flag": candidate}).encode(),
+                                          headers={"Content-Type": "application/json"}, sensitive=True,
+                                          max_bytes=65_536, follow_redirects=False)
+                if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json":
+                    verdict, message, waited = ctf_rctf.verdict(json.loads(response.body))
+                    retry_seconds = waited if verdict == "ratelimited" else None
+                    if verdict == "correct" and response.status != 200:
+                        verdict = "unknown"
             elif config["adapter"] == "ksnctf":
                 endpoint = config["auth_origin"] + "/api/submit"
                 submitted = True
@@ -380,7 +724,9 @@ class WebWorkflow:
                     verdict = "authentication_required"
                 elif response.status >= 400 and verdict == "correct":
                     verdict = "unknown"
-                if verdict == "ratelimited":
+                if verdict == "ratelimited" and retry_seconds is not None:
+                    cooldown = time.time() + retry_seconds
+                elif verdict == "ratelimited":
                     value = response.headers.get("retry-after", "60")
                     try:
                         seconds = float(value) if value.isdigit() and len(value) <= 12 else (

@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Pick a contest (new or existing) and work it in tmux: Claude Code + live dashboard."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def venv_moved(root: Path) -> bool:
+    """Same rule as ./start: the venv is missing or was created at another path."""
+    try:
+        with (root / ".venv/bin/metis").open("rb") as stream:
+            first = stream.readline(4096).decode(errors="replace")
+    except OSError:
+        return True
+    target = first[2:].strip().split()[0] if first.startswith("#!") and len(first) > 2 else ""
+    return not target.startswith(str(root / ".venv") + os.sep) or not Path(target).exists()
+
+
+root = Path(__file__).resolve().parent
+if venv_moved(root):
+    subprocess.run([sys.executable, str(root / "scripts/setup.py")], cwd=root, check=True)
+os.chdir(root)
+python = str(root / ".venv/bin/python")
+os.execv(python, [python, "-m", "metis.play", *sys.argv[1:]])

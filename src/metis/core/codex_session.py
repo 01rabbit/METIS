@@ -34,7 +34,10 @@ class CodexSession:
         self.store = RunStore(database)
         if created:
             database.chmod(0o600)
-        with sqlite3.connect(database) as db:
+        with sqlite3.connect(database, timeout=30) as db:
+            # Several swarm workers share this database; WAL lets readers and one
+            # writer proceed concurrently (the setting persists in the file).
+            db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS codex_sessions (
                 run_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, commitment TEXT,
                 started REAL NOT NULL, max_actions INTEGER NOT NULL,
@@ -42,6 +45,22 @@ class CodexSession:
             columns = {row[1] for row in db.execute("PRAGMA table_info(codex_sessions)")}
             if "artifact_root" not in columns:
                 db.execute("ALTER TABLE codex_sessions ADD COLUMN artifact_root TEXT")
+            # Older databases stored absolute artifact roots; store them relative to the
+            # state directory so the whole checkout can be moved or copied.
+            base = database.parent.resolve()
+            for run_id, stored in db.execute(
+                    "SELECT run_id, artifact_root FROM codex_sessions WHERE artifact_root LIKE '/%'").fetchall():
+                path = Path(stored)
+                if path.is_relative_to(base):
+                    db.execute("UPDATE codex_sessions SET artifact_root=? WHERE run_id=?",
+                               (path.relative_to(base).as_posix(), run_id))
+                elif not path.exists() and (base / path.name).is_dir():
+                    # The checkout was moved: the snapshot now lives beside the database.
+                    db.execute("UPDATE codex_sessions SET artifact_root=? WHERE run_id=?", (path.name, run_id))
+            if "activated" not in columns:
+                # The wall-clock budget starts at the first action, not at intake, so a
+                # portfolio opened at once does not expire together.
+                db.execute("ALTER TABLE codex_sessions ADD COLUMN activated REAL")
 
     def _emit(self, run_id: str, status: RunStatus, **detail: str) -> None:
         events = self.store.read(run_id)
@@ -57,6 +76,8 @@ class CodexSession:
         root = str(artifact_root.resolve(strict=True)) if artifact_root is not None else None
         if root is not None and not Path(root).is_dir():
             raise ValueError("artifact root must be a directory")
+        if root is not None and Path(root).is_relative_to(self.database.parent.resolve()):
+            root = Path(root).relative_to(self.database.parent.resolve()).as_posix()
         if commitment is not None and not re.fullmatch(r"[0-9a-f]{64}", commitment):
             raise ValueError("invalid SHA-256 verification commitment")
         if not 1 <= max_actions <= 1000 or not 1 <= wall_seconds <= 86_400:
@@ -82,19 +103,34 @@ class CodexSession:
         return row
 
     def context(self, run_id: str) -> dict:
-        manifest, commitment, started, max_actions, wall_seconds = self._session(run_id)
+        manifest, commitment, _started, max_actions, wall_seconds = self._session(run_id)
         events = self.store.read(run_id)
         used = sum(event.status == RunStatus.EXECUTING for event in events)
+        with sqlite3.connect(self.database) as db:
+            activated = db.execute("SELECT activated FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()[0]
+        clock = activated if activated is not None else time.time()
         return {
             "run_id": run_id, "status": events[-1].status.value,
             "challenge": json.loads(manifest), "tools": sorted(NATIVE_TOOLS),
             "artifact_tools": sorted(ARTIFACT_TOOLS),
             "triage": triage(ChallengeManifest.model_validate_json(manifest)),
-            "network_tools": [],
+            "network_tools": self._network_tools(run_id),
             "verification_available": commitment is not None,
             "actions_remaining": max(0, max_actions - used),
-            "seconds_remaining": max(0, round(started + wall_seconds - time.time())),
+            "seconds_remaining": max(0, round(clock + wall_seconds - time.time())),
+            "budget": {"max_actions": max_actions, "wall_seconds": wall_seconds,
+                       "clock_started": activated is not None},
         }
+
+    def _network_tools(self, run_id: str) -> list[dict]:
+        with sqlite3.connect(self.database) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='remote_endpoints'"
+                              ).fetchone():
+                return []
+            rows = db.execute("SELECT idx,host,port,tls FROM remote_endpoints WHERE run_id=? ORDER BY idx",
+                              (run_id,)).fetchall()
+        return [{"index": idx, "host": host, "port": port, "tls": bool(tls),
+                 "operations": ["remote exchange", "remote pipe"]} for idx, host, port, tls in rows]
 
     def _reserve(self, run_id: str, operation: str, **detail: str) -> None:
         context = self.context(run_id)
@@ -103,7 +139,42 @@ class CodexSession:
         if not context["actions_remaining"] or not context["seconds_remaining"]:
             self._emit(run_id, RunStatus.EXHAUSTED, reason="budget_limit")
             raise ValueError("session budget exhausted")
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE codex_sessions SET activated=? WHERE run_id=? AND activated IS NULL",
+                       (time.time(), run_id))
         self._emit(run_id, RunStatus.EXECUTING, operation=operation, **detail)
+
+    def extend(self, run_id: str, *, actions: int = 0, seconds: int = 0) -> dict:
+        """Operator-approved budget extension; also resumes a budget-exhausted run.
+
+        Keeps the run identity, attempt history and duplicate-candidate protection,
+        which reopening the problem as a new run would lose.
+        """
+        _, _, _, max_actions, wall_seconds = self._session(run_id)
+        if actions < 0 or not 0 <= seconds <= 86_400 or not (actions or seconds):
+            raise ValueError("extension must add actions and/or 0-86400 seconds")
+        with sqlite3.connect(self.database) as db:
+            activated = db.execute("SELECT activated FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()[0]
+        # Time already spent past the old limit is forgiven: `seconds` means "this
+        # much more from now", which is what an operator expects after expiry.
+        elapsed = time.time() - activated if activated is not None else 0.0
+        used = sum(event.status == RunStatus.EXECUTING for event in self.store.read(run_id))
+        new_seconds = int(max(wall_seconds, elapsed)) + seconds
+        new_actions = max(max_actions, used) + actions
+        if new_actions - used > 2000:
+            raise ValueError("extension exceeds the hard action ceiling")
+        events = self.store.read(run_id)
+        status = events[-1].status
+        if status not in {RunStatus.PLANNING, RunStatus.EXHAUSTED}:
+            raise ValueError("only planning or budget-exhausted runs can be extended")
+        if status == RunStatus.EXHAUSTED and events[-1].detail.get("reason") != "budget_limit":
+            raise ValueError("run was not stopped by its budget")
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE codex_sessions SET max_actions=?, wall_seconds=? WHERE run_id=?",
+                       (new_actions, new_seconds, run_id))
+        if status == RunStatus.EXHAUSTED:
+            self._emit(run_id, RunStatus.PLANNING, reason="operator_budget_extension")
+        return self.context(run_id)
 
     def act(self, run_id: str, request: ToolRequest) -> dict:
         request = ToolRequest.model_validate(request.model_dump())
@@ -139,14 +210,12 @@ class CodexSession:
         manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
         if name not in manifest.artifacts or tool not in ARTIFACT_TOOLS:
             raise ValueError("artifact or operation is outside the declared scope")
-        with sqlite3.connect(self.database) as db:
-            root = db.execute("SELECT artifact_root FROM codex_sessions WHERE run_id=?",
-                              (run_id,)).fetchone()[0]
+        root = self.artifact_root(run_id)
         if root is None:
             raise ValueError("no artifact root registered")
         self._reserve(run_id, "read_only_artifact_analysis", tool=tool)
         try:
-            result = inspect_file(Path(root), name, tool, options)
+            result = inspect_file(root, name, tool, options)
             output = {"run_id": run_id, "ok": True, "result": result}
         except ARTIFACT_ERRORS as exc:
             output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",
@@ -165,8 +234,11 @@ class CodexSession:
         try:
             copied = []
             total = 0
-            for index, path in enumerate(paths):
-                name = f"{index:02d}-" + re.sub(r"[^\w.-]", "_", path.name)[:40]
+            for index, supplied in enumerate(paths):
+                # The user named these paths explicitly; resolve OS-level symlinks such as
+                # macOS /tmp -> /private/tmp. The target must still be a bounded regular file.
+                path = supplied.resolve(strict=True)
+                name = f"{index:02d}-" + re.sub(r"[^\w.-]", "_", supplied.name)[:40]
                 descriptor = os.open(workspace / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with (os.fdopen(descriptor, "wb") as stream,
                       artifact_stream(path.parent, path.name, max_bytes=MAX_FILE) as source):
@@ -201,20 +273,41 @@ class CodexSession:
         content = base64.b64decode(observation["result"]["base64"], validate=True)
         if len(content) > 1_048_576:
             raise ValueError("derived artifact exceeds one MiB")
+        relative = self.store_artifact(run_id, content)
+        return {"run_id": run_id, "ok": True, "artifact": relative,
+                "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+
+    def artifact_root(self, run_id: str) -> Path | None:
+        """Snapshot directory of a run; relative roots live beside the database."""
+        self._session(run_id)
         with sqlite3.connect(self.database) as db:
             root = db.execute("SELECT artifact_root FROM codex_sessions WHERE run_id=?",
                               (run_id,)).fetchone()[0]
+        if root is None:
+            return None
+        path = Path(root)
+        return path if path.is_absolute() else self.database.parent.resolve() / path
+
+    def store_artifact(self, run_id: str, content: bytes, *, directory_name: str = ".metis-derived",
+                       suffix: str = ".bin") -> str:
+        """Write controller-produced bytes into the run snapshot and declare them in scope."""
+        if len(content) > MAX_FILE or not re.fullmatch(r"\.metis-[a-z]{1,16}", directory_name) \
+                or not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+            raise ValueError("invalid controller artifact")
+        root = self.artifact_root(run_id)
+        if root is None:
+            raise ValueError("no artifact root registered")
         directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             try:
-                os.mkdir(".metis-derived", mode=0o700, dir_fd=directory)
+                os.mkdir(directory_name, mode=0o700, dir_fd=directory)
             except FileExistsError:
                 pass
-            output_directory = os.open(".metis-derived", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            output_directory = os.open(directory_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                        dir_fd=directory)
         finally:
             os.close(directory)
-        filename = uuid4().hex + ".bin"
+        filename = uuid4().hex + suffix
         try:
             descriptor = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o600, dir_fd=output_directory)
@@ -222,7 +315,7 @@ class CodexSession:
                 stream.write(content)
         finally:
             os.close(output_directory)
-        relative = ".metis-derived/" + filename
+        relative = directory_name + "/" + filename
         manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
         data = manifest.model_dump()
         data["artifacts"] = [*manifest.artifacts, relative]
@@ -230,8 +323,51 @@ class CodexSession:
         with sqlite3.connect(self.database) as db:
             db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
                        (updated.model_dump_json(), run_id))
-        return {"run_id": run_id, "ok": True, "artifact": relative,
-                "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        return relative
+
+    def add_file(self, run_id: str, supplied: Path) -> dict:
+        """Add a user-supplied file (e.g. downloaded in the browser) to a run's snapshot."""
+        path = supplied.resolve(strict=True)
+        if not path.is_file():
+            raise ValueError("add-file requires a regular file")
+        root = self.artifact_root(run_id)
+        if root is None:
+            raise ValueError("no artifact root registered")
+        name = re.sub(r"[^\w.-]", "_", supplied.name)[:60].lstrip(".") or "added.bin"
+        directory = root / ".metis-added"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink():
+            raise ValueError("invalid snapshot directory")
+        target = directory / name
+        stem, suffix, counter = target.stem, target.suffix, 1
+        while target.exists():
+            counter += 1
+            target = directory / f"{stem}-{counter}{suffix}"
+        digest = hashlib.sha256()
+        size = 0
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with (os.fdopen(descriptor, "wb") as stream,
+                  artifact_stream(path.parent, path.name, max_bytes=MAX_FILE) as source):
+                while chunk := source.read(1_048_576):
+                    size += len(chunk)
+                    if size > MAX_FILE:
+                        raise ValueError("file exceeds the artifact limit")
+                    digest.update(chunk)
+                    stream.write(chunk)
+        except (OSError, ValueError):
+            target.unlink(missing_ok=True)
+            raise
+        relative = ".metis-added/" + target.name
+        manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
+        data = manifest.model_dump()
+        data["artifacts"] = [*manifest.artifacts, relative]
+        updated = ChallengeManifest.model_validate(data)
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                       (updated.model_dump_json(), run_id))
+        return {"run_id": run_id, "ok": True, "artifact": relative, "size": size,
+                "sha256": digest.hexdigest()}
 
     def cancel(self, run_id: str) -> dict:
         context = self.context(run_id)

@@ -20,6 +20,18 @@ AI coding CLI in the repository. With Codex it enables `cli_daybreak`,
 METIS commands, verifier, state, and knowledge store. The instructions cap
 unnecessary fan-out and context duplication to conserve tokens.
 
+For contests (Claude Code + tmux), use the contest launcher instead:
+
+```sh
+./play                 # menu: continue a contest or register a new one from its URL
+./play CONTEST_ID      # continue directly; ./play --new URL registers and starts
+```
+
+It opens a tmux session with an interactive Claude Code window (started with the
+contest's rules and a "fetch new challenges, report, clear handoffs" brief), a live
+dashboard, and optionally swarm workers. Choosing a running contest re-attaches.
+See [Tournament mode](docs/TOURNAMENT_MODE.md).
+
 `./start` detects Codex, Claude, Gemini, OpenCode, or Aider. Select explicitly
 with `./start --agent NAME`; see the
 [compatibility guide](docs/AGENT_COMPATIBILITY.md) for validated boundaries.
@@ -60,6 +72,36 @@ The problem ID comes from the URL. `metis web submit RUN_ID` sends the stdin
 candidate to the same-origin JSON API and accepts only its boolean `result: true`.
 Successful submissions update the run to `solved` and permit success technique cards.
 
+rCTF events use `metis web auth URL --kind rctf-team-token` once, then
+`metis web catalog URL --adapter rctf` and
+`metis web open URL --adapter rctf --challenge-id ID`. JavaScript-built pages can
+be opened with `--render` (optional scoped headless Chromium:
+`python3 scripts/setup.py --browser`).
+
+Services announced as `nc host port` are reached with `metis remote`: `suggest`
+lists candidates from the statement, `grant` records the endpoint the user
+authorized, `exchange` runs a bounded JSON send/receive script, `pipe`
+bridges an agent-written solver's stdin/stdout to the socket, `ssh` runs
+commands and fetches files over SSH, and `connect` is an `nc`-like bridge.
+Web challenge servers are reached with `metis web grant` and `metis web
+request` (single or batched, shared cookie jar, any non-hop-by-hop header).
+All of these honor the platform proxy, so they work inside agent sandboxes
+such as Claude Code's where raw sockets and local DNS are blocked.
+
+Challenge programs run only in `metis sandbox`: a fresh no-network, read-only,
+capability-free container per call (Docker Desktop, OrbStack, Colima or Podman),
+with `run`, `strace`, `ltrace`, `gdb` and `script` modes and pwntools inside.
+Build the bundled image once with `metis sandbox build`.
+
+Each CTF gets a directory under `writeups/` with one Markdown write-up per
+problem (`metis writeup save`), a progress table, and a cross-CTF technique
+index (`writeups/KNOWLEDGE.md`) generated from the MUNIN technique cards that
+later challenges retrieve automatically.
+
+To move or copy the checkout (another folder or another Mac), copy the whole
+folder including hidden directories and run `python3 scripts/setup.py --all`;
+see [migration](docs/MIGRATION.md).
+
 See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
 [METIS skill](.agents/skills/metis/SKILL.md) for Codex instructions.
 
@@ -71,18 +113,26 @@ See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
   keys, packing, cyclic patterns, and candidate extraction.
 - Bounded static inspection for archives, images, audio, packet captures,
   SQLite, PDF text, Java classes, PE, ELF, and several CPU disassemblies.
-- Official CTFd and ksnctf JSON verdicts and explicitly configured HTML-form verdicts; reflected
+- Scoped TCP/TLS service interaction (scripted exchanges and solver pipes) with
+  explicit grants, DNS-rebinding refusal, byte/time bounds and saved transcripts.
+- Isolated dynamic execution (run/strace/ltrace/gdb/pwntools scripts) in a
+  no-network container; challenge programs never run on the host.
+- Optional JavaScript rendering with out-of-scope requests aborted.
+- Claude Code project skill, `/ctf` command and eight category subagents
+  (install from `integrations/claude-code/`).
+- Official CTFd, rCTF and ksnctf JSON verdicts and explicitly configured HTML-form verdicts; reflected
   candidates and HTTP status alone are rejected as proof.
 - Duplicate-answer prevention, rate-limit handling, post-failure hypothesis
   revision, resumable state, and evidence-backed reusable technique cards.
 - Six synthetic offline category exercises and a local CTFd-shaped rehearsal
   server for repeatable tests.
 
-Uploaded programs are never executed on the host. This environment cannot
-safely run hostile binaries, so dynamic exploitation requires a separately
-enforced sandbox. JavaScript-rendered pages and unusual competition APIs may
-need an adapter or a manually supplied distribution. These limits do not block
-the static and network submission workflow above.
+Uploaded programs are never executed on the host; dynamic analysis requires a
+local container engine. A container is defense in depth, not a proof against
+kernel exploits. The image is built for the host CPU; foreign-architecture
+targets (x86-64 on Apple Silicon) run through QEMU user-mode, where gdb works via
+QEMU's gdb stub, strace via `qemu -strace`, and ltrace is unavailable. Platforms other than CTFd, rCTF and ksnctf need the generic
+HTML form verifier or a new adapter.
 
 ## Development
 
