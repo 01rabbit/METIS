@@ -21,3 +21,4 @@ artifacts/
 .metis-web-stage-*/
 # Machine-specific Claude Code settings (absolute paths, local allowlists)
 .claude/settings.local.json
+*.py[cod]
