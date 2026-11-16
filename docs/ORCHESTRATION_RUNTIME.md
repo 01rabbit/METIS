@@ -231,6 +231,9 @@ PR #14 の受け入れ手順を、現行のコマンドに合わせて短くし�
   `next_action` に書き、Daybreak が実行する。
 - 合成 fixture での結果は実大会の solve 率を意味しない。
 
+=======
+
+>>>>>>> 15b8894 (Restrict Linux specialist process creation with seccomp)
 ### Linux process creation restriction
 
 Linux の bubblewrap 内では、転送器を起動した後に seccomp を Codex の実行系へ適用する。
