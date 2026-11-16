@@ -107,6 +107,15 @@ refuses to run; `--isolation none` is an explicit, recorded opt-out. An untested
 CLI version is refused unless `codex-probe --ping` passes and you add
 `--allow-untested-codex`.
 
+### Answers and write-ups
+
+Solved answers live in the answer vault outside the repository (`$METIS_ANSWER_VAULT`,
+default `~/.local/share/metis/answers.json`); write-ups keep `⟦answer:…⟧` references.
+Neither you nor subagents read the vault while solving. `metis web open` reports
+`evaluation.split`; for `practice` problems a write-up exists, so do not open it when
+the user asks for an independent solve. `metis writeup save` moves any flag in the
+narrative or scripts into the vault automatically.
+
 ## 3. Tools you and the subagents use
 
 - Static: `metis codex tools`, `metis codex artifact RUN_ID NAME TOOL [--options JSON]`,

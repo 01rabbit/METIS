@@ -7,7 +7,7 @@
 | カテゴリ | rev |
 | 配点 | 150 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:57 JST） |
-| Flag | `FLAG_HTcJT6pUmFEd2PH2` |
+| Flag | `⟦answer:writeups/ksnctf/27-lives-out.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | rev, pe, x64, game-of-life, static-analysis, capstone |
 | 問題URL | https://ksnctf.sweetduet.info/problem/27 |

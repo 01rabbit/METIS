@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1.5 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:46 JST） |
-| Flag | `Alpaca{258}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/quiz-alpacas-quiz-alpacashock.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, quiz, counting |
 | 問題URL | https://alpacahack.com/daily/challenges/quiz-alpacashock |
@@ -15,7 +15,7 @@
 
 ## 概要
 
-Daily AlpacaHack の A-SIDE 問題が開始から何問目かを数えて Alpaca{N} 形式で答えるクイズ。9/1 公開分は 258 問目。
+Daily AlpacaHack の A-SIDE 問題が開始から何問目かを数えて ⟦answer:writeups/alpacahack-daily/quiz-alpacas-quiz-alpacashock.md#2⟧ 形式で答えるクイズ。9/1 公開分は 258 問目。
 
 ## 解析
 
@@ -27,7 +27,7 @@ Daily AlpacaHack の A-SIDE 問題が開始から何問目かを数えて Alpaca
 - 2026-08: 1 / 2 / 3-4 / 5 / 6-8 / 9-10 / 11-12 / 13-15 / 16-17 / 18-20 / 21-23 / 24-26 / 27-28 / 29-31 の 14 問
 - 2026-09-01 の QUIZ ALPACASHOCK 自身 = 1
 
-合計 243 + 14 + 1 = 258 → `Alpaca{258}`。ブラウザのフラグ欄から提出し Solved を確認。
+合計 243 + 14 + 1 = 258 → `⟦answer:writeups/alpacahack-daily/quiz-alpacas-quiz-alpacashock.md#1⟧`。ブラウザのフラグ欄から提出し Solved を確認。
 
 ## 学び・再利用できる手法
 

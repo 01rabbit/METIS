@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:34 JST） |
-| Flag | `Alpaca{The_author_has_only_ever_used_$IFS_in_CTF._How_about_you?}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/cowsay-jail-cowsay-jail.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, jail, shell-injection |
 | 問題URL | https://alpacahack.com/daily/challenges/cowsay-jail |

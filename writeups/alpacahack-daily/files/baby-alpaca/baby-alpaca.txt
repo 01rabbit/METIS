@@ -1,1 +1,1 @@
-# Baby Alpaca (quiz): baby alpaca = 'cria' (Spanish, 4 letters). Flag: Alpaca{cria}
+# Baby Alpaca (quiz): baby alpaca = 'cria' (Spanish, 4 letters). Flag: ⟦answer:writeups/alpacahack-daily/files/baby-alpaca/baby-alpaca.txt#1⟧

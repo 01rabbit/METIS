@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:39 JST） |
-| Flag | `Alpaca{W3_w0uld_lik3_t0_foll0w_th3_ex4mpl3_0f_YAMAMOTO_NAOZUMI_wh0_d3d1c4ted_h1mself_t0_7h3_d3vel0pment_0f_mu51c}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/yell-yell.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, rsa, pollard-p-1 |
 | 問題URL | https://alpacahack.com/daily/challenges/yell |

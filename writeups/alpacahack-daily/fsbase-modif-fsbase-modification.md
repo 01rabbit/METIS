@@ -7,7 +7,7 @@
 | カテゴリ | pwn |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:02 JST） |
-| Flag | `Alpaca{Also_we_can_use_the_WRFSBASE_instruction_to_set_the_FS_base_address}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/fsbase-modif-fsbase-modification.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | pwn, canary, fsbase, ret2win |
 | 問題URL | https://alpacahack.com/daily/challenges/fsbase-modification |

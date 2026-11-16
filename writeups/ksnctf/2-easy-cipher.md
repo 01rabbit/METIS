@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 50 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:50 JST） |
-| Flag | `FLAG_SwzgxBJSAMqwxxAU` |
+| Flag | `⟦answer:writeups/ksnctf/2-easy-cipher.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, rot13, caesar |
 | 問題URL | https://ksnctf.sweetduet.info/problem/2 |
@@ -27,7 +27,7 @@
 import codecs
 p=codecs.decode(text,'rot13')
 ```
-FLAGSwzgxBJSAMqwxxAU の FLAG の直後にアンダースコアを挿入して FLAG_SwzgxBJSAMqwxxAU。
+FLAGSwzgxBJSAMqwxxAU の FLAG の直後にアンダースコアを挿入して ⟦answer:writeups/ksnctf/2-easy-cipher.md#1⟧。
 
 ## 使用したスクリプト
 

@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 100 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:40 JST） |
-| Flag | `FLAG_un5A5BUMF8JwjYi` |
+| Flag | `⟦answer:writeups/ksnctf/40-deep-flag-network.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | ctf-misc, ml, model-inversion, qr-code, reed-solomon, affine |
 | 問題URL | https://ksnctf.sweetduet.info/problem/40 |

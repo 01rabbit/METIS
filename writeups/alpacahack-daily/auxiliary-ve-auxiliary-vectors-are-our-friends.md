@@ -7,7 +7,7 @@
 | カテゴリ | pwn |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:11 JST） |
-| Flag | `Alpaca{Auxiliary_vectors_are_a_gift_from_the_Linux_kernel}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/auxiliary-ve-auxiliary-vectors-are-our-friends.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | pwn, canary, auxv, ret2win |
 | 問題URL | https://alpacahack.com/daily/challenges/auxiliary-vectors-are-our-friends |

@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 60 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 15:39 JST） |
-| Flag | `FLAG_aSiuJHSLfzoQkszD` |
+| Flag | `⟦answer:writeups/ksnctf/14-john.md#1⟧` |
 | タグ | crypto, sha512crypt, dictionary-attack, shadow, ksnctf |
 | 問題URL | https://ksnctf.sweetduet.info/problem/14 |
 | METIS run | `01b16be7cc9d4d5aac16a4b87134e0a9` |
@@ -32,7 +32,7 @@ user00..user20 の 21 件が約 45 秒で全て辞書ヒット:
 `FREQUENT LATTER ADDITIONAL GENDER __________ applies SPIRITS independent ultimate JENNY HELD SUFFERS LEAVE floating zecht opinion QUESTION karaoke strange zero DELIGHT`
 
 各パスワードの頭文字を順に連結する (大文字小文字は保持):
-`F L A G _ a S i u J H S L f z o Q k s z D` -> `FLAG_aSiuJHSLfzoQkszD`
+`F L A G _ a S i u J H S L f z o Q k s z D` -> `⟦answer:writeups/ksnctf/14-john.md#1⟧`
 
 ## 使用したスクリプト
 

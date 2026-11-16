@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 60 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:59 JST） |
-| Flag | `FLAG_xWqGGiTkpQpF43mp` |
+| Flag | `⟦answer:writeups/ksnctf/28-lo-tech-cipher.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | crypto, visual-cryptography, polyglot, png, zip, xor |
 | 問題URL | https://ksnctf.sweetduet.info/problem/28 |

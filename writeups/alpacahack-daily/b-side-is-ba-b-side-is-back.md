@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 20:13 JST） |
-| Flag | `Alpaca{we_will_rock_you}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/b-side-is-ba-b-side-is-back.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, quiz |
 | 問題URL | https://alpacahack.com/daily/challenges/b-side-is-back |

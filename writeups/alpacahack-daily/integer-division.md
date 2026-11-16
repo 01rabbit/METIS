@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 3 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 22:30 JST） |
-| Flag | `Alpaca{The_IDIV_instruction_generates_#DE_and_Linux_converts_it_to_SIGFPE}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/integer-division.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, integer-overflow, SIGFPE |
 | 問題URL | https://alpacahack.com/daily/challenges/integer-division |

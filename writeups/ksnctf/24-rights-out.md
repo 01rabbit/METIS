@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 100 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:57 JST） |
-| Flag | `FLAG_EhiAfPAAY7JG3UZ2` |
+| Flag | `⟦answer:writeups/ksnctf/24-rights-out.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | ksnctf, rev, dotnet, lights-out, xor |
 | 問題URL | https://ksnctf.sweetduet.info/problem/24 |
@@ -27,9 +27,9 @@ rightsout.exe は .NET(Windows Forms)。ILを自作ディスアセンブラで�
 key = struct.unpack("<8I", d[0x538:0x538+32])   # (1,7,16,11,14,19,20,18)
 c   = struct.unpack("<33I", d[0x558:0x558+132])
 print("".join(chr(c[i]^key[i%8]) for i in range(33)))
-# The flag is FLAG_EhiAfPAAY7JG3UZ2
+# The flag is ⟦answer:writeups/ksnctf/24-rights-out.md#1⟧
 ```
-実行は不要(静的に復号)。フラグ: `FLAG_EhiAfPAAY7JG3UZ2`
+実行は不要(静的に復号)。フラグ: `⟦answer:writeups/ksnctf/24-rights-out.md#1⟧`
 
 ## 使用したスクリプト
 

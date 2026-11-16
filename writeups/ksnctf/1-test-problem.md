@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:48 JST） |
-| Flag | `FLAG_SRORGLnTh2Q5fTwu` |
+| Flag | `⟦answer:writeups/ksnctf/1-test-problem.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | warmup |
 | 問題URL | https://ksnctf.sweetduet.info/problem/1 |
@@ -28,7 +28,7 @@ import re
 t=re.sub(r'<[^>]+>','\n',open('00-problem.html').read())
 print(re.search(r'FLAG_\w+',t).group(0))
 ```
-結果: FLAG_SRORGLnTh2Q5fTwu
+結果: ⟦answer:writeups/ksnctf/1-test-problem.md#1⟧
 
 ## 使用したスクリプト
 

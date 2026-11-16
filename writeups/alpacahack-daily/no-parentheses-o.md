@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 7.5 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 22:36 JST） |
-| Flag | `Alpaca{v(^-^)v<nice!}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/no-parentheses-o.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, jail, python |
 | 問題URL | https://alpacahack.com/daily/challenges/no-parentheses |

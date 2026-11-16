@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 20 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:53 JST） |
-| Flag | `FLAG_SHEBANG` |
+| Flag | `⟦answer:writeups/ksnctf/10-untitled.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, trivia, shebang |
 | 問題URL | https://ksnctf.sweetduet.info/problem/10 |
@@ -19,11 +19,11 @@
 
 ## 解析
 
-問題文は 'The flag is FLAG_S??????'(?は6文字、大文字)、'#!' の呼称を問う。SHEBANG は S+6文字(HEBANG) で形式に一致するため候補 FLAG_SHEBANG。ただし保存データに検証材料はなく、フラグの正否は主催側の検証に依存する。
+問題文は 'The flag is FLAG_S??????'(?は6文字、大文字)、'#!' の呼称を問う。SHEBANG は S+6文字(HEBANG) で形式に一致するため候補 ⟦answer:writeups/ksnctf/10-untitled.md#1⟧。ただし保存データに検証材料はなく、フラグの正否は主催側の検証に依存する。
 
 ## 解法
 
-`#!` の名称は shebang。S + HEBANG の6文字で FLAG_S?????? に合致 → FLAG_SHEBANG (候補、オフラインでは未検証)。
+`#!` の名称は shebang。S + HEBANG の6文字で FLAG_S?????? に合致 → ⟦answer:writeups/ksnctf/10-untitled.md#1⟧ (候補、オフラインでは未検証)。
 
 ## 学び・再利用できる手法
 

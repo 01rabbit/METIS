@@ -7,7 +7,7 @@
 | カテゴリ | crypto |
 | 配点 | 7 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:44 JST） |
-| Flag | `Alpaca{Now_is_the_time_to_recite_those_lyrics_by_John_Lennon:'All_we_are_saying_is_give_peace_a_chance!'}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/neighborhood-neighborhood_distance.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | rsa, crypto, close-primes |
 | 問題URL | https://alpacahack.com/daily/challenges/neighborhood-distance |

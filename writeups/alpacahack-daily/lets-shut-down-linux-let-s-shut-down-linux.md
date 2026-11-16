@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 2.5 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 22:33 JST） |
-| Flag | `Alpaca{Did_you_notice_that_hex_values_of_magic2_represent_DD/MM/YYYY_format?}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/lets-shut-down-linux-let-s-shut-down-linux.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, syscall, reboot |
 | 問題URL | https://alpacahack.com/daily/challenges/lets-shut-down-linux |

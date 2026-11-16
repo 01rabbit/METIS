@@ -7,7 +7,7 @@
 | カテゴリ | pwn |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:05 JST） |
-| Flag | `Alpaca{u_w0n_7h3_g4m3_GG}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/what-is-my-p-what-is-my-pointer-4.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | pwn, oob, aslr |
 | 問題URL | https://alpacahack.com/daily/challenges/what-is-my-pointer-4 |

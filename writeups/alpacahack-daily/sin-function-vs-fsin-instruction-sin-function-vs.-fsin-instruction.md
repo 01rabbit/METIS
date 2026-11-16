@@ -7,7 +7,7 @@
 | カテゴリ | rev |
 | 配点 | 4 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 22:32 JST） |
-| Flag | `Alpaca{Specifications_say_everything}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/sin-function-vs-fsin-instruction-sin-function-vs.-fsin-instruction.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | rev, x87, fsin |
 | 問題URL | https://alpacahack.com/daily/challenges/sin-function-vs-fsin-instruction |

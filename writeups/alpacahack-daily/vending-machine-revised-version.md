@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 2 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 22:28 JST） |
-| Flag | `Alpaca{!sp3ci41_drink_f0r_you!}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/vending-machine-revised-version.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, python |
 | 問題URL | https://alpacahack.com/daily/challenges/vending-machine-revised-version |

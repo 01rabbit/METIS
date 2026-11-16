@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 70 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:50 JST） |
-| Flag | `FLAG_FeLgP3SiAWezWPHu` |
+| Flag | `⟦answer:writeups/ksnctf/5-onion.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | encoding, base64, uuencode |
 | 問題URL | https://ksnctf.sweetduet.info/problem/5 |
@@ -30,7 +30,7 @@ while True:
     d=x
 binascii.a2b_uu(line)
 ```
-最終結果 FLAG_FeLgP3SiAWezWPHu
+最終結果 ⟦answer:writeups/ksnctf/5-onion.md#1⟧
 
 ## 使用したスクリプト
 

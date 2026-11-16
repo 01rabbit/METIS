@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 1 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 21:00 JST） |
-| Flag | `Alpaca{oops!}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/remnant-remnant.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, oracle, base64 |
 | 問題URL | https://alpacahack.com/daily/challenges/remnant |
@@ -23,7 +23,7 @@ validate=False の b64decode は非英数字を落とす。前方確定分を落
 
 ## 解法
 
-オラクル問い合わせで base64 文字列復元 -> base64decode -> Alpaca{oops!}（最後に flag 自体を送って Correct! 確認）。
+オラクル問い合わせで base64 文字列復元 -> base64decode -> ⟦answer:writeups/alpacahack-daily/remnant-remnant.md#1⟧（最後に flag 自体を送って Correct! 確認）。
 
 ## 使用したスクリプト
 

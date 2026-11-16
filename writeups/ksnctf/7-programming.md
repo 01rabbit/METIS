@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 110 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:37 JST） |
-| Flag | `FLAG_EmTx6FTbGLieiMcA` |
+| Flag | `⟦answer:writeups/ksnctf/7-programming.md#1⟧` |
 | タグ | misc, whitespace, esolang, polyglot |
 | 問題URL | https://ksnctf.sweetduet.info/problem/7 |
 | METIS run | `d7014a684aa94037a5919ceb504d4e90` |
@@ -27,7 +27,7 @@ C++ 部分を計算すると 'FROG' + '_This_is_wrong_:(' となり偽物。ソ�
 3. 実行結果:
 ```
 PIN: OK
-FLAG_EmTx6FTbGLieiMcA
+⟦answer:writeups/ksnctf/7-programming.md#1⟧
 ```
 ```
 ../../.venv/bin/python -I 7-ws.py ../.metis-artifacts-5jkm5bl2/01-00-program.cpp

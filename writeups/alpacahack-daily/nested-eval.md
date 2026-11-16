@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 6.5 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 22:29 JST） |
-| Flag | `Alpaca{jail_tsukurun0_taihenda}` |
+| Flag | `⟦answer:writeups/alpacahack-daily/nested-eval.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | misc, jail, python |
 | 問題URL | https://alpacahack.com/daily/challenges/nested-eval |

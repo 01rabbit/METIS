@@ -7,7 +7,7 @@
 | カテゴリ | web |
 | 配点 | 220 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 15:18 JST） |
-| Flag | `FLAG_4nanCgVEFnZZysxW` |
+| Flag | `⟦answer:writeups/ksnctf/34-are-you-human.md#1⟧` |
 | タグ | web, forensics, ocr, reed-solomon, gf256, captcha, jpeg, kmeans |
 | 問題URL | https://ksnctf.sweetduet.info/problem/34 |
 | METIS run | `a95c1aa32255482496d2e4854c55d11c` |
@@ -37,7 +37,7 @@ S=[pev(cw,A[i]) for i in range(191)]     # syndromes
 6. グリフ別に回転後の高さを計測: 大文字 F,L,A,G,4,C,V,E,F,Z,Z,W は約20-21、小文字 n,a,n,n,s,x は約13-16（a は 15.9）。y,g は下降部で約19。よって `n`(4の直後) は h ではなく n、`a` は小文字、`ZZ` は2つとも大文字。
 
 ## フラグ
-`FLAG_4nanCgVEFnZZysxW`
+`⟦answer:writeups/ksnctf/34-are-you-human.md#1⟧`
 
 ## 使用したスクリプト
 

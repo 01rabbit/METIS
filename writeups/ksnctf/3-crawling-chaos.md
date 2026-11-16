@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 100 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-13 00:00 JST） |
-| Flag | `FLAG_fqpZUCoqPb4izPJE` |
+| Flag | `⟦answer:writeups/ksnctf/3-crawling-chaos.md#1⟧` |
 | Flag照合 | 公式判定で正解した文字列と一致 |
 | タグ | javascript, jjencode, obfuscation, static-decoding, ksnctf |
 | 問題URL | https://ksnctf.sweetduet.info/problem/3 |

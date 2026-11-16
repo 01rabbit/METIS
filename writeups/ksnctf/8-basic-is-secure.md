@@ -7,7 +7,7 @@
 | カテゴリ | misc |
 | 配点 | 50 |
 | 状態 | 解決済み（公式判定で正解: 2026-11-12 23:58 JST） |
-| Flag | `FLAG_5ux7zK2NKSH8fSGA` |
+| Flag | `⟦answer:writeups/ksnctf/8-basic-is-secure.md#1⟧` |
 | タグ | forensics, pcap, http-basic, base64 |
 | 問題URL | https://ksnctf.sweetduet.info/problem/8 |
 | METIS run | `2cea088de8bc44c89e45b715de595464` |
@@ -18,7 +18,7 @@ pcap 内の HTTP Basic 認証の Authorization ヘッダを base64 デコード�
 
 ## 解析
 
-q8.pcap には /~q8/ への GET が 2 回あり、1 回目は 401 (WWW-Authenticate: Basic realm="Secret")、2 回目に Authorization: Basic cTg6RkxBR181dXg3eksyTktTSDhmU0dB が付き 200 が返る。Basic 認証は base64 のみで暗号化されていない。
+q8.pcap には /~q8/ への GET が 2 回あり、1 回目は 401 (WWW-Authenticate: Basic realm="Secret")、2 回目に Authorization: Basic cTg6⟦answer:writeups/ksnctf/8-basic-is-secure.md#enc3⟧0dB が付き 200 が返る。Basic 認証は base64 のみで暗号化されていない。
 
 ## 解法
 
@@ -27,8 +27,8 @@ strings q8.pcap | grep Authorization
 ```
 ```python
 import base64
-print(base64.b64decode('cTg6RkxBR181dXg3eksyTktTSDhmU0dB').decode())
-# q8:FLAG_5ux7zK2NKSH8fSGA
+print(base64.b64decode('cTg6⟦answer:writeups/ksnctf/8-basic-is-secure.md#enc3⟧0dB').decode())
+# q8:⟦answer:writeups/ksnctf/8-basic-is-secure.md#1⟧
 ```
 user=q8, password=フラグ。
 
