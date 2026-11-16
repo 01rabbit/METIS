@@ -390,7 +390,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 outcome = scheduler.complete(run_id, assignment_id, attempt_id, report)
                 break
             except ValueError as exc:
-                transcript.append({"report_rejected": str(exc)[:300]})
+                transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
                 continue
         raw = decision.get("intent") or {}
         step: dict[str, Any] = {"intent": raw}
@@ -408,6 +408,25 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     return {"run_id": run_id, "assignment_id": assignment_id, "attempt_id": attempt_id, "model": selected,
             "codex_turns": turns, "intents": [_public_step(step) for step in transcript],
             "outcome": outcome, "job_state": final["state"], "failure": final["failure"]}
+
+
+REPORT_HINTS = (
+    ("raw encoded", ("Remove every run of 48 or more letters/digits (moduli, ciphertexts, hashes, base64, hex) "
+                    "from all four text fields; name the value by event number and field instead, e.g. "
+                    "'the modulus n of the first leaf in event 17'.")),
+    ("flag", "Remove flag-shaped strings; describe the recorded transformation that yields the value."),
+    ("credential", "Remove tokens, passwords and cookies; refer to the event that holds them."),
+    ("unknown run evidence", "event_sequences may only list event numbers the controller returned to you."),
+    ("duplicate next action", "This next_action was already reported; propose a different discriminating step."),
+)
+
+
+def _report_hint(error: str) -> str:
+    lowered = error.lower()
+    for marker, hint in REPORT_HINTS:
+        if marker in lowered:
+            return hint
+    return "Fix the named field and resubmit; keep each text field between 5 and 2000 characters."
 
 
 def _public_step(step: dict[str, Any]) -> dict[str, Any]:
