@@ -6,7 +6,9 @@ where sandbox-exec is unavailable; the proxy, home and gating tests run everywhe
 """
 import json
 import socket
+import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -14,14 +16,13 @@ from metis.core import codex_isolation, codex_specialist
 from metis.core.codex_isolation import (
     AllowlistProxy,
     TurnHome,
-    isolation_available,
     native_codex,
     seatbelt_profile,
     self_test,
 )
 from metis.core.codex_specialist import CodexCLI
 
-macos = pytest.mark.skipif(not isolation_available(), reason="macOS sandbox-exec is required")
+macos = pytest.mark.skipif(codex_isolation.isolation_backend() != "seatbelt", reason="macOS sandbox-exec is required")
 
 
 def _connect(port: int, request: bytes) -> bytes:
@@ -151,12 +152,49 @@ def test_seatbelt_refuses_reads_writes_and_egress(tmp_path):
     result = self_test(sentinel, protected=[secret])
     assert result["passed"], result
     assert result["proxy_refusals_logged"] == ["CONNECT example.com:443"]
+    assert result["child_process_denied"] is True
 
 
 @macos
-def test_codex_turn_runs_under_the_sandbox_and_cannot_escape(tmp_path, monkeypatch):
-    """A stand-in `codex` (shell script) tries to read a protected file, write outside its turn
-    directory and reach the network directly; the turn must report all three as failed."""
+def test_codex_turn_may_exec_only_the_codex_binary(tmp_path, monkeypatch):
+    """A stand-in `codex` shell script cannot even start: the turn may exec only the named binary
+    (here the script itself, whose interpreter /bin/sh is then refused) and may not fork."""
+    secret = tmp_path / "protected"
+    secret.mkdir()
+    (secret / "auth.json").write_text("{}")
+    package = tmp_path / "pkg"
+    package.mkdir()
+    fake = package / "codex"
+    fake.write_text("#!/bin/sh\nif [ \"$1\" = features ]; then echo 'shell_tool stable true'; exit 0; fi\n"
+                    "cat /etc/hosts\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(codex_specialist, "default_codex_home", lambda: secret)
+    cli = CodexCLI(str(fake), allow_untested=True, protected=[secret, tmp_path / "elsewhere"])
+    turn = cli.run("x", model=None, timeout=60)
+    assert turn.isolation["mode"] == "seatbelt" and turn.returncode != 0
+    assert "Operation not permitted" in turn.stderr_tail and "localhost" not in turn.stderr_tail
+
+
+
+linux = pytest.mark.skipif(codex_isolation.isolation_backend() != "bwrap",
+                           reason="Linux with bubblewrap and user namespaces is required")
+
+
+@linux
+def test_bwrap_refuses_reads_writes_and_egress_and_sets_no_new_privs(tmp_path):
+    secret = tmp_path / "protected"
+    secret.mkdir()
+    sentinel = secret / "secret.txt"
+    sentinel.write_text("do not read")
+    result = self_test(sentinel)
+    assert result["backend"] == "bwrap" and result["passed"], result
+    assert result["no_new_privileges"] is True
+
+
+@linux
+def test_codex_turn_under_bwrap_cannot_escape(tmp_path, monkeypatch):
+    """A stand-in `codex` script runs inside the namespaces: the home directory is not mounted, writes
+    outside the turn fail, direct egress has no route and other hosts are refused by the proxy."""
     secret = tmp_path / "protected"
     secret.mkdir()
     (secret / "auth.json").write_text("{}")
@@ -169,19 +207,18 @@ def test_codex_turn_runs_under_the_sandbox_and_cannot_escape(tmp_path, monkeypat
         "if [ \"$1\" = features ]; then echo 'shell_tool stable true'; exit 0; fi\n"
         f"cat {secret}/private.txt >/dev/null 2>&1 && echo READ_OK >&2 || echo READ_DENIED >&2\n"
         f"touch {secret}/x 2>/dev/null && echo WRITE_OK >&2 || echo WRITE_DENIED >&2\n"
-        "/usr/bin/curl --noproxy '*' -s -m 5 https://example.com >/dev/null 2>&1 && echo NET_OK >&2 "
-        "|| echo NET_DENIED >&2\n"
-        "/usr/bin/curl -s -m 5 https://example.com >/dev/null 2>&1 && echo PROXY_OK >&2 || echo PROXY_DENIED >&2\n"
+        f"{Path(sys.executable).resolve()} -I -c \"import socket; socket.create_connection(('1.1.1.1', 443), timeout=5)\" 2>/dev/null "
+        "&& echo NET_OK >&2 || echo NET_DENIED >&2\n"
+        f"{Path(sys.executable).resolve()} -I -c \"import urllib.request; urllib.request.urlopen('https://example.com', timeout=8)\" "
+        "2>/dev/null && echo PROXY_OK >&2 || echo PROXY_DENIED >&2\n"
         "ls \"$CODEX_HOME\" >&2\n"
         "exit 0\n")
     fake.chmod(0o755)
     monkeypatch.setattr(codex_specialist, "default_codex_home", lambda: secret)
-    cli = CodexCLI(str(fake), allow_untested=True, protected=[secret, tmp_path / "elsewhere"])
+    cli = CodexCLI(str(fake), allow_untested=True)
     turn = cli.run("x", model=None, timeout=60)
-    assert turn.isolation["mode"] == "seatbelt"
+    assert turn.isolation["mode"] == "bwrap"
     log = turn.stderr_tail
     for word in ("READ_DENIED", "WRITE_DENIED", "NET_DENIED", "PROXY_DENIED", "auth.json"):
         assert word in log, log
-    assert "private.txt" not in log and turn.isolation["refused"] == ["CONNECT example.com:443"]
-    assert turn.isolation["auth"] == "unchanged"
-
+    assert turn.isolation["refused"] == ["CONNECT example.com:443"]

@@ -175,7 +175,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   モデルから隠すことは、まだできていない。
 - `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。網羅的なツール一覧を
   取得する手段はないが、#16 以後、ファイルの読み書きは OS 側で制限している。
-- OS 隔離は macOS の Seatbelt だけで、Linux と Windows は未実装（起動を拒否する）。Seatbelt や
+- OS 隔離は macOS が Seatbelt（fork を禁止し、exec は Codex 本体だけ）、Linux が bubblewrap（名前空間・capability 0・
+  NoNewPrivs、通信は Unix ソケット経由のプロキシのみ）。Windows は未実装で、起動を拒否する。Linux 上の実 Codex は未検証
+  （`docs/reports/issue16-isolation-backends-2026-11-16.md`）。Seatbelt や
   カーネル自体の脆弱性による脱出、許可した宛先（モデル API）へ送られる内容は、対象外。
 - E2E 時点の重複判定は、生の action identity の一致だけを見ていた。そのため `length` を 1 変える、無関係な
   イベントを `new_evidence` に挙げる、といった操作で回避でき、Codex は実際にそうした。正準化、再試験の上限、

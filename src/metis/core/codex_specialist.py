@@ -48,10 +48,10 @@ from metis.core.codex_isolation import (
     codex_version,
     default_codex_home,
     isolation_available,
+    isolation_backend,
     native_codex,
-    sandbox_command,
-    seatbelt_profile,
     upstream_proxy,
+    wrap,
 )
 from metis.core.ctf_artifacts import ALLOWED_OPTIONS
 
@@ -277,20 +277,19 @@ class CodexCLI:
             home: TurnHome | None = None
             proxy: AllowlistProxy | None = None
             if self.isolation == "required":
+                backend = isolation_backend()
+                if backend is None:
+                    raise RuntimeError("OS isolation became unavailable; refusing to run")
                 binary, package = native_codex(self.executable)
                 home = TurnHome(base, default_codex_home() / "auth.json")
                 proxy = stack.enter_context(AllowlistProxy(self.hosts, upstream=upstream_proxy()))
-                profile = base / "turn.sb"
-                profile.write_text(seatbelt_profile(turn_dir=base, readable=[package],
-                                                    protected=self.protected_roots(base.parent),
-                                                    proxy_port=proxy.port))
                 for key in [key for key in env if key.lower().endswith("_proxy")]:
                     env.pop(key)
-                proxy_url = f"http://127.0.0.1:{proxy.port}"
-                env.update(CODEX_HOME=str(home.path), HTTPS_PROXY=proxy_url, HTTP_PROXY=proxy_url,
-                           ALL_PROXY=proxy_url, TMPDIR=str(base) + "/")
-                command = sandbox_command(profile, [binary, *command[1:]])
-                isolation = {"mode": "seatbelt", "proxy_hosts": sorted(self.hosts)}
+                env.update(CODEX_HOME=str(home.path), TMPDIR=str(base) + "/")
+                command, env = wrap(backend, turn_dir=base, argv=[binary, *command[1:]], env=env, proxy=proxy,
+                                    readable=[package], protected=self.protected_roots(base.parent),
+                                    workdir=workdir, executable=Path(binary))
+                isolation = {"mode": backend, "proxy_hosts": sorted(self.hosts)}
             process = subprocess.Popen(command, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        cwd=workdir, env=env, start_new_session=True)

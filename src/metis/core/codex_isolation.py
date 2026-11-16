@@ -39,8 +39,29 @@ TESTED_CODEX_VERSIONS = frozenset({"0.166.0"})
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 
+def isolation_backend() -> str | None:
+    """'seatbelt' (macOS), 'bwrap' (Linux with working user namespaces) or None (fail closed)."""
+    if sys.platform == "darwin" and Path(SANDBOX_EXEC).is_file():
+        return "seatbelt"
+    if sys.platform.startswith("linux") and bwrap_available():
+        return "bwrap"
+    return None
+
+
 def isolation_available() -> bool:
-    return sys.platform == "darwin" and Path(SANDBOX_EXEC).is_file()
+    return isolation_backend() is not None
+
+
+def bwrap_available() -> bool:
+    binary = shutil.which("bwrap")
+    if not binary:
+        return False
+    try:
+        probe = subprocess.run([binary, "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"],
+                               capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
 
 
 def codex_version(executable: str) -> str | None:
@@ -78,8 +99,13 @@ def _quote(path: Path | str) -> str:
     return f'"{text}"'
 
 
-def seatbelt_profile(*, turn_dir: Path, readable: list[Path], protected: list[Path], proxy_port: int) -> str:
-    """Later rules win in SBPL: allow by default, then deny, then re-allow the exceptions."""
+def seatbelt_profile(*, turn_dir: Path, readable: list[Path], protected: list[Path], proxy_port: int,
+                     executable: Path | None = None) -> str:
+    """Later rules win in SBPL: allow by default, then deny, then re-allow the exceptions.
+
+    With ``executable`` the process may not fork at all and may exec only that binary: no
+    shell, helper or setuid program can start, whatever tools Codex offers the model.
+    """
     turn = _quote(turn_dir.resolve())
     reads = " ".join(f"(subpath {_quote(path.resolve())})" for path in readable)
     roots = " ".join(f"(subpath {_quote(path.resolve())})" for path in protected)
@@ -95,7 +121,10 @@ def seatbelt_profile(*, turn_dir: Path, readable: list[Path], protected: list[Pa
 (deny file-write* {roots} (subpath "/private/tmp") (subpath "/tmp") (subpath "/private/var/tmp"))
 (allow file-write* (subpath {turn}))
 (deny process-exec (literal "/usr/bin/sudo") (literal "/usr/bin/osascript"))
-"""
+""" + ("" if executable is None else f"""(deny process-fork)
+(deny process-exec)
+(allow process-exec (literal {_quote(executable.resolve())}))
+""")
 
 
 @dataclass
@@ -130,11 +159,23 @@ class AllowlistProxy:
     def __exit__(self, *_: object) -> None:
         self._stop.set()
         self._server.close()
+        if self._unix is not None:
+            self._unix.close()
 
-    def _serve(self) -> None:
+    _unix: socket.socket | None = None
+
+    def serve_unix(self, path: Path) -> None:
+        """Also accept connections on a Unix socket (bound into a Linux network namespace)."""
+        self._unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._unix.bind(str(path))
+        self._unix.listen(64)
+        threading.Thread(target=self._serve, args=(self._unix,), daemon=True).start()
+
+    def _serve(self, server: socket.socket | None = None) -> None:
+        listener = server or self._server
         while not self._stop.is_set():
             try:
-                client, _ = self._server.accept()
+                client, _ = listener.accept()
             except OSError:
                 return
             threading.Thread(target=self._handle, args=(client,), daemon=True).start()
@@ -242,38 +283,143 @@ def sandbox_command(profile_path: Path, argv: list[str]) -> list[str]:
     return [SANDBOX_EXEC, "-f", str(profile_path), *argv]
 
 
-def self_test(sentinel: Path, *, protected: list[Path] | None = None) -> dict[str, Any]:
-    """Run plain system programs under a turn profile and report what the OS refused.
+INSIDE_PROXY_PORT = 18080
 
-    ``sentinel`` must be an existing file inside a protected root; its content is never printed.
+
+def wrap(backend: str, *, turn_dir: Path, argv: list[str], env: dict[str, str], proxy: AllowlistProxy,
+         readable: list[Path], protected: list[Path], workdir: Path,
+         executable: Path | None = None) -> tuple[list[str], dict[str, str]]:
+    """Command and environment that run ``argv`` under the OS isolation of ``backend``."""
+    if backend == "seatbelt":
+        profile = turn_dir / f"turn-{len(list(turn_dir.glob('turn-*.sb')))}.sb"
+        profile.write_text(seatbelt_profile(turn_dir=turn_dir, readable=readable, protected=protected,
+                                            proxy_port=proxy.port, executable=executable))
+        url = f"http://127.0.0.1:{proxy.port}"
+        return sandbox_command(profile, argv), {**env, "HTTPS_PROXY": url, "HTTP_PROXY": url, "ALL_PROXY": url}
+    if backend == "bwrap":
+        socket_path = turn_dir / "proxy.sock"
+        if not socket_path.exists():
+            proxy.serve_unix(socket_path)
+        url = f"http://127.0.0.1:{INSIDE_PROXY_PORT}"
+        inside = {**env, "HTTPS_PROXY": url, "HTTP_PROXY": url, "ALL_PROXY": url,
+                  "PATH": "/usr/local/bin:/usr/bin:/bin"}
+        return bwrap_command(turn_dir=turn_dir, readable=readable, socket_path=socket_path, port=INSIDE_PROXY_PORT,
+                             env=inside, argv=argv, workdir=workdir), {"PATH": "/usr/bin:/bin"}
+    raise RuntimeError("no OS isolation backend on this host")
+
+
+def self_test(sentinel: Path, *, protected: list[Path] | None = None) -> dict[str, Any]:
+    """Run plain system programs under the turn isolation and report what the OS refused.
+
+    ``sentinel`` must be an existing file outside the turn directory (inside a protected root on
+    macOS; not mounted at all on Linux); its content is never printed.
     """
     import tempfile
 
-    results: dict[str, Any] = {"platform": sys.platform, "available": isolation_available()}
-    if not results["available"]:
+    backend = isolation_backend()
+    results: dict[str, Any] = {"platform": sys.platform, "backend": backend, "available": backend is not None}
+    if backend is None:
         return results
+    python = str(Path(sys.executable).resolve())
+    cat, ls, touch = (shutil.which(name) or f"/bin/{name}" for name in ("cat", "ls", "touch"))
     with tempfile.TemporaryDirectory(prefix="metis-isolation-") as temporary, AllowlistProxy() as proxy:
         turn = Path(temporary).resolve()
         roots = protected if protected is not None else [Path.home(), turn.parent]
-        profile = turn / "turn.sb"
-        profile.write_text(seatbelt_profile(turn_dir=turn, readable=[], protected=roots, proxy_port=proxy.port))
 
-        def attempt(argv: list[str], env: dict[str, str] | None = None) -> int:
-            done = subprocess.run(sandbox_command(profile, argv), capture_output=True, timeout=30, check=False,
-                                  env={"PATH": "/usr/bin:/bin", **(env or {})}, cwd=turn)
+        def attempt(argv: list[str], executable: Path | None = None) -> int:
+            command, env = wrap(backend, turn_dir=turn, argv=argv, env={"PATH": "/usr/bin:/bin"}, proxy=proxy,
+                                readable=[], protected=roots, workdir=turn, executable=executable)
+            done = subprocess.run(command, capture_output=True, timeout=60, check=False, env=env, cwd=turn)
             return done.returncode
 
-        proxy_env = {"HTTPS_PROXY": f"http://127.0.0.1:{proxy.port}"}
-        results["read_protected_denied"] = attempt(["/bin/cat", str(sentinel)]) != 0
-        results["list_protected_denied"] = attempt(["/bin/ls", str(sentinel.parent)]) != 0
-        results["write_outside_denied"] = attempt(["/usr/bin/touch", str(sentinel.parent / ".metis-probe")]) != 0
-        results["write_turn_dir_allowed"] = attempt(["/usr/bin/touch", str(turn / "ok")]) == 0
-        results["direct_network_denied"] = attempt(["/usr/bin/curl", "--noproxy", "*", "-sS", "-m", "8", "-o",
-                                                    "/dev/null", "https://example.com"]) != 0
-        results["proxy_other_host_refused"] = attempt(["/usr/bin/curl", "-sS", "-m", "8", "-o", "/dev/null",
-                                                       "https://example.com"], proxy_env) != 0
+        curl = "/usr/bin/curl" if Path("/usr/bin/curl").is_file() else None
+        if curl:
+            direct = [curl, "--noproxy", "*", "-sS", "-m", "8", "-o", "/dev/null", "https://example.com"]
+            proxied = [curl, "-sS", "-m", "8", "-o", "/dev/null", "https://example.com"]
+        else:
+            direct = [python, "-I", "-c", "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5)"]
+            proxied = [python, "-I", "-c", ("import urllib.request; urllib.request.urlopen('https://example.com', "
+                       "timeout=8)")]
+        results["read_protected_denied"] = attempt([cat, str(sentinel)]) != 0
+        results["list_protected_denied"] = attempt([ls, str(sentinel.parent)]) != 0
+        results["write_outside_denied"] = attempt([touch, str(sentinel.parent / ".metis-probe")]) != 0
+        results["write_turn_dir_allowed"] = attempt([touch, str(turn / "ok")]) == 0
+        results["direct_network_denied"] = attempt(direct) != 0
+        results["proxy_other_host_refused"] = attempt(proxied) != 0 and any("example.com" in item
+                                                                            for item in proxy.log.refused)
+        if backend == "seatbelt":  # only the named executable may run; it may not fork
+            shell = Path("/bin/sh")
+            results["child_process_denied"] = (attempt([str(shell), "-c", "/bin/echo hi"], shell) != 0
+                                               and attempt([str(shell), "-c", "exec /bin/echo hi"], shell) != 0)
+        else:  # bubblewrap: children stay in the namespaces; no new privileges (setuid is inert)
+            check = "import sys; sys.exit(0 if 'NoNewPrivs:\\t1' in open('/proc/self/status').read() else 1)"
+            results["no_new_privileges"] = attempt([python, "-I", "-c", check]) == 0
         results["proxy_refusals_logged"] = list(proxy.log.refused)
-        results["passed"] = all(results[key] for key in ("read_protected_denied", "list_protected_denied",
-                                                         "write_outside_denied", "write_turn_dir_allowed",
-                                                         "direct_network_denied", "proxy_other_host_refused"))
+        required = ["read_protected_denied", "list_protected_denied", "write_outside_denied",
+                    "write_turn_dir_allowed", "direct_network_denied", "proxy_other_host_refused",
+                    "child_process_denied" if backend == "seatbelt" else "no_new_privileges"]
+        results["passed"] = all(results[key] for key in required)
     return results
+
+
+# -- Linux backend (bubblewrap) ------------------------------------------------------------------
+FORWARDER = r"""
+import os, select, socket, sys
+port, path, argv = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", port))
+listener.listen(64)
+if os.fork() == 0:
+    while True:
+        client, _ = listener.accept()
+        if os.fork() == 0:
+            upstream = socket.socket(socket.AF_UNIX)
+            upstream.connect(path)
+            while True:
+                ready, _, _ = select.select([client, upstream], [], [], 300)
+                if not ready:
+                    os._exit(0)
+                for sock in ready:
+                    data = sock.recv(65536)
+                    if not data:
+                        os._exit(0)
+                    (upstream if sock is client else client).sendall(data)
+        client.close()
+listener.close()
+os.execv(argv[0], argv)
+"""
+SYSTEM_RO = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl", "/etc/ca-certificates", "/etc/pki",
+             "/etc/alternatives")
+
+
+def python_roots() -> list[Path]:
+    """Install prefixes of the running interpreter (e.g. /opt/hostedtoolcache/... on CI runners)."""
+    roots = {Path(sys.base_prefix).resolve(), Path(sys.executable).resolve().parent.parent}
+    return sorted(root for root in roots if root.is_dir() and not str(root).startswith("/usr"))
+
+
+def bwrap_command(*, turn_dir: Path, readable: list[Path], socket_path: Path, port: int, env: dict[str, str],
+                  argv: list[str], workdir: Path) -> list[str]:
+    """Run ``argv`` in new user/pid/net/ipc/uts/cgroup namespaces with only system dirs (read-only),
+    the readable paths (read-only) and the turn dir (read-write) mounted. The home directory and
+    shared temp dirs are not mounted at all. Egress: 127.0.0.1:port inside -> Unix socket -> host proxy.
+    bwrap sets PR_SET_NO_NEW_PRIVS and drops capabilities, so setuid programs cannot raise privileges.
+    Child processes are possible (no seccomp filter) but stay inside the same namespaces."""
+    binary = shutil.which("bwrap")
+    if not binary:
+        raise RuntimeError("bubblewrap is not available")
+    python = str(Path(sys.executable).resolve())  # the forwarder uses only the standard library
+    readable = [*readable, *python_roots()]
+    forwarder = turn_dir / "forward.py"
+    forwarder.write_text(FORWARDER)
+    command = [binary, "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
+               "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    for system in SYSTEM_RO:
+        command += ["--ro-bind-try", system, system]
+    for path in readable:
+        command += ["--ro-bind", str(path), str(path)]
+    command += ["--bind", str(turn_dir), str(turn_dir), "--chdir", str(workdir)]
+    for key, value in env.items():
+        command += ["--setenv", key, value]
+    return [*command, "--", python, "-I", str(forwarder), str(port), str(socket_path), *argv]
