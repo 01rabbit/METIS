@@ -7,7 +7,6 @@ where sandbox-exec is unavailable; the proxy, home and gating tests run everywhe
 import json
 import socket
 import subprocess
-import os
 import sys
 import threading
 from pathlib import Path
@@ -246,5 +245,5 @@ for call in (os.fork, lambda: os.posix_spawn('/bin/true', ['/bin/true'], {})):
         os.waitpid(pid, 0)
         raise AssertionError('process creation allowed')
 """
-    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=15)
+    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 0, result.stderr
