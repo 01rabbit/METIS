@@ -56,20 +56,21 @@ sandbox (gdb, strace, script mode, network and filesystem isolation probes) and
 a real Chromium rendering check.
 
 The 2026-11-17 AlpacaHack Daily evaluation is recorded in
-`docs/reports/alpacahack-evaluation-2026-11-17.md`. Three authorized August
-challenges now have official browser-observed solves across Rev, Web, and
-Crypto. This demonstrates the scoped challenge intake, one-instance remote
-workflow, browser submission reservation, official verdict attestation, and
-category extraction against live pages. It is not evidence that the solver
-autonomously produced the answer: Daybreak performed the bounded collision
-search for Happy Birthday, and the result does not close the P1 autonomous
-solver or other open acceptance gates.
+`docs/reports/alpacahack-evaluation-2026-11-17.md`. Four authorized August
+challenges have official browser-observed solves across Rev, Web, Crypto, and
+Misc. This demonstrates scoped challenge intake, one-instance remote
+workflow, browser submission, official verdict attestation, and category
+extraction against live pages. Password, Please was Daybreak-led, and Daybreak
+performed the bounded collision search for Happy Birthday. These are not
+evidence that an autonomous specialist produced the answers, so P1 and the
+other open acceptance gates remain open.
 
 After hardware-key reauthentication, the 2026-11-17 KSNCTF #33 offline
 regression reached `view` and private candidate handoff without reproducing
 the authentication error. A Daybreak metadata audit also checked all four
-decrypted server responses without reading their bodies. It was not submitted
-to the official verifier; details and limits are in
+decrypted server responses without reading their bodies. This satisfied Issue
+#24's reauthentication regression condition, and the issue is closed. The
+challenge was not submitted to its official verifier; details and limits are in
 `docs/reports/issue24-reauth-regression-2026-11-17.md`.
 
 ## Boundaries and remaining work
