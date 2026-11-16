@@ -1,4 +1,6 @@
-# Issue #16 Codex の隔離: spawn ツールの調査、子プロセスの禁止、Linux 版（2026-11-16）
+# Issue #16 Codex の隔離: spawn ツールの調査、子プロセスの禁止、Linux 版
+
+この記録の最初の節と表は 2026-11-16 時点の調査スナップショットである。後述の追記を含む現状では、Linux の seccomp による fork 等の拒否は実装済み。Linux 実 Codex の検証は未実施。
 
 ## spawn ツールは設定で無効化できるか
 
@@ -31,7 +33,7 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 - 外部への通信は、新しいネットワーク名前空間の中から、127.0.0.1:18080 → 転送器 → Unix ソケット → ホスト側の許可リスト付き
   プロキシ、という経路だけに限る。直接の通信は経路が無い。
 - bubblewrap は no-new-privileges を設定するので、setuid による権限昇格は効かない。
-- 子プロセスは禁止できない（seccomp フィルタは未導入）。ただし子プロセスも同じ名前空間・capability 0・no-new-privileges の下にいる。
+- （2026-11-16 時点）子プロセスは禁止できなかった。後述の追記で seccomp を導入したが、既存プロセスの `exec` と Codex 内部の in-process spawn は禁止しない。
 - 起動前に `bwrap` が実際に名前空間を作れるかを確かめる。作れない場合は隔離なしとみなし、起動を拒否する（fail closed）。
 
 検証:
@@ -53,7 +55,7 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 | --- | --- | --- |
 | ホームと共有の一時ディレクトリの読み書き | 拒否（プロファイル） | 見えない（マウントしない） |
 | 外部への通信 | プロキシの許可リストのみ | 名前空間の中からプロキシ経由のみ |
-| 子プロセス | 禁止（fork・exec） | 可能。ただし同じ名前空間・capability 0・NoNewPrivs |
+| OS プロセス生成 | 禁止（fork、Codex 本体以外の exec） | seccomp で fork/vfork、プロセス生成 clone を拒否。thread clone は許可。exec は可能 |
 | 権限昇格 | exec を Codex 本体に限る | NoNewPrivs、capability 0 |
 | 実 Codex での確認 | 実施済み | 未実施（偽 Codex のみ） |
 | 隔離を用意できない場合 | 起動を拒否する | 起動を拒否する |
@@ -61,7 +63,7 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 ## 未解決
 
 - spawn ツールそのものをモデルから隠すこと（この CLI の版では不可能）。
-- Linux での子プロセスの禁止（seccomp フィルタ）と、実 Codex での確認。
+- Linux 実 Codex での確認（bwrap + seccomp の互換性、認証済み一回ターン）。
 - Windows は未実装（起動を拒否する）。
 
 

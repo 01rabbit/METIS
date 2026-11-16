@@ -1,5 +1,7 @@
 # Issue #16 Codex 専門家の OS 隔離（2026-11-16）
 
+以下は初回導入時の記録であり、Linux の隔離実装より前の状態を含む。現在の実装・受け入れ状況は末尾の「2026-11-17 時点の更新」を参照。
+
 ## Codex CLI の版に依存する制限（整理）
 
 codex-cli 0.166.0 で確認したこと。
@@ -52,7 +54,14 @@ codex-cli 0.166.0 で確認したこと。
 - spawn ツールそのものをモデルから隠すこと。#16 の受け入れ条件のうち、この 1 項目は未達。
   spawn された sub-agent は同じプロセス内にいるので、上記のファイル・ネットワーク制限の下にある
   （推測を含む: sub-agent が別プロセスとして起動する実装でも、子プロセスなので Seatbelt を継承する）。
-- Linux / Windows の隔離。未実装で、起動を拒否する。
+- （記録時点）Linux / Windows の隔離。未実装で、起動を拒否する。
 - Seatbelt やカーネル自体の脆弱性。`sandbox-exec` は Apple が非推奨としているが、現行の macOS で動作する。
 - 許可した宛先（モデル API）へ送られる内容。プロンプトと観測は、設計上この宛先へ送られる。
 - 読み取りを許可した範囲（Codex パッケージ、システムのディレクトリ）に含まれる情報。
+
+## 2026-11-17 時点の更新
+
+- Linux は bubblewrap の mount / user / pid / network namespaces と seccomp を実装済み。seccomp は fork/vfork とプロセスを作る clone を拒否する一方、スレッド生成と `exec` は許可する。fake Codex と OS セルフテスト、CI でファイル読取拒否等を確認した。Linux 実 Codex での確認は未実施。
+- Codex CLI 0.169.0 では、`agents.enabled=false` と MultiAgentV2 の feature 無効化・スレッド上限を指定した状態で、`--ephemeral` を外した spawn 呼び出しが `code-mode host is disabled` で拒否されたとの実機記録がある。現在のドライバはこれらの設定を適用する。ただし 0.166.0 で同じ設定を用いた拒否確認はなく、ツール名も依然としてモデルに提示される。よって #16 の spawn 受け入れ条件は、全ての許可 CLI 版に対して確実な拒否が示されるまで未達として扱う。
+- 現在の audit 環境は macOS arm64 で、Linux / `bwrap` が無い。Linux 実 Codex の認証済み検証をここから実施できず、認証情報を CI や challenge sandbox に複製して代替することもしていない。Linux 実 Codex で、(1) OS の fork/clone 拒否と (2) Codex の in-process spawn 拒否を別々に確認する必要がある。spawn 呼び出しが成功した場合、子 agent に作業を実行させず直ちに停止する。
+- Version gate は各 turn の直前に版を再確認し、0.166.0 / 0.169.0 以外を既定で拒否する。`--allow-untested-codex` は明示的な解除手段。

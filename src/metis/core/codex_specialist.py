@@ -253,7 +253,8 @@ class CodexCLI:
                                f"({', '.join(sorted(TESTED_CODEX_VERSIONS))}); run `metis agent codex-probe --ping` "
                                "and pass --allow-untested-codex only if its canary passes")
         if self.isolation == "required" and not isolation_available():
-            raise RuntimeError("OS isolation (macOS sandbox-exec) is unavailable on this host; refusing to run. "
+            raise RuntimeError("OS isolation (macOS Seatbelt or Linux bubblewrap) is unavailable on this host; "
+                               "refusing to run. "
                                "Use --isolation none only as a recorded, explicit opt-out")
         return version
 
