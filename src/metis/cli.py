@@ -86,6 +86,14 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
 
     scheduler = AgentScheduler(args.database, host_by_name(args.host))
     command = args.agent_command
+    if command == "autopilot":
+        from metis.core.agent_autopilot import autopilot
+        from metis.core.codex_specialist import CodexCLI
+        continuations = json.loads(args.continuations.read_text()) if args.continuations else None
+        if continuations is not None and not isinstance(continuations, list):
+            raise ValueError("continuations must be a JSON array")
+        return autopilot(scheduler, args.run_id, CodexCLI(args.codex), max_waves=args.max_waves,
+                         continuations=continuations)
     if command == "dispatch":
         scheduler.enqueue(args.run_id, args.wave_id)
         return scheduler.dispatch(args.run_id)
@@ -262,6 +270,11 @@ def main() -> int:
     synthesis.add_argument("wave_id")
     agent.add_argument("--host", choices=("bridge", "sequential"), default="bridge",
                        help="bridge: Daybreak runs briefs with its own subagents; sequential: one at a time")
+    agent_auto = agent_commands.add_parser("autopilot", help="drive a bounded wave through Codex specialists")
+    agent_auto.add_argument("run_id")
+    agent_auto.add_argument("--max-waves", type=int, required=True)
+    agent_auto.add_argument("--continuations", type=Path, help="Daybreak-selected wave/report/reason JSON array")
+    agent_auto.add_argument("--codex", help="path to the Codex CLI")
     agent_dispatch = agent_commands.add_parser("dispatch", help="queue a wave's assignments and start what slots allow")
     agent_dispatch.add_argument("run_id")
     agent_dispatch.add_argument("wave_id")

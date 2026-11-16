@@ -227,7 +227,6 @@ PR #14 の受け入れ手順を、現行のコマンドに合わせて短くし�
   `next_action` に書き、Daybreak が実行する。
 - 合成 fixture での結果は実大会の solve 率を意味しない。
 
-
 ### Linux process creation restriction
 
 Linux の bubblewrap 内では、転送器を起動した後に seccomp を Codex の実行系へ適用する。
@@ -237,3 +236,23 @@ Linux の bubblewrap 内では、転送器を起動した後に seccomp を Code
 既存プロセスの置き換えは可能であり、macOS の実行ファイル制限と同じ保証ではない。
 Codex の in-process `collaboration.spawn_agent` は OS のプロセス生成ではなく、このフィルタでは止められない。
 Linux 実 Codex での互換性検証は未実施である。
+
+## 6.3 Bounded autopilot
+
+`metis agent autopilot RUN_ID --max-waves N` runs the latest wave (or creates the initial
+plan) through the existing scheduler and isolated Codex specialist driver. N is 1–10 and
+counts waves inspected in this invocation, including a resumed wave. Sequential work,
+pending candidates, unresolved existing attempts, other active waves, unavailable slots,
+and non-spawn failures stop for Daybreak. Spawn failures alone are retried within the
+scheduler's attempt limit. An autopilot lock prevents simultaneous drivers for one run;
+existing running or unknown attempts are never relaunched after a restart. Reconcile
+those explicitly with the scheduler before retrying. Candidate values stay in the private
+candidate store; this command never submits or expands scope.
+
+A subsequent wave requires both the synthesis gate and Daybreak's explicit selection of
+a materially different unresolved hypothesis. Supply `--continuations FILE` as a JSON
+array of objects with `wave_id`, `report_id`, and `reason`. The reason must exactly match
+an inconclusive report's `next_action` and must not repeat a previous wave reason. This
+checks provenance and literal repetition, not semantic difference: Daybreak remains
+responsible for that judgment. Missing or invalid selections stop the driver. A selection
+for a later wave can be supplied when resuming after its report exists.
