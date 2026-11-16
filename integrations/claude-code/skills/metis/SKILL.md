@@ -76,6 +76,27 @@ another wave only for a materially different unresolved hypothesis. Escalate a
 stalled lower-tier branch once (re-launch with `model: "opus"` or do it
 yourself); kill disproved branches.
 
+### Codex CLI as the specialist (optional)
+
+When the user wants Codex specialists instead of Claude subagents, check once per
+session with `.venv/bin/metis agent codex-probe --ping` (`ready: true` needed: a
+tool-less turn works and the sub-agent spawn canary is detected). Register the
+models Codex reports (`codex debug models`) with `metis agent slots --catalog-file`.
+Then, for each started job, run in the background (one Bash call per job, all in
+one message):
+
+```sh
+.venv/bin/metis agent codex RUN_ID ASSIGNMENT_ID --attempt ATT
+```
+
+This driver runs `codex exec` with the user config ignored, a read-only sandbox,
+shell/sub-agent/app/browser/code-mode features disabled and web search off. Codex
+can only return intents, which METIS executes and logs; Daybreak-only kinds are
+refused. Do not hand Codex the brief in any other way, and never give it
+`danger-full-access`. Cancel with `metis agent cancel --assignment ID`; the driver
+kills the Codex process group within about two seconds. The driver's output lists
+intents with their inputs reduced to digests; the full record stays in the run.
+
 ## 3. Tools you and the subagents use
 
 - Static: `metis codex tools`, `metis codex artifact RUN_ID NAME TOOL [--options JSON]`,
