@@ -83,6 +83,14 @@ decrypted server responses without reading their bodies. This satisfied Issue
 challenge was not submitted to its official verifier; details and limits are in
 `docs/reports/issue24-reauth-regression-2026-11-17.md`.
 
+Issue #28 has bounded Biham–Kocher and Info-ZIP seed tools. Its synthetic intent
+test now covers recovered-key decryption with CRC checks for every member, then
+XOR, using a reduced candidate set. Wall-time exhaustion has a tested reason
+code. An OS-enforced memory ceiling and Stay key recovery remain incomplete;
+the 2020 two-file attack's paper and legacy CUDA source were reviewed, not run.
+See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
+`docs/reports/issue28-stay-assessment-2026-11-16.md`.
+
 ## Boundaries and remaining work
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
