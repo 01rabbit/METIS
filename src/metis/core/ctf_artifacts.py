@@ -35,7 +35,7 @@ ARTIFACT_TOOLS = frozenset({
     "gzip", "image", "image_lsb", "pcap",
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
-    "tar_list", "tar_read", "bzip2", "xz", "pdf_text",
+    "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
 })
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
@@ -471,6 +471,7 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "disassemble": {"architecture", "offset", "length", "count", "address"},
     "zip_list": set(), "zip_read": {"member", "max_bytes", "password"}, "gzip": {"max_bytes"},
     "image": set(), "image_lsb": {"channels", "bit", "max_bytes"}, "pcap": {"packets"},
+    "x509": {"limit"}, "tls_certificates": {"packets", "connections", "limit"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
     "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
@@ -549,6 +550,19 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
         return _image(data, tool, options)
     if tool == "pcap":
         return _pcap(data, options)
+    if tool == "x509":
+        from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
+        return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
+    if tool == "tls_certificates":
+        from metis.core.ctf_x509 import MAX_CERTIFICATES, MAX_CONNECTIONS, tls_certificates
+        packets = bounded_integer(options, "packets", 1024, 1, 4096)
+        if file_kind(data) == "PCAPNG":
+            data, _more = _pcapng_to_classic(data, packets)
+        if len(data) < 24 or file_kind(data) != "PCAP":
+            raise ValueError("PCAP or supported PCAPNG required")
+        return tls_certificates(data, options, packets=packets,
+                                connections=bounded_integer(options, "connections", 16, 1, MAX_CONNECTIONS),
+                                limit=bounded_integer(options, "limit", 4, 1, MAX_CERTIFICATES))
     if tool == "pe":
         return _pe(data)
     if tool == "java_class":

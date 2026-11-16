@@ -6,7 +6,8 @@ import re
 from metis.core.contracts import ChallengeManifest
 
 PLAYBOOKS = {
-    "crypto": {"tools": ["frequency", "xor_single", "xor", "gcd", "mod_inverse", "crt", "integer_root", "rsa_decrypt"],
+    "crypto": {"tools": ["frequency", "xor_single", "xor", "gcd", "mod_inverse", "crt", "integer_root", "rsa_decrypt",
+                          "x509", "tls_certificates"],
                "steps": ["Identify encoding, cipher and supplied parameters before choosing a method.",
                          "Test one hypothesis and inspect actual decoded bytes.",
                          "Check mathematical assumptions; submit only an independently verified candidate."],
@@ -17,7 +18,8 @@ PLAYBOOKS = {
                       "Use only explicitly authorized targets for live requests; native tools remain offline.",
                       "JavaScript-built problem pages: reopen with `metis web open --render` (scoped Chromium)."],
             "limit": "Live requests only to granted origins; raw TCP services via `metis remote` grants."},
-    "forensics": {"tools": ["overview", "strings", "hex", "zip_list", "zip_read", "gzip", "image", "image_lsb", "pcap"],
+    "forensics": {"tools": ["overview", "strings", "hex", "zip_list", "zip_read", "gzip", "image", "image_lsb", "pcap",
+                            "tls_certificates", "x509"],
                   "steps": ["Identify real magic and size; do not trust the extension.",
                             "Inspect metadata and structure before trying extraction or bit planes.",
                             "Preserve original bytes and digest; derive bounded artifacts without executing them."],

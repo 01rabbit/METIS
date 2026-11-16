@@ -163,8 +163,10 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   option の変種の上限で塞いだ（`tests/test_intent_identity.py`）。ただし意味の同値性を網羅しているわけでは
   ない。例えば `strings` の `limit` を変えれば、結果が同じでも別の要求として扱われる。
 - METIS の artifact tool には X.509/TLS の構造解析が無く、観測は 12000 文字で切り詰める。2048 bit の
-  modulus を hex 窓から抽出する作業は、6 intent の上限内で完了しなかった（ksnctf #33 の実例）。証明書解析
-  tool の追加は #17。
+  modulus を hex 窓から抽出する作業は、6 intent の上限内で完了しなかった（ksnctf #33 の実例）。#17 で
+  artifact tool `x509`（DER/PEM の証明書）と `tls_certificates`（PCAP/PCAPNG の TLS Certificate handshake）
+  を追加し、RSA の `n`・`e` を intent で取得できるようにした。TLS 1.3 の証明書は暗号化されているため
+  取得できない（理由コード `tls13_certificates_encrypted`）。
 
 ## 7. 残る制約
 

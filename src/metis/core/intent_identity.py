@@ -38,6 +38,7 @@ DEFAULTS: dict[str, dict[str, int]] = {
     "zlib": {"max_bytes": 65_536}, "bzip2": {"max_bytes": 65_536}, "xz": {"max_bytes": 65_536},
     "image_lsb": {"bit": 0, "max_bytes": 4096}, "wav_lsb": {"channel": 0, "bit": 0, "max_bytes": 4096},
     "pdf_text": {"pages": 5}, "sqlite": {"limit": 20},
+    "x509": {"limit": 8}, "tls_certificates": {"packets": 1024, "connections": 16, "limit": 4},
 }
 WINDOWED = {"text", "hex", "strings", "disassemble"}
 STRUCTURED_DATA = {"bytes_decode", "zlib_decompress", "aes_decrypt", "fermat_factor", "rsa_common_modulus",
