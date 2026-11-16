@@ -153,6 +153,11 @@
   },
   {
    "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "fermats-last-theorem-fermat-s-last-theorem",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/fermats-last-theorem-fermat-s-last-theorem.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
    "problem": "happy-birthday",
    "writeup": "alpacahack-daily-2026-08-metis-evaluation/happy-birthday.md"
   },
