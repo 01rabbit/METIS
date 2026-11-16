@@ -9,8 +9,13 @@ Gemini, OpenCode, Aider. Select one with `./start --agent NAME` and show discove
 with `./start --list`. Extra arguments are passed unchanged to the selected CLI.
 
 The Codex adapter is tested and enables Daybreak, multi-agent support, and
-automatic approval review. Claude and Gemini receive equivalent repository
-instructions through `CLAUDE.md` and `GEMINI.md`. OpenCode and Aider are launched
+automatic approval review. Claude Code starts with a METIS startup prompt and
+gets a project skill, a `/ctf` command, and eight
+category subagents (haiku/sonnet tiers), installed once from
+`integrations/claude-code/` into `.claude/`, that map
+one-to-one to `metis plan` roles and are forbidden from submitting, granting, or
+handling credentials. Gemini receives repository instructions through
+`GEMINI.md`. OpenCode and Aider are launched
 in the repository and can use `AGENTS.md`; their multi-agent behavior depends on
 the installed version and plugins. These four CLIs were not installed in the
 validation environment, so METIS does not invent provider-specific flags.

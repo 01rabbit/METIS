@@ -27,6 +27,17 @@ Implemented:
 - A project-local setup script, six synthetic category exercises, and a local
   CTFd-shaped rehearsal server.
 
+- Remote services (`metis remote`): suggestion-only statement parsing, explicit
+  per-run TCP/TLS grants, bounded scripted exchanges and solver pipes,
+  DNS-rebinding refusal, transcripts saved as scoped artifacts.
+- Dynamic sandbox (`metis sandbox`): immutable image, no network, read-only
+  root, no host mounts, capability-free unprivileged user, resource limits;
+  run/strace/ltrace/gdb/script modes; bundled Dockerfile with pwntools.
+- Platforms: rCTF adapter (team-token login, catalog, open, strict `kind`
+  verdicts, `timeLeft` cooldown) and optional scoped JavaScript rendering.
+- Claude Code: project skill, `/ctf` command, eight category subagents mapped
+  to `metis plan` roles, startup prompt via `./start --agent claude`.
+
 ## Observed evidence
 
 The local rehearsal exercised the full generic path: URL statement/file
@@ -39,13 +50,18 @@ knowledge. This is integration evidence, not a general solve-rate measurement.
 Final test, lint, type, build, bootstrap, and fresh-clone results for this
 increment are recorded in `docs/reports/codex-native.md` after validation.
 
+The 2026-11-12 completion increment is recorded in
+`docs/reports/completion-2026-11-12.md`, including a real Docker run of the
+sandbox (gdb, strace, script mode, network and filesystem isolation probes) and
+a real Chromium rendering check.
+
 ## Boundaries and remaining work
 
-Untrusted challenge programs are not executed on the host. The current cloud
-runtime cannot enforce the isolation needed for hostile dynamic binaries, so
-dynamic pwn/reverse execution remains unavailable unless a separately enforced
-sandbox is provided. JavaScript-only pages, non-CTFd platform APIs, unusual
-download flows, or site-specific verdict formats may need a dedicated adapter.
+Untrusted challenge programs are not executed on the host; dynamic analysis
+needs a local container engine and the sandbox image. The bundled Dockerfile
+build itself was not run in validation because registries were unreachable
+there. Platforms other than CTFd, rCTF and ksnctf, and site-specific verdict
+formats, need the generic form verifier or a new adapter.
 
 The broader P0-P8 master plan remains a research roadmap. This increment does
 not claim universal CTF solving, live competition success, macOS validation,
