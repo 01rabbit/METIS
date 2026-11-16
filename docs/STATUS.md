@@ -28,6 +28,10 @@ Implemented:
   for ablation.
 - A project-local setup script, six synthetic category exercises, and a local
   CTFd-shaped rehearsal server.
+  The 2026-11-17 focused category/orchestration run passed 22 tests across
+  `tests/test_codex_practice_categories.py`, `tests/test_agent_orchestration.py`,
+  and `tests/test_ctf_orchestration.py`; see
+  [`p2-offline-category-fixtures-2026-11-17.md`](reports/p2-offline-category-fixtures-2026-11-17.md).
 
 - Remote services (`metis remote`): suggestion-only statement parsing, explicit
   per-run TCP/TLS grants, bounded scripted exchanges and solver pipes,

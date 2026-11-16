@@ -2,10 +2,24 @@
 import json
 import re
 
+import pytest
+
+from metis.core.agent_contracts import CATEGORIES, PROFILES, SpecialistProfile
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_practice import practice
 from metis.core.ctf_tools import transform
 from metis.core.runtime import ToolRequest
+
+
+@pytest.mark.parametrize("category", CATEGORIES)
+def test_category_specialist_profiles_validate_typed_scope(category):
+    profile = PROFILES[f"{category}-specialist"]
+    validated = SpecialistProfile.model_validate(profile.model_dump())
+    assert validated.category == category
+    assert validated.may_submit is False
+    assert validated.may_expand_scope is False
+    assert validated.may_handle_credentials is False
+    assert validated.may_delegate is False
 
 
 def test_six_practice_categories_use_authorized_bounded_adapters(tmp_path):
