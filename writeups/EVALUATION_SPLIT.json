@@ -153,6 +153,11 @@
   },
   {
    "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "happy-birthday",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/happy-birthday.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
    "problem": "lets-analyze-system-calls-let-s-analyze-system-calls",
    "writeup": "alpacahack-daily-2026-08-metis-evaluation/lets-analyze-system-calls-let-s-analyze-system-calls.md"
   },

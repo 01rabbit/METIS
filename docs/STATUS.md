@@ -55,6 +55,16 @@ The 2026-11-12 completion increment is recorded in
 sandbox (gdb, strace, script mode, network and filesystem isolation probes) and
 a real Chromium rendering check.
 
+The 2026-11-17 AlpacaHack Daily evaluation is recorded in
+`docs/reports/alpacahack-evaluation-2026-11-17.md`. Three authorized August
+challenges now have official browser-observed solves across Rev, Web, and
+Crypto. This demonstrates the scoped challenge intake, one-instance remote
+workflow, browser submission reservation, official verdict attestation, and
+category extraction against live pages. It is not evidence that the solver
+autonomously produced the answer: Daybreak performed the bounded collision
+search for Happy Birthday, and the result does not close the P1 autonomous
+solver or other open acceptance gates.
+
 ## Boundaries and remaining work
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
