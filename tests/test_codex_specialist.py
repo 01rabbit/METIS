@@ -229,7 +229,7 @@ def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):
     job = started[0]
 
     class FakeCLI:
-        def __init__(self, executable=None):
+        def __init__(self, executable=None, **_options):
             self.runner = ScriptedRunner([_say({"action": "fail", "intent": None, "report": None,
                                                 "reason": "not my category"})])
 
@@ -256,7 +256,7 @@ def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path):
     fake.write_text("#!/bin/sh\nif [ \"$1\" = features ]; then echo 'shell_tool stable true'; exit 0; fi\n"
                     "cat >/dev/null\nsleep 120\n")
     fake.chmod(0o755)
-    cli = CodexCLI(str(fake))
+    cli = CodexCLI(str(fake), isolation="none", allow_untested=True)
     timer = threading.Timer(1.0, lambda: scheduler.cancel(assignment_id=job["assignment_id"]))
     timer.start()
     began = time.monotonic()
@@ -296,3 +296,14 @@ def test_rejected_report_comes_back_with_a_concrete_fix(setup):
     runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)), first_report, fixed])
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert result["job_state"] == "completed"
+
+
+def test_isolation_summary_is_written_to_the_audit_log(setup):
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    turn = _say({"action": "fail", "intent": None, "report": None, "reason": "nothing to do"})
+    turn.isolation = {"mode": "seatbelt", "refused": ["CONNECT ab.chatgpt.com:443"], "auth": "unchanged"}
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], ScriptedRunner([turn]))
+    with sqlite3.connect(database) as db:
+        detail = db.execute("SELECT detail FROM agent_job_log WHERE event='codex_turn'").fetchone()[0]
+    assert json.loads(detail)["isolation"] == "seatbelt:refused=1:unchanged"

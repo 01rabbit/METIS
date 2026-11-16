@@ -110,7 +110,9 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
     if command == "codex":
         from metis.core.codex_specialist import CodexCLI, run_assignment
         return run_assignment(scheduler, args.run_id, args.assignment_id, args.attempt,
-                              CodexCLI(args.codex), model=args.model, turn_timeout=args.turn_timeout,
+                              CodexCLI(args.codex, isolation=args.isolation,
+                                       allow_untested=args.allow_untested_codex),
+                              model=args.model, turn_timeout=args.turn_timeout,
                               note=_note(args))
     if command == "codex-probe":
         return codex_probe(args)
@@ -135,12 +137,21 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
     import subprocess
     import tempfile
 
+    from metis.core.codex_isolation import (
+        TESTED_CODEX_VERSIONS,
+        codex_version,
+        default_codex_home,
+        self_test,
+    )
     from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI
 
     try:
-        cli = CodexCLI(args.codex)
+        cli = CodexCLI(args.codex, isolation=args.isolation, allow_untested=args.allow_untested_codex)
     except RuntimeError as exc:
         return {"codex_available": False, "reason": str(exc)}
+    sentinel = default_codex_home() / "auth.json"
+    isolation = self_test(sentinel) if args.isolation == "required" and sentinel.is_file() else {
+        "skipped": "isolation none" if args.isolation == "none" else "no Codex auth.json to use as sentinel"}
     version = subprocess.run([cli.executable, "--version"], capture_output=True, text=True, timeout=20,
                              check=False).stdout.strip()
     with tempfile.TemporaryDirectory() as temporary:
@@ -148,6 +159,8 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
         argv = cli.argv(base / "work", base / "schema.json", base / "last.json", args.model)
     result: dict[str, Any] = {
         "codex_available": True, "executable": cli.executable, "version": version,
+        "tested_version": codex_version(cli.executable) in TESTED_CODEX_VERSIONS,
+        "isolation": {"mode": args.isolation, "self_test": isolation},
         "disabled_features": [name for name in DISABLED_FEATURES if name in cli.features],
         "unknown_features": [name for name in DISABLED_FEATURES if name not in cli.features],
         "argv": [item if not item.startswith(str(base)) else "<tmp>" + item[len(str(base)):] for item in argv],
@@ -166,7 +179,9 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
                                   "message": canary.message, "violations": canary.violations(),
                                   "detected": "sub_agent_attempt" in canary.violations()
                                   or "collab_tool_call" in canary.violations()}
-        result["ready"] = (turn.returncode == 0 and not turn.violations() and result["spawn_canary"]["detected"])
+        result["ping"]["isolation"] = turn.isolation
+        result["ready"] = (turn.returncode == 0 and not turn.violations() and result["spawn_canary"]["detected"]
+                           and (args.isolation == "none" or bool(isolation.get("passed"))))
     return result
 
 
@@ -278,10 +293,16 @@ def main() -> int:
     agent_codex.add_argument("--codex", help="path to the Codex CLI (default: codex on PATH)")
     agent_codex.add_argument("--note", help="Daybreak's focus for this attempt (shown to the specialist)")
     agent_codex.add_argument("--note-file", type=Path, help="read the note from a file")
+    agent_codex.add_argument("--isolation", choices=("required", "none"), default="required",
+                             help="required: OS isolation (macOS sandbox-exec + egress allow-list); none: flags only")
+    agent_codex.add_argument("--allow-untested-codex", action="store_true",
+                             help="run a Codex CLI version that is not in the tested list")
     agent_probe = agent_commands.add_parser("codex-probe", help="check that Codex can run as a tool-less specialist")
     agent_probe.add_argument("--ping", action="store_true", help="also run one real, tool-less Codex turn")
     agent_probe.add_argument("--model")
     agent_probe.add_argument("--codex")
+    agent_probe.add_argument("--isolation", choices=("required", "none"), default="required")
+    agent_probe.add_argument("--allow-untested-codex", action="store_true")
     agent_slots = agent_commands.add_parser("slots", help="show or set global/per-run slots, model catalog")
     agent_slots.add_argument("--global", dest="global_slots", type=int)
     agent_slots.add_argument("--per-run", dest="per_run_slots", type=int)

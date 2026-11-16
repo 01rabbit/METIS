@@ -96,6 +96,16 @@ refused. Do not hand Codex the brief in any other way, and never give it
 `danger-full-access`. Cancel with `metis agent cancel --assignment ID`; the driver
 kills the Codex process group within about two seconds. The driver's output lists
 intents with their inputs reduced to digests; the full record stays in the run.
+Pass `--note TEXT` to give the attempt a focus (a hypothesis or step); it cannot
+widen what the specialist may do.
+
+Each turn also runs under OS isolation (macOS `sandbox-exec`): no reads or writes in
+the home directory or shared temp dirs except the Codex package and the turn's own
+directory, a per-turn `CODEX_HOME` holding only `auth.json`, and egress only through
+a local proxy that allows the model API hosts. Where this is unavailable the driver
+refuses to run; `--isolation none` is an explicit, recorded opt-out. An untested Codex
+CLI version is refused unless `codex-probe --ping` passes and you add
+`--allow-untested-codex`.
 
 ## 3. Tools you and the subagents use
 
