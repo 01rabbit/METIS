@@ -92,7 +92,7 @@ MUNIN には、手法を抽象化したカードを 2 枚、`source_split: pract
 
 | 条件 | 状況 | 根拠 |
 | --- | --- | --- |
-| 仕様 10 節を合成 fixture・ローカル HTTP・fake executor で検証 | ローカルで合格 | pytest 319 passed / 10 skipped。新規 `tests/test_codex_specialist.py` 15 件を含む |
+| 仕様 10 節を合成 fixture・ローカル HTTP・fake executor で検証 | ローカルで合格 | E2E 時点で pytest 319 passed / 10 skipped。重複 intent の修正後は 327 passed / 10 skipped（`tests/test_codex_specialist.py` 15 件、`tests/test_intent_identity.py` 8 件を含む） |
 | 単純問題は不要 spawn なし、複合問題は異なる有限担当、モデルは active catalog のみ | 一部は実運用で確認 | 実運用では両問題とも異なる 4 担当（turn 4〜6、期限 600〜900 秒）で、使ったモデルは catalog の ID だけ。catalog 外のモデル指定は driver が拒否する（単体テスト）。単純問題の非 spawn は単体テストのみ |
 | 並列数の制限、timeout・cancel・再起動後に二重操作や二重提出が無い | 一部は実運用で確認 | run ごと 2 slot で `queued` が残ることを実運用で確認。実 Codex の実行中に cancel すると、in-flight の intent は `rejected_stale`。修正後は 2 秒以内にプロセスを停止した（合成 run、`codex_killed`）。提出は各 run 1 回。controller 再起動を跨ぐ試験は既存の単体テストのみ |
 | 専門家は公式送信・scope 拡張・資格情報管理をしない | 実運用で確認 | Codex にはツールが無く、8 種の Daybreak 専用 intent を CLI から送るとすべて拒否された（`intent_refused` 8 件）。spawn 試行はカナリアで検知した。提出・add-file・gcd の実行は Daybreak が行った |
@@ -101,8 +101,8 @@ MUNIN には、手法を抽象化したカードを 2 枚、`source_split: pract
 | Python 3.12 で pytest・Ruff・mypy・manifest・build | ローカルで合格 | Ruff 合格、mypy 合格（42 files）、`metis validate` は valid、build 成功。このブランチの CI は未実行（push していない） |
 | 既存 CLI/DB 互換と残る制限の文書化 | 対応済み | 新しいサブコマンドは `agent codex` と `agent codex-probe` だけで、DB スキーマは変更していない。`ctf_artifacts.ALLOWED_OPTIONS` は挙動を変えずにモジュール定数へ移した。制限は ORCHESTRATION_RUNTIME 6.1 節 |
 
-skip の内訳: Docker 実行系 7 件（`METIS_TEST_DOCKER_IMAGE` 未設定）、sandbox イメージ 1 件、ブラウザ 1 件、
-runner の Docker 統合 1 件。いずれも未検証として扱う。
+skip の内訳: runtime の Docker 実行系 6 件、runner の Docker 統合 2 件（いずれも `METIS_TEST_DOCKER_IMAGE`
+未設定）、sandbox イメージ 1 件、ブラウザ 1 件。いずれも未検証として扱う。
 
 ## 6. 残る制約と次の作業
 
