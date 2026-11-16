@@ -53,8 +53,8 @@ def isolation_available() -> bool:
 
 
 def bwrap_available() -> bool:
-    binary, python = shutil.which("bwrap"), shutil.which("python3")
-    if not binary or not python:
+    binary = shutil.which("bwrap")
+    if not binary:
         return False
     try:
         probe = subprocess.run([binary, "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"],
@@ -320,7 +320,7 @@ def self_test(sentinel: Path, *, protected: list[Path] | None = None) -> dict[st
     results: dict[str, Any] = {"platform": sys.platform, "backend": backend, "available": backend is not None}
     if backend is None:
         return results
-    python = shutil.which("python3") or "/usr/bin/python3"
+    python = str(Path(sys.executable).resolve())
     cat, ls, touch = (shutil.which(name) or f"/bin/{name}" for name in ("cat", "ls", "touch"))
     with tempfile.TemporaryDirectory(prefix="metis-isolation-") as temporary, AllowlistProxy() as proxy:
         turn = Path(temporary).resolve()
@@ -393,6 +393,12 @@ SYSTEM_RO = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl", "/etc/ca-cer
              "/etc/alternatives")
 
 
+def python_roots() -> list[Path]:
+    """Install prefixes of the running interpreter (e.g. /opt/hostedtoolcache/... on CI runners)."""
+    roots = {Path(sys.base_prefix).resolve(), Path(sys.executable).resolve().parent.parent}
+    return sorted(root for root in roots if root.is_dir() and not str(root).startswith("/usr"))
+
+
 def bwrap_command(*, turn_dir: Path, readable: list[Path], socket_path: Path, port: int, env: dict[str, str],
                   argv: list[str], workdir: Path) -> list[str]:
     """Run ``argv`` in new user/pid/net/ipc/uts/cgroup namespaces with only system dirs (read-only),
@@ -401,9 +407,10 @@ def bwrap_command(*, turn_dir: Path, readable: list[Path], socket_path: Path, po
     bwrap sets PR_SET_NO_NEW_PRIVS and drops capabilities, so setuid programs cannot raise privileges.
     Child processes are possible (no seccomp filter) but stay inside the same namespaces."""
     binary = shutil.which("bwrap")
-    python = shutil.which("python3")
-    if not binary or not python:
-        raise RuntimeError("bubblewrap or python3 is not available")
+    if not binary:
+        raise RuntimeError("bubblewrap is not available")
+    python = str(Path(sys.executable).resolve())  # the forwarder uses only the standard library
+    readable = [*readable, *python_roots()]
     forwarder = turn_dir / "forward.py"
     forwarder.write_text(FORWARDER)
     command = [binary, "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",

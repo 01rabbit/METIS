@@ -8,6 +8,7 @@ import json
 import socket
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -206,9 +207,9 @@ def test_codex_turn_under_bwrap_cannot_escape(tmp_path, monkeypatch):
         "if [ \"$1\" = features ]; then echo 'shell_tool stable true'; exit 0; fi\n"
         f"cat {secret}/private.txt >/dev/null 2>&1 && echo READ_OK >&2 || echo READ_DENIED >&2\n"
         f"touch {secret}/x 2>/dev/null && echo WRITE_OK >&2 || echo WRITE_DENIED >&2\n"
-        f"{sys.executable} -I -c \"import socket; socket.create_connection(('1.1.1.1', 443), timeout=5)\" 2>/dev/null "
+        f"{Path(sys.executable).resolve()} -I -c \"import socket; socket.create_connection(('1.1.1.1', 443), timeout=5)\" 2>/dev/null "
         "&& echo NET_OK >&2 || echo NET_DENIED >&2\n"
-        f"{sys.executable} -I -c \"import urllib.request; urllib.request.urlopen('https://example.com', timeout=8)\" "
+        f"{Path(sys.executable).resolve()} -I -c \"import urllib.request; urllib.request.urlopen('https://example.com', timeout=8)\" "
         "2>/dev/null && echo PROXY_OK >&2 || echo PROXY_DENIED >&2\n"
         "ls \"$CODEX_HOME\" >&2\n"
         "exit 0\n")
