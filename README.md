@@ -15,8 +15,9 @@ API key nor Docker.
 ```
 
 This launcher installs missing project-local dependencies and starts an installed
-AI coding CLI in the repository. With Codex it enables `cli_daybreak`,
-`multi_agent`, and automatic approval review. Other agents use the same local
+AI coding CLI in the repository. With Codex it enables `cli_daybreak` and
+`multi_agent` when the installed Codex lists them (`codex features list`), and
+automatic approval review when supported. Other agents use the same local
 METIS commands, verifier, state, and knowledge store. The instructions cap
 unnecessary fan-out and context duplication to conserve tokens.
 
