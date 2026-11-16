@@ -260,3 +260,14 @@ an inconclusive report's `next_action` and must not repeat a previous wave reaso
 checks provenance and literal repetition, not semantic difference: Daybreak remains
 responsible for that judgment. Missing or invalid selections stop the driver. A selection
 for a later wave can be supplied when resuming after its report exists.
+
+Each invocation returns and persists an answer-free row in `agent_autopilot_runs` in the
+METIS SQLite database. It records elapsed wall time, wave count, stop reason, Daybreak
+handoff count, enqueue/dispatch/retry/synthesis/continuation counts, specialist starts and
+turns, tokens for jobs started during this invocation, and `cost="unknown"`. A handoff is counted once when the
+invocation returns control for a decision or reconciliation; it is not a count of every
+manual action Daybreak later performs. Resuming after an interruption creates a new row,
+and the existing-attempt guard prevents duplicate starts. These measurements instrument
+the scheduler path; they do not by themselves establish improved solve rate or less human
+work. The single-run test `test_drives_batches_and_resumes_completed_wave_without_new_attempts`
+checks persisted counters, unknown token/cost reporting, and resume behavior.

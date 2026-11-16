@@ -1,4 +1,6 @@
 """Autopilot drives only scheduler-authorized work and leaves decisions to Daybreak."""
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -37,10 +39,23 @@ def test_drives_batches_and_resumes_completed_wave_without_new_attempts(tmp_path
     first = autopilot(scheduler, run, None, max_waves=2, drive=drive)
     assert first["stop"] == "continuation_for_daybreak"
     assert first["waves"][0]["complete"]
+    assert first["metrics"]["daybreak_handoffs"] == 1
+    assert first["metrics"]["operations"] == {
+        "plan_created": 1, "enqueue": 1, "dispatch": 2, "spawn_retry": 0, "synthesize": 1,
+        "continuation_created": 0, "specialists_started": 4,
+    }
     assert all(j["attempt_no"] == 1 for j in scheduler.jobs(run))
     second = autopilot(scheduler, run, None, max_waves=2, drive=drive)
     assert second["stop"] == "continuation_for_daybreak"
+    assert second["metrics"]["operations"]["specialists_started"] == 0
     assert all(j["attempt_no"] == 1 for j in scheduler.jobs(run))
+    with sqlite3.connect(scheduler.database) as db:
+        rows = db.execute("SELECT stop_reason, daybreak_handoffs, operations, tokens, cost "
+                           "FROM agent_autopilot_runs ORDER BY started").fetchall()
+    assert len(rows) == 2
+    assert all(row[0] == "continuation_for_daybreak" and row[1] == 1 and row[4] == "unknown" for row in rows)
+    assert json.loads(rows[0][2])["specialists_started"] == 4
+    assert json.loads(rows[0][3])["input_tokens"] == "unknown"
 
 
 def test_existing_running_attempt_is_not_driven_again(tmp_path):
@@ -51,6 +66,8 @@ def test_existing_running_attempt_is_not_driven_again(tmp_path):
     result = autopilot(scheduler, run, None, max_waves=1,
                        drive=lambda *args: pytest.fail("must not run an existing attempt"))
     assert result["stop"] == "existing_attempt_needs_reconciliation"
+    assert result["metrics"]["daybreak_handoffs"] == 1
+    assert result["metrics"]["operations"]["specialists_started"] == 0
 
 
 def test_bounds_and_failed_attempt_stops_without_retry(tmp_path):

@@ -14,12 +14,13 @@ separate write-up without the answer value.
 | Let's analyze system calls | Rev | `1709125dc8f645f4a7c72a86efa1d210` | `metis web attest`: `official_browser_observed` |
 | Springing | Web | `ea91c4d7c2c748bc9277f5e39f1cb80a` | `metis web attest`: `official_browser_observed` |
 | Happy Birthday | Crypto | `1f8c26a2f7bd437e878297d37955fb0b` | Browser displayed `SOLVED!`; `metis web attest`: `official_browser_observed` |
+| Password, Please | Misc | `4e139020ad554e2a9d061df07c621853` | Browser card changed to solved, form disabled, dashboard 4/14 and Misc 1/6; `metis web attest`: `official_browser_observed` |
 
-After the third solve, the authenticated dashboard showed 3/14 for August,
-including Rev 1/2, Web 1/4, and Crypto 1/2. The METIS evaluation board showed
-3/4 challenges solved with Password, Please still queued. This meets the plan's
-minimum live-evaluation gate of three official solves across three non-Welcome
-categories, including both designated final-evaluation challenges.
+After the fourth solve, the authenticated dashboard showed 4/14 for August,
+including Rev 1/2, Web 1/4, Crypto 1/2, and Misc 1/6. The METIS evaluation board
+showed 4/4 challenges solved. This exceeds the plan's minimum live-evaluation
+gate of three official solves across three non-Welcome categories, including
+both designated final-evaluation challenges.
 
 ## Happy Birthday evidence
 
@@ -43,11 +44,10 @@ gates.
 
 ## Current limits
 
-- The August board has one remaining queued challenge, Password, Please.
+- Password, Please was a development candidate, not a designated final-evaluation challenge. Daybreak used the observed Bash glob comparison to direct one bounded connection to the single challenge instance, then submitted once in the browser. This is official integration evidence, not an autonomous specialist solve; it does not count toward P1 model autonomy.
 - No issues were closed based on this evaluation.
-- PR #31 remains Draft. Its current CI jobs passed on head `fb2b4ef` before
-  these documentation-only changes; new checks must be inspected after the
-  write-up commit is pushed.
+- PR #31 remains Draft. Its three required CI jobs passed on head `8f85ce5`;
+  checks must be inspected again after this report and write-up update is pushed.
 - The issue gates for bounded ZipCrypto/Stay recovery, Linux real-Codex and
   sub-agent isolation, post-reauthentication KSNCTF #33, and P1–P8 research,
   benchmark, and operational acceptance remain separate work.

@@ -163,6 +163,11 @@
   },
   {
    "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "password-please",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/password-please.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
    "problem": "springing",
    "writeup": "alpacahack-daily-2026-08-metis-evaluation/springing.md"
   },
