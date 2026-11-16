@@ -45,7 +45,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   具体的には、整数 option の型を揃え（`"0x10"` と `16` を同一視）、既定値を補い、byte 窓を artifact サイズで、
   PCAP のパケット数を実レコード数で打ち切り、構造化 data の JSON をキー順で正準化し、hex 入力の空白と
   大小文字を無視する。identity は重複判定にだけ使い、ツールは要求どおりに実行する。
-- 再試験は run ごとに 1 回（`MAX_RETESTS`）まで。`new_evidence` には、前回の実行より新しく、かつ別の
+- 重複判定の範囲は attempt 単位（#23 で変更）。状態を持たない専門家は他の担当の観測を見られないため、他の attempt が
+  実行済みの要求は新しい attempt が実行できる。ただし同じ正準要求は run 全体で 8 回（`RUN_REPLAY_LIMIT`）まで。
+- 再試験は attempt ごとに 1 回（`MAX_RETESTS`）まで。`new_evidence` には、前回の実行より新しく、かつ別の
   action が生んだ観測イベントを挙げる必要がある（古いイベントや同じ action 自身のイベントは数えない）。
 - 1 attempt の中で、同じ artifact に同じツールを option を変えて使えるのは 3 通り（`FAMILY_LIMIT`）まで。
 - 拒否は `agent_job_log` に `intent_duplicate` / `intent_variant_limit` として残り、メッセージは引用すべき
@@ -155,6 +157,8 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
     のみ）以外を拒否する。拒否した宛先はターンごとに記録する。
   - 隔離が使えない環境では起動を拒否する。`--isolation none` は明示的な opt-out で、記録が残る。
   - 試験済みでない Codex CLI の版も拒否する（`--allow-untested-codex` で解除）。
+- 専門家は `view` intent で登録済みの画像を次のターンに添付させられる。答えは `candidate` で非公開に渡す（0600 のファイル、
+  DB には digest のみ）。Daybreak は `metis agent candidates RUN` でファイルのパスを受け取り、`metis web submit --candidate-file` で提出する。
 - `metis agent codex-probe --ping` は、隔離のセルフテスト、実ターン 1 回、spawn カナリア 1 回を実行し、
   `ready` を返す。
 - usage（トークン数）は Codex の報告値を `agent_jobs.usage` に記録する。費用は `unknown`。

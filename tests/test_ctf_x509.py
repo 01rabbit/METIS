@@ -210,7 +210,7 @@ def test_specialist_gets_moduli_and_shared_factor_through_intents_only(tmp_path,
         def __init__(self):
             self.prompts: list = []
 
-        def run(self, prompt, *, model, timeout, should_stop=None):
+        def run(self, prompt, *, model, timeout, should_stop=None, images=None):
             self.prompts.append(prompt)
             return CodexTurn(returncode=0, message=json.dumps(decide(self.prompts)), item_types=["agent_message"])
 
