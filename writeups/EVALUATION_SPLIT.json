@@ -157,6 +157,11 @@
    "writeup": "alpacahack-daily-2026-08-metis-evaluation/lets-analyze-system-calls-let-s-analyze-system-calls.md"
   },
   {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "springing",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/springing.md"
+  },
+  {
    "ctf": "ksnctf",
    "problem": "1",
    "writeup": "ksnctf/1-test-problem.md"
