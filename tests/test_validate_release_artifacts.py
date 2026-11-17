@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import io
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from metis.release_artifacts import validate_release
+
+
+def write_distributions(root: Path, *, wheel_version: str = "0.5.0",
+                        sdist_version: str = "0.5.0") -> Path:
+    dist = root / "dist"
+    dist.mkdir()
+    with zipfile.ZipFile(dist / "metis_ctf-0.5.0-py3-none-any.whl", "w") as archive:
+        archive.writestr("metis_ctf-0.5.0.dist-info/METADATA",
+                         f"Metadata-Version: 2.1\nName: metis-ctf\nVersion: {wheel_version}\n\n")
+    with tarfile.open(dist / "metis_ctf-0.5.0.tar.gz", "w:gz") as archive:
+        content = f"Metadata-Version: 2.1\nName: metis-ctf\nVersion: {sdist_version}\n\n".encode()
+        member = tarfile.TarInfo("metis_ctf-0.5.0/PKG-INFO")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+    return dist
+
+
+def test_release_validation_accepts_matching_wheel_sdist_and_tag(tmp_path):
+    artifacts = validate_release(write_distributions(tmp_path), "v0.5.0", "metis-ctf", "0.5.0")
+    assert [path.suffix for path in artifacts] == [".whl", ".gz"]
+
+
+@pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),
+                                                   ("v0.5.0-rc1", "0.5.0")])
+def test_release_validation_rejects_mismatched_or_nonrelease_tag(tmp_path, tag, project_version):
+    with pytest.raises(ValueError, match="tag"):
+        validate_release(write_distributions(tmp_path), tag, "metis-ctf", project_version)
+
+
+@pytest.mark.parametrize("wheel_version,sdist_version", [("0.5.1", "0.5.0"), ("0.5.0", "0.5.1")])
+def test_release_validation_rejects_distribution_metadata_mismatch(tmp_path, wheel_version, sdist_version):
+    with pytest.raises(ValueError, match="metadata"):
+        validate_release(write_distributions(tmp_path, wheel_version=wheel_version,
+                                             sdist_version=sdist_version),
+                         "v0.5.0", "metis-ctf", "0.5.0")
+
+
+def test_release_validation_rejects_extra_artifacts(tmp_path):
+    dist = write_distributions(tmp_path)
+    (dist / "untracked.zip").write_bytes(b"unexpected")
+    with pytest.raises(ValueError, match="exactly one"):
+        validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")

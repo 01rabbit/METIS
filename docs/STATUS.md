@@ -491,6 +491,8 @@ provide cost/provider usage or artifact-retention accounting, and is
 not a tamper-proof signature or full operator UI. Issue #9 remains open. See
 [`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md).
 
+A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
+
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
 before registering a worker or accepting results, and cannot replace another
