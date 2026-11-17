@@ -39,10 +39,12 @@ def cluster_interval(rows: list[dict[str, Any]], task_ids: list[str],
 def analyze(data: dict[str, Any]) -> dict[str, Any]:
     task_families = data["encoding_pairs"]
     task_ids = sorted(task_families)
+    records_by_key = {(record["case"], record["arm"]): record for record in data["records"]}
     rows = []
     for pair in data["pairs"]:
         task_id = pair["case"].rsplit("-rep-", 1)[0]
         row = {
+            "case": pair["case"],
             "task_id": task_id,
             "single_verified": bool(pair["single_verified"]),
             "multi_verified": bool(pair["multi_verified"]),
@@ -57,12 +59,25 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "single_tokens": pair["single_tokens"],
             "multi_tokens": pair["multi_tokens"],
         }
+        for arm in ("single", "multi"):
+            record = records_by_key[(pair["case"], arm)]
+            row[f"{arm}_protocol_complete"] = (
+                record["synthesis_complete"] is True
+                and all(state == "completed" for state in record["job_states"])
+            )
+            row[f"{arm}_workflow_verified"] = (
+                row[f"{arm}_protocol_complete"] and row[f"{arm}_verified"]
+            )
+        row["workflow_solve_delta_multi_minus_single"] = (
+            int(row["multi_workflow_verified"]) - int(row["single_workflow_verified"])
+        )
         rows.append(row)
     if len(rows) != 60 or len(task_ids) != 30 or any(
             sum(row["task_id"] == task_id for row in rows) != 2 for task_id in task_ids):
         raise ValueError("expected 30 task clusters with exactly two paired repetitions each")
 
     outcomes: Counter[str] = Counter()
+    workflow_outcomes: Counter[str] = Counter()
     for row in rows:
         if row["multi_verified"] and row["single_verified"]:
             outcomes["both"] += 1
@@ -72,11 +87,24 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             outcomes["single_only"] += 1
         else:
             outcomes["neither"] += 1
+        if row["multi_workflow_verified"] and row["single_workflow_verified"]:
+            workflow_outcomes["both"] += 1
+        elif row["multi_workflow_verified"]:
+            workflow_outcomes["multi_only"] += 1
+        elif row["single_workflow_verified"]:
+            workflow_outcomes["single_only"] += 1
+        else:
+            workflow_outcomes["neither"] += 1
 
-    records_by_key = {(record["case"], record["arm"]): record for record in data["records"]}
     failures = []
+    rows_by_case = {row["case"]: row for row in rows}
     for pair in data["pairs"]:
-        if pair["single_verified"] and pair["multi_verified"]:
+        case = pair["case"]
+        case_row = rows_by_case[case]
+        single_protocol_complete = case_row["single_protocol_complete"]
+        multi_protocol_complete = case_row["multi_protocol_complete"]
+        if (pair["single_verified"] and pair["multi_verified"]
+                and single_protocol_complete and multi_protocol_complete):
             continue
         task_id = pair["case"].rsplit("-rep-", 1)[0]
         failure = {
@@ -84,6 +112,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "encoding_pair": task_families[task_id],
             "single_verified": pair["single_verified"],
             "multi_verified": pair["multi_verified"],
+            "single_protocol_complete": single_protocol_complete,
+            "multi_protocol_complete": multi_protocol_complete,
         }
         for arm in ("single", "multi"):
             record = records_by_key[(pair["case"], arm)]
@@ -94,6 +124,7 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         failures.append(failure)
 
     solve_delta = statistics.mean(row["solve_delta_multi_minus_single"] for row in rows)
+    workflow_solve_delta = statistics.mean(row["workflow_solve_delta_multi_minus_single"] for row in rows)
     latency_delta = statistics.mean(row["latency_delta_single_minus_multi"] for row in rows)
     arms = {}
     for arm in ("single", "multi"):
@@ -107,6 +138,11 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         arms[arm] = {
             "oracle_verified": sum(row[f"{arm}_verified"] for row in rows),
             "trials": len(rows),
+            "protocol_complete_trials": sum(row[f"{arm}_protocol_complete"] for row in rows),
+            "protocol_complete_oracle_verified": sum(
+                row[f"{arm}_workflow_verified"] for row in rows),
+            "oracle_verified_but_protocol_incomplete": sum(
+                row[f"{arm}_verified"] and not row[f"{arm}_protocol_complete"] for row in rows),
             "mean_end_to_end_seconds": round(statistics.mean(row[f"{arm}_seconds"] for row in rows), 3),
             "mean_wall_budget_fraction": round(statistics.mean(row[f"{arm}_seconds"] for row in rows) / 600, 4),
             "mean_calls_observed": round(statistics.mean(row[f"{arm}_calls"] for row in rows), 3),
@@ -134,9 +170,14 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         "repetitions_per_cluster": 2,
         "arms": arms,
         "discordant_pairs": dict(outcomes),
+        "protocol_complete_discordant_pairs": dict(workflow_outcomes),
         "paired_mean_solve_difference_multi_minus_single": round(solve_delta, 4),
         "paired_solve_difference_cluster_bootstrap_95_percentile_interval": cluster_interval(
             rows, task_ids, "solve_delta_multi_minus_single"),
+        "paired_mean_protocol_complete_solve_difference_multi_minus_single": round(
+            workflow_solve_delta, 4),
+        "paired_protocol_complete_solve_difference_cluster_bootstrap_95_percentile_interval":
+            cluster_interval(rows, task_ids, "workflow_solve_delta_multi_minus_single"),
         "paired_mean_latency_difference_single_minus_multi_seconds": round(latency_delta, 3),
         "paired_latency_difference_cluster_bootstrap_95_percentile_interval_seconds": cluster_interval(
             rows, task_ids, "latency_delta_single_minus_multi"),

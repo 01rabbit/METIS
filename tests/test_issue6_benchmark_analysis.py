@@ -52,6 +52,7 @@ def test_analysis_bootstraps_task_clusters_and_reports_paired_outcomes():
     assert result["repetitions_per_cluster"] == 2
     assert result["arms"]["single"]["oracle_verified"] == 0
     assert result["arms"]["multi"]["oracle_verified"] == 60
+    assert result["arms"]["multi"]["protocol_complete_oracle_verified"] == 60
     assert result["arms"]["single"]["usage_complete_for_all_trials"] is True
     assert result["discordant_pairs"] == {"multi_only": 60}
     assert result["paired_solve_difference_cluster_bootstrap_95_percentile_interval"] == [1.0, 1.0]
@@ -73,3 +74,14 @@ def test_analysis_marks_vacuous_or_empty_usage_as_unknown():
     result = analyze(data)
     assert result["arms"]["single"]["usage_complete_for_all_trials"] is False
     assert result["arms"]["single"]["mean_input_tokens_reported"] == "unknown"
+
+
+def test_analysis_separates_oracle_candidate_from_complete_workflow():
+    data = fixture_result()
+    data["records"][1]["job_states"] = ["failed"]
+    data["records"][1]["synthesis_complete"] = False
+    result = analyze(data)
+    assert result["arms"]["multi"]["oracle_verified"] == 60
+    assert result["arms"]["multi"]["protocol_complete_trials"] == 59
+    assert result["arms"]["multi"]["protocol_complete_oracle_verified"] == 59
+    assert result["arms"]["multi"]["oracle_verified_but_protocol_incomplete"] == 1
