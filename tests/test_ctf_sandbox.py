@@ -22,17 +22,31 @@ FAKE_ENGINE = textwrap.dedent('''\
     """Test double for a container engine: records argv, emulates /work in a temp dir."""
     import json, os, subprocess, sys, tempfile
     log = os.environ["FAKE_ENGINE_LOG"]
+    containers = log + ".containers"
     with open(log, "a") as stream:
         stream.write(json.dumps(sys.argv[1:]) + "\\n")
     if sys.argv[1] == "version":
         print('"27.0"')
         raise SystemExit(0)
     if sys.argv[1] == "rm":
+        try:
+            os.unlink(containers)
+        except FileNotFoundError:
+            pass
         raise SystemExit(0)
     if sys.argv[1] == "inspect":
         print("Error: No such object: " + sys.argv[-1], file=sys.stderr)
         raise SystemExit(1)
-    script = sys.argv[sys.argv.index("-c") + 1]
+    if sys.argv[1] == "create":
+        with open(containers, "w") as stream:
+            json.dump(sys.argv[1:], stream)
+        print("fake-container-id")
+        raise SystemExit(0)
+    if sys.argv[1] != "start":
+        raise SystemExit("unexpected engine command")
+    with open(containers) as stream:
+        created = json.load(stream)
+    script = created[created.index("-c") + 1]
     work = tempfile.mkdtemp()
     script = script.replace("/work", work)
     raise SystemExit(subprocess.run([sys.executable, "-I", "-c", script]).returncode)
@@ -101,7 +115,8 @@ def test_sandbox_isolation_flags_and_execution(tmp_path, engine):
     assert result["stdout"]["text"] == "hello metis\n"
     assert "args:-x" in result["stderr"]["text"]
     assert result["files_in_sandbox"] == ["chall", "libc.so.6"]
-    argv = [json.loads(line) for line in engine.read_text().splitlines()][-1]
+    commands = [json.loads(line) for line in engine.read_text().splitlines()]
+    argv = next(command for command in commands if command[0] == "create")
     for flag in ("--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
                  "--user=65534:65534", "--pull=never", "--rm"):
         assert flag in argv

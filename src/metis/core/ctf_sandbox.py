@@ -437,7 +437,7 @@ class Sandbox:
         memory, cpus, ipc = ({"zipcrypto": ("2g", "4", "private"),
                               "zipcrypto_test_lowmem": ("128m", "4", "private")}.get(
                                   profile, ("512m", "1", "none")))
-        return [self.engine, "run", *( ["--rm"] if profile == "standard" else []), "-i", "--name", name,
+        return [self.engine, "create", *( ["--rm"] if profile == "standard" else []), "-i", "--name", name,
                 "--pull=never",
                 *(["--platform", self.platform] if self.platform else []),
                 "--network=none", "--read-only", "--cap-drop=ALL",
@@ -516,21 +516,28 @@ class Sandbox:
                     with sqlite3.connect(self.session.database) as db:
                         db.execute("INSERT OR REPLACE INTO sandbox_workers VALUES (?, ?, ?, ?)",
                                    (run_id, self.engine, name, time.time()))
-                    process = subprocess.Popen(self.command(name, profile=_profile), stdin=subprocess.PIPE,
-                                               stdout=output, stderr=error, env=_engine_environment())
-                try:
-                    process.communicate(input=bundle, timeout=request.timeout + 60)
-                    completed: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
-                        process.args, process.returncode or 0)
-                except subprocess.TimeoutExpired:
-                    self._remove_worker(name)
-                    process.communicate()
-                    raise
-                finally:
-                    with (run_lock(self.session.database, run_id),
-                          sqlite3.connect(self.session.database) as db):
-                        db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
-                                   (run_id, name))
+                    created = subprocess.run(self.command(name, profile=_profile), capture_output=True,
+                                             timeout=60, check=False, env=_engine_environment())
+                    if created.returncode:
+                        error.write(created.stderr)
+                        completed: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+                            created.args, created.returncode)
+                        process = None
+                    else:
+                        # `create` completes only after the named container exists.
+                        # Starting that existing name avoids a cancel/create race.
+                        process = subprocess.Popen(
+                            [self.engine, "start", "--attach", "--interactive", name],
+                            stdin=subprocess.PIPE, stdout=output, stderr=error,
+                            env=_engine_environment())
+                if process is not None:
+                    try:
+                        process.communicate(input=bundle, timeout=request.timeout + 60)
+                        completed = subprocess.CompletedProcess(process.args, process.returncode or 0)
+                    except subprocess.TimeoutExpired:
+                        self._remove_worker(name)
+                        process.communicate()
+                        raise
                 if _profile.startswith("zipcrypto"):
                     inspected = subprocess.run(
                         [self.engine, "inspect", "--format={{.State.OOMKilled}}", name],
@@ -567,6 +574,10 @@ class Sandbox:
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
         finally:
+            with (run_lock(self.session.database, run_id),
+                  sqlite3.connect(self.session.database) as db):
+                db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                           (run_id, name))
             if _profile.startswith("zipcrypto"):
                 try:
                     cleanup = subprocess.run([self.engine, "rm", "-f", name], capture_output=True,
