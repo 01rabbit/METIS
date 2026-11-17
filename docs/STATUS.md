@@ -185,12 +185,19 @@ synthetic scheduler benchmark verifies the same tasks in both arms (30/30) and
 measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
 single assignment vs two dispatched specialists under matched two-turn/two-
 action budgets. This is virtual scheduler evidence; it does not measure real
-elapsed time, concurrent tool execution, or model reasoning. A controlled
-real-model multi-agent vs single-agent benchmark remains outstanding. Issue #6
-stays open; see
+elapsed time, concurrent tool execution, or model reasoning. A real-model
+paired pilot then ran one seeded task through both arms using Codex CLI 0.169.0:
+both candidates verified, while the two-specialist arm took 21.83s vs 20.95s,
+used 6 vs 3 provider calls, and used 59,627 vs 29,881 input tokens. This is one
+mechanical task with the default model not pinned, so it is not a general
+performance estimate and shows no gain. Repeated, diverse, pinned-model runs
+with uncertainty and cost reporting remain outstanding. Issue #6 stays open;
+see
 [`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
 The paired benchmark protocol is in
 [`issue6-paired-scheduler-benchmark-2026-11-17.md`](reports/issue6-paired-scheduler-benchmark-2026-11-17.md).
+The real-model pilot is in
+[`issue6-real-model-paired-pilot-2026-11-17.md`](reports/issue6-real-model-paired-pilot-2026-11-17.md).
 
 Browser verdict attestation now requires a matching pre-reserved candidate;
 attestation cannot create a submission record for an unprepared candidate.
