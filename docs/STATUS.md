@@ -395,6 +395,16 @@ usage or artifact-retention accounting absent structured source data, and is
 not a tamper-proof signature or full operator UI. Issue #9 remains open. See
 [`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md).
 
+`metis codex purge-derived RUN_ID` now previews run-scoped generated artifacts;
+`--apply` unlinks only registered `.metis-derived` files and removes their
+manifest entries. It refuses active states, operations, workers, queued/running
+jobs, and unexpected or symlinked entries. Enqueue/retry and dispatch's
+queued-to-running reservation share the per-run lock, closing a race found in
+independent review. The retry path reconciles missing files after interruption;
+focused tests confirm originals and `.metis-added` files remain. This is local
+directory-entry deletion, not secure erasure from snapshots, WAL, or backups. See
+[`issue9-derived-artifact-purge-2026-11-18.md`](reports/issue9-derived-artifact-purge-2026-11-18.md).
+
 Phase 4 autopilot has a synthetic one-wave comparison against direct scheduler
 calls: both produced four inconclusive specialist reports with matching plan,
 enqueue, dispatch, and synthesis counts. Returned activity metrics match their

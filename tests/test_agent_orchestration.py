@@ -16,6 +16,7 @@ from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_contest import ContestBoard
 from metis.core.ctf_orchestration import AgentLedger, plan_agent_wave
+from metis.core.run_lock import run_lock
 
 
 def _run(database: Path, tmp_path: Path, *, categories=("crypto", "forensics"), files=2, actions=80,
@@ -140,6 +141,58 @@ def test_assignment_deadline_is_capped_by_shared_run_wall_budget(state, tmp_path
     assert started
     assert all(item["brief"]["seconds"] <= remaining for item in started)
     assert all(job["deadline_seconds"] <= remaining for job in scheduler.jobs(run_id))
+
+
+@pytest.mark.parametrize("mutation", ["enqueue", "retry", "dispatch"])
+def test_scheduler_queue_mutations_wait_for_run_lock(state, tmp_path, mutation):
+    run_id = _run(state, tmp_path)
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler = AgentScheduler(state, FakeHost())
+    if mutation in {"retry", "dispatch"}:
+        jobs = scheduler.enqueue(run_id, wave["wave_id"])
+    if mutation == "retry":
+        job = jobs[0]
+        with sqlite3.connect(state) as db:
+            db.execute("UPDATE agent_jobs SET state='failed', attempt_id='old', attempt_no=1 "
+                       "WHERE assignment_id=?", (job["assignment_id"],))
+        action = lambda: scheduler.retry(job["assignment_id"])
+    elif mutation == "dispatch":
+        action = lambda: scheduler.dispatch(run_id)
+    else:
+        action = lambda: scheduler.enqueue(run_id, wave["wave_id"])
+
+    locked = threading.Event()
+    release = threading.Event()
+    action_started = threading.Event()
+    action_finished = threading.Event()
+    result: list[Any] = []
+
+    def hold_run_lock():
+        with run_lock(state, run_id):
+            locked.set()
+            assert release.wait(5)
+
+    def mutate_queue():
+        action_started.set()
+        try:
+            result.append(action())
+        finally:
+            action_finished.set()
+
+    holder = threading.Thread(target=hold_run_lock)
+    worker = threading.Thread(target=mutate_queue)
+    holder.start()
+    assert locked.wait(2)
+    worker.start()
+    try:
+        assert action_started.wait(2)
+        assert not action_finished.wait(0.1)
+    finally:
+        release.set()
+    holder.join(2)
+    worker.join(2)
+    assert not holder.is_alive() and not worker.is_alive()
+    assert action_finished.is_set() and result
 
 
 def test_concurrent_dispatch_does_not_double_reserve(state, tmp_path):

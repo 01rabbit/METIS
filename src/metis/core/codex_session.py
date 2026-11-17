@@ -10,6 +10,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -401,6 +402,7 @@ class CodexSession:
         path = Path(root)
         return path if path.is_absolute() else self.database.parent.resolve() / path
 
+    @locked
     def store_artifact(self, run_id: str, content: bytes, *, directory_name: str = ".metis-derived",
                        suffix: str = ".bin") -> str:
         """Write controller-produced bytes into the run snapshot and declare them in scope."""
@@ -437,6 +439,110 @@ class CodexSession:
             db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
                        (updated.model_dump_json(), run_id))
         return relative
+
+    def purge_derived(self, run_id: str, *, apply: bool = False) -> dict[str, object]:
+        """Dry-run or remove only generated `.metis-derived` files for an inactive run.
+
+        Files are unlinked before their manifest entries are removed. If the process
+        stops between those steps, a retry treats already-missing registered files
+        as complete and finishes the manifest update.
+        """
+        with operation_lock(self.database, run_id), run_lock(self.database, run_id):
+            events = self.store.read(run_id)
+            if not events:
+                raise ValueError("run not found")
+            if events[-1].status in {RunStatus.EXECUTING, RunStatus.OBSERVING,
+                                     RunStatus.REPLANNING, RunStatus.VERIFYING}:
+                raise ValueError("run must be inactive before derived artifact purge")
+
+            with sqlite3.connect(self.database) as db:
+                tables = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                active_operations = (db.execute(
+                    "SELECT 1 FROM codex_active_operations WHERE run_id=? LIMIT 1", (run_id,),
+                ).fetchone() if "codex_active_operations" in tables else None)
+                active_workers = (db.execute(
+                    "SELECT 1 FROM sandbox_workers WHERE run_id=? LIMIT 1", (run_id,),
+                ).fetchone() if "sandbox_workers" in tables else None)
+                active_jobs = (db.execute(
+                    "SELECT 1 FROM agent_jobs WHERE run_id=? AND state IN ('queued','running','unknown') LIMIT 1",
+                    (run_id,),
+                ).fetchone() if "agent_jobs" in tables else None)
+            if active_operations or active_workers or active_jobs:
+                raise ValueError("run has active operations or workers")
+
+            manifest_text = self._session(run_id)[0]
+            manifest = ChallengeManifest.model_validate_json(manifest_text)
+            derived_paths = sorted(path for path in manifest.artifacts
+                                   if path.startswith(".metis-derived/"))
+            expected_names: set[str] = set()
+            for path in derived_paths:
+                name = path.removeprefix(".metis-derived/")
+                if ("/" in name or not re.fullmatch(r"[0-9a-f]{32}\.[a-z0-9]{1,8}", name)):
+                    raise ValueError("registered derived artifact path is unexpected")
+                expected_names.add(name)
+            if len(expected_names) != len(derived_paths):
+                raise ValueError("registered derived artifact path is duplicated")
+
+            root = self.artifact_root(run_id)
+            if root is None:
+                if expected_names:
+                    raise ValueError("run has no registered artifact root")
+                return {"run_id": run_id, "applied": apply, "files": [], "bytes": 0}
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            derived_fd: int | None = None
+            entries: list[dict[str, str | int]]
+            try:
+                try:
+                    derived_fd = os.open(".metis-derived", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                         dir_fd=root_fd)
+                except FileNotFoundError:
+                    entries = [
+                        {"path": path, "state": "missing", "size": 0} for path in derived_paths
+                    ]
+                    derived_exists = False
+                else:
+                    names = set(os.listdir(derived_fd))
+                    if names - expected_names:
+                        raise ValueError("derived directory contains unregistered entries")
+                    entries = []
+                    for path in derived_paths:
+                        name = path.removeprefix(".metis-derived/")
+                        try:
+                            file_stat = os.stat(name, dir_fd=derived_fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            entries.append({"path": path, "state": "missing", "size": 0})
+                            continue
+                        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+                            raise ValueError("derived artifact is not a private regular file")
+                        entries.append({"path": path, "state": "present", "size": file_stat.st_size})
+                    derived_exists = True
+
+                total_bytes = sum(int(item["size"]) for item in entries)
+                if not apply:
+                    return {"run_id": run_id, "applied": False, "files": entries, "bytes": total_bytes}
+
+                if derived_exists and derived_fd is not None:
+                    for item in entries:
+                        if item["state"] == "present":
+                            os.unlink(str(item["path"]).removeprefix(".metis-derived/"),
+                                      dir_fd=derived_fd)
+                            item["state"] = "deleted"
+                    os.fsync(derived_fd)
+
+                data = manifest.model_dump()
+                data["artifacts"] = [path for path in manifest.artifacts
+                                     if not path.startswith(".metis-derived/")]
+                updated = ChallengeManifest.model_validate(data)
+                with sqlite3.connect(self.database) as db:
+                    db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                               (updated.model_dump_json(), run_id))
+                return {"run_id": run_id, "applied": True, "files": entries, "bytes": total_bytes,
+                        "manifest_entries_removed": len(derived_paths)}
+            finally:
+                if derived_fd is not None:
+                    os.close(derived_fd)
+                os.close(root_fd)
 
     @locked
     def add_file(self, run_id: str, supplied: Path) -> dict:

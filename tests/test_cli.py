@@ -86,6 +86,28 @@ def test_audit_fails_closed_on_corrupt_chain_and_missing_database(tmp_path):
     assert database.read_bytes() == before
 
 
+def test_cli_purge_derived_defaults_to_preview_and_apply_is_explicit(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="retention", description="local fixture", paths=[source])["run_id"]
+    derived = session.store_artifact(run_id, b"generated")
+    root = session.artifact_root(run_id)
+    assert root is not None
+    derived_file = root / derived
+
+    preview = cli("codex", "--database", database, "purge-derived", run_id)
+    assert preview.returncode == 0, preview.stderr
+    assert json.loads(preview.stdout)["applied"] is False
+    assert derived_file.exists()
+
+    applied = cli("codex", "--database", database, "purge-derived", run_id, "--apply")
+    assert applied.returncode == 0, applied.stderr
+    assert json.loads(applied.stdout)["applied"] is True
+    assert not derived_file.exists()
+
+
 def test_rejected_inputs_are_not_echoed_or_recorded(tmp_path):
     manifest = tmp_path / "invalid.json"
     database = tmp_path / "runs.sqlite"

@@ -68,6 +68,134 @@ def test_native_invalid_inputs_cannot_be_executed():
     ).hexdigest()
 
 
+def test_purge_derived_keeps_original_and_user_added_artifacts(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    original = tmp_path / "original.txt"
+    added = tmp_path / "added.txt"
+    original.write_bytes(b"user supplied original")
+    added.write_bytes(b"user added later")
+    session = CodexSession(database)
+    run_id = session.intake(title="retention", description="local fixture", paths=[original])["run_id"]
+    derived = session.store_artifact(run_id, b"generated intermediate")
+    added_relative = session.add_file(run_id, added)["artifact"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    derived_file = root / derived
+    before_manifest = session._session(run_id)[0]
+
+    preview = session.purge_derived(run_id)
+    assert preview["applied"] is False
+    assert preview["files"] == [{"path": derived, "state": "present", "size": 22}]
+    assert session._session(run_id)[0] == before_manifest
+    assert derived_file.read_bytes() == b"generated intermediate"
+
+    result = session.purge_derived(run_id, apply=True)
+    assert result["applied"] is True
+    assert result["manifest_entries_removed"] == 1
+    assert result["files"] == [{"path": derived, "state": "deleted", "size": 22}]
+    assert not derived_file.exists()
+    challenge = session.context(run_id)["challenge"]
+    assert challenge["artifacts"] == ["00-original.txt", added_relative]
+    assert (root / "00-original.txt").read_bytes() == b"user supplied original"
+    assert (root / added_relative).read_bytes() == b"user added later"
+
+    repeated = session.purge_derived(run_id, apply=True)
+    assert repeated["files"] == []
+    assert repeated["manifest_entries_removed"] == 0
+
+
+def test_purge_derived_refuses_active_runs_and_registered_workers(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    active_run = session.intake(title="active", description="fixture", paths=[source])["run_id"]
+    active_artifact = session.store_artifact(active_run, b"keep")
+    active_root = session.artifact_root(active_run)
+    assert active_root is not None
+    session._emit(active_run, RunStatus.EXECUTING)
+    with pytest.raises(ValueError, match="inactive"):
+        session.purge_derived(active_run, apply=True)
+    assert (active_root / active_artifact).exists()
+
+    worker_run = session.intake(title="worker", description="fixture", paths=[source])["run_id"]
+    worker_artifact = session.store_artifact(worker_run, b"keep")
+    worker_root = session.artifact_root(worker_run)
+    assert worker_root is not None
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE sandbox_workers (run_id TEXT, engine TEXT, container_name TEXT, started REAL)")
+        db.execute("INSERT INTO sandbox_workers VALUES (?, 'docker', 'test-worker', 1.0)", (worker_run,))
+    with pytest.raises(ValueError, match="active operations or workers"):
+        session.purge_derived(worker_run, apply=True)
+    assert (worker_root / worker_artifact).exists()
+
+    with sqlite3.connect(database) as db:
+        db.execute("DELETE FROM sandbox_workers WHERE run_id=?", (worker_run,))
+        db.execute("CREATE TABLE agent_jobs (run_id TEXT, state TEXT)")
+        db.execute("INSERT INTO agent_jobs VALUES (?, 'queued')", (worker_run,))
+    with pytest.raises(ValueError, match="active operations or workers"):
+        session.purge_derived(worker_run, apply=True)
+    assert (worker_root / worker_artifact).exists()
+
+
+def test_purge_derived_rejects_symlink_and_preserves_external_target(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    external = tmp_path / "outside.txt"
+    source.write_text("fixture")
+    external.write_text("must remain")
+    session = CodexSession(database)
+    run_id = session.intake(title="symlink", description="fixture", paths=[source])["run_id"]
+    derived = session.store_artifact(run_id, b"generated")
+    root = session.artifact_root(run_id)
+    assert root is not None
+    link = root / derived
+    link.unlink()
+    link.symlink_to(external)
+
+    with pytest.raises(ValueError, match="private regular file"):
+        session.purge_derived(run_id, apply=True)
+    assert external.read_text() == "must remain"
+    assert link.is_symlink()
+
+
+def test_purge_derived_recovers_after_file_unlink_before_manifest_update(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="retry", description="fixture", paths=[source])["run_id"]
+    derived = session.store_artifact(run_id, b"generated")
+    root = session.artifact_root(run_id)
+    assert root is not None
+    (root / derived).unlink()  # Simulate a crash after unlink and before manifest commit.
+
+    result = session.purge_derived(run_id, apply=True)
+    assert result["files"] == [{"path": derived, "state": "missing", "size": 0}]
+    assert result["manifest_entries_removed"] == 1
+    assert not any(path.startswith(".metis-derived/")
+                   for path in session.context(run_id)["challenge"]["artifacts"])
+
+
+def test_purge_derived_rejects_unregistered_directory_entries(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="unexpected", description="fixture", paths=[source])["run_id"]
+    derived = session.store_artifact(run_id, b"registered")
+    root = session.artifact_root(run_id)
+    assert root is not None
+    registered = root / derived
+    unexpected = root / ".metis-derived" / "unregistered.txt"
+    unexpected.write_text("leave untouched")
+
+    with pytest.raises(ValueError, match="unregistered entries"):
+        session.purge_derived(run_id, apply=True)
+    assert registered.read_bytes() == b"registered"
+    assert unexpected.read_text() == "leave untouched"
+
+
 def test_codex_cli_across_processes(tmp_path):
     command = [sys.executable, "-m", "metis.cli", "codex", "--database",
                str(tmp_path / "session.sqlite")]

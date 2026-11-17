@@ -637,6 +637,9 @@ def main() -> int:
     add_file = commands.add_parser("add-file", help="add a file you downloaded yourself (e.g. in the browser) to a run")
     add_file.add_argument("run_id")
     add_file.add_argument("path", type=Path)
+    purge_derived = commands.add_parser("purge-derived", help="dry-run removal of generated run artifacts")
+    purge_derived.add_argument("run_id")
+    purge_derived.add_argument("--apply", action="store_true", help="unlink registered .metis-derived files")
     extend = commands.add_parser("extend", help="operator budget extension; resumes a budget-exhausted run")
     extend.add_argument("run_id")
     extend.add_argument("--actions", type=int, default=0)
@@ -1063,6 +1066,8 @@ def main() -> int:
                 output = session.context(args.run_id)
             elif args.codex_command == "add-file":
                 output = session.add_file(args.run_id, args.path)
+            elif args.codex_command == "purge-derived":
+                output = session.purge_derived(args.run_id, apply=args.apply)
             elif args.codex_command == "extend":
                 output = session.extend(args.run_id, actions=args.actions, seconds=args.seconds)
             elif args.codex_command == "cancel":

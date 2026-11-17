@@ -21,6 +21,7 @@ import os
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -33,7 +34,7 @@ from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
 from metis.core.ctf_orchestration import AgentLedger, assigned_artifact_scope
 from metis.core.intent_identity import intent_identity
-from metis.core.run_lock import run_lock
+from metis.core.run_lock import locked, run_lock
 from metis.core.runtime import ToolRequest
 
 MAX_ATTEMPTS = 3
@@ -150,6 +151,7 @@ class AgentScheduler:
         return self.config()
 
     # -- jobs ------------------------------------------------------------------------------
+    @locked
     def enqueue(self, run_id: str, wave_id: str) -> list[dict[str, Any]]:
         plan = self.ledger._plan(run_id, wave_id)
         now = time.time()
@@ -243,6 +245,44 @@ class AgentScheduler:
     def dispatch(self, run_id: str | None = None) -> dict[str, Any]:
         """Start as many queued jobs as the slots allow (atomic slot reservation)."""
         self.tick()
+        with self._db() as db:
+            queued_runs = {row[0] for row in db.execute(
+                "SELECT DISTINCT run_id FROM agent_jobs WHERE state='queued'" +
+                (" AND run_id=?" if run_id else ""), [run_id] if run_id else [])}
+        locked_runs = {run_id} if run_id else queued_runs
+        reserved: list[dict[str, Any]] = []
+        with ExitStack() as locks:
+            for identity in sorted(locked_runs):
+                locks.enter_context(run_lock(self.database, identity))
+            reserved, settings, limit = self._reserve_dispatch_jobs(run_id, locked_runs)
+
+        started = []
+        for job in reserved:
+            plan = self.ledger._plan(job["run_id"], job["wave_id"])
+            assignment = next(item for item in plan["assignments"] if item["assignment_id"] == job["assignment_id"])
+            assignment["deadline_seconds"] = job["deadline_seconds"]
+            model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
+            brief = self.brief(job["run_id"], assignment, job["attempt_id"])
+            try:
+                host_job = self.host.spawn(assignment, brief, model)
+            except Exception as exc:  # noqa: BLE001 -- any host failure releases the slot
+                with self._db() as db:
+                    db.execute("UPDATE agent_jobs SET state='failed', failure=?, finished=? WHERE assignment_id=? "
+                               "AND attempt_id=?", (f"spawn_error: {type(exc).__name__}", time.time(),
+                                                     job["assignment_id"], job["attempt_id"]))
+                    self._log(db, job["assignment_id"], job["attempt_id"], "spawn_failed", type(exc).__name__)
+                continue
+            with self._db() as db:
+                db.execute("UPDATE agent_jobs SET host_job_id=?, model=? WHERE assignment_id=? AND attempt_id=?",
+                           (host_job, model.model_dump_json(), job["assignment_id"], job["attempt_id"]))
+            started.append({"assignment_id": job["assignment_id"], "attempt_id": job["attempt_id"],
+                            "host_job_id": host_job, "model": model.model_dump(), "brief": brief})
+        queued = sum(1 for job in self.jobs(run_id) if job["state"] == "queued")
+        return {"started": started, "queued": queued, "slot_limit": limit,
+                "per_run_slots": settings["per_run_slots"], "host": self.host.name}
+
+    def _reserve_dispatch_jobs(self, run_id: str | None,
+                               locked_runs: set[str]) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
         settings = self.config()
         capability = self.host.capabilities()
         limit = min(settings["global_slots"], capability.max_parallel)
@@ -250,7 +290,8 @@ class AgentScheduler:
         with self._db() as read_db:
             queued_runs = {row[0] for row in read_db.execute(
                 "SELECT DISTINCT run_id FROM agent_jobs WHERE state='queued'" +
-                (" AND run_id=?" if run_id else ""), [run_id] if run_id else [])}
+                (" AND run_id=?" if run_id else ""), [run_id] if run_id else [])
+                           if row[0] in locked_runs}
         run_seconds = {identity: self.session.context(identity)["seconds_remaining"]
                        for identity in queued_runs}
         reserved: list[dict[str, Any]] = []
@@ -264,8 +305,18 @@ class AgentScheduler:
             for row in busy:
                 per_run[row["run_id"]] = per_run.get(row["run_id"], 0) + 1
             free = limit - len(busy)
-            query = "SELECT * FROM agent_jobs WHERE state='queued'" + (" AND run_id=?" if run_id else "")
-            for row in db.execute(query + " ORDER BY created, assignment_id", [run_id] if run_id else []):
+            query = "SELECT * FROM agent_jobs WHERE state='queued'"
+            if run_id:
+                query += " AND run_id=?"
+                values = [run_id]
+            elif locked_runs:
+                placeholders = ",".join("?" for _ in locked_runs)
+                query += f" AND run_id IN ({placeholders})"
+                values = sorted(locked_runs)
+            else:
+                query += " AND 0"
+                values = []
+            for row in db.execute(query + " ORDER BY created, assignment_id", values):
                 if free <= 0:
                     break
                 if per_run.get(row["run_id"], 0) >= settings["per_run_slots"]:
@@ -297,30 +348,7 @@ class AgentScheduler:
             raise
         finally:
             db.close()
-        started = []
-        for job in reserved:
-            plan = self.ledger._plan(job["run_id"], job["wave_id"])
-            assignment = next(item for item in plan["assignments"] if item["assignment_id"] == job["assignment_id"])
-            assignment["deadline_seconds"] = job["deadline_seconds"]
-            model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
-            brief = self.brief(job["run_id"], assignment, job["attempt_id"])
-            try:
-                host_job = self.host.spawn(assignment, brief, model)
-            except Exception as exc:  # noqa: BLE001 -- any host failure releases the slot
-                with self._db() as db:
-                    db.execute("UPDATE agent_jobs SET state='failed', failure=?, finished=? WHERE assignment_id=? "
-                               "AND attempt_id=?", (f"spawn_error: {type(exc).__name__}", time.time(),
-                                                    job["assignment_id"], job["attempt_id"]))
-                    self._log(db, job["assignment_id"], job["attempt_id"], "spawn_failed", type(exc).__name__)
-                continue
-            with self._db() as db:
-                db.execute("UPDATE agent_jobs SET host_job_id=?, model=? WHERE assignment_id=? AND attempt_id=?",
-                           (host_job, model.model_dump_json(), job["assignment_id"], job["attempt_id"]))
-            started.append({"assignment_id": job["assignment_id"], "attempt_id": job["attempt_id"],
-                            "host_job_id": host_job, "model": model.model_dump(), "brief": brief})
-        queued = sum(1 for job in self.jobs(run_id) if job["state"] == "queued")
-        return {"started": started, "queued": queued, "slot_limit": limit,
-                "per_run_slots": settings["per_run_slots"], "host": self.host.name}
+        return reserved, settings, limit
 
     def brief(self, run_id: str, assignment: dict[str, Any], attempt_id: str) -> dict[str, Any]:
         """Minimal no-history brief (spec 5.1): only references, never raw data or candidates."""
@@ -507,14 +535,21 @@ class AgentScheduler:
 
     def retry(self, assignment_id: str) -> dict[str, Any]:
         job = next((item for item in self.jobs() if item["assignment_id"] == assignment_id), None)
-        if job is None or job["state"] not in {"failed", "timed_out", "cancelled"}:
+        if job is None:
             raise ValueError("only failed, timed-out or cancelled jobs can be retried")
-        if job["attempt_no"] >= MAX_ATTEMPTS:
-            raise ValueError("attempt limit reached; reassign or hand over to Daybreak")
-        with self._db() as db:
-            db.execute("UPDATE agent_jobs SET state='queued', failure=NULL WHERE assignment_id=?", (assignment_id,))
-            self._log(db, assignment_id, job["attempt_id"], "requeued")
-        return {"assignment_id": assignment_id, "state": "queued", "next_attempt": job["attempt_no"] + 1}
+        with run_lock(self.database, job["run_id"]):
+            job = next((item for item in self.jobs(job["run_id"])
+                        if item["assignment_id"] == assignment_id), None)
+            if job is None or job["state"] not in {"failed", "timed_out", "cancelled"}:
+                raise ValueError("only failed, timed-out or cancelled jobs can be retried")
+            if job["attempt_no"] >= MAX_ATTEMPTS:
+                raise ValueError("attempt limit reached; reassign or hand over to Daybreak")
+            with self._db() as db:
+                db.execute("UPDATE agent_jobs SET state='queued', failure=NULL WHERE assignment_id=?",
+                           (assignment_id,))
+                self._log(db, assignment_id, job["attempt_id"], "requeued")
+            return {"assignment_id": assignment_id, "state": "queued",
+                    "next_attempt": job["attempt_no"] + 1}
 
     def tick(self) -> list[dict[str, Any]]:
         """Enforce deadlines, collect finished jobs, recover expired leases."""
