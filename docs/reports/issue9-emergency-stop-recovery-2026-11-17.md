@@ -127,6 +127,106 @@ Controller A ran on macOS and launched the sleeping sandbox in the Linux VM;
 after A was SIGKILLed, controller B stopped the container and recovered the
 SQLite run. The test verified the action remained charged, no solve event was
 created, and a third recovery was idempotent. This is an end-to-end smoke of
-the native Mac controller to the isolated Linux VM execution engine. It does
-not test VM reboot, a clean-machine installer, VM provisioning, or production
-monitoring and retention. Those P8 gates remain open.
+the native Mac controller to the isolated Linux VM execution engine. This
+specific test did not cover VM reboot, clean-machine installation, VM
+provisioning, or production monitoring and retention; later checks in this
+report add fresh-profile and VM-restart evidence.
+
+## 2026-11-17 clean wheel installation and E2E smoke
+
+Built the project wheel on the Mac and exported runtime dependencies from the
+checked-in lockfile. A newly created Python 3.12 virtual environment was
+populated from that export, then the wheel itself was installed without
+dependencies; the repository source was not installed editable. The local uv
+version was 0.11.32. Wheel SHA-256:
+`ef5f0a0453bb91adf58a20d3dc9e45c77c9578dda6defb90ce28d5ab39457e11`.
+
+Commands and observed results:
+
+```text
+uv build --wheel --out-dir /tmp/metis-p8-smoke.kSwTJn/dist
+Successfully built metis_ctf-0.5.0-py3-none-any.whl
+uv export --locked --no-dev --no-emit-project --output-file /tmp/metis-p8-smoke.kSwTJn/requirements.txt
+Resolved 65 packages
+uv venv --python python3.12 /tmp/metis-p8-smoke.kSwTJn/venv
+uv pip sync --python /tmp/metis-p8-smoke.kSwTJn/venv/bin/python /tmp/metis-p8-smoke.kSwTJn/requirements.txt
+Installed 16 pinned runtime packages
+uv pip install --python /tmp/metis-p8-smoke.kSwTJn/venv/bin/python --no-deps /tmp/metis-p8-smoke.kSwTJn/dist/metis_ctf-0.5.0-py3-none-any.whl
+Installed metis-ctf==0.5.0
+/tmp/metis-p8-smoke.kSwTJn/venv/bin/metis --version
+METIS 0.5.0
+/tmp/metis-p8-smoke.kSwTJn/venv/bin/metis validate challenges/training/fixture-001.json
+{"valid": true, "challenge_id": "local-demo-001"}
+```
+
+The installed-wheel Python API created a temporary, explicitly authorized
+synthetic run using `/tmp/metis-p8-smoke.kSwTJn/hello.py`; the run id was
+`694364977d5244348ef03cf7776f3c7e`. The installed CLI configured the existing
+immutable `linux/arm64` image and ran the declared script through the active
+Colima Linux VM:
+
+```text
+/tmp/metis-p8-smoke.kSwTJn/venv/bin/metis sandbox --database /tmp/metis-p8-smoke.kSwTJn/runs/e2e.sqlite configure --engine docker --image sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b --platform linux/arm64
+/tmp/metis-p8-smoke.kSwTJn/venv/bin/metis sandbox --database /tmp/metis-p8-smoke.kSwTJn/runs/e2e.sqlite run 694364977d5244348ef03cf7776f3c7e 00-hello.py --mode script --script /tmp/metis-p8-smoke.kSwTJn/hello.py --timeout 10
+{"ok": true, "exit_code": 0, "stdout": "hello from clean wheel install\\n"}
+```
+
+The script returned `hello from clean wheel install` with exit code 0 in
+0.006s. A policy probe through the same installed CLI returned `net-blocked`,
+`rootfs-readonly`, and uid `65534`. Both observations were stored as hashes and
+exit metadata by the run ledger.
+
+This first pass provides a reproducible local wheel install and a native
+Mac-controller to Linux-VM smoke with boundary probes. The fresh profile and
+VM-restart checks below add separate evidence. This does not establish a signed
+installer, host reboot recovery, secret rotation/retention, or a P7 benchmark
+regression gate. Issue #9 remains open.
+
+## 2026-11-17 fresh VM provisioning and reboot recovery
+
+Created a separate Colima profile `metis-p8-fresh` with Colima 0.10.3,
+Virtualization.Framework, two CPUs, four GiB RAM, and a new 20 GiB root disk.
+The guest reported Ubuntu 24.04.4 LTS, aarch64, kernel
+`6.8.0-117-generic`. Its Docker daemon was 29.5.2. The active `colima-rosetta`
+context was left unchanged. Built the repository sandbox image from a fresh
+Debian Bookworm base on this guest; immutable image ID:
+`sha256:97571cce9372893ed98631c1fe08316c7b2446e10e1042d61df16cb07c7d8dfa`
+(`linux/arm64`).
+
+Commands:
+
+```text
+colima start metis-p8-fresh --cpu 2 --memory 4 --disk 40 --vm-type vz --runtime docker --activate=false --save-config=true
+docker --context colima-metis-p8-fresh build --platform linux/arm64 --tag metis-p8-fresh:2026-11-17 sandbox
+docker --context colima-metis-p8-fresh image inspect metis-p8-fresh:2026-11-17 --format '{{.Id}} {{.Os}}/{{.Architecture}}'
+sha256:97571cce9372893ed98631c1fe08316c7b2446e10e1042d61df16cb07c7d8dfa linux/arm64
+```
+
+The already-built METIS wheel (`ef5f0a…39457e11`) in the fresh Python 3.12
+environment configured this image and ran the same harmless script through
+`DOCKER_HOST=unix:///Users/mao/.colima/metis-p8-fresh/docker.sock`. It exited
+0 in 0.004s with `hello from clean wheel install`. A second run through this
+newly built image reported `net-blocked`, `rootfs-readonly`, uid `65534`, and
+`network:none` with no host mounts.
+
+Then exercised an interrupted run across a VM stop/start cycle. Controller A
+started a sleeping sandbox on the fresh profile; after A was SIGKILLed, the
+VM was stopped and restarted. Controller B recovered the persisted run and
+confirmed the worker container was absent. The run returned to `planning`,
+kept its one charged action (`9` remaining), and had no solve event. A rerun of
+the harness, including cleanup, exited 0. Run
+`35706202465b4391a1d39023391d1f0b`; worker
+`metis-sandbox-6acdfc8161e84104`.
+
+The cross-controller Docker test also passed on this fresh profile:
+
+```text
+DOCKER_HOST=unix:///Users/mao/.colima/metis-p8-fresh/docker.sock METIS_TEST_SANDBOX_IMAGE=sha256:97571cce9372893ed98631c1fe08316c7b2446e10e1042d61df16cb07c7d8dfa METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/python -m pytest -q tests/test_ctf_sandbox.py::test_real_engine_separate_controller_recovers_orphaned_sandbox
+1 passed
+```
+
+This is VM stop/start recovery, not a macOS host reboot test. The sandbox image
+was built from current Debian and Python package repositories rather than a
+fully version-pinned image recipe; it is not a signed release installer. Host
+reboot, secret rotation/retention, production monitoring, and the P7 benchmark
+regression gate remain uncovered. Issue #9 stays open.

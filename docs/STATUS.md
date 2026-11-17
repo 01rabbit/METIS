@@ -278,10 +278,11 @@ remain open. Issue #5 stays open. See
 [`issue5-hypothesis-synthesis-2026-11-17.md`](reports/issue5-hypothesis-synthesis-2026-11-17.md).
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
-needs a local container engine and the sandbox image. The bundled Dockerfile
-build itself was not run in validation because registries were unreachable
-there. Platforms other than CTFd, rCTF and ksnctf, and site-specific verdict
-formats, need the generic form verifier or a new adapter.
+needs a local container engine and the sandbox image. Earlier validation could
+not build the bundled Dockerfile because registries were unreachable; a fresh
+Colima profile later built and exercised the image on 2026-11-17. Platforms
+other than CTFd, rCTF and ksnctf, and site-specific verdict formats, need the
+generic form verifier or a new adapter.
 
 The broader P0-P8 master plan remains a research roadmap. The evidence above
 does not establish autonomous solving, broad benchmark performance, comparative
@@ -316,9 +317,18 @@ cross-controller test now kills controller A while its container is running,
 then verifies controller B teardown/recovery, retained action charge, no
 fabricated solve, and idempotent third recovery. A native macOS controller also
 passed this recovery test against the active Colima Ubuntu 24.04/aarch64 Linux
-VM (`1 passed in 0.68s`), exercising the Mac-to-VM container path. Host/VM
-reboot, artifact/secret cleanup, and the P7 benchmark release gate remain
-uncovered. The sandbox/session focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped there
+VM (`1 passed in 0.68s`), exercising the Mac-to-VM container path. A separate
+fresh-profile recovery drill also passed across VM stop/start. Host reboot,
+artifact/secret cleanup, and the P7 benchmark release gate remain uncovered.
+A fresh Python 3.12 venv installed the built METIS wheel with
+lockfile-exported runtime dependencies; the installed CLI validated a training
+manifest and ran a local script in the active Linux VM. A separate fresh
+Colima profile then built the sandbox image, ran the wheel-installed CLI with
+network/read-only-root/uid probes, and passed a controller-crash recovery drill
+across VM stop/start (charged action retained, no solve). This confirms fresh
+VM setup and VM reboot recovery, but not a signed VM installer or host reboot.
+The sandbox/session focused suite passed
+(`17 passed, 5 skipped`); real-engine tests skipped there
 because no image was configured. Exact PR HEAD `e33d070` passed all checks:
 Python CI (`459 passed, 27 skipped`), Docker sandbox integration (`7 passed in
 120.72s`), aarch64 seccomp, Ruff, mypy, fixture validation, and build. The

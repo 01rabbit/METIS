@@ -29,16 +29,21 @@ The source is organized as:
 
 1. `mitm_stage1` emits sharded intermediate candidate files.
 2. `mitm_stage2` consumes stage-one shards and emits stage-two shards.
-3. `cuda_stage3` consumes stage-two candidates and performs final key recovery.
+3. Stage 3 consumes stage-two candidates and performs final key recovery; the
+   repository supplies both `cpu_stage3` and `cuda_stage3` targets.
 
 The supplied shell scripts launch stage two with 96 parallel workers and stage
-three through CUDA. Although a `cpu_stage3` target exists, the repository build
-requires CUDA, its `cpu_stage3.cpp` only supplies a helper and `main`, and the
-shown normal run script invokes `cuda_stage3`. The CUDA stage is the completion
-path in the supplied scripts. The existing stage shard files are useful
-intermediates, but the scripts do not define a durable checkpoint manifest,
-atomic checkpoint protocol, resume validation, cancellation contract, or
-bounded progress/reason-code interface.
+three through CUDA. The `cpu_stage3.cpp` translation unit includes
+`stage3_definitions.h`, which supplies the host implementations of the stage
+functions when `__CUDACC__` is not defined. The CPU route is therefore present
+in source; the earlier statement in this audit that this file only supplied a
+helper and `main` was incorrect. The root CMake project still declares CUDA as
+a required project language, and no CPU-only build or recovered-key run has
+been performed, so the practical availability of the target remains
+unverified. The shown normal run script invokes `cuda_stage3`. The existing
+stage shard files are useful intermediates, but the scripts do not define a
+durable checkpoint manifest, atomic checkpoint protocol, resume validation,
+cancellation contract, or bounded progress/reason-code interface.
 
 The inspected source also documents assumptions that must be resolved before
 an adapter can safely accept arbitrary METIS artifacts: stage-three code
@@ -68,9 +73,10 @@ configuration, so no isolated reference execution was attempted.
 - Independently derive small synthetic encrypted archives and expected keys
   from the ZipCrypto state equations; test the complete reference pipeline
   against those vectors inside a pinned no-network image.
-- Establish whether the CPU stage-three path is complete and supported, or
-  make the CUDA dependency an explicit required capability. Fail closed when
-  unavailable.
+- Establish whether the CPU stage-three path builds and passes an independently
+  generated two-member vector. The project currently requires CUDA at CMake
+  configure time; either make the CPU path a supported build configuration or
+  make the CUDA dependency explicit. Fail closed when unavailable.
 - Restrict supported archive/member layout, validate seed and both member
   headers, then validate recovered keys by decrypting members and checking
   CRCs before returning `found`.
