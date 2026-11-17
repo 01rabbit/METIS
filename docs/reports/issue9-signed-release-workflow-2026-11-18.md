@@ -4,7 +4,7 @@
 
 Added a tag-triggered release workflow that accepts only strict `vMAJOR.MINOR.PATCH` tags matching `pyproject.toml`, and only when the tagged commit is reachable from `main`. It builds the wheel and source archive from the locked environment, checks both embedded metadata records, generates SHA-256 sums, and installs the wheel into a fresh virtual environment using hash-locked runtime dependencies. The installed CLI must pass `metis --version` and `metis doctor` before proceeding.
 
-The workflow pins each third-party action by full commit SHA and grants write/attestation/OIDC permissions only to the release job. It creates GitHub artifact attestations, verifies each attestation with the repository identity, and only then creates the GitHub Release. The workflow was not triggered; no tag, attestation, or release was created.
+The workflow pins each third-party action by full commit SHA; the pinned `setup-uv` action verifies the downloaded uv archive checksum. It grants write/attestation/OIDC permissions only to the release job. It creates GitHub artifact attestations, verifies each attestation with the repository identity, and only then creates the GitHub Release. The workflow was not triggered; no tag, attestation, or release was created.
 
 ## Local evidence
 
