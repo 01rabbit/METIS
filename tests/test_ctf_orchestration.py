@@ -1,9 +1,12 @@
+import sqlite3
+
 import pytest
 
 from metis.core.agent_host import FakeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_orchestration import AgentLedger, plan_agent_wave
+from metis.core.models import ToolRequest
 
 
 def test_wave_is_bounded_distinct_and_keeps_submission_with_daybreak():
@@ -267,6 +270,48 @@ def test_synthesis_does_not_trust_unexecuted_proposal_identity(tmp_path):
     )
 
     result = ledger.synthesize(run_id, second["wave_id"])
+    assert result["stuckness"]["detected"] is False
+    assert result["stuckness"]["repeated_actions"] == []
+
+
+def test_legacy_proposal_identity_does_not_migrate_as_executed_evidence(tmp_path):
+    database = tmp_path / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.demo()[0]["run_id"]
+    ledger = AgentLedger(database)
+    scheduler = AgentScheduler(database, FakeHost())
+    scheduler.configure(global_slots=1, per_run_slots=1)
+    proposal = {"kind": "data", "tool": "hex_decode", "data": "6162"}
+
+    def report(wave, sequence, next_action):
+        scheduler.enqueue(run_id, wave["wave_id"])
+        job = scheduler.dispatch(run_id)["started"][0]
+        scheduler.complete(run_id, job["assignment_id"], job["attempt_id"], {
+            "hypothesis": "The supplied payload is hexadecimal text.",
+            "evidence": "The cited transform observation preserves the payload structure.",
+            "falsifier": "A strict hexadecimal parse failure would reject this hypothesis.",
+            "next_action": next_action,
+            "next_action_intent": proposal,
+            "event_sequences": [sequence],
+            "status": "inconclusive",
+        })
+        scheduler.cancel(wave_id=wave["wave_id"], reason="unused synthetic assignments")
+
+    first = ledger.create_wave(run_id, mode="delegated")
+    first_sequence = session.act(run_id, ToolRequest(tool="base64_decode", data="YWI="))[
+        "_evidence_sequence"]
+    report(first, first_sequence, "Decode the payload as hex.")
+    second = ledger.create_wave(run_id, mode="delegated",
+                                reason="Compare the original payload against the latest transform evidence.")
+    second_sequence = session.act(run_id, ToolRequest(tool="base64_decode", data="YWI="))[
+        "_evidence_sequence"]
+    report(second, second_sequence, "Apply hexadecimal decoding to the original payload.")
+
+    # Simulate a database created before evidence_action_identity existed.
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE ctf_agent_reports DROP COLUMN evidence_action_identity")
+    migrated = AgentLedger(database)
+    result = migrated.synthesize(run_id, second["wave_id"])
     assert result["stuckness"]["detected"] is False
     assert result["stuckness"]["repeated_actions"] == []
 

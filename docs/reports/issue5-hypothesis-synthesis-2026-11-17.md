@@ -54,11 +54,12 @@ event sequences matches a controller-recorded action row for that identity.
 Legacy rows with only the proposal identity do not participate in stuckness
 matching. Regressions execute the same canonical hex action across waves with
 different wording, check a materially different payload and changed-status
-controls, and confirm an unexecuted proposal cannot create a match.
+controls, confirm an unexecuted proposal cannot create a match, and verify
+legacy proposal-only rows migrate without being treated as execution evidence.
 
 ```text
 .venv/bin/python -m pytest -o addopts= -q tests/test_runner.py tests/test_ctf_orchestration.py tests/test_codex_specialist.py
-66 passed, 2 skipped in 4.25s
+67 passed, 2 skipped in 4.69s
 .venv/bin/ruff check src/metis/core/models.py src/metis/core/runner.py src/metis/core/fixtures.py src/metis/core/ctf_orchestration.py tests/test_runner.py tests/test_ctf_orchestration.py tests/test_codex_specialist.py
 All checks passed!
 .venv/bin/mypy src/metis
