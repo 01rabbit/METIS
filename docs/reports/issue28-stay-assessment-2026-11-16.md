@@ -58,4 +58,25 @@ the same test file. Its selected state bits and search space are a toy fixture;
 this does not implement Stay's published 23-bit slices/carry pruning or
 demonstrate full-key recovery.
 
+## Official distribution re-fetch (2026-11-18)
+
+The user selected the official distribution source. The original run was
+rechecked directly through its scoped ksnctf origin:
+
+- `GET https://ksnctf.sweetduet.info/q/39/split_flag.php`: HTTP 200, 836 bytes,
+  SHA-256 `42e5078588d89c3506afe87b1b01b1ec868986b2098aedde704485b3675ea529`.
+- `GET https://ksnctf.sweetduet.info/q/39/flag.zip`: HTTP 200, 2,353 bytes,
+  SHA-256 `ff663a29abc5f0ded2c3456bc731b1b21329eb95914286733c40364624e5d8f5`.
+
+The registered archive still contains seven 159-byte stored, encrypted members
+with data descriptors and DOS-time check bytes. The bounded glibc search
+matched all seven leaked header bytes and regenerated all seven ten-byte random
+sequences from one seed. This confirms the PRNG/header hypothesis for this
+distribution. The known plaintext required by the ordinary ZipCrypto attack is
+still absent. The specialist review confirmed the remaining algorithmic gap:
+the section 4 text provides staged bit guesses and carry filters, but no
+complete candidate-lifting implementation is present in METIS, and no
+independent synthetic inverse vector exists. The exact Stay attack therefore
+remains unimplemented and unverified; no candidate was submitted.
+
 The synthetic specialist-intent test exercises known-plaintext key recovery, CRC validation across all members, derived decryption, and XOR. Its reduction stage is restricted to the true key2 candidate plus decoys: it exercises the attack worker and intent routing, but not the exhaustive search or Stay attack. The optional slow test covers exhaustive Biham–Kocher search separately.
