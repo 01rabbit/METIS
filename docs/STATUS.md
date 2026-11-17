@@ -225,7 +225,11 @@ independent bitwise CRC transition (`1 passed in 0.35s`). It does not validate
 the paper's inverse candidate search. A second forward interoperability check
 matched the relation on seven Info-ZIP-generated header pairs decrypted with
 CPython's independent `zipfile._ZipDecrypter`; METIS CRC checks and external
-`unzip -t` passed. See
+`unzip -t` passed. A further reduced 12-bit synthetic search matched the
+formula's complete candidate survivor set against direct enumeration for five
+observations, and a one-byte-corrupted control rejected the planted state.
+This does not cover Stay's published 23-bit slices/carry pruning or full-state
+recovery. See
 `reports/issue28-stay-assessment-2026-11-16.md`.
 
 The Stay primary source was checked against the official archive and its

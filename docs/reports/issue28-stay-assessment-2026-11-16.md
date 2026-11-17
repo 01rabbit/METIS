@@ -35,7 +35,8 @@ synthetic key states in
 [`tests/test_stay_header_differential.py`](../../tests/test_stay_header_differential.py).
 An independent bitwise CRC transition drives a direct two-pass encryption; the
 test checks first-byte cancellation and compares the observed second-byte
-differential with the derived recurrence. It passed in 0.35s. This validates
+differential with the derived recurrence. Both focused cases passed in 0.38s.
+This validates
 that forward relation for synthetic states, not the paper's 23-bit inverse
 decomposition, candidate pruning, full key recovery, or target feasibility.
 
@@ -47,5 +48,14 @@ payload with CRC success, and external `unzip -t` passed. This cross-checks the
 forward relation against a separately implemented ZipCrypto decryptor and the
 Info-ZIP producer. It still does not test the inverse candidate search or the
 actual #39 key.
+
+The relation was also used as a candidate filter over a deliberately reduced
+12-bit state subspace. For five synthetic two-byte observations, the filter's
+complete survivor set exactly matched direct two-pass enumeration of all 4,096
+states. Flipping one observed differential removed the planted state, and the
+filtered and direct-oracle survivor sets still agreed. The regression is in
+the same test file. Its selected state bits and search space are a toy fixture;
+this does not implement Stay's published 23-bit slices/carry pruning or
+demonstrate full-key recovery.
 
 The synthetic specialist-intent test exercises known-plaintext key recovery, CRC validation across all members, derived decryption, and XOR. Its reduction stage is restricted to the true key2 candidate plus decoys: it exercises the attack worker and intent routing, but not the exhaustive search or Stay attack. The optional slow test covers exhaustive Biham–Kocher search separately.
