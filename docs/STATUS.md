@@ -192,7 +192,7 @@ in-container supervisor's workload deadline maps to `work_exceeds_budget`.
 Timeout/OOM phase attribution now preserves the furthest parent phase when
 spawned workers re-emit earlier import markers. An AlpacaHack Daily held-out
 `zen.zip` known-plaintext run reached `candidate-key-search` and exceeded its
-60-second budget; it did not recover a key or get submitted. Fake-engine phase tests and
+300-second tool limit; it did not recover a key or get submitted. Fake-engine phase tests and
 real-container deadline/OOM tests pass. Stay recovery and natural candidate-search OOM
 remain unproven. The 2020 two-file attack's paper was reviewed; legacy CPU code
 was compiled and attempted only in the bounded temporary probe documented in
