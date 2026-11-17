@@ -77,6 +77,27 @@ The configured limits constrain the sandbox, but source-level memory bounding,
 streaming/shard design, checkpointing, cancellation/progress, and a tractable
 independent vector remain unresolved. Keep Issue #28 open.
 
+### Compact Stage 1 bucket prototype (2026-11-17)
+
+A follow-up experiment used a fresh temporary clone of the same upstream commit
+and the same embedded two-file vector. It replaced the `2^24`
+`vector<vector<stage1a>>` table with a `2^24` array of 32-bit bucket heads and
+contiguous candidate/next-index arrays. Only Stage 1 was built in a temporary
+CPU-only CMake configuration; no upstream files in METIS were changed. The
+probe ran in the METIS `zipcrypto` profile (2 GiB, four CPUs, no network or
+host mounts) on `linux/arm64`.
+
+The modified Stage 1a completed and reported 84,148,224 retained candidates.
+Stage 1b then exhausted the 2 GiB cgroup limit (exit 137, observed peak
+2,147,483,648 bytes) before producing a shard. Thus compacting the bucket
+index alone does not meet the resource gate. The result narrows the next
+investigation to Stage 1b's accumulation of `stage1_candidate` records: it
+currently appends matches to an in-memory vector before writing the shard.
+Streaming bounded candidate batches to a temporary shard is a plausible next
+experiment, but has not been implemented or validated. There is still no
+recovered key, and this upstream-authored embedded vector is not an independent
+acceptance vector. No #39 data was used; Issue #28 remains open.
+
 The inspected source also documents assumptions that must be resolved before
 an adapter can safely accept arbitrary METIS artifacts: stage-three code
 comments that the MITM structures support only two files, and stage-three

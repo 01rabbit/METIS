@@ -175,8 +175,11 @@ acceptance item is now met: the real-worker deadline and production-profile
 synthetic cgroup OOM tests return bounded reason codes and clean up. All three
 listed acceptance checkboxes are checked; the Issue remains open because Stay
 key recovery and ksnctf #39 remain unresolved. A bounded upstream reference
-probe also compiled the temporary CPU-only targets, but the embedded test run
-OOMed at both 512 MiB and 2 GiB before producing a stage-one shard; this is not
+probe also compiled temporary CPU-only targets. The original embedded test
+run OOMed at both 512 MiB and 2 GiB before producing a stage-one shard. A
+compact-bucket Stage 1 prototype completed Stage 1a (84,148,224 candidates)
+but OOMed in Stage 1b at 2 GiB before writing a shard. This narrows the next
+memory target to Stage 1b's in-memory candidate accumulation; neither run is
 a passing reference vector. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
