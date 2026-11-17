@@ -14,4 +14,20 @@ The target ksnctf #39 archive has seven encrypted members, so it meets the paper
 
 The standard dynamic sandbox is limited to one CPU and 512 MiB; the dedicated ZipCrypto profile provides four CPUs and 2 GiB, while each current request remains capped at 300 seconds. The standard profile cannot run the published 2020 GPU workflow, and earlier BreakZip CPU probes exceeded 2 GiB during normal stage-one candidate accumulation. These observations do not establish whether a faithful, optimized FSE 2001 CPU implementation would fit the ZipCrypto profile. A safe adapter would need a complete verified algorithm, independently generated synthetic vectors, cancellable processing, explicit candidate/time/memory bounds, no network or host mounts, and end-to-end key/CRC verification. Timeout or exhausted bounds must remain inconclusive. No Stay key-recovery operation is advertised.
 
+## Forward-only Info-ZIP interoperability check (2026-11-18)
+
+To verify the archive metadata interpretation independently of a Stay
+implementation, the system Info-ZIP 3.0 (Apple modifications) generated a
+synthetic seven-member stored archive. Each test file contained 159 repeated
+bytes derived from its member number; all entries used the same synthetic-only
+password and had the data-descriptor flag set. METIS decrypted all seven
+members with the known password, matched each expected payload and CRC, and
+found the two header check bytes matched the DOS time fields for every entry.
+The independent `unzip -t` command also validated all seven entries.
+
+This confirms the ordinary ZipCrypto forward/header path and the descriptor
+check-byte interpretation for this generator. It is not an independent test of
+Stay's inverse key-recovery recurrence, does not validate the #39 archive's
+secret key, and does not establish a bounded runtime for the 2001 attack.
+
 The synthetic specialist-intent test exercises known-plaintext key recovery, CRC validation across all members, derived decryption, and XOR. Its reduction stage is restricted to the true key2 candidate plus decoys: it exercises the attack worker and intent routing, but not the exhaustive search or Stay attack. The optional slow test covers exhaustive Biham–Kocher search separately.

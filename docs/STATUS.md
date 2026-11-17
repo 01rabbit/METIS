@@ -213,6 +213,14 @@ Stay vector, or official submission has occurred. Issue #28 and ksnctf #39
 remain open; see `reports/issue28-stay-assessment-2026-11-16.md` and the live
 run evidence.
 
+A separate forward-only interoperability check generated a synthetic seven-
+member stored archive with Info-ZIP Zip 3.0. METIS matched all known payloads
+and CRCs, its header check bytes matched the DOS time fields on all seven
+descriptor entries, and independent `unzip -t` passed. This validates normal
+ZipCrypto header/decryption behavior only; Stay's inverse key-recovery
+recurrence and runtime remain unvalidated. See
+`reports/issue28-stay-assessment-2026-11-16.md`.
+
 The Stay primary source was checked against the official archive and its
 embedded citation. It assumes five consecutively encrypted compatible files
 and reports a typical runtime below two hours on a 500 MHz Pentium II; that is
