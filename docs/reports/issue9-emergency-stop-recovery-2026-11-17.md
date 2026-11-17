@@ -20,6 +20,19 @@ absent and the session does not fabricate a solve. A separate failure-path
 test confirms an unknown teardown leaves the session in `EXECUTING` and blocks
 recovery.
 
+The `test_separate_controller_recovers_orphaned_sandbox_idempotently` test
+adds a cross-process crash rehearsal with a deterministic fake engine.
+Controller A registers a worker and blocks in `start`; the test sends SIGKILL to
+its entire process group, leaving the SQLite row and engine-side container
+record behind. A separate Python process first attempts recovery while fake
+`rm` is failing and confirms the run remains `EXECUTING`, the worker row stays
+registered, and the reserved action remains charged. A later controller
+process removes and confirms absence, returns the run to `PLANNING` without a
+`SOLVED` event, and deletes the worker row. A third process repeats recovery to
+verify idempotency. This exercises the controller-process boundary and
+unknown-teardown retry logic; real Docker process-restart behavior is still
+covered only by the same-process integration test.
+
 Sandbox execution cleanup now uses the same delete-and-inspect confirmation for
 every resource profile. It removes the SQLite worker row only after absence is
 confirmed. If removal/inspection is unknown, it raises while preserving the row
@@ -33,6 +46,7 @@ Focused test:
 
 ```sh
 .venv/bin/python -m pytest -q tests/test_codex_session.py::test_emergency_stop_survives_controller_restart_without_resuming_work
+.venv/bin/python -m pytest -q tests/test_ctf_sandbox.py::test_separate_controller_recovers_orphaned_sandbox_idempotently
 METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/python -m pytest -q tests/test_ctf_sandbox.py::test_real_engine_cancel_confirms_container_teardown
 METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/python -m pytest -q tests/test_ctf_sandbox.py::test_real_engine_recovery_stops_orphaned_sandbox_before_resuming
 ```
@@ -40,9 +54,17 @@ METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c
 Focused real-container validation (configured image
 `sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b`,
 `linux/arm64`) passed both the new cancellation test and the existing timeout
-process-group teardown test. These tests use a local Docker engine and a
-disposable temporary run; they do not exercise host reboot, a separate
-controller process, Linux VM deployment, model provider cancellation, or
+process-group teardown test. These real-container tests use a local Docker
+engine and a disposable temporary run. The separate-process test uses a
+deterministic fake engine, not a real daemon restart. The suite does not
+exercise host reboot, Linux VM deployment, model provider cancellation, or
 artifact/secret cleanup. A failed engine response remains `unknown`, not
 confirmed. The broader Issue #9 acceptance gate and its P7 dependency remain
 open.
+
+Local validation for the separate-controller fake-engine test:
+
+```text
+.venv/bin/pytest -ra tests/test_ctf_sandbox.py::test_separate_controller_recovers_orphaned_sandbox_idempotently
+1 passed in 0.86s
+```

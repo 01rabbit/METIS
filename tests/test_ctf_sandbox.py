@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -20,7 +21,7 @@ IMAGE = "sha256:" + "a" * 64
 FAKE_ENGINE = textwrap.dedent('''\
     #!{python}
     """Test double for a container engine: records argv, emulates /work in a temp dir."""
-    import json, os, subprocess, sys, tempfile
+    import json, os, subprocess, sys, tempfile, time
     log = os.environ["FAKE_ENGINE_LOG"]
     containers = log + ".containers"
     with open(log, "a") as stream:
@@ -29,12 +30,17 @@ FAKE_ENGINE = textwrap.dedent('''\
         print('"27.0"')
         raise SystemExit(0)
     if sys.argv[1] == "rm":
+        if os.environ.get("FAKE_ENGINE_RM_FAIL") == "1":
+            raise SystemExit(2)
         try:
             os.unlink(containers)
         except FileNotFoundError:
             pass
         raise SystemExit(0)
     if sys.argv[1] == "inspect":
+        if os.path.exists(containers):
+            print("fake-container-id")
+            raise SystemExit(0)
         print("Error: No such object: " + sys.argv[-1], file=sys.stderr)
         raise SystemExit(1)
     if sys.argv[1] == "create":
@@ -46,6 +52,11 @@ FAKE_ENGINE = textwrap.dedent('''\
         raise SystemExit("unexpected engine command")
     with open(containers) as stream:
         created = json.load(stream)
+    if os.environ.get("FAKE_ENGINE_BLOCK_START") == "1":
+        with open(os.environ["FAKE_ENGINE_STARTED"], "w") as stream:
+            stream.write("started")
+        while True:
+            time.sleep(1)
     script = created[created.index("-c") + 1]
     work = tempfile.mkdtemp()
     script = script.replace("/work", work)
@@ -252,6 +263,94 @@ def test_sandbox_cleanup_failure_keeps_worker_registered_until_recovery(tmp_path
     assert recovered["status"] == "planning"
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="process-group termination requires POSIX")
+def test_separate_controller_recovers_orphaned_sandbox_idempotently(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    Sandbox(database)  # create the persistent worker registry before controller A starts
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    initial_actions = session.context(run_id)["actions_remaining"]
+    started = tmp_path / "fake-engine-started"
+    environment = os.environ.copy()
+    environment.update(FAKE_ENGINE_BLOCK_START="1", FAKE_ENGINE_STARTED=str(started))
+    launch_code = textwrap.dedent(f"""
+        from pathlib import Path
+        from metis.core.ctf_sandbox import Sandbox, SandboxRequest
+        Sandbox(Path({str(database)!r})).execute(
+            {run_id!r}, SandboxRequest(target={target!r}, timeout=300))
+    """)
+    controller_a = subprocess.Popen([sys.executable, "-c", launch_code], env=environment,
+                                    start_new_session=True, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+    worker = None
+    deadline = time.monotonic() + 15
+    try:
+        while time.monotonic() < deadline:
+            with sqlite3.connect(database) as db:
+                worker = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
+                                    (run_id,)).fetchone()
+            if worker and started.exists():
+                break
+            if controller_a.poll() is not None:
+                raise AssertionError("controller A exited before starting its sandbox worker")
+            time.sleep(0.05)
+        assert worker and started.exists(), "controller A did not register and start the worker"
+        before_recovery = CodexSession(database).context(run_id)
+        assert before_recovery["status"] == "executing"
+        assert before_recovery["actions_remaining"] < initial_actions
+    finally:
+        try:
+            os.killpg(controller_a.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        controller_a.wait(timeout=10)
+
+    assert worker is not None
+    recovery_code = textwrap.dedent(f"""
+        import json
+        from pathlib import Path
+        from metis.core.codex_session import CodexSession
+        try:
+            result = CodexSession(Path({str(database)!r})).recover({run_id!r})
+            print(json.dumps({{"status": result["status"], "worker": result["worker_teardown"]}}))
+        except RuntimeError as exc:
+            print(json.dumps({{"error": str(exc)}}))
+    """)
+
+    def recover_from_new_process(env_overrides):
+        child_env = os.environ.copy()
+        child_env.update(env_overrides)
+        return subprocess.run([sys.executable, "-c", recovery_code], env=child_env,
+                              capture_output=True, text=True, timeout=20, check=False)
+
+    uncertain = recover_from_new_process({"FAKE_ENGINE_RM_FAIL": "1"})
+    assert uncertain.returncode == 0, uncertain.stderr
+    assert json.loads(uncertain.stdout) == {
+        "error": "recovery blocked: sandbox worker teardown is unknown"}
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is not None
+    after_unknown = CodexSession(database).context(run_id)
+    assert after_unknown["status"] == "executing"
+    assert after_unknown["actions_remaining"] == before_recovery["actions_remaining"]
+
+    recovered_process = recover_from_new_process({})
+    assert recovered_process.returncode == 0, recovered_process.stderr
+    recovered = json.loads(recovered_process.stdout)
+    assert recovered == {"status": "planning", "worker": {"status": "confirmed"}}
+    after_recovery = CodexSession(database).context(run_id)
+    assert after_recovery["actions_remaining"] == before_recovery["actions_remaining"]
+    assert after_recovery["status"] == "planning"
+    assert not any(event.status == "solved" for event in session.store.read(run_id))
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+    repeated = recover_from_new_process({})
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout) == {"status": "planning", "worker": {"status": "not_running"}}
+    assert CodexSession(database).context(run_id)["actions_remaining"] == before_recovery["actions_remaining"]
 
 
 def test_cli_sandbox(tmp_path, engine, monkeypatch, capsys):
