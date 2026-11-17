@@ -180,10 +180,17 @@ when the first wave is queued (default 24); concurrency, no-call on
 exhaustion, and immutable-run-limit tests pass. Bounded autopilot now fails
 closed unless its runner explicitly advertises this controller-side reservation
 mechanism. Manual BridgeHost delegation remains outside that guarantee.
-Token/cost limits are not enforceable when usage is unknown, and a controlled
+Token/cost limits are not enforceable when usage is unknown. A 30-case paired
+synthetic scheduler benchmark verifies the same tasks in both arms (30/30) and
+measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
+single assignment vs two dispatched specialists under matched two-turn/two-
+action budgets. This is virtual scheduler evidence; it does not measure real
+elapsed time, concurrent tool execution, or model reasoning. A controlled
 real-model multi-agent vs single-agent benchmark remains outstanding. Issue #6
 stays open; see
 [`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
+The paired benchmark protocol is in
+[`issue6-paired-scheduler-benchmark-2026-11-17.md`](reports/issue6-paired-scheduler-benchmark-2026-11-17.md).
 
 Browser verdict attestation now requires a matching pre-reserved candidate;
 attestation cannot create a submission record for an unprepared candidate.
