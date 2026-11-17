@@ -113,6 +113,18 @@ not establish the production resource bound or unblock #39. The output file
 was validated for its one-record count and serialized length; a full Stage 2
 and CPU Stage 3 recovery was not run.
 
+### AlpacaHack Daily held-out probe (2026-11-17)
+
+The user-authorized unsolved `zen.zip` Daily archive was added to a separate
+held-out METIS run. Using the public first 32 bytes of “The Zen of Python” as
+known plaintext for `zen.txt`, the fixed ZipCrypto worker ran inside the
+configured `linux/arm64` 2 GiB/no-network/no-host-mount profile. After
+correcting phase attribution for spawned workers, the attack reported
+`work_exceeds_budget` at 60.057 seconds in `candidate-key-search`. No key or
+plaintext was recovered and no official submission was made. This is a real
+held-out negative result for the standard known-plaintext route; it does not
+test or establish Stay key recovery.
+
 The inspected source also documents assumptions that must be resolved before
 an adapter can safely accept arbitrary METIS artifacts: stage-three code
 comments that the MITM structures support only two files, and stage-three

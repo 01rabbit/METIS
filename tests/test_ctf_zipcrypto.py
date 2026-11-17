@@ -293,14 +293,20 @@ while True:
         assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
 
 
-def test_zipcrypto_oom_preserves_last_worker_phase():
+def test_zipcrypto_failure_preserves_furthest_worker_phase():
     from metis.core.ctf_zipcrypto_worker import _sandbox_failure
 
     failure = _sandbox_failure({"memory_limit_exceeded": True, "elapsed": 0.25,
                                 "stdout": {"text": "METIS_PHASE:worker-startup\n"
-                                                    "METIS_PHASE:candidate-reduction\n"}})
+                                                    "METIS_PHASE:candidate-key-search\n"
+                                                    "METIS_PHASE:worker-imports\n"}})
     assert failure == {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
-                       "seconds": 0.25, "phase": "candidate-reduction"}
+                       "seconds": 0.25, "phase": "candidate-key-search"}
+    timed_out = _sandbox_failure({"timed_out": True, "elapsed": 120.0,
+                                  "stdout": {"text": "METIS_PHASE:candidate-key-search\n"
+                                                     "METIS_PHASE:worker-imports\n"}})
+    assert timed_out == {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",
+                         "seconds": 120.0, "phase": "candidate-key-search"}
     unknown = _sandbox_failure({"memory_limit_exceeded": True,
                                 "stdout": {"text": "METIS_PHASE:host-secret\n"}})
     assert unknown == {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",

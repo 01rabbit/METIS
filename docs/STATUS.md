@@ -188,7 +188,11 @@ route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
 300-second budget. Container creation, engine attach, and OOM inspection timeout
 results now map to `worker_failed` with their infrastructure phase; only the
-in-container supervisor's workload deadline maps to `work_exceeds_budget`. Fake-engine phase tests and
+in-container supervisor's workload deadline maps to `work_exceeds_budget`.
+Timeout/OOM phase attribution now preserves the furthest parent phase when
+spawned workers re-emit earlier import markers. An AlpacaHack Daily held-out
+`zen.zip` known-plaintext run reached `candidate-key-search` and exceeded its
+60-second budget; it did not recover a key or get submitted. Fake-engine phase tests and
 real-container deadline/OOM tests pass. Stay recovery and natural candidate-search OOM
 remain unproven. The 2020 two-file attack's paper was reviewed; legacy CPU code
 was compiled and attempted only in the bounded temporary probe documented in

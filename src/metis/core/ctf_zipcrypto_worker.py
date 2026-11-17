@@ -122,11 +122,16 @@ def _sandbox_failure(result: dict[str, Any]) -> dict[str, Any] | None:
     """Map isolated execution failures to stable ZipCrypto reason codes."""
     stdout = result.get("stdout")
     text = stdout.get("text", "") if isinstance(stdout, dict) else ""
-    phases = {"worker-imports", "worker-startup", "archive-parsing",
-              "candidate-reduction", "candidate-key-search"}
-    worker_phase = next((line.removeprefix("METIS_PHASE:") for line in reversed(text.splitlines())
-                         if line.startswith("METIS_PHASE:")
-                         and line.removeprefix("METIS_PHASE:") in phases), None)
+    # Spawned multiprocessing workers re-import the bootstrap and can print an
+    # older phase after the parent has reached candidate search. Preserve the
+    # furthest phase observed instead of letting a child import downgrade it.
+    phase_order = ("worker-imports", "worker-startup", "archive-parsing",
+                   "candidate-reduction", "candidate-key-search")
+    phase_rank = {phase: rank for rank, phase in enumerate(phase_order)}
+    observed_phases = (line.removeprefix("METIS_PHASE:") for line in text.splitlines()
+                       if line.startswith("METIS_PHASE:")
+                       and line.removeprefix("METIS_PHASE:") in phase_rank)
+    worker_phase = max(observed_phases, key=phase_rank.__getitem__, default=None)
     if result.get("memory_limit_exceeded"):
         failure = {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
                    "seconds": result.get("elapsed")}
