@@ -494,6 +494,129 @@ def test_candidate_needs_basis_and_is_limited(setup):
         scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], "FLAG_try9", [1])
 
 
+def test_candidate_and_report_can_complete_in_one_private_turn(setup):
+    import os
+    import stat
+
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "FLAG_privateCandidate42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    report = lambda prompts: _report(steps(prompts)[0]["result"]["event_sequence"])["report"]
+    candidate_report = lambda prompts: {
+        "action": "candidate_report", "intent": None, "reason": None,
+        "candidate": {"value": secret,
+                      "basis_events": [steps(prompts)[0]["result"]["event_sequence"]]},
+        "report": report(prompts),
+    }
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)),
+                             lambda prompts: _say(candidate_report(prompts))])
+
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+
+    assert result["job_state"] == "completed" and result["outcome"]["candidate_stored"] is True
+    assert len(result["codex_turns"]) == 2
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and listed[0]["state"] == "pending"
+    path = Path(listed[0]["candidate_file"])
+    assert path.read_text() == secret and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in
+                          ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump and secret not in json.dumps(result)
+    assert secret not in json.dumps(runner.prompts)
+    scheduler.candidates(run_id, purge="all")
+
+
+def test_candidate_report_rejects_candidate_leak_before_storing_report(setup):
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "privateAnswer42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    def bad_candidate_report(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        report = _report(sequence)["report"]
+        report["evidence"] += f" Candidate={secret}"
+        return _say({"action": "candidate_report", "intent": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}, "report": report})
+
+    def bad_report_only(prompts):
+        report = _report(steps(prompts)[0]["result"]["event_sequence"])["report"]
+        report["next_action"] += f"; candidate={secret}"
+        return _say({"action": "report", "intent": None, "reason": None,
+                     "candidate": None, "report": report})
+
+    def hand_off_candidate(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        return _say({"action": "candidate", "intent": None, "reason": None, "report": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}})
+
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)), bad_candidate_report,
+                             bad_report_only, hand_off_candidate, bad_report_only,
+                             lambda prompts: _say(_report(steps(prompts)[0]["result"]["event_sequence"]))])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+
+    assert result["job_state"] == "completed" and len(result["codex_turns"]) == 6
+    rejections = [step for step in result["intents"] if "candidate value must not appear" in
+                  step.get("report_rejected", "")]
+    assert len(rejections) == 3
+    assert secret not in json.dumps(result) and secret not in json.dumps(runner.prompts)
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and Path(listed[0]["candidate_file"]).read_text() == secret
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in
+                          ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump
+    scheduler.candidates(run_id, purge="all")
+
+
+def test_candidate_disclosure_check_handles_json_escaped_and_embedded_short_values():
+    from metis.core.codex_specialist import _candidate_in_report
+
+    assert _candidate_in_report('x"\\y', {"nested": ["prefix x\"\\y suffix"]})
+    assert _candidate_in_report("abc", {"nested": ["prefixabcpostfix"]})
+
+
+def test_candidate_report_retries_reuse_private_candidate_after_scheduler_rejection(setup):
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "FLAG_retryCandidate42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    def combined(prompts, *, invalid=False):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        report = _report(sequence)["report"]
+        if invalid:
+            report["event_sequences"] = [999999]
+        return _say({"action": "candidate_report", "intent": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}, "report": report})
+
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)),
+                             *[lambda prompts: combined(prompts, invalid=True) for _ in range(3)],
+                             lambda prompts: combined(prompts)])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+
+    assert result["job_state"] == "completed" and len(result["codex_turns"]) == 5
+    assert sum("report_rejected" in step for step in result["intents"]) == 3
+    candidates = scheduler.candidates(run_id)
+    assert len(candidates) == 1 and Path(candidates[0]["candidate_file"]).read_text() == secret
+    with sqlite3.connect(database) as db:
+        stored = db.execute("SELECT COUNT(*) FROM agent_candidates").fetchone()[0]
+    assert stored == 1
+    assert secret not in json.dumps(result)
+    scheduler.candidates(run_id, purge="all")
+
+
 def test_long_option_values_are_digests_in_driver_output():
     from metis.core.codex_specialist import _public_step
 

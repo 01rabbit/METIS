@@ -300,6 +300,17 @@ answer-free 120-run dataset and reproducible runner/analysis are retained. See
 The historical asymmetric study remains separately documented and is not
 pooled with this symmetric replication.
 
+A candidate/report single-turn specialist action now reduces one potential
+model call when both the private candidate and report are ready. It retains the
+separate handoff path and checks report text against proposed and pending
+candidates, including across correction retries, without exposing candidate
+values in output or logs. Focused privacy and retry regressions, the full test
+suite, Ruff, and mypy pass. This is a controller optimization, not evidence
+that call starvation caused the symmetric result or that multi-agent work now
+performs better. A preregistered controlled comparison remains required; Issue
+#6 and dependent #7 stay open. See
+[`issue6-candidate-report-single-turn-2026-11-18.md`](reports/issue6-candidate-report-single-turn-2026-11-18.md).
+
 Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
 with matched cap checks, complete paired repetitions, contamination exclusions,
 independent-verifier provenance filtering, task-cluster intervals and explicit

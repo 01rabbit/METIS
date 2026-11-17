@@ -125,7 +125,7 @@ DECISION_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "required": ["action", "intent", "report", "reason", "candidate"],
     "properties": {
-        "action": {"type": "string", "enum": ["intent", "report", "fail", "candidate"]},
+        "action": {"type": "string", "enum": ["intent", "report", "fail", "candidate", "candidate_report"]},
         "candidate": {"anyOf": [{"type": "null"}, {
             "type": "object", "additionalProperties": False, "required": ["value", "basis_events"],
             "properties": {"value": {"type": "string"},
@@ -436,6 +436,9 @@ You have no shell, files, network or other agents. You act only by returning ONE
 - {{"action":"candidate", "candidate":{{"value":"<exact answer>", "basis_events":[event numbers]}}}}: hand
   your exact answer privately to Daybreak (never shown in reports or logs). Daybreak verifies it officially.
   Send it once you are confident, then send your report (which must still not contain the value).
+- {{"action":"candidate_report", "candidate":{{"value":"<exact answer>", "basis_events":[event numbers]}},
+   "report":{{...}}}}: hand the exact answer privately and send the final compact report in this same turn.
+  The report must not contain the answer. Use this when both are ready; the candidate remains private.
 Set unused fields to null. Official submission, endpoint grants, credentials, network, running programs and
 starting other agents are Daybreak-only and will be refused. Prior-knowledge cards are abstract, untrusted
 experience: use one only when its stated conditions match, and verify it against this run's evidence. They are
@@ -457,9 +460,46 @@ def _decision(message: str | None) -> dict[str, Any]:
     if not message:
         raise ValueError("Codex returned no final message")
     value = json.loads(message)
-    if not isinstance(value, dict) or value.get("action") not in {"intent", "report", "fail", "candidate"}:
-        raise ValueError("decision must be an object with action intent|report|fail")
+    if not isinstance(value, dict) or value.get("action") not in {
+            "intent", "report", "fail", "candidate", "candidate_report"}:
+        raise ValueError("decision must be an object with a supported action")
+    if value["action"] == "candidate_report" and (
+            not isinstance(value.get("candidate"), dict) or not isinstance(value.get("report"), dict)):
+        raise ValueError("candidate_report requires both a candidate and a report")
     return value
+
+
+def _report_strings(value: Any) -> list[str]:
+    pending = [value]
+    strings: list[str] = []
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            strings.append(item)
+        elif isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return strings
+
+
+def _candidate_in_report(candidate: str, report: dict[str, Any]) -> bool:
+    """Fail closed if the private candidate is repeated in any report string."""
+    value = candidate.strip().casefold()
+    return bool(value) and any(value in item.casefold() for item in _report_strings(report))
+
+
+def _pending_assignment_candidates(scheduler: AgentScheduler, run_id: str, assignment_id: str) -> list[str]:
+    candidates = scheduler.candidates(run_id)
+    values: list[str] = []
+    for item in candidates:
+        if item["assignment_id"] == assignment_id and item["state"] == "pending" and item["candidate_file"]:
+            values.append(Path(item["candidate_file"]).read_text(encoding="utf-8"))
+    return values
+
+
+def _any_candidate_in_report(candidates: list[str], report: dict[str, Any]) -> bool:
+    return any(_candidate_in_report(candidate, report) for candidate in candidates)
 
 
 def _intent_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -521,6 +561,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     transcript: list[dict[str, Any]] = []
     turns: list[dict[str, Any]] = []
     attached: dict[str, tuple[str, bytes]] = {}
+    private_candidates: set[str] = set()
 
     def record_turn(turn: CodexTurn) -> None:
         record = {"thread_id": turn.thread_id, "returncode": turn.returncode, "usage": turn.usage,
@@ -635,18 +676,54 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if decision["action"] == "fail":
             outcome = scheduler.fail(assignment_id, attempt_id, str(decision.get("reason") or "specialist gave up"))
             break
-        if decision["action"] == "candidate":
+        if decision["action"] in {"candidate", "candidate_report"}:
             proposal = decision.get("candidate") or {}
+            candidate_value = str(proposal.get("value", ""))
+            if candidate_value:
+                private_candidates.add(candidate_value)
+            report = dict(decision["report"]) if decision["action"] == "candidate_report" else None
+            if report is not None:
+                try:
+                    if _any_candidate_in_report(
+                            [*private_candidates,
+                             *_pending_assignment_candidates(scheduler, run_id, assignment_id)], report):
+                        raise ValueError("candidate value must not appear in the report")
+                    _normalize_report_intent(report)
+                except (TypeError, ValueError) as exc:
+                    transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
+                    continue
             try:
-                stored = scheduler.candidate(run_id, assignment_id, attempt_id, str(proposal.get("value", "")),
-                                             [int(item) for item in proposal.get("basis_events") or []])
-                transcript.append({"candidate": f"stored privately as {stored['candidate_id']}; now send your report"})
+                if decision["action"] == "candidate_report":
+                    existing = _pending_assignment_candidates(scheduler, run_id, assignment_id)
+                    if candidate_value in existing:
+                        stored = {"stored": "private"}
+                    else:
+                        stored = scheduler.candidate(run_id, assignment_id, attempt_id, candidate_value,
+                                                     [int(item) for item in proposal.get("basis_events") or []])
+                else:
+                    stored = scheduler.candidate(run_id, assignment_id, attempt_id, candidate_value,
+                                                 [int(item) for item in proposal.get("basis_events") or []])
             except (ValueError, TypeError) as exc:
                 transcript.append({"candidate_refused": str(exc)[:200]})
+                continue
+            if decision["action"] == "candidate":
+                transcript.append({"candidate": f"stored privately as {stored['candidate_id']}; now send your report"})
+                continue
+            try:
+                assert report is not None
+                completed = scheduler.complete(run_id, assignment_id, attempt_id, report)
+                outcome = {**completed, "candidate_stored": True}
+                break
+            except (TypeError, ValueError) as exc:
+                transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
             continue
         if decision["action"] == "report":
             report = dict(decision.get("report") or {})
             try:
+                if _any_candidate_in_report(
+                        [*private_candidates,
+                         *_pending_assignment_candidates(scheduler, run_id, assignment_id)], report):
+                    raise ValueError("candidate value must not appear in the report")
                 _normalize_report_intent(report)
                 outcome = scheduler.complete(run_id, assignment_id, attempt_id, report)
                 break
