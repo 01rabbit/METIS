@@ -59,6 +59,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         protocols: dict[str, bool] = {}
         for arm in ARMS:
             record = by_key[(case, arm)]
+            if record["task_id"] != task_id:
+                raise ValueError("record task cluster does not match its case")
             expected_jobs = 1 if arm == "single" else 2
             protocol = (record["synthesis_complete"] is True
                         and len(record["job_states"]) == expected_jobs
@@ -67,9 +69,16 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             protocols[arm] = bool(protocol)
             comparisons[case]["arms"][arm]["workflow_complete"] = bool(protocol)
             comparisons[case]["arms"][arm]["workflow_verified"] = outcomes[arm]
+            cached = comparisons[case]["arms"][arm]
+            for field in ("oracle_verified", "calls_observed", "calls_reserved", "elapsed_seconds"):
+                if cached.get(field) != record.get(field):
+                    raise ValueError("comparison arm metric disagrees with retained record")
         rows.append({"case": case, "task_id": task_id,
                      "primary_delta": int(outcomes["multi_combined"]) - int(outcomes["single"]),
                      "handoff_delta": int(outcomes["multi_combined"]) - int(outcomes["multi_separate"]),
+                     "handoff_completion_delta": int(protocols["multi_combined"]) - int(protocols["multi_separate"]),
+                     "handoff_oracle_delta": int(bool(by_key[(case, "multi_combined")]["oracle_verified"]))
+                                              - int(bool(by_key[(case, "multi_separate")]["oracle_verified"])),
                      "single": outcomes["single"], "multi_separate": outcomes["multi_separate"],
                      "multi_combined": outcomes["multi_combined"], "protocols": protocols})
 
@@ -106,6 +115,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         }
     primary = statistics.mean(row["primary_delta"] for row in rows)
     handoff = statistics.mean(row["handoff_delta"] for row in rows)
+    handoff_completion = statistics.mean(row["handoff_completion_delta"] for row in rows)
+    handoff_oracle = statistics.mean(row["handoff_oracle_delta"] for row in rows)
     primary_ci = _cluster_interval(rows, "primary_delta")
     handoff_ci = _cluster_interval(rows, "handoff_delta")
     discordance = {}
@@ -125,6 +136,10 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         "primary_gain_gate_met": primary_ci[0] > 0,
         "mechanism_contrast_multi_combined_minus_multi_separate": round(handoff, 4),
         "mechanism_cluster_bootstrap_95_interval": handoff_ci,
+        "handoff_completion_contrast_multi_combined_minus_multi_separate": round(handoff_completion, 4),
+        "handoff_completion_cluster_bootstrap_95_interval": _cluster_interval(rows, "handoff_completion_delta"),
+        "handoff_oracle_correctness_contrast_multi_combined_minus_multi_separate": round(handoff_oracle, 4),
+        "handoff_oracle_correctness_cluster_bootstrap_95_interval": _cluster_interval(rows, "handoff_oracle_delta"),
         "discordant_pairs": discordance,
         "bootstrap": {"samples": BOOTSTRAP_SAMPLES, "seed": BOOTSTRAP_SEED,
                       "resampling_unit": "task_id"},

@@ -314,9 +314,20 @@ candidates, including across correction retries, without exposing candidate
 values in output or logs. Focused privacy and retry regressions, the full test
 suite, Ruff, and mypy pass. This is a controller optimization, not evidence
 that call starvation caused the symmetric result or that multi-agent work now
-performs better. A preregistered controlled comparison remains required; Issue
-#6 and dependent #7 stay open. See
-[`issue6-candidate-report-single-turn-2026-11-18.md`](reports/issue6-candidate-report-single-turn-2026-11-18.md).
+performs better. The preregistered 30-cluster, three-arm diagnostic has now
+completed. Workflow-complete verified outcomes were single 27/30,
+multi-separate 8/30, and multi-combined 19/30. Its primary paired gain was
+−26.67 points (task-cluster 95% interval [−43.33, −13.33]), so the #6 gain gate
+is not met. Combined handoff improved workflow completion versus separate by
+43.33 points ([20.00, 66.67]) but raw oracle correctness changed by −6.67 points
+([−23.33, 10.00]); combined also had more report rejections (11 vs 9). Therefore
+the preregistered full handoff-support rule is not met, and this synthetic
+diagnostic does not establish general CTF performance or explain the prior
+symmetric result. The answer-free data, deterministic analysis, and results are
+retained. Issue #6 and dependent #7 stay open. See
+[`issue6-candidate-report-single-turn-2026-11-18.md`](reports/issue6-candidate-report-single-turn-2026-11-18.md),
+[`issue6-handoff-diagnostic-results-2026-11-18.md`](reports/issue6-handoff-diagnostic-results-2026-11-18.md),
+and [`issue6-handoff-diagnostic-preregistration-2026-11-18.md`](reports/issue6-handoff-diagnostic-preregistration-2026-11-18.md).
 
 Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
 with matched cap checks, complete paired repetitions, contamination exclusions,
