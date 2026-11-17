@@ -243,7 +243,7 @@ def test_zipcrypto_real_low_memory_container_reports_memory_limit(tmp_path):
     }, _profile="zipcrypto_test_lowmem")
     assert result["reason"] == "memory_limit_exceeded", result
     assert result["stage"] == "sandbox-oom"
-    assert result["phase"] in {"worker-startup", "archive-parsing", "candidate-reduction",
+    assert result["phase"] in {"worker-imports", "worker-startup", "archive-parsing", "candidate-reduction",
                                 "candidate-key-search"}
 
 

@@ -13,8 +13,11 @@ _WORKER = r'''
 if __name__ == "__main__":
     import json, os, sys
     from pathlib import Path
+    allowed_phases = {"worker-imports", "worker-startup", "archive-parsing",
+                      "candidate-reduction", "candidate-key-search"}
     def mark_phase(name):
-        print("METIS_PHASE:" + name, flush=True)
+        if name in allowed_phases:
+            print("METIS_PHASE:" + name, flush=True)
     mark_phase("worker-startup")
     request = json.loads(Path(os.environ["METIS_STDIN"]).read_text())
     if (not isinstance(request, dict) or not isinstance(request.get("member"), str)
@@ -75,7 +78,10 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     if _profile not in {"zipcrypto", "zipcrypto_test_lowmem"}:
         return {"found": False, "reason": "isolation_unavailable", "stage": "sandbox-profile"}
     source = Path(__file__).with_name("ctf_zipcrypto.py").read_text(encoding="utf-8")
-    script = source + "\n" + _WORKER
+    bootstrap = ("import sys\n"
+                 "print('METIS_PHASE:worker-imports', flush=True)\n"
+                 f"exec(compile({source!r}, '<metis-zipcrypto>', 'exec'), globals())\n")
+    script = bootstrap + _WORKER
     if len(script.encode()) > 262_144:
         return {"found": False, "reason": "isolation_unavailable", "stage": "worker-package"}
     seconds = options["seconds"]
@@ -116,7 +122,8 @@ def _sandbox_failure(result: dict[str, Any]) -> dict[str, Any] | None:
     """Map isolated execution failures to stable ZipCrypto reason codes."""
     stdout = result.get("stdout")
     text = stdout.get("text", "") if isinstance(stdout, dict) else ""
-    phases = {"worker-startup", "archive-parsing", "candidate-reduction", "candidate-key-search"}
+    phases = {"worker-imports", "worker-startup", "archive-parsing",
+              "candidate-reduction", "candidate-key-search"}
     worker_phase = next((line.removeprefix("METIS_PHASE:") for line in reversed(text.splitlines())
                          if line.startswith("METIS_PHASE:")
                          and line.removeprefix("METIS_PHASE:") in phases), None)

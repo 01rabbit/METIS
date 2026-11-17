@@ -142,11 +142,13 @@ end-to-end timeout that kills the entire worker process group. The generic
 mapping has a deterministic unit test. A real-container ZipCrypto route OOM
 test passed in CI under a fixed 128 MiB test profile (`5 passed in 76.78s` on
 exact head `9465732`). The ZipCrypto worker now emits bounded phase markers for
-worker startup, archive parsing, candidate reduction, and candidate key search;
+module imports, worker startup, archive parsing, candidate reduction, and candidate key search;
 OOM and timeout results preserve the last observed marker as diagnostic `phase`
 while keeping the stable `sandbox-oom`/`sandbox-timeout` stage. A real-container
 low-memory test confirms the result carries one of the allowlisted phases. This
-attributes the OOM to a coarse worker phase, not a specific internal loop. A new synthetic memory-pressure test in the
+best-effort diagnostic attributes the OOM to a coarse worker phase, not a
+specific internal loop; an OOM that kills the supervisor may still have no phase.
+A new synthetic memory-pressure test in the
 actual 2 GiB ZipCrypto profile observed the cgroup OOM marker, mapped it to
 `memory_limit_exceeded`, and confirmed worker-registry cleanup. This validates
 production-profile OOM classification and cleanup, but does not show a natural

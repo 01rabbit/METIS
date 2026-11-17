@@ -59,12 +59,13 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 
 ## 2026-11-17 OOM phase attribution increment
 
-The ZipCrypto worker now emits only allowlisted progress markers: `worker-startup`,
+The ZipCrypto worker now emits only allowlisted progress markers: `worker-imports`, `worker-startup`,
 `archive-parsing`, `candidate-reduction`, and `candidate-key-search`. The bounded
 sandbox wrapper preserves the last marker emitted before an OOM or timeout. The
 stable reason remains `memory_limit_exceeded` with stage `sandbox-oom`; the
 additional `phase` is coarse diagnostic evidence and does not imply a successful
-search or identify a specific allocation site.
+search or identify a specific allocation site. Attribution is best-effort: an OOM
+that kills the sandbox supervisor itself may return no worker phase.
 
 Validation on the configured immutable linux/arm64 test image:
 
