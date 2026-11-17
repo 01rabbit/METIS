@@ -137,6 +137,13 @@ See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 
 ## Boundaries and remaining work
 
+Issue #1's bounded P0 gate is now accepted for explicit user intake and local
+fixtures: exact-head locked install/CI, grant and traversal rejection, private
+oracle separation, and the independent trust-boundary audit are documented in
+[`p0-acceptance-2026-11-17.md`](reports/p0-acceptance-2026-11-17.md). This does
+not establish signed manifest provenance, kernel-escape resistance, or
+production readiness.
+
 Untrusted challenge programs are not executed on the host; dynamic analysis
 needs a local container engine and the sandbox image. The bundled Dockerfile
 build itself was not run in validation because registries were unreachable

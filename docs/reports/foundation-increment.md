@@ -47,9 +47,12 @@ full solver/verifier protocol is implemented. SOLVED transitions are controller-
 metadata, not an independent verifier verdict. This API must not be exposed to
 the solver. Preparation can leave a NEW record if its second append fails.
 
-Review scope: this increment advances P0 and lifecycle prerequisites; it does not
-fulfill P0–P8. No phase Issue is eligible for closure from this evidence alone.
-Outstanding external review/model prerequisites are listed in `docs/STATUS.md`.
+Review scope: this increment advances the bounded P0 operator-intake/local-fixture
+contract; it does not fulfill P1–P8. The initial report predated full oracle,
+candidate, fresh-install and CI evidence. The 2026-11-17 acceptance review is
+recorded in `docs/reports/p0-acceptance-2026-11-17.md`; the P0 issue is considered
+complete only for the scope and assumptions documented there. P1/P8 and broader
+security review remain open.
 
 Container evidence: official Python image
 `python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b`.
