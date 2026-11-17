@@ -30,4 +30,13 @@ check-byte interpretation for this generator. It is not an independent test of
 Stay's inverse key-recovery recurrence, does not validate the #39 archive's
 secret key, and does not establish a bounded runtime for the 2001 attack.
 
+The two-pass relation from section 4 was then checked on 10,000 seeded
+synthetic key states in
+[`tests/test_stay_header_differential.py`](../../tests/test_stay_header_differential.py).
+An independent bitwise CRC transition drives a direct two-pass encryption; the
+test checks first-byte cancellation and compares the observed second-byte
+differential with the derived recurrence. It passed in 0.35s. This validates
+that forward relation for synthetic states, not the paper's 23-bit inverse
+decomposition, candidate pruning, full key recovery, or target feasibility.
+
 The synthetic specialist-intent test exercises known-plaintext key recovery, CRC validation across all members, derived decryption, and XOR. Its reduction stage is restricted to the true key2 candidate plus decoys: it exercises the attack worker and intent routing, but not the exhaustive search or Stay attack. The optional slow test covers exhaustive Biham–Kocher search separately.

@@ -218,7 +218,11 @@ member stored archive with Info-ZIP Zip 3.0. METIS matched all known payloads
 and CRCs, its header check bytes matched the DOS time fields on all seven
 descriptor entries, and independent `unzip -t` passed. This validates normal
 ZipCrypto header/decryption behavior only; Stay's inverse key-recovery
-recurrence and runtime remain unvalidated. See
+recurrence and runtime remain unvalidated. A separate 10,000-state synthetic
+test validates the first-byte cancellation and second-byte differential
+relation from Stay section 4 against direct two-pass encryption, using an
+independent bitwise CRC transition (`1 passed in 0.35s`). It does not validate
+the paper's inverse candidate search. See
 `reports/issue28-stay-assessment-2026-11-16.md`.
 
 The Stay primary source was checked against the official archive and its
