@@ -14,6 +14,7 @@ from metis.core.codex_specialist import (
     REQUIRED_DISABLES,
     CodexCLI,
     CodexTurn,
+    _normalize_report_intent,
     render_prompt,
     run_assignment,
 )
@@ -260,16 +261,30 @@ def test_decision_schema_is_strict():
         if isinstance(node, dict):
             if node.get("type") == "object":
                 assert node["additionalProperties"] is False
-                if path[-1:] == ("options",):
-                    assert not node.get("required", [])
-                else:
-                    assert set(node["required"]) == set(node["properties"])
+                assert set(node["required"]) == set(node["properties"])
             for key, value in node.items():
                 walk(value, (*path, key))
         elif isinstance(node, list):
             for value in node:
                 walk(value, path)
     walk(DECISION_SCHEMA)
+
+
+def test_report_next_action_options_are_json_text_and_normalized():
+    report = {"next_action_intent": {"kind": "artifact", "tool": "zipcrypto_info",
+                                      "data": None, "artifact": "archive.zip",
+                                      "options_json": '{"member":"readme.txt"}',
+                                      "new_evidence": []}}
+    _normalize_report_intent(report)
+    assert report["next_action_intent"]["options"] == {"member": "readme.txt"}
+    assert "options_json" not in report["next_action_intent"]
+
+
+@pytest.mark.parametrize("options_json", ['[]', '"text"', "not-json"])
+def test_report_next_action_rejects_non_object_options(options_json):
+    report = {"next_action_intent": {"options_json": options_json}}
+    with pytest.raises((TypeError, ValueError, json.JSONDecodeError)):
+        _normalize_report_intent(report)
 
 
 def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):

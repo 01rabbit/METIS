@@ -120,8 +120,6 @@ TOOL_HINTS = (
 )
 ARTIFACT_OPTIONS = "; ".join(f"{tool}{{{','.join(sorted(names))}}}" for tool, names in sorted(ALLOWED_OPTIONS.items())
                              if names)
-PROPOSAL_OPTIONS_SCHEMA: dict[str, Any] = {key: {} for names in ALLOWED_OPTIONS.values() for key in names}
-
 DECISION_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "required": ["action", "intent", "report", "reason", "candidate"],
@@ -152,13 +150,12 @@ DECISION_SCHEMA: dict[str, Any] = {
                 "artifact_refs": {"type": "array", "items": {"type": "string"}},
                 "next_action_intent": {"anyOf": [{"type": "null"}, {
                     "type": "object", "additionalProperties": False,
-                    "required": ["kind", "tool", "data", "artifact", "options", "new_evidence"],
+                    "required": ["kind", "tool", "data", "artifact", "options_json", "new_evidence"],
                     "properties": {
                         "kind": {"type": "string", "enum": ["data", "artifact", "derive", "view"]},
                         "tool": {"type": "string"}, "data": {"type": ["string", "null"]},
                         "artifact": {"type": ["string", "null"]},
-                        "options": {"type": "object", "additionalProperties": False,
-                                    "properties": PROPOSAL_OPTIONS_SCHEMA},
+                        "options_json": {"type": ["string", "null"]},
                         "new_evidence": {"type": "array", "items": {"type": "integer"}},
                     }}]},
             }}]},
@@ -429,7 +426,7 @@ You have no shell, files, network or other agents. You act only by returning ONE
   Include next_action_intent when you can specify the proposed next tool request precisely; it enables
   controller-checked repeated-action detection even when next_action is paraphrased. It is a proposal, not
   execution authorization. The controller validates request shape, supported tool, known option names and
-  assignment artifact scope.
+  assignment artifact scope. In next_action_intent, encode options as options_json (a JSON object string or null).
   NEVER put a flag or flag candidate in the report: describe the exact recorded transformation (tool, input,
   event number) that produces it, so Daybreak can reproduce and verify it.
 - {{"action":"fail", "reason":"..."}}: stop when the assignment cannot be done with these tools.
@@ -477,6 +474,25 @@ def _intent_payload(raw: dict[str, Any]) -> dict[str, Any]:
     if raw.get("new_evidence"):
         payload["new_evidence"] = raw["new_evidence"]
     return payload
+
+
+def _normalize_report_intent(report: dict[str, Any]) -> None:
+    """Convert strict-schema JSON text into the controller's options mapping."""
+    intent = report.get("next_action_intent")
+    if intent is None:
+        return
+    if not isinstance(intent, dict):
+        raise TypeError("next_action_intent must be an object or null")
+    raw_options = intent.pop("options_json", None)
+    if raw_options is None:
+        intent["options"] = {}
+        return
+    if not isinstance(raw_options, str):
+        raise TypeError("next_action_intent.options_json must be a JSON object string or null")
+    options = json.loads(raw_options)
+    if not isinstance(options, dict):
+        raise TypeError("next_action_intent.options_json must encode an object")
+    intent["options"] = options
 
 
 def _truncate(value: Any) -> Any:
@@ -613,9 +629,10 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if decision["action"] == "report":
             report = dict(decision.get("report") or {})
             try:
+                _normalize_report_intent(report)
                 outcome = scheduler.complete(run_id, assignment_id, attempt_id, report)
                 break
-            except ValueError as exc:
+            except (TypeError, ValueError) as exc:
                 transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
                 continue
         raw = decision.get("intent") or {}
