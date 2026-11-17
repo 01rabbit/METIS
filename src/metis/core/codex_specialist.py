@@ -543,7 +543,8 @@ def _truncate(value: Any) -> Any:
 
 def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, attempt_id: str,
                    runner: CodexRunner, *, model: str | None = None, turn_timeout: float = 300.0,
-                   clock: Callable[[], float] = time.time, note: str | None = None) -> dict[str, Any]:
+                   clock: Callable[[], float] = time.time, note: str | None = None,
+                   allow_candidate_report: bool = True) -> dict[str, Any]:
     """Drive one running attempt to a report, a failure or a stop. Returns a summary.
 
     ``note`` is Daybreak's focus for this attempt (a hypothesis to test, a step to take). It is
@@ -562,6 +563,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     turns: list[dict[str, Any]] = []
     attached: dict[str, tuple[str, bytes]] = {}
     private_candidates: set[str] = set()
+    decision_counts: dict[str, int] = {}
 
     def record_turn(turn: CodexTurn) -> None:
         record = {"thread_id": turn.thread_id, "returncode": turn.returncode, "usage": turn.usage,
@@ -671,7 +673,17 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         try:
             decision = _decision(turn.message)
         except (ValueError, json.JSONDecodeError) as exc:
+            decision_counts["invalid"] = decision_counts.get("invalid", 0) + 1
             transcript.append({"error": f"invalid decision: {exc}"[:300]})
+            continue
+        action = decision["action"]
+        decision_counts[action] = decision_counts.get(action, 0) + 1
+        if action == "candidate_report" and not allow_candidate_report:
+            value = str((decision.get("candidate") or {}).get("value", ""))
+            if value:
+                private_candidates.add(value)
+            transcript.append({"decision_refused": "combined candidate/report handoff is disabled for this assignment",
+                               "how_to_fix": "Send the candidate with action candidate, then submit the report in a later turn."})
             continue
         if decision["action"] == "fail":
             outcome = scheduler.fail(assignment_id, attempt_id, str(decision.get("reason") or "specialist gave up"))
@@ -748,6 +760,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     final = _job(scheduler, assignment_id)
     return {"run_id": run_id, "assignment_id": assignment_id, "attempt_id": attempt_id, "model": selected,
             "codex_turns": turns, "intents": [_public_step(step) for step in transcript],
+            "decision_counts": decision_counts,
             "outcome": outcome, "job_state": final["state"], "failure": final["failure"]}
 
 

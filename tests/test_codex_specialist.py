@@ -532,6 +532,45 @@ def test_candidate_and_report_can_complete_in_one_private_turn(setup):
     scheduler.candidates(run_id, purge="all")
 
 
+def test_disabled_candidate_report_fails_closed_and_requires_separate_handoff(setup):
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "privateAnswer42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    def combined(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        return _say({"action": "candidate_report", "intent": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]},
+                     "report": _report(sequence)["report"]})
+
+    def candidate(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        return _say({"action": "candidate", "intent": None, "report": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}})
+
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)), combined, candidate,
+                             lambda prompts: _say(_report(steps(prompts)[0]["result"]["event_sequence"]))])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            allow_candidate_report=False)
+
+    assert result["job_state"] == "completed" and len(result["codex_turns"]) == 4
+    assert result["decision_counts"] == {"intent": 1, "candidate_report": 1, "candidate": 1, "report": 1}
+    assert any("combined candidate/report handoff is disabled" in step.get("decision_refused", "")
+               for step in result["intents"])
+    assert secret not in json.dumps(result) and secret not in json.dumps(runner.prompts)
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and Path(listed[0]["candidate_file"]).read_text() == secret
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in
+                          ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump
+    scheduler.candidates(run_id, purge="all")
+
+
 def test_candidate_report_rejects_candidate_leak_before_storing_report(setup):
     database, scheduler, run_id, _wave, started, artifact = setup
     job = started[0]
