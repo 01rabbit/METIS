@@ -241,3 +241,48 @@ passed (`1 passed`); Ruff and mypy also passed. This proves the existing
 per-origin upsert replacement behavior in a local test, not revocation,
 retention limits, encrypted-at-rest storage, provider-side credential
 rotation, or production lifecycle controls. Issue #9 remains open.
+
+## Operator recovery procedure for the verified controller-to-VM path
+
+Use the same persistent METIS database and the same configured Docker endpoint
+that launched the run. The tested setup was a macOS controller using a Colima
+Linux VM; this procedure does not claim support for host reboot or a production
+installer.
+
+1. Check the run and engine before intervening:
+
+   ```sh
+   .venv/bin/metis inspect --database "$METIS_DB" "$RUN_ID"
+   .venv/bin/metis sandbox --database "$METIS_DB" status
+   ```
+
+2. If the controller is still alive and the run needs to stop, request
+   cancellation. If the controller died while a sandbox was active, recover
+   from another controller using the same database and Docker endpoint:
+
+   ```sh
+   .venv/bin/metis codex --database "$METIS_DB" cancel "$RUN_ID"
+   .venv/bin/metis codex --database "$METIS_DB" recover "$RUN_ID"
+   ```
+
+   Run `cancel` only for the live-run case and `recover` for an interrupted
+   controller; `recover` performs removal and absence confirmation itself.
+
+3. Read the run again and check its board entry:
+
+   ```sh
+   .venv/bin/metis inspect --database "$METIS_DB" "$RUN_ID"
+   .venv/bin/metis codex --database "$METIS_DB" board
+   ```
+
+   In the verified recovery case, the run returns to planning, the interrupted
+   action remains charged, and no solve event is created. A canceled session
+   remains canceled. If teardown or absence cannot be confirmed, recovery
+   fails closed and leaves the run executing with its worker record retained;
+   keep the database intact and retry after the engine is available. Do not
+   manually mark the run solved or delete the worker record.
+
+The underlying lifecycle behavior is exercised by the recorded real Docker
+controller-crash and VM stop/start tests. The exact CLI sequence above has not
+been rehearsed manually end to end. These tests do not establish a monitoring
+dashboard, a macOS host reboot procedure, or production support.
