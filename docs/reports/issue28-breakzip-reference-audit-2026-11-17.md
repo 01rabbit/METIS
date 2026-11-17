@@ -257,3 +257,36 @@ aggregate `k20` values. The 21 shard headers add 84 bytes. These figures allow
 recomputation of the 420,223,804-byte total without retaining or exporting any
 candidate or key material. Reproduction still validates only an upstream
 self-test; it is not a Stay solve or an independent attack vector.
+
+### Oracle-assisted Stage 1 → Stage 2 handoff probe
+
+A follow-up checked that the known-correct Stage 1 record can be passed through
+the upstream Stage 2 executable inside one sandbox request. The source was the
+same public BreakZip commit above, packaged without `.git` or `third-party/`
+(archive SHA-256
+`5e83f269746602716535296e17c1c6903a2e8fd397a51e49326e96118ce30d63`). The
+count-only patch above was applied, followed by
+[`issue28-breakzip-only-correct.patch`](issue28-breakzip-only-correct.patch)
+(SHA-256
+`afa23ddfb65d5546a7832b26cedeebe86babeda9803750de5e36e232f96936e7`). For
+this test-only patch, `-only_emit_correct` retains only the embedded test
+oracle's known-correct Stage 1 record; this intentionally avoids storing the
+other 20.8 million candidates. This is oracle-assisted filtering, not an
+attack-mode streaming implementation.
+
+The sandbox compiled both targets and ran the embedded Stage 1 test, then fed
+its 18-byte `stage1.0` shard to Stage 2 with `-only_emit_correct=true` and
+`-stop_after=0`. Stage 2 processed that one Stage 1 record, enumerated 1,988
+Stage 2 candidates, and emitted the single oracle-matching record in a 25-byte
+`stage2.0` file. The complete request took 10.675 seconds and reported a
+container `memory.peak` of 1,170,993,152 bytes under the pinned linux/arm64
+2-GiB, 4-CPU, 300-second profile; network was disabled and there were no host
+mounts. No challenge archive or candidate material was exported. The build
+binary ran only inside the sandbox.
+
+This validates a one-record file-format and Stage 1/2 handoff. It does not
+exercise a full 1-million-record shard, repeated shard deletion, full Stage 2
+coverage, Stage 3 key validation, candidate streaming, checkpoint/resume, or
+Stay recovery. It therefore does not establish that the 420,223,804-byte
+candidate set can be processed end-to-end within the current disk, memory, and
+time limits, and does not change the Issue #28 decision.
