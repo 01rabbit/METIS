@@ -184,7 +184,8 @@ Token/cost limits are not enforceable when usage is unknown. A 30-case paired
 synthetic scheduler benchmark verifies the same tasks in both arms (30/30) and
 measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
 single assignment vs two dispatched specialists under matched two-turn/two-
-action budgets. A deterministic `FakeHost` worker now reads only its assigned
+action budgets, using a predeclared one-poll-per-assigned-model-turn service
+model independent of artifact count. A deterministic `FakeHost` worker now reads only its assigned
 artifact subset and itself reserves turns, issues mediated intents, and
 submits evidence-backed reports; the test driver advances scheduler ticks and
 scores the combined result through the private oracle. This is virtual scheduler

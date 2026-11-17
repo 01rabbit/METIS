@@ -15,6 +15,9 @@ gets a separate METIS run with the same registered artifacts, action limit
 (four, of which two are used), shared wall-clock budget (300 seconds), and
 per-run model-turn cap (two). The private `FixtureOracle` is a mode-0600 file
 outside every run's artifact root; only the controller-side evaluator loads it.
+The deterministic service model is fixed before measuring outcomes: each
+worker requires one fake-host poll per assigned model turn, regardless of how
+many artifacts it receives.
 
 - **Single-agent baseline:** one generalized assignment decodes both artifacts
   sequentially, reserving two model turns and making two controller-mediated
@@ -47,7 +50,8 @@ persisted events and reports.
 The scheduler model completes all tasks in both arms. It reduces the simulated
 serial provider rounds by 50% because the two specialist assignments are
 dispatched in one batch. These rounds are deterministic `FakeHost` poll units,
-not measured elapsed seconds. `AgentScheduler.tick` polls the fake workers
+not measured elapsed seconds. Under the stated one-poll-per-turn model,
+`AgentScheduler.tick` polls the fake workers
 serially, so this does not measure real tool-call concurrency or latency. The
 workers use a fixed deterministic policy, not model output, and therefore
 cannot show a model solve-rate advantage. A confidence
@@ -57,7 +61,7 @@ Reproduction:
 
 ```text
 .venv/bin/pytest -ra tests/test_agent_benchmark.py
-1 passed in 2.28s
+1 passed in 2.57s
 .venv/bin/ruff check tests/test_agent_benchmark.py
 All checks passed!
 ```

@@ -25,7 +25,8 @@ class DeterministicWorkerHost(FakeHost):
     def __init__(self):
         super().__init__(script={
             role: lambda assignment, _brief: {
-                "after": len(assignment["inputs"]["artifacts"]), "state": "finished", "output": None,
+                # Predeclared service model: one FakeHost poll per assigned model turn.
+                "after": assignment["max_turns"], "state": "finished", "output": None,
             }
             for role in ("crypto-specialist", "forensics-specialist")
         }, max_parallel=2)
