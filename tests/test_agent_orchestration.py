@@ -18,7 +18,7 @@ from metis.core.ctf_orchestration import AgentLedger, plan_agent_wave
 
 
 def _run(database: Path, tmp_path: Path, *, categories=("crypto", "forensics"), files=2, actions=80,
-         description="Recover the hidden message.") -> str:
+         wall_seconds=7200, description="Recover the hidden message.") -> str:
     paths = []
     for index in range(files):
         path = tmp_path / f"part{index}.txt"
@@ -26,7 +26,7 @@ def _run(database: Path, tmp_path: Path, *, categories=("crypto", "forensics"), 
         paths.append(path)
     session = CodexSession(database)
     return session.intake(title="Synthetic", description=description, paths=paths, categories=list(categories),
-                          max_actions=actions)["run_id"]
+                          max_actions=actions, wall_seconds=wall_seconds)["run_id"]
 
 
 def _report(sequence: int, label: str, status: str = "inconclusive", **extra) -> dict:
@@ -113,6 +113,23 @@ def test_global_and_per_run_slots_are_never_exceeded(state, tmp_path):
     assert max(per_run.values()) <= 2
     assert scheduler.dispatch()["started"] == []  # no slot is faked
     assert sum(job["state"] == "queued" for job in scheduler.jobs()) == 16 - 4
+
+
+def test_assignment_deadline_is_capped_by_shared_run_wall_budget(state, tmp_path):
+    run_id = _run(state, tmp_path, wall_seconds=60)
+    wave = AgentLedger(state).create_wave(run_id)
+    host = FakeHost(script={role: (lambda a, b: {"state": "hang"}) for role in PROFILES})
+    scheduler = AgentScheduler(state, host)
+    scheduler.configure(per_run_slots=4)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    with sqlite3.connect(state) as db:
+        db.execute("UPDATE codex_sessions SET activated=? WHERE run_id=?", (time.time() - 52, run_id))
+    remaining = CodexSession(state).context(run_id)["seconds_remaining"]
+    assert 1 <= remaining <= 10
+    started = scheduler.dispatch(run_id)["started"]
+    assert started
+    assert all(item["brief"]["seconds"] <= remaining for item in started)
+    assert all(job["deadline_seconds"] <= remaining for job in scheduler.jobs(run_id))
 
 
 def test_concurrent_dispatch_does_not_double_reserve(state, tmp_path):

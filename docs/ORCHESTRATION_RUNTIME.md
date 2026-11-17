@@ -31,6 +31,10 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - **delegated**: 2カテゴリ以上、または宣言/推定カテゴリ＋配布物2件以上のとき。2〜4件の異なる role。
   カテゴリの出所（declared / triage / default）と理由を `decision` に記録する。triage 推定は「未検証」と明記。
 - `--mode sequential|delegated` で上書きできる（旧動作の再現は `--mode delegated`）。
+- dispatch時の各assignment deadlineは、そのrunの現在の `seconds_remaining` で上限をかける。
+  同一runの並列workerが個別deadlineによってrun全体のwall-clock期限を越えないようにする。
+  Tool intentのaction数もrun単位で共有する。一方、hostが報告しない推論turn/token/costを
+  全worker共通で完全予約・停止する仕組みはなく、Issue #6 の比較ゲートは未達。
 
 ### tool intent（担当 → controller）
 
@@ -114,6 +118,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 | 公式検証 | 既存 `test_ctf_web.py`（CTFd/ksnctf/HTML の correct/incorrect/unknown/429/auth/redirect） |
 | 修正 | 既存 `test_ctfd_intake_wrong_answer_replan_correct_answer_and_reopen` |
 | 再起動・並行 | `test_deadlines_turns_and_stale_attempts`（別 scheduler で tick）、`test_concurrent_intents_respect_the_run_budget`、`test_parallel_submissions_are_serialized_and_pending_sends_are_kept`、`test_cancel_without_confirmation_keeps_the_slot_until_released` |
+| run wall-clock共有 | `test_assignment_deadline_is_capped_by_shared_run_wall_budget` |
 | 大会 | `test_contest_binding_and_timebox`、既存 `test_ctf_contest.py` |
 | 知識 | 既存 `test_ctf_knowledge.py`（verified 前の成功 card 拒否、失敗根拠、heldout 除外） |
 

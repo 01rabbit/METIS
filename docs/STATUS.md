@@ -147,6 +147,12 @@ oracle separation, and the independent trust-boundary audit are documented in
 not establish signed manifest provenance, kernel-escape resistance, or
 production readiness.
 
+Issue #6 now also caps each specialist's assigned deadline by the shared run's
+remaining wall-clock and has a regression test for parallel dispatch. Shared run
+action limits already apply to mediated intents. Aggregate specialist model
+turn/token reservation and a controlled multi-agent vs single-agent benchmark
+remain unproven; Issue #6 stays open.
+
 Untrusted challenge programs are not executed on the host; dynamic analysis
 needs a local container engine and the sandbox image. The bundled Dockerfile
 build itself was not run in validation because registries were unreachable

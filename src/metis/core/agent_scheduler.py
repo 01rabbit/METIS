@@ -171,6 +171,12 @@ class AgentScheduler:
         capability = self.host.capabilities()
         limit = min(settings["global_slots"], capability.max_parallel)
         now = time.time()
+        with self._db() as read_db:
+            queued_runs = {row[0] for row in read_db.execute(
+                "SELECT DISTINCT run_id FROM agent_jobs WHERE state='queued'" +
+                (" AND run_id=?" if run_id else ""), [run_id] if run_id else [])}
+        run_seconds = {identity: self.session.context(identity)["seconds_remaining"]
+                       for identity in queued_runs}
         reserved: list[dict[str, Any]] = []
         db = sqlite3.connect(self.database, timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
@@ -188,16 +194,26 @@ class AgentScheduler:
                     break
                 if per_run.get(row["run_id"], 0) >= settings["per_run_slots"]:
                     continue
+                shared_seconds = run_seconds.get(row["run_id"], 0)
+                deadline_seconds = min(row["deadline_seconds"], shared_seconds)
+                if deadline_seconds <= 0:
+                    db.execute("UPDATE agent_jobs SET state='timed_out', failure=?, finished=? "
+                               "WHERE assignment_id=? AND state='queued'",
+                               ("run wall-clock budget exhausted", now, row["assignment_id"]))
+                    self._log(db, row["assignment_id"], None, "run_deadline_expired")
+                    continue
                 attempt = uuid4().hex[:16]
                 db.execute("UPDATE agent_jobs SET state='running', attempt_id=?, attempt_no=attempt_no+1, host=?, "
-                           "started=?, deadline=?, lease_until=?, turns_used=0, failure=NULL, finished=NULL "
+                           "started=?, deadline=?, lease_until=?, deadline_seconds=?, turns_used=0, "
+                           "failure=NULL, finished=NULL "
                            "WHERE assignment_id=? AND state='queued'",
-                           (attempt, self.host.name, now, now + row["deadline_seconds"],
-                            now + row["deadline_seconds"] + LEASE_GRACE, row["assignment_id"]))
+                           (attempt, self.host.name, now, now + deadline_seconds,
+                            now + deadline_seconds + LEASE_GRACE, deadline_seconds, row["assignment_id"]))
                 self._log(db, row["assignment_id"], attempt, "started")
                 per_run[row["run_id"]] = per_run.get(row["run_id"], 0) + 1
                 free -= 1
-                reserved.append({**dict(row), "attempt_id": attempt})
+                reserved.append({**dict(row), "deadline_seconds": deadline_seconds,
+                                 "attempt_id": attempt})
             db.execute("COMMIT")
         except BaseException:
             if db.in_transaction:
@@ -209,6 +225,7 @@ class AgentScheduler:
         for job in reserved:
             plan = self.ledger._plan(job["run_id"], job["wave_id"])
             assignment = next(item for item in plan["assignments"] if item["assignment_id"] == job["assignment_id"])
+            assignment["deadline_seconds"] = job["deadline_seconds"]
             model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
             brief = self.brief(job["run_id"], assignment, job["attempt_id"])
             try:
