@@ -219,8 +219,21 @@ when the first wave is queued (default 24); concurrency, no-call on
 exhaustion, and immutable-run-limit tests pass. Bounded autopilot now fails
 closed unless its runner explicitly advertises this controller-side reservation
 mechanism. Manual BridgeHost delegation remains outside that guarantee.
-Token/cost limits are not enforceable when usage is unknown. A 30-case paired
-synthetic scheduler benchmark verifies the same tasks in both arms (30/30) and
+Token/cost limits are not enforceable when usage is unknown.
+
+The preregistered 30-task diverse real-model benchmark is now complete: the
+two-specialist arm produced 12/60 workflow-complete oracle solves versus 0/60
+for one specialist, a paired gain of 20 percentage points (task-cluster 95%
+bootstrap interval [10, 30] points). The oracle accepted 53/60 multi-arm
+candidates, but 41 came from incomplete job/synthesis workflows and score zero
+under the preregistered rule. Multi-arm workflow completion was 15/60, so
+reliability remains a substantial limitation. This synthetic result meets the
+paired-gain gate for Issue #6 only; it does not establish general CTF or P7
+performance. See
+[`issue6-real-model-diverse-benchmark-2026-11-18.md`](reports/issue6-real-model-diverse-benchmark-2026-11-18.md).
+
+An earlier 30-case paired synthetic scheduler benchmark verifies the same
+tasks in both arms (30/30) and
 measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
 single assignment vs two dispatched specialists under matched two-turn/two-
 action budgets, using a predeclared one-poll-per-assigned-model-turn service
