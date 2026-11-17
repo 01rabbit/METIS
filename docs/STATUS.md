@@ -99,10 +99,10 @@ Issue #28 has bounded Biham–Kocher and Info-ZIP seed tools. Its synthetic inte
 test covers recovered-key decryption with CRC checks for every member, then XOR,
 using a reduced candidate set. A separate opt-in slow test now confirms full
 Biham–Kocher candidate search and all-member CRC validation on a synthetic ZIP
-(8 workers); 2 workers did not recover within the 300-second budget. Wall-time
-exhaustion has a tested reason code. The 2-worker observation used unseeded
-header bytes and is not treated as a comparable performance result. Full-search specialist-intent coverage, an
-OS-enforced memory ceiling, and Stay key recovery remain incomplete; the 2020
+(8 workers). Another opt-in slow test covers full search through specialist
+intents, decryption and XOR (`1 passed in 107.48s`); this is a scripted intent
+test, not a model-driven solve. Wall-time exhaustion has a tested reason code.
+An OS-enforced memory ceiling and Stay key recovery remain incomplete; the 2020
 two-file attack's paper and legacy CUDA source were reviewed, not run.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.

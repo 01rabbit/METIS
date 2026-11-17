@@ -196,11 +196,7 @@ def test_ksnctf_39_seed_is_recovered():
     assert result["found"] and result["matched_leaked_bytes"] == 7 and result["salt"] == "pid"
 
 
-def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
-    """Exercise the specialist controller chain with a reduced, deterministic attack candidate set.
-
-    This verifies the real attack worker and intent routing, not exhaustive key-space search.
-    """
+def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=120):
     from metis.core.agent_host import BridgeHost
     from metis.core.agent_scheduler import AgentScheduler
     from metis.core.codex_session import CodexSession
@@ -209,7 +205,7 @@ def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
     known = b"A known plaintext for synthetic ZipCrypto testing. " * 2
     secret = b"synthetic xor result"
     encoded = bytes(byte ^ 0x42 for byte in secret).hex().encode()
-    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, b"intent-test")
+    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, b"intent-test", seed=0x28)
     source = tmp_path / "input.zip"
     source.write_bytes(archive)
     database = tmp_path / "state" / "metis.sqlite"
@@ -222,18 +218,19 @@ def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
     job = scheduler.dispatch(run_id)["started"][0]
     name = session.context(run_id)["challenge"]["artifacts"][0]
 
-    entry = next(e for e in zc.members(archive) if e["name"] == "known.txt")
-    ciphertext = zc.member_bytes(archive, entry)
     keys = zc.Keys.from_password(b"intent-test")
-    plain = keys.copy().decrypt(ciphertext)
-    stream = [a ^ b for a, b in zip(known[:40], ciphertext[12:52], strict=True)]
-    _, index = zc.z_reduction(stream, float("inf"))
-    state = keys.copy()
-    for byte in plain[:12 + index]:
-        state.update(byte)
-    true_z = state.z & 0xFFFFFFFC
-    monkeypatch.setattr(zc, "z_reduction", lambda _stream, _deadline: (
-        np.array([true_z ^ 0x100000, true_z], dtype=np.uint32), index))
+    if monkeypatch is not None:
+        entry = next(e for e in zc.members(archive) if e["name"] == "known.txt")
+        ciphertext = zc.member_bytes(archive, entry)
+        plain = keys.copy().decrypt(ciphertext)
+        stream = [a ^ b for a, b in zip(known[:40], ciphertext[12:52], strict=True)]
+        _, index = zc.z_reduction(stream, float("inf"))
+        state = keys.copy()
+        for byte in plain[:12 + index]:
+            state.update(byte)
+        true_z = state.z & 0xFFFFFFFC
+        monkeypatch.setattr(zc, "z_reduction", lambda _stream, _deadline: (
+            np.array([true_z ^ 0x100000, true_z], dtype=np.uint32), index))
 
     def intent(kind, tool, *, artifact=None, options=None, data=None):
         return scheduler.intent(run_id, job["assignment_id"], job["attempt_id"],
@@ -241,7 +238,7 @@ def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
                                  "options": options or {}, "data": data})["observation"]
 
     attack = intent("artifact", "zipcrypto_attack", artifact=name,
-                    options={"member": "known.txt", "plaintext_hex": known[:40].hex(), "seconds": 120})
+                    options={"member": "known.txt", "plaintext_hex": known[:60].hex(), "seconds": seconds})
     assert attack["ok"] and attack["result"]["found"]
     recovered = attack["result"]["keys"]
     assert recovered == keys.hex()
@@ -256,3 +253,14 @@ def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
     assert content["ok"]
     decoded = intent("data", "xor", data=json.dumps({"data": content["result"]["text"], "key": "42"}))
     assert decoded["ok"] and json.loads(decoded["output"])["utf8"] == secret.decode()
+
+
+def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
+    """Exercise the intent chain through a reduced, deterministic candidate set."""
+    _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch)
+
+
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SLOW"), reason="full intent search takes minutes")
+def test_specialist_intents_full_search_decrypt_and_xor(tmp_path):
+    """Exercise full candidate search through specialist intents, then decrypt and combine members."""
+    _specialist_intent_zipcrypto_chain(tmp_path, seconds=300)
