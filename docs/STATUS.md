@@ -222,7 +222,10 @@ recurrence and runtime remain unvalidated. A separate 10,000-state synthetic
 test validates the first-byte cancellation and second-byte differential
 relation from Stay section 4 against direct two-pass encryption, using an
 independent bitwise CRC transition (`1 passed in 0.35s`). It does not validate
-the paper's inverse candidate search. See
+the paper's inverse candidate search. A second forward interoperability check
+matched the relation on seven Info-ZIP-generated header pairs decrypted with
+CPython's independent `zipfile._ZipDecrypter`; METIS CRC checks and external
+`unzip -t` passed. See
 `reports/issue28-stay-assessment-2026-11-16.md`.
 
 The Stay primary source was checked against the official archive and its

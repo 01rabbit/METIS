@@ -39,4 +39,13 @@ differential with the derived recurrence. It passed in 0.35s. This validates
 that forward relation for synthetic states, not the paper's 23-bit inverse
 decomposition, candidate pruning, full key recovery, or target feasibility.
 
+As a separate interoperability check, seven Info-ZIP-generated header pairs
+were decrypted twice with CPython 3.12's `zipfile._ZipDecrypter`. For all seven,
+the recovered random bytes and initial state made the derived second-byte
+differential match the stored ciphertext; METIS also decrypted each synthetic
+payload with CRC success, and external `unzip -t` passed. This cross-checks the
+forward relation against a separately implemented ZipCrypto decryptor and the
+Info-ZIP producer. It still does not test the inverse candidate search or the
+actual #39 key.
+
 The synthetic specialist-intent test exercises known-plaintext key recovery, CRC validation across all members, derived decryption, and XOR. Its reduction stage is restricted to the true key2 candidate plus decoys: it exercises the attack worker and intent routing, but not the exhaustive search or Stay attack. The optional slow test covers exhaustive Biham–Kocher search separately.
