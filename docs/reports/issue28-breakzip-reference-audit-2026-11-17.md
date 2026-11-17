@@ -182,3 +182,25 @@ configuration, so no isolated reference execution was attempted.
 
 Until those conditions are met and independently tested, keep Stay key
 recovery unavailable and leave Issue #28 open.
+
+### Count-only Stage 1b volume diagnostic (2026-11-17)
+
+A temporary count-only variant of the compact Stage 1 implementation was built
+and run against BreakZip's embedded two-file self-test in the pinned METIS
+`zipcrypto` sandbox (`linux/arm64`, 2 GiB memory, four CPUs, no network, no
+host mounts, 300-second limit). The diagnostic completed in 8.127 seconds
+without a sandbox timeout or OOM. Stage 1a retained 84,148,224 entries; Stage
+1b visited 20,804,384 candidate records and found exactly one match against
+the self-test's embedded known answer. It retained and wrote no candidate
+records.
+
+Using the upstream serializer's exact record layout (8 fixed bytes plus three
+bytes per `k20` value) and four-byte per-shard count header, the full candidate
+set would occupy 420,223,804 bytes across 21 shards at the default one-million
+record shard size. That exceeds METIS's current 256 MiB `/work` tmpfs by
+151,788,348 bytes. The diagnostic provides an output-volume measurement; it is
+oracle-assisted self-test evidence, not a recovered key or independent
+cryptanalytic validation. It does not implement shard streaming, persistent
+checkpoints, resume validation, cancellation, or a usable multi-stage data
+channel. Therefore it does not satisfy Issue #28's acceptance gates, and no
+change to the production worker or sandbox resource defaults is justified.
