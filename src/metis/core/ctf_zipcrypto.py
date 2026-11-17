@@ -353,27 +353,36 @@ def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, 
     order = candidates.tolist()
     shards = [order[i::jobs] for i in range(jobs)]
     arguments = [(ciphertext, plaintext, offset, extra, index, shard, deadline) for shard in shards]
-    tried, found = 0, None
-    if jobs == 1:
-        outcomes = [_attack_shard(arguments[0])]
-    else:
-        context = multiprocessing.get_context("spawn")
-        with context.Pool(jobs) as pool:
-            outcomes = []
-            for outcome in pool.imap_unordered(_attack_shard, arguments):
-                outcomes.append(outcome)
-                if outcome[1] is not None:
-                    pool.terminate()  # one worker found the keys; stop the others now
-                    break
+    tried, found, timed_out = 0, None, False
+    context = multiprocessing.get_context("spawn")
+    with context.Pool(jobs) as pool:
+        outcomes = []
+        pending = pool.imap_unordered(_attack_shard, arguments)
+        for _ in range(jobs):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                pool.terminate()
+                break
+            try:
+                outcome = pending.next(timeout=remaining)
+            except multiprocessing.TimeoutError:
+                timed_out = True
+                pool.terminate()
+                break
+            outcomes.append(outcome)
+            if outcome[1] is not None:
+                pool.terminate()  # one worker found the keys; stop the others now
+                break
     for count, keys in outcomes:
         tried += count
         found = found or keys
     elapsed = round(time.monotonic() - started, 1)
     if found:
         return {**result, "found": True, "keys": found, "tried": tried, "workers": jobs, "seconds": elapsed}
-    if time.monotonic() > deadline:
-        return {**result, "found": False, "reason": "work_exceeds_budget", "tried": tried, "workers": jobs,
-                "seconds": elapsed}
+    if timed_out or time.monotonic() > deadline:
+        return {**result, "found": False, "reason": "work_exceeds_budget", "stage": "key-search",
+                "tried": tried, "workers": jobs, "seconds": elapsed}
     return {**result, "found": False, "reason": "no_solution", "detail": "plaintext or offset is probably wrong",
             "workers": jobs, "seconds": elapsed}
 

@@ -28,8 +28,8 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 - 実際の Info-ZIP zip 3.0（Debian glibc 2.41）で作った 7 メンバーの zip（`tests/fixtures/infozip-glibc-vector.zip`、パスワード `testpass`、内容は合成の乱数）で、種を 1.7 秒で復元した。予測した 70 バイトの乱数は、パスワードで 2 段の暗号化を戻した値とすべて一致した。
 - 既知平文攻撃: 60 バイトの既知平文で、正しい鍵を 145 秒・210 秒で復元した（15 ワーカー）。CI では、候補を絞ったパイプラインのテストのみを実行する。網羅的な探索は `METIS_TEST_SLOW=1` のときだけ実行する。
 - 2026-11-17 のslow direct-API testをseed付き合成ZIPへ拡張した。`METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_full_known_plaintext_attack` は `1 passed in 17.05s`。8 workerで実候補探索から鍵を復元し、known/encoded両メンバーの平文とCRCを検証した。
-- Specialist intent の高速テストは真の key2 候補とdecoysに縮小して確認する。別のslowテスト `METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_specialist_intents_full_search_decrypt_and_xor` は、候補を差し替えず `zipcrypto_attack` intentで探索し、復元鍵を `zipcrypto_decrypt` intentへ渡し、text/XOR intentまで進んで `1 passed in 107.48s` だった。これはMETIS controllerのintent経路を呼ぶ決定的なscripted testであり、モデル自身がintentを選んだ実行ではない。
-- 極小の wall-clock 予算で `work_exceeds_budget` と `z-reduction` 段階の理由コードを返すテストを追加した。
+- Specialist intent の高速テストは真の key2 候補とdecoysに縮小して確認する。別のslowテスト `METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_specialist_intents_full_search_decrypt_and_xor` は、候補を差し替えず `zipcrypto_attack` intentで探索し、復元鍵を `zipcrypto_decrypt` intentへ渡し、text/XOR intentまで進んでいた。親プロセスの期限付きworker回収を追加した後、direct APIとintentの両slowテストを連続実行して `2 passed in 125.77s`。これはMETIS controllerのintent経路を呼ぶ決定的なscripted testであり、モデル自身がintentを選んだ実行ではない。
+- 候補workerが1件の処理を終えない場合、親プロセスが残り時間でpoolをterminateするテストを追加した。`.venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_attack_parent_kills_worker_when_candidate_exceeds_time_budget` は `1 passed in 0.69s`。通常のZipCrypto test moduleは `12 passed, 3 skipped in 10.30s`（slow/external-data tests skipped）。この期限はreduction反復とworker待ちを制限するが、候補配列の生成やPool起動を別プロセスから監督するhard end-to-end timeoutではない。
 - ksnctf #39: 種を 0.8 秒で復元した（7 メンバーすべて一致。`time ^ pid`）。鍵の復元には至らず、#39 は未解決のまま。
 
 ## 実 Codex の測定（ksnctf #39、新しい DB、note なし、codex-cli 0.169.0）
@@ -48,5 +48,6 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 ## 未達（#28 は Open のまま）
 
 - Stay の鍵復元（2^39）。ネイティブ実装と `metis sandbox` での実行が必要。
-- 攻撃 worker の上限には wall-clock 秒と候補数の制限があるが、OS が強制するメモリ上限はまだない。メモリ枯渇時の管理された理由コードも未検証。
+- 攻撃 worker はwall-clock期限で回収するが、OSが強制するメモリ上限はまだない。メモリ枯渇時の管理された理由コードも未検証。
 - `max_candidates` は `z_reduction` 後に適用されるため、reduction中のpeak allocationを制限しない。OS強制メモリ上限および上限到達時の管理理由コードは未検証。
+- Pool起動・候補配列のmaterializationを含むhard end-to-end wall-clock cutoffは未実装。

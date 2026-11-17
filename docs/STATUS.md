@@ -100,10 +100,13 @@ test covers recovered-key decryption with CRC checks for every member, then XOR,
 using a reduced candidate set. A separate opt-in slow test now confirms full
 Biham–Kocher candidate search and all-member CRC validation on a synthetic ZIP
 (8 workers). Another opt-in slow test covers full search through specialist
-intents, decryption and XOR (`1 passed in 107.48s`); this is a scripted intent
-test, not a model-driven solve. Wall-time exhaustion has a tested reason code.
-An OS-enforced memory ceiling and Stay key recovery remain incomplete; the 2020
-two-file attack's paper and legacy CUDA source were reviewed, not run.
+intents, decryption and XOR in a combined pair of slow tests (`2 passed in
+125.77s`); this is a scripted intent test, not a model-driven solve. The parent
+now terminates candidate workers at the wall-clock deadline, with a dedicated
+reason-code test (`1 passed in 0.69s`). Pool startup and candidate materialization
+are not under a hard end-to-end supervisor timeout. An OS-enforced memory
+ceiling and Stay key recovery remain incomplete; the 2020 two-file attack's
+paper and legacy CUDA source were reviewed, not run.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
 

@@ -11,6 +11,7 @@ import json
 import os
 import random
 import struct
+import time
 import zipfile
 import zlib
 from pathlib import Path
@@ -129,6 +130,22 @@ def test_attack_time_budget_returns_reason_code():
     assert result["found"] is False
     assert result["reason"] == "work_exceeds_budget"
     assert result["stage"] == "z-reduction"
+
+
+def _delayed_attack_shard(_arguments):
+    time.sleep(5)
+    return 1, None
+
+
+def test_attack_parent_kills_worker_when_candidate_exceeds_time_budget(monkeypatch):
+    monkeypatch.setattr(zc, "z_reduction", lambda _stream, _deadline: (np.array([1, 2], dtype=np.uint32), 7))
+    monkeypatch.setattr(zc, "_attack_shard", _delayed_attack_shard)
+    started = time.monotonic()
+    result = zc.known_plaintext_attack(b"\0" * 128, b"x" * 40, 12, seconds=0.5, workers=2)
+    elapsed = time.monotonic() - started
+    assert result["found"] is False
+    assert result["reason"] == "work_exceeds_budget" and result["stage"] == "key-search"
+    assert elapsed < 4.0
 
 
 @pytest.mark.skipif(not os.environ.get("METIS_TEST_SLOW"), reason="exhaustive search takes minutes; METIS_TEST_SLOW=1")
