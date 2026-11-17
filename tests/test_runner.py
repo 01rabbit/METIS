@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import random
 import time
 
 import pytest
@@ -79,6 +80,26 @@ def test_repeated_action_is_stopped(local_fixture):
     provider = ConstantProvider(Decision(kind="tool", tool=ToolRequest(tool="hex_decode", data="!")))
     run_id = Runner(store, provider, FailedRuntime(), oracle, RunBudget()).run(manifest)
     assert store.read(run_id)[-1].detail["reason"] == "repeated_action"
+
+
+def test_fixture_provider_does_not_replan_on_unclassified_runtime_failure(local_fixture):
+    from metis.core.models import SolverContext
+    from metis.core.runtime import ToolRequest
+
+    manifest, _, _ = local_fixture
+    manifest = manifest.model_copy(update={"description": json.dumps({"attempts": [
+        {"tool": "base64_decode", "data": "payload"},
+        {"tool": "hex_decode", "data": "7061796c6f6164"},
+    ]})})
+    context = SolverContext(
+        challenge=manifest,
+        observations=(ToolResult(ok=False, output="decoded data is not UTF-8 text",
+                                 failure_kind="invalid_text"),),
+        last_tool=ToolRequest(tool="base64_decode", data="payload"),
+    )
+    decision = FixtureProvider().decide(context, timeout_seconds=1)
+    assert decision.kind == "halt"
+    assert "stop before guessing hex" in (decision.rationale or "")
 
 
 def test_cancelled_run_never_calls_provider(local_fixture):
@@ -195,7 +216,7 @@ def test_deterministic_provider_solves_two_fixture_categories_without_docker(tmp
                           if request.tool == "hex_decode" else "")
                 return ToolResult(ok=True, output=output)
             except (ValueError, UnicodeDecodeError):
-                return ToolResult(ok=False, output="invalid encoded input")
+                return ToolResult(ok=False, output="invalid encoded input", failure_kind="invalid_input")
 
     store = RunStore(tmp_path / f"{category}.sqlite")
     run_id = Runner(store, FixtureProvider(), DecoderRuntime(), oracle, RunBudget()).run(manifest)
@@ -204,6 +225,114 @@ def test_deterministic_provider_solves_two_fixture_categories_without_docker(tmp
     assert events[-1].detail["verification"] == "local_fixture_oracle"
     assert all(answer not in store.export_jsonl(run_id)
                for answer in json.loads(oracle_path.read_text()).values())
+
+
+def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
+    """Thirty synthetic pairs: same first action/budget, oracle-scored outcomes."""
+    from metis.core.runtime import ToolRequest
+
+    class DecoderRuntime:
+        def execute(self, request, *, timeout_seconds):
+            try:
+                output = (base64.b64decode(request.data, validate=True).decode()
+                          if request.tool == "base64_decode"
+                          else bytes.fromhex(request.data).decode()
+                          if request.tool == "hex_decode" else "")
+                return ToolResult(ok=True, output=output)
+            except (ValueError, UnicodeDecodeError):
+                return ToolResult(ok=False, output="invalid encoded input", failure_kind="invalid_input")
+
+    class FirstActionBaseline:
+        reservation_tokens = 0
+        reservation_cost = 0.0
+
+        def decide(self, context, *, timeout_seconds):
+            # Pinned baseline is one-shot: it never uses failure evidence to replan.
+            if context.rejected_candidates:
+                return Decision(kind="halt")
+            if context.observations and context.observations[-1].ok:
+                return Decision(kind="candidate", candidate=context.observations[-1].output)
+            return Decision(kind="tool", tool=ToolRequest(tool="base64_decode", data=encoded))
+
+    rng = random.Random(20261117)
+    samples = [("base64", "METIS{" + f"{rng.getrandbits(128):032x}" + "}")
+               for _ in range(15)]
+    while sum(encoding == "hex" for encoding, _ in samples) < 15:
+        value = "METIS{" + f"{rng.getrandbits(128):032x}" + "}"
+        # Ensure Base64 rejects the hex-encoded bytes, so the observed failure
+        # genuinely distinguishes the representation.
+        encoded_hex = value.encode().hex()
+        try:
+            base64.b64decode(encoded_hex, validate=True)
+        except ValueError:
+            samples.append(("hex", value))
+    del rng
+    oracle_path = tmp_path / "private" / "answers.json"
+    oracle_path.parent.mkdir()
+    answers = {f"adaptive-{i}": value for i, (_, value) in enumerate(samples)}
+    # Both systems receive only an opaque challenge id; this private file is used by verifier.
+    oracle_path.write_text(json.dumps(answers))
+    oracle_path.chmod(0o600)
+    oracle = FixtureOracle(oracle_path, solver_roots=(tmp_path / "solver",))
+    runtime = DecoderRuntime()
+    deltas: list[int] = []
+    adaptive_actions: list[int] = []
+    baseline_actions: list[int] = []
+    for i, (encoding, answer) in enumerate(samples):
+        encoded = base64.b64encode(answer.encode()).decode() if encoding == "base64" else answer.encode().hex()
+        manifest = ChallengeManifest.model_validate({
+            "challenge_id": f"adaptive-{i}", "title": "Paired decoder fixture",
+            "description": json.dumps({"attempts": [
+                {"tool": "base64_decode", "data": encoded},
+                {"tool": "hex_decode", "data": encoded},
+            ]}), "categories": ["crypto"],
+            "scope": {"authorized": True, "granted_by": "offline-paired-ablation",
+                      "challenge_id": f"adaptive-{i}"},
+        })
+        arm_success = []
+        arm_actions = []
+        for arm in ("adaptive", "baseline"):
+            provider = FixtureProvider() if arm == "adaptive" else FirstActionBaseline()
+            store = RunStore(tmp_path / f"{arm}-{i}.sqlite")
+            budget = RunBudget(max_actions=3, wall_time_seconds=10, per_tool_seconds=2,
+                               max_model_tokens=100, max_cost_usd=1)
+            run_id = Runner(store, provider, runtime, oracle, budget).run(manifest)
+            events = store.read(run_id)
+            arm_success.append(events[-1].status == RunStatus.SOLVED)
+            arm_actions.append(sum(event.status == RunStatus.EXECUTING
+                                   and event.detail.get("operation") == "isolated_fixture_tool"
+                                   for event in events))
+            action_requests = [event.detail["tool"] for event in events
+                               if event.status == RunStatus.EXECUTING
+                               and event.detail.get("operation") == "isolated_fixture_tool"]
+            assert len(action_requests) == len(set(action_requests))
+            if arm == "adaptive" and encoding == "hex":
+                failed_observation = next(i for i, event in enumerate(events)
+                                          if event.status == RunStatus.OBSERVING
+                                          and event.detail.get("tool_ok") == "false"
+                                          and event.detail.get("tool") == "base64_decode"
+                                          and event.detail.get("failure_kind") == "invalid_input")
+                alternate_action = next(i for i, event in enumerate(events)
+                                        if event.status == RunStatus.EXECUTING
+                                        and event.detail.get("tool") == "hex_decode")
+                assert failed_observation < alternate_action
+                assert "Base64 decoder rejected" in events[alternate_action].detail["rationale"]
+        assert arm_actions[0] == (2 if encoding == "hex" else 1)
+        assert arm_actions[1] == 1
+        deltas.append(int(arm_success[0]) - int(arm_success[1]))
+        adaptive_actions.append(arm_actions[0])
+        baseline_actions.append(arm_actions[1])
+
+    # Paired bootstrap percentile interval over fixed-seed paired outcomes.
+    bootstrap = random.Random(20261118)
+    estimates = [sum(bootstrap.choices(deltas, k=len(deltas))) / len(deltas)
+                 for _ in range(10_000)]
+    estimates.sort()
+    interval = (estimates[249], estimates[9749])
+    assert sum(deltas) == 15
+    assert interval == (1 / 3, 2 / 3)
+    assert sum(adaptive_actions) / 30 == 1.5
+    assert sum(baseline_actions) / 30 == 1
 
 
 @pytest.mark.parametrize("category", ["crypto", "misc"])

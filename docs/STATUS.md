@@ -60,6 +60,17 @@ the local commitment oracle, with one action versus two per target. This is
 policy plumbing evidence, not LLM behavior or a general solve-rate claim; see
 `docs/reports/issue4-munin-ablation-2026-11-17.md`.
 
+Issue #5 now has a narrow evidence-conditioned fallback demonstration: a
+controlled Base64 rejection can select a distinct hex decode, with the failure
+observation and rationale preceding that action in the local run trace. A
+paired 30-fixture synthetic comparison under equal three-action limits scored
+30/30 verified solves for the adaptive policy and 15/30 for the pinned
+first-action baseline, with a paired bootstrap 95% interval of [0.333, 0.667]
+for the solve-rate difference. This advances the micro-gate only; generalized
+hypothesis scoring, contradiction/stuckness handling, semantic repeat
+detection, diverse held-out tasks, and real-model comparison remain open.
+See `docs/reports/issue5-adaptive-replanning-2026-11-17.md`.
+
 Final test, lint, type, build, bootstrap, and fresh-clone results for this
 increment are recorded in `docs/reports/codex-native.md` after validation.
 

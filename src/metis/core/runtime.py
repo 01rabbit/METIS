@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 import time
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import Field
@@ -35,16 +36,25 @@ request = json.load(sys.stdin)
 tool, data = request["tool"], request["data"]
 try:
     if tool == "base64_decode":
-        result = base64.b64decode(data, validate=True).decode("utf-8")
+        raw = base64.b64decode(data, validate=True)
     elif tool == "hex_decode":
-        result = bytes.fromhex(data).decode("utf-8")
+        raw = bytes.fromhex(data)
     elif tool == "sha256":
         result = hashlib.sha256(data.encode()).hexdigest()
+        raw = None
     else:
         raise ValueError("unsupported tool")
+    if raw is not None:
+        try:
+            result = raw.decode("utf-8")
+        except UnicodeError:
+            print(json.dumps({"ok": False, "output": "decoded data is not UTF-8 text",
+                              "failure_kind": "invalid_text"}))
+            sys.exit(0)
     print(json.dumps({"ok": True, "output": result}))
-except (ValueError, UnicodeError):
-    print(json.dumps({"ok": False, "output": "invalid transform input"}))
+except ValueError:
+    print(json.dumps({"ok": False, "output": "invalid transform input",
+                      "failure_kind": "invalid_input"}))
 '''
 
 
@@ -56,6 +66,7 @@ class ToolRequest(Contract):
 class ToolResult(Contract):
     ok: bool
     output: str
+    failure_kind: Literal["invalid_input", "invalid_text", "execution_error", "timeout", "policy"] | None = None
 
 
 class FixtureRuntime:

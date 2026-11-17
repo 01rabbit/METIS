@@ -75,6 +75,13 @@ def test_invalid_transform_input_is_a_result_not_crash(container_runtime):
     result = container_runtime.execute(ToolRequest(tool="base64_decode", data="!!!"))
     assert not result.ok
     assert result.output == "invalid transform input"
+    assert result.failure_kind == "invalid_input"
+
+
+def test_valid_base64_non_utf8_is_not_classified_as_invalid_input(container_runtime):
+    result = container_runtime.execute(ToolRequest(tool="base64_decode", data="/w=="))
+    assert not result.ok
+    assert result.failure_kind == "invalid_text"
 
 
 def test_container_cannot_access_oracle_or_host_resources(

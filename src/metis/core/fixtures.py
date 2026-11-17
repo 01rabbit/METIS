@@ -23,7 +23,9 @@ def generate_fixtures(challenge_dir: Path, oracle_path: Path) -> list[Path]:
         answer = "METIS{" + secrets.token_hex(16) + "}"
         encoded = (base64.b64encode(answer.encode()).decode() if category == "crypto"
                    else answer.encode().hex())
-        attempts = [{"tool": transform, "data": encoded}]
+        attempts = ([{"tool": "base64_decode", "data": encoded},
+                     {"tool": "hex_decode", "data": encoded}]
+                    if category == "misc" else [{"tool": transform, "data": encoded}])
         if category == "crypto":
             attempts.insert(0, {"tool": "hex_decode", "data": "invalid-hex"})
         manifest = ChallengeManifest.model_validate({

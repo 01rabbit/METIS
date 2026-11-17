@@ -105,7 +105,8 @@ class Runner:
                     emit(RunStatus.EXHAUSTED, reason="repeated_action")
                     break
                 seen.add(identity)
-                emit(RunStatus.EXECUTING, operation="isolated_fixture_tool")
+                emit(RunStatus.EXECUTING, operation="isolated_fixture_tool", tool=decision.tool.tool,
+                     action_identity=identity, rationale=decision.rationale or "")
                 check()
                 started = time.monotonic()
                 observation = self.runtime.execute(decision.tool, timeout_seconds=min(
@@ -117,9 +118,11 @@ class Runner:
                 # Observe data in memory only; do not persist outputs/candidates.
                 context = context.model_copy(update={
                     "observations": (*context.observations, observation),
+                    "last_tool": decision.tool,
                 })
-                emit(RunStatus.OBSERVING, tool_ok=str(observation.ok).lower())
-                emit(RunStatus.REPLANNING)
+                emit(RunStatus.OBSERVING, tool_ok=str(observation.ok).lower(), tool=decision.tool.tool,
+                     failure_kind=observation.failure_kind or "none")
+                emit(RunStatus.REPLANNING, reason=decision.rationale or "observation_recorded")
         except (Cancelled, KeyboardInterrupt):
             emit(RunStatus.CANCELLED)
         except BudgetExhausted:
