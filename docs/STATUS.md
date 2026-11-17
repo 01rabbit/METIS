@@ -96,10 +96,13 @@ the tested CLI configuration, the tool can remain visible, and Linux was tested
 from the VM's root account. Unsupported platforms remain fail closed.
 
 Issue #28 has bounded Biham–Kocher and Info-ZIP seed tools. Its synthetic intent
-test now covers recovered-key decryption with CRC checks for every member, then
-XOR, using a reduced candidate set. Wall-time exhaustion has a tested reason
-code. An OS-enforced memory ceiling and Stay key recovery remain incomplete;
-the 2020 two-file attack's paper and legacy CUDA source were reviewed, not run.
+test covers recovered-key decryption with CRC checks for every member, then XOR,
+using a reduced candidate set. A separate opt-in slow test now confirms full
+Biham–Kocher candidate search and all-member CRC validation on a synthetic ZIP
+(8 workers); 2 workers did not recover within the 300-second budget. Wall-time
+exhaustion has a tested reason code. Full-search specialist-intent coverage, an
+OS-enforced memory ceiling, and Stay key recovery remain incomplete; the 2020
+two-file attack's paper and legacy CUDA source were reviewed, not run.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
 

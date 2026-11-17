@@ -130,11 +130,21 @@ def test_attack_time_budget_returns_reason_code():
 
 @pytest.mark.skipif(not os.environ.get("METIS_TEST_SLOW"), reason="exhaustive search takes minutes; METIS_TEST_SLOW=1")
 def test_full_known_plaintext_attack():
-    keys = zc.Keys.from_password(os.urandom(8))
-    plain = os.urandom(12) + b"The quick brown fox jumps over the lazy dog. " * 4
-    cipher = keys.encrypt(plain)
-    result = zc.known_plaintext_attack(cipher, plain[12:72], 12, extra={11: plain[11]}, seconds=300)
-    assert result["found"] and result["keys"] == keys.hex()
+    password = b"full-search-test"
+    known = b"The quick brown fox jumps over the lazy dog. " * 2
+    secret = b"independent member with a known ZipCrypto key"
+    encoded = bytes(byte ^ 0x42 for byte in secret).hex().encode("ascii")
+    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, password)
+    entry = next(item for item in zc.members(archive) if item["name"] == "known.txt")
+    ciphertext = zc.member_bytes(archive, entry)
+    result = zc.known_plaintext_attack(ciphertext, known[:60], 12, extra=zc.check_bytes(entry), seconds=300,
+                                       workers=8)
+    assert result["found"], result
+    assert result["keys"] == zc.Keys.from_password(password).hex()
+    recovered = zc.parse_keys(",".join(result["keys"][name] for name in ("x", "y", "z")))
+    for member in ("known.txt", "encoded.txt"):
+        decrypted = zc.decrypt_member(archive, member, recovered)
+        assert decrypted["crc_ok"]
 
 
 # -- METIS tool surface ----------------------------------------------------------------------------------
