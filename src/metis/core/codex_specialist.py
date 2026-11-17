@@ -120,6 +120,7 @@ TOOL_HINTS = (
 )
 ARTIFACT_OPTIONS = "; ".join(f"{tool}{{{','.join(sorted(names))}}}" for tool, names in sorted(ALLOWED_OPTIONS.items())
                              if names)
+PROPOSAL_OPTIONS_SCHEMA: dict[str, Any] = {key: {} for names in ALLOWED_OPTIONS.values() for key in names}
 
 DECISION_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
@@ -142,13 +143,24 @@ DECISION_SCHEMA: dict[str, Any] = {
         "report": {"anyOf": [{"type": "null"}, {
             "type": "object", "additionalProperties": False,
             "required": ["hypothesis", "evidence", "falsifier", "next_action", "event_sequences", "status",
-                         "artifact_refs"],
+                         "artifact_refs", "next_action_intent"],
             "properties": {
                 "hypothesis": {"type": "string"}, "evidence": {"type": "string"},
                 "falsifier": {"type": "string"}, "next_action": {"type": "string"},
                 "event_sequences": {"type": "array", "items": {"type": "integer"}},
                 "status": {"type": "string", "enum": ["supported", "rejected", "inconclusive"]},
                 "artifact_refs": {"type": "array", "items": {"type": "string"}},
+                "next_action_intent": {"anyOf": [{"type": "null"}, {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["kind", "tool", "data", "artifact", "options", "new_evidence"],
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["data", "artifact", "derive", "view"]},
+                        "tool": {"type": "string"}, "data": {"type": ["string", "null"]},
+                        "artifact": {"type": ["string", "null"]},
+                        "options": {"type": "object", "additionalProperties": False,
+                                    "properties": PROPOSAL_OPTIONS_SCHEMA},
+                        "new_evidence": {"type": "array", "items": {"type": "integer"}},
+                    }}]},
             }}]},
         "reason": {"type": ["string", "null"]},
     },
@@ -414,6 +426,9 @@ You have no shell, files, network or other agents. You act only by returning ONE
   At most 3 option variants of one tool on one artifact per attempt; one action runs at most 3 times per run.
 - {{"action":"report", "report":{{...}}}}: your final compact report. event_sequences must cite event numbers
   returned to you; artifact_refs only registered artifact names. Status supported|rejected|inconclusive.
+  Include next_action_intent when you can specify the proposed next tool request precisely; it enables
+  controller-checked repeated-action detection even when next_action is paraphrased. It is a proposal, not
+  execution authorization. The controller validates tool, options and assignment artifact scope.
   NEVER put a flag or flag candidate in the report: describe the exact recorded transformation (tool, input,
   event number) that produces it, so Daybreak can reproduce and verify it.
 - {{"action":"fail", "reason":"..."}}: stop when the assignment cannot be done with these tools.

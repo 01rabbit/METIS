@@ -267,11 +267,14 @@ evidence, not model-generated research or held-out workflow performance. Issue
 Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
 normalized hypothesis and marks a conflict only when that same hypothesis has
 both outcomes. The count difference is not a confidence measure. Synthesis now
-also detects the same normalized action and hypothesis with the same single
-status in consecutive waves; a current strategy change clears the signal.
-Exact reused wave rationales are rejected. It does not identify paraphrased
-strategies or select an alternative itself. Held-out evaluation and real-model
-baseline comparison remain open. Issue #5 stays open. See
+also derives canonical identity for structured, bounded single-tool
+`next_action_intent` proposals, detecting equivalent requests despite wording
+or input-normalization changes; free-text reports retain exact normalized
+matching. The same status in adjacent waves signals a stall, and changing
+strategy clears it. Exact reused wave rationales are rejected. It does not
+infer paraphrased hypothesis equivalence, compare multi-step plans, or choose an
+alternative itself. Held-out evaluation and real-model baseline comparison
+remain open. Issue #5 stays open. See
 [`issue5-hypothesis-synthesis-2026-11-17.md`](reports/issue5-hypothesis-synthesis-2026-11-17.md).
 
 Untrusted challenge programs are not executed on the host; dynamic analysis

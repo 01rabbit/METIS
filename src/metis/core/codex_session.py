@@ -17,7 +17,13 @@ from uuid import uuid4
 
 from metis.core.artifacts import artifact_stream
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
-from metis.core.ctf_artifacts import ARTIFACT_ERRORS, ARTIFACT_TOOLS, MAX_FILE, inspect_file
+from metis.core.ctf_artifacts import (
+    ARTIFACT_ERRORS,
+    ARTIFACT_TOOLS,
+    DERIVE_TOOLS,
+    MAX_FILE,
+    inspect_file,
+)
 from metis.core.ctf_tools import DATA_TOOLS, transform
 from metis.core.ctf_triage import triage
 from metis.core.run_lock import locked, operation_lock, run_lock
@@ -347,8 +353,7 @@ class CodexSession:
 
     def derive(self, run_id: str, name: str, tool: str, options: dict | None = None, *,
                _owner: tuple[str, str] | None = None, _defer_store: bool = False) -> dict:
-        if tool not in {"zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz",
-                        "base64_decode", "base32_decode", "hex_decode", "tls_http_body", "zipcrypto_decrypt"}:
+        if tool not in DERIVE_TOOLS:
             raise ValueError("only bounded archive decoding can derive an artifact")
         with operation_lock(self.database, run_id):
             observation = self.artifact(run_id, name, tool, options, _owner=_owner, _retain_operation=True)

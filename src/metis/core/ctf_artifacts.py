@@ -39,6 +39,10 @@ ARTIFACT_TOOLS = frozenset({
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
     "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt",
 })
+DERIVE_TOOLS = frozenset({
+    "zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz", "base64_decode", "base32_decode",
+    "hex_decode", "tls_http_body", "zipcrypto_decrypt",
+})
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
 ARTIFACT_ERRORS = (OSError, ValueError, KeyError, TypeError, EOFError, struct.error,

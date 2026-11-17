@@ -260,7 +260,7 @@ def test_decision_schema_is_strict():
         if isinstance(node, dict):
             if node.get("type") == "object":
                 assert node["additionalProperties"] is False
-                assert set(node["required"]) == set(node["properties"])
+                assert set(node.get("required", [])) <= set(node["properties"])
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):

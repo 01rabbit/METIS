@@ -20,10 +20,14 @@ from metis.core.agent_contracts import (
     TERMINAL_JOB_STATES,
     CompactReport,
     ExecutionMode,
+    ProposedAction,
     decide_wave,
 )
 from metis.core.codex_session import CodexSession
+from metis.core.ctf_artifacts import ALLOWED_OPTIONS, ARTIFACT_TOOLS, DERIVE_TOOLS
 from metis.core.ctf_knowledge import abstract_text
+from metis.core.ctf_tools import DATA_TOOLS
+from metis.core.intent_identity import intent_identity
 
 
 def assigned_artifact_scope(assignment: dict[str, Any], declared_artifacts: set[str]) -> set[str] | None:
@@ -201,11 +205,41 @@ class AgentLedger:
         allowed_artifacts = assigned_artifact_scope(assignment, declared)
         if allowed_artifacts is not None and set(parsed.artifact_refs) - allowed_artifacts:
             raise ValueError("report references artifacts outside this assignment's scope")
+        action_identity = None
+        if parsed.next_action_intent is not None:
+            try:
+                proposed = ProposedAction.model_validate(parsed.next_action_intent)
+            except ValidationError:
+                raise ValueError("next_action_intent must be a bounded METIS tool request") from None
+            supported = ((proposed.kind == "data" and proposed.tool in DATA_TOOLS)
+                         or (proposed.kind == "artifact" and proposed.tool in ARTIFACT_TOOLS
+                             and set(proposed.options) <= ALLOWED_OPTIONS[proposed.tool])
+                         or (proposed.kind == "derive" and proposed.tool in DERIVE_TOOLS
+                             and set(proposed.options) <= ALLOWED_OPTIONS[proposed.tool])
+                         or (proposed.kind == "view" and proposed.tool == "view"))
+            if not supported:
+                raise ValueError("next_action_intent names an unsupported tool or option")
+            if proposed.kind in {"artifact", "derive", "view"}:
+                if proposed.artifact not in declared:
+                    raise ValueError("next_action_intent references an undeclared artifact")
+                if allowed_artifacts is not None and proposed.artifact not in allowed_artifacts:
+                    raise ValueError("next_action_intent artifact is outside this assignment's scope")
+            action_identity, _family = intent_identity(proposed.kind, proposed.tool, proposed.artifact,
+                                                        proposed.options, proposed.data,
+                                                        self.session.artifact_root(run_id))
+            if parsed.action_identity is not None and parsed.action_identity != action_identity:
+                raise ValueError("action_identity must match next_action_intent")
+        elif parsed.action_identity is not None:
+            raise ValueError("action_identity requires a controller-checkable next_action_intent")
         action_key = hashlib.sha256(" ".join(values["next_action"].lower().split()).encode()).hexdigest()
         newest = max(sequences)
         with sqlite3.connect(self.database) as db:
-            rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND (action_key=? OR "
-                              "action_identity=?)", (run_id, action_key, parsed.action_identity or "-")).fetchall()
+            if action_identity:
+                rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND action_identity=?",
+                                  (run_id, action_identity)).fetchall()
+            else:
+                rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND action_identity IS NULL "
+                                  "AND action_key=?", (run_id, action_key)).fetchall()
             # Same action again is allowed only when it rests on newer evidence (a real re-test).
             if any(newest <= max(json.loads(row[0])["event_sequences"]) for row in rows):
                 raise ValueError("duplicate next action")
@@ -216,7 +250,7 @@ class AgentLedger:
                 (report_id,wave_id,run_id,assignment_id,payload,action_key,created,attempt_id,action_identity)
                 VALUES (?,?,?,?,?,?,?,?,?)""",
                 (report_id, wave_id, run_id, assignment_id, json.dumps(payload, sort_keys=True), action_key,
-                 time.time(), attempt_id, parsed.action_identity))
+                 time.time(), attempt_id, action_identity))
         return {"report_id": report_id, "wave_id": wave_id, "assignment_id": assignment_id,
                 "stored": True, "candidate_stored": False}
 
@@ -248,7 +282,7 @@ class AgentLedger:
                 jobs = dict(db.execute("SELECT assignment_id, state FROM agent_jobs WHERE wave_id=?",
                                        (wave_id,)).fetchall())
             all_rows = db.execute(
-                "SELECT wave_id,payload,action_key FROM ctf_agent_reports WHERE run_id=? ORDER BY created",
+                "SELECT wave_id,payload,action_key,action_identity FROM ctf_agent_reports WHERE run_id=? ORDER BY created",
                 (run_id,),
             ).fetchall()
             wave_order = [row[0] for row in db.execute(
@@ -283,12 +317,14 @@ class AgentLedger:
             for key, group in sorted(grouped.items())
         ]
         strategy_history: dict[tuple[str, str], dict[str, Any]] = {}
-        for prior_wave_id, payload, action_key in all_rows:
+        for prior_wave_id, payload, action_key, action_identity in all_rows:
             if action_key is None:
                 continue
             report = json.loads(payload)
             hypothesis_key = " ".join(report["hypothesis"].casefold().split())
-            history = strategy_history.setdefault((action_key, hypothesis_key), {
+            # The structured proposal identity is controller-derived from a bounded tool
+            # request; free-text next_action remains the legacy fallback.
+            history = strategy_history.setdefault((action_identity or action_key, hypothesis_key), {
                 "action": report["next_action"], "hypothesis": report["hypothesis"],
                 "wave_statuses": {},
             })
