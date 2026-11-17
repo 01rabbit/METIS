@@ -232,6 +232,17 @@ paired-gain gate for Issue #6 only; it does not establish general CTF or P7
 performance. See
 [`issue6-real-model-diverse-benchmark-2026-11-18.md`](reports/issue6-real-model-diverse-benchmark-2026-11-18.md).
 
+For Issue #8, a separate held-out AlpacaHack Daily Misc task (`Not so Pyf**k`)
+was locally exercised from its official archive in the no-network, no-host-
+mount sandbox. A three-letter ASCII expression passed the archived jail and
+the final probe's local-package comparison; no output value was logged or
+submitted. The web run had no official verifier or verdict, so this is not an
+independently verified solve and cannot be scored under P7. It is one positive
+local datapoint only; repeated runs, confidence intervals, controls,
+comparable budgets, cost reporting, and ablations remain outstanding. An
+independent acceptance review agreed this does not meet Issue #8's gate. See
+[`issue8-alpacahack-not-so-pyfk-probe-2026-11-18.md`](reports/issue8-alpacahack-not-so-pyfk-probe-2026-11-18.md).
+
 An earlier 30-case paired synthetic scheduler benchmark verifies the same
 tasks in both arms (30/30) and
 measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
