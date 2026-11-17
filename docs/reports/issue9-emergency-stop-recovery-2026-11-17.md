@@ -69,6 +69,28 @@ Local validation for the separate-controller fake-engine test:
 1 passed in 0.86s
 ```
 
+The additional real-Docker cross-controller test starts a sleeping container
+from controller A, verifies it is running, SIGKILLs A's process group, then
+uses controller B to confirm teardown and recover the interrupted run. It also
+checks that the action budget remains charged, the worker registry row is
+removed, no `SOLVED` event appears, and a third recovery is idempotent. Failure
+cleanup force-removes the uniquely named temporary container.
+
+Local validation with the pinned `linux/arm64` sandbox image:
+
+```text
+METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/pytest -ra tests/test_ctf_sandbox.py::test_real_engine_separate_controller_recovers_orphaned_sandbox
+1 passed in 1.01s
+.venv/bin/ruff check tests/test_ctf_sandbox.py
+All checks passed!
+```
+
+The existing sandbox CI job now runs this test against its freshly built
+`linux/amd64` image. This demonstrates controller-process crash recovery with
+a real container engine. Host reboot, Linux VM deployment, model provider
+cancellation, artifact/secret cleanup, and the P7 benchmark gate remain
+uncovered; Issue #9 stays open.
+
 Exact PR HEAD `2950c5097414517c77856d7ed4d3401ebdc1ac85` passed all checks.
 The full Python CI suite reported `457 passed, 26 skipped in 86.51s`; the
 Docker sandbox integration suite reported `6 passed in 74.92s`. The process

@@ -512,6 +512,98 @@ def test_real_engine_recovery_stops_orphaned_sandbox_before_resuming(tmp_path):
                           check=False).returncode != 0
 
 
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="process-group termination requires POSIX")
+def test_real_engine_separate_controller_recovers_orphaned_sandbox(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    initial_actions = session.context(run_id)["actions_remaining"]
+    Sandbox(database)  # initialize persistent worker registry before controller A starts
+    launch_code = textwrap.dedent(f"""
+        from pathlib import Path
+        from metis.core.ctf_sandbox import Sandbox, SandboxRequest
+        Sandbox(Path({str(database)!r})).execute(
+            {run_id!r}, SandboxRequest(target={target!r}, mode="script", timeout=300,
+                                       script="import time; time.sleep(300)\\n"))
+    """)
+    controller_a = subprocess.Popen([sys.executable, "-c", launch_code],
+                                    start_new_session=True, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+    worker = None
+    before_recovery = None
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            with sqlite3.connect(database) as db:
+                row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                                 (run_id,)).fetchone()
+            if row:
+                worker = row[0]
+                inspected = subprocess.run(["docker", "inspect", "--format={{.State.Running}}", worker],
+                                           capture_output=True, text=True, check=False, timeout=10)
+                if inspected.returncode == 0 and inspected.stdout.strip() == "true":
+                    break
+            if controller_a.poll() is not None:
+                raise AssertionError("controller A exited before its sandbox worker was running")
+            time.sleep(0.05)
+        assert worker is not None and inspected.returncode == 0 and inspected.stdout.strip() == "true", \
+            "controller A did not start a live Docker worker"
+        before_recovery = session.context(run_id)
+        assert before_recovery["status"] == "executing"
+        assert before_recovery["actions_remaining"] < initial_actions
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone()
+
+        os.killpg(controller_a.pid, signal.SIGKILL)
+        controller_a.wait(timeout=10)
+        orphan = subprocess.run(["docker", "inspect", "--format={{.State.Running}}", worker],
+                                capture_output=True, text=True, check=False, timeout=10)
+        assert orphan.returncode == 0 and orphan.stdout.strip() == "true", \
+            "the sandbox did not survive controller A termination"
+
+        recovery_code = textwrap.dedent(f"""
+            import json
+            from pathlib import Path
+            from metis.core.codex_session import CodexSession
+            result = CodexSession(Path({str(database)!r})).recover({run_id!r})
+            print(json.dumps({{"status": result["status"], "worker": result["worker_teardown"]}}))
+        """)
+        recovered_process = subprocess.run([sys.executable, "-c", recovery_code],
+                                           capture_output=True, text=True, timeout=30, check=False)
+        assert recovered_process.returncode == 0, recovered_process.stderr
+        assert json.loads(recovered_process.stdout) == {
+            "status": "planning", "worker": {"status": "confirmed"}}
+        after_recovery = session.context(run_id)
+        assert after_recovery["actions_remaining"] == before_recovery["actions_remaining"]
+        assert after_recovery["status"] == "planning"
+        assert not any(event.status.value == "solved" for event in session.store.read(run_id))
+        assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                              check=False, timeout=10).returncode != 0
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+        repeated = subprocess.run([sys.executable, "-c", recovery_code], capture_output=True,
+                                  text=True, timeout=30, check=False)
+        assert repeated.returncode == 0, repeated.stderr
+        assert json.loads(repeated.stdout) == {
+            "status": "planning", "worker": {"status": "not_running"}}
+        assert session.context(run_id)["actions_remaining"] == before_recovery["actions_remaining"]
+    finally:
+        if controller_a.poll() is None:
+            try:
+                os.killpg(controller_a.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            controller_a.wait(timeout=10)
+        if worker:
+            subprocess.run(["docker", "rm", "-f", worker], capture_output=True,
+                           check=False, timeout=30)
+
+
 def _elf(machine: int) -> bytes:
     header = bytearray(64)
     header[:4] = b"\x7fELF"

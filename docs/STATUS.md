@@ -241,15 +241,19 @@ removal and absence are confirmed; unknown cleanup leaves the run executing so
 recovery can retry or block. A synthetic failed-cleanup test verifies registry
 retention and subsequent recovery. Real Docker integration tests cover cancel
 and recover, and a synthetic failure test covers the unknown path. A
-process-backed fake-engine test now kills controller A, confirms failed
+process-backed fake-engine test kills controller A, confirms failed
 teardown remains recoverable, and verifies controller B recovery plus a
-third-process idempotent retry without a fabricated solve. This does not cover
-host reboot, real-Docker separate-controller recovery, artifact/secret cleanup,
-Linux VM deployment, or the P7 benchmark release gate. The sandbox/session
+third-process idempotent retry without a fabricated solve. A real-Docker
+cross-controller test now kills controller A while its container is running,
+then verifies controller B teardown/recovery, retained action charge, no
+fabricated solve, and idempotent third recovery. Host reboot, artifact/secret cleanup,
+Linux VM deployment, or the P7 benchmark release gate remain uncovered. The sandbox/session
 focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped here
 because no image was configured for that command. Exact PR HEAD
 `2950c50` passed all checks, including the full suite (`457 passed, 26 skipped`)
-and Docker integration suite (`6 passed`).
+and Docker integration suite (`6 passed`). Exact PR HEAD `f03440f` also passed
+all PR checks before the new real-Docker cross-controller test was added; that
+test is now included in the sandbox CI job.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
