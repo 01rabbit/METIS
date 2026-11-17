@@ -469,7 +469,8 @@ def zipcrypto_info(data: bytes) -> dict[str, Any]:
             "notes": [("Known plaintext attack: zipcrypto_attack needs >= 12 known bytes (8 contiguous) of one "
                       "member; header byte 11 is known (check byte)."),
                       ("Info-ZIP archives: header byte 0 of each member equals a rand() byte (Stay 2001); with "
-                      "5+ members infozip_seed can recover the PRNG seed and all header bytes.")]}
+                       "5+ members infozip_seed can recover the PRNG seed and all header bytes. Stay section 4 "
+                       "uses the double-encryption stream-byte XOR constraints for key recovery.")]}
 
 
 # -- Info-ZIP PRNG (Stay 2001, section 4) ------------------------------------------------------------
@@ -563,9 +564,10 @@ def infozip_seed(data: bytes, *, generator: str = "glibc", time_from: int | None
                         "random_header_bytes": headers, "tried_seeds": tried,
                         "seconds": round(time.monotonic() - started, 1),
                         "next": ("These are the rand() bytes r[i][0..9] of each member. Info-ZIP encrypted them "
-                                 "twice, so they are not known plaintext of the stored stream; Stay's key recovery "
-                                 "from them costs about 2^39 cipher steps and is not available in METIS "
-                                 "(work_exceeds_budget).")}
+                                 "twice, so they are not Biham-Kocher known plaintext. Stay section 4 specifically "
+                                 "uses the resulting stream-byte XOR constraints for key recovery; its roughly "
+                                 "2^39-cipher-step inverse search is not implemented in METIS and remains "
+                                 "unavailable (work_exceeds_budget).")}
     return {"found": False, "reason": "no_seed_in_range", "tried_seeds": tried,
             "seconds": round(time.monotonic() - started, 1),
             "detail": "try another time window or generator, or the archive was not made by Info-ZIP"}

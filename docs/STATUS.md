@@ -246,9 +246,15 @@ embedded citation. It assumes five consecutively encrypted compatible files
 and reports a typical runtime below two hours on a 500 MHz Pentium II; that is
 historical paper evidence, not a METIS or exact-archive benchmark. The
 registered ZIP has seven Info-ZIP 3.0 entries, and its seed-derived random
-bytes constrain the double-encrypted headers but are not ordinary known
-plaintext. An independent METIS wave found no key-recovery implementation or
-vector yet. The Stay feasibility report now distinguishes the standard
+bytes constrain the double-encrypted headers but are not ordinary
+Biham–Kocher known plaintext. Stay section 4 specifically exploits the
+stream-byte XOR constraints from those double-encrypted bytes across multiple
+files. A primary-source cross-check and independent review find the official
+seven-member archive's assumptions structurally consistent with section 4
+(same-password use is inferred from the single `zip -e` command, and the seed
+search matched all seven header observations). The inverse search is not
+implemented or validated in METIS; these preconditions do not prove key
+recovery. The Stay feasibility report now distinguishes the standard
 sandbox (1 CPU/512 MiB) from the ZipCrypto profile (4 CPU/2 GiB, up to 300s per
 request). See `reports/issue28-stay-assessment-2026-11-16.md`.
 

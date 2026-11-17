@@ -80,3 +80,32 @@ independent synthetic inverse vector exists. The exact Stay attack therefore
 remains unimplemented and unverified; no candidate was submitted.
 
 The synthetic specialist-intent test exercises known-plaintext key recovery, CRC validation across all members, derived decryption, and XOR. Its reduction stage is restricted to the true key2 candidate plus decoys: it exercises the attack worker and intent routing, but not the exhaustive search or Stay attack. The optional slow test covers exhaustive Biham–Kocher search separately.
+
+## Clarification: the seed output is Stay's attack input, not a dead end
+
+A fresh primary-source review of section 4 corrects an overbroad reading in the
+independent critique recorded during the 2026-11-18 ksnctf #39 wave. The
+recovered random header bytes are indeed *not* Biham–Kocher known plaintext for
+the final stored stream. Stay's section 4 attack is specifically designed for
+this case: Info-ZIP encrypts the random header once, reinitializes with the
+same password state, and encrypts the header again. The first-byte outputs
+cancel; known PRNG bytes then give XOR constraints between the first and second
+pass stream bytes. The paper's multi-file divide-and-conquer stages use those
+constraints across at least five consecutively encrypted files. The official
+archive has seven encrypted files and the seed search matched all seven
+leaked header bytes, so the input assumptions appear to match. This is a
+strongly supported applicability inference, not proof of a recovered key.
+
+The missing step is the inverse search from those constraints through the
+paper's 23-bit guesses, carry filters, candidate lifting, and cross-file
+stages. Existing METIS tests verify forward two-pass relations and a toy
+reduced state space only; they do not implement or test that staged inverse
+algorithm. The independent follow-up critique was right that seed fit alone
+is not a key-recovery verdict, but its wording should not be read to exclude
+Stay's attack. No full search or official submission has occurred.
+
+The registered official-distribution evidence for the new wave includes
+complete source inspection (sequence 105) and full ZIP structure accounting
+(sequence 113). The wave found independent random share generation in PHP and
+no extra unencrypted archive payload; that eliminates alternate plaintext
+routes, not the Stay section 4 route.

@@ -89,6 +89,8 @@ def test_infozip_seed_recovers_every_random_header_byte():
         twice = zc.member_bytes(data, entry)[:10]
         assert keys.decrypt(keys.decrypt(twice)).hex() == predicted  # undo both Info-ZIP encryptions
     assert "2^39" in result["next"]
+    assert "Stay section 4 specifically uses" in result["next"]
+    assert "stream-byte XOR constraints" in result["next"]
 
 
 def test_infozip_seed_reports_misses_and_bounds():
@@ -177,6 +179,8 @@ def test_tools_are_registered_and_bounded(tmp_path):
     (tmp_path / "v.zip").write_bytes(FIXTURE.read_bytes())
     info = inspect_file(tmp_path, "v.zip", "zipcrypto_info", {})
     assert info["encrypted_members"] == 7 and info["members"][0]["data_descriptor"] is True
+    assert any("Stay section 4" in note and "stream-byte XOR constraints" in note
+               for note in info["notes"])
     seed = inspect_file(tmp_path, "v.zip", "infozip_seed", {"seconds": 60})
     assert seed["found"] and len(seed["random_header_bytes"]) == 7
     with pytest.raises(ValueError):

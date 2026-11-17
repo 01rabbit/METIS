@@ -110,8 +110,9 @@ TOOL_HINTS = (
      "infozip_seed{time_from,time_to,pid_bits,seconds}: start with pid_bits=22 and seconds=120 "
      "(max 22 and 300; default time window uses member timestamps). A smaller pid_bits can exclude the seed; "
      "work_exceeds_budget is inconclusive. It searches Info-ZIP srand(time^pid) from 3+ members and returns every "
-     "member's ten random header bytes (not known plaintext: they were encrypted twice; key recovery from them "
-     "alone is ~2^39 work and not available); zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
+     "member's ten random header bytes (not Biham-Kocher known plaintext). Stay section 4 specifically uses "
+     "their double-encryption stream-byte XOR constraints for key recovery (~2^39 cipher steps); that inverse "
+     "search is not implemented. zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
      "Biham-Kocher known-plaintext attack (>=12 known bytes of the member's data, 8 contiguous; offset 0 = first "
      "data byte) and returns keys x,y,z; derive tool zipcrypto_decrypt{member,keys:'x,y,z'} registers the "
      "plaintext."),
