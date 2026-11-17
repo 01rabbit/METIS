@@ -20,6 +20,15 @@ absent and the session does not fabricate a solve. A separate failure-path
 test confirms an unknown teardown leaves the session in `EXECUTING` and blocks
 recovery.
 
+Sandbox execution cleanup now uses the same delete-and-inspect confirmation for
+every resource profile. It removes the SQLite worker row only after absence is
+confirmed. If removal/inspection is unknown, it raises while preserving the row
+and leaves the run `EXECUTING`; a later recovery retries teardown. The
+`test_sandbox_cleanup_failure_keeps_worker_registered_until_recovery` regression
+injects an unknown cleanup, verifies the row and state remain, then restores
+the engine check and confirms recovery removes the container and row before
+returning to planning.
+
 Focused test:
 
 ```sh

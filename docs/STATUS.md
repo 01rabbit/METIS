@@ -175,6 +175,13 @@ not enforceable when usage is unknown, and a controlled real-model multi-agent
 vs single-agent benchmark remains outstanding. Issue #6 stays open; see
 [`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
 
+Browser verdict attestation now requires a matching pre-reserved candidate;
+attestation cannot create a submission record for an unprepared candidate.
+Repeated identical verdicts are idempotent and recover the run if a process
+stops after persisting the verdict but before the terminal event. This
+constrains local state transitions; it does not automate or independently
+authenticate what a human saw in the official browser.
+
 Issue #7 now has a seeded declarative-workflow vertical slice: two bounded
 encoding families, a closed schema over existing artifact tools, a fixed
 no-network sandbox runner, and a controller-side digest check against a private
@@ -206,6 +213,9 @@ multi-agent gains, or production deployment. Issue #16 now has Linux real-Codex
 0.166.0 and 0.169.0 evidence under bwrap and seccomp; the collaborator tool
 remains visible but is refused by the tested CLI configuration. The optional standalone
 model/container experiments remain separate from the default Codex workflow.
+The seccomp regression now checks direct `clone` flag combinations and the
+`clone3` fallback on x86_64 and aarch64; CI runs the focused test on both hosted
+Linux architectures. This does not expand the tested Codex-version set.
 
 The 2026-11-17 MUNIN increment adds three deterministic synthetic transfer trials
 and an ablation comparing one fixed retrieval-guided tool action with two fixed
@@ -218,11 +228,13 @@ not report it. See `docs/ORCHESTRATION_RUNTIME.md` for operational limits.
 Issue #9 now has a local real-container emergency-stop slice: the sandbox
 registers its active worker under the per-run lock; cancellation and recovery
 remove it, confirm absence with `inspect`, and prevent late results from
-overwriting recovered state. Unknown teardown blocks recovery. Real Docker
-integration tests cover cancel and recover, and a synthetic failure test covers
-the unknown path. This does not cover host reboot, separate-controller
-recovery, artifact/secret cleanup, Linux VM deployment, or the P7 benchmark
-release gate.
+overwriting recovered state. Execution cleanup now retains the worker row until
+removal and absence are confirmed; unknown cleanup leaves the run executing so
+recovery can retry or block. A synthetic failed-cleanup test verifies registry
+retention and subsequent recovery. Real Docker integration tests cover cancel
+and recover, and a synthetic failure test covers the unknown path. This does
+not cover host reboot, separate-controller recovery, artifact/secret cleanup,
+Linux VM deployment, or the P7 benchmark release gate.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 

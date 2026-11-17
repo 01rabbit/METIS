@@ -587,18 +587,16 @@ class Sandbox:
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
         finally:
-            with (run_lock(self.session.database, run_id),
-                  sqlite3.connect(self.session.database) as db):
-                db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
-                           (run_id, name))
-            if _profile.startswith("zipcrypto"):
-                try:
-                    cleanup = subprocess.run([self.engine, "rm", "-f", name], capture_output=True,
-                                             timeout=10, check=False, env=_engine_environment())
-                    if cleanup.returncode and b"no such container" not in cleanup.stderr.lower():
-                        raise RuntimeError("ZipCrypto sandbox cleanup could not be confirmed")
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    raise RuntimeError("ZipCrypto sandbox cleanup could not be confirmed") from exc
+            # Keep the persistent record until removal and absence are confirmed.
+            # Recovery and cancellation use the same lock, so neither can miss a
+            # worker whose teardown is still uncertain.
+            with run_lock(self.session.database, run_id):
+                cleanup = _remove_container(self.engine, name)
+                if cleanup["status"] != "confirmed":
+                    raise RuntimeError("sandbox cleanup could not be confirmed")
+                with sqlite3.connect(self.session.database) as db:
+                    db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                               (run_id, name))
         if not _reserved:
             with run_lock(self.session.database, run_id):
                 current_status = self.session.context(run_id)["status"]

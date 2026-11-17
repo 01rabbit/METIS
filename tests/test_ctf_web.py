@@ -540,10 +540,44 @@ def test_browser_reservation_survives_restart_and_binds_candidate(site, tmp_path
         reopened.attest(run_id, "other-candidate", verdict="correct", evidence="Official UI showed Correct")
     result = reopened.attest(run_id, "private-candidate", verdict="correct", evidence="Official UI showed Correct")
     assert result["verified"]
+    retried = WebWorkflow(database).attest(
+        run_id, "private-candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert retried["verified"] and retried["idempotent_retry"]
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT attempts,verdict FROM web_attempts").fetchall() == [(1, "correct")]
     assert state["posts"] == 0
     assert "private-candidate" not in reopened.session.store.export_jsonl(run_id)
+
+
+def test_browser_verdict_requires_reservation_and_recovers_terminal_event_crash(site, tmp_path, monkeypatch):
+    from metis.core.contracts import RunStatus
+
+    base, _ = site
+    database = tmp_path / "browser.sqlite"
+    workflow = WebWorkflow(database)
+    run_id = workflow.open(base + "/problem")["context"]["run_id"]
+    with pytest.raises(ValueError, match="prepare this exact browser submission"):
+        workflow.attest(run_id, "candidate", verdict="correct", evidence="Official UI showed Correct")
+
+    workflow.prepare_browser(run_id, "candidate")
+    original_emit = workflow.session._emit
+
+    def crash_before_terminal(run, status, **detail):
+        if status == RunStatus.SOLVED:
+            raise RuntimeError("simulated process interruption")
+        original_emit(run, status, **detail)
+
+    monkeypatch.setattr(workflow.session, "_emit", crash_before_terminal)
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        workflow.attest(run_id, "candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert workflow.session.context(run_id)["status"] == RunStatus.VERIFYING.value
+
+    recovered = WebWorkflow(database).attest(
+        run_id, "candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert recovered["verified"] and recovered["idempotent_retry"]
+    assert recovered["status"] == RunStatus.SOLVED.value
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT attempts,verdict FROM web_attempts").fetchall() == [(1, "correct")]
 
 
 def test_browser_reservation_requires_revision_and_honors_cap(site, tmp_path):

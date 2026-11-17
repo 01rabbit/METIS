@@ -247,7 +247,7 @@ def test_seccomp_blocks_processes_but_allows_threads(tmp_path):
     prefix = codex_isolation.FORWARDER.split("port, path, argv =", 1)[0]
     code = prefix + """
 restrict_process_creation()
-import errno, threading
+import ctypes, errno, platform, threading
 thread = threading.Thread(target=lambda: None)
 thread.start(); thread.join()
 for call in (os.fork, lambda: os.posix_spawn('/bin/true', ['/bin/true'], {})):
@@ -259,6 +259,21 @@ for call in (os.fork, lambda: os.posix_spawn('/bin/true', ['/bin/true'], {})):
         if pid == 0: os._exit(0)
         os.waitpid(pid, 0)
         raise AssertionError('process creation allowed')
+machine = platform.machine()
+sys_clone = {'x86_64': 56, 'aarch64': 220}[machine]
+libc = ctypes.CDLL(None, use_errno=True)
+for flags in (0, 0x00020000 | 0x00000100, 0x00008000):
+    ctypes.set_errno(0)
+    result = libc.syscall(sys_clone, flags, 0, 0, 0, 0)
+    assert result == -1 and ctypes.get_errno() == errno.EPERM, (flags, result, ctypes.get_errno())
+# A thread clone reaches the kernel (which rejects the incomplete flags), while
+# clone3 always returns ENOSYS so callers can fall back to the inspected clone ABI.
+ctypes.set_errno(0)
+result = libc.syscall(sys_clone, 0x00010000, 0, 0, 0, 0)
+assert result == -1 and ctypes.get_errno() != errno.EPERM, (result, ctypes.get_errno())
+ctypes.set_errno(0)
+result = libc.syscall(435, 0, 0)
+assert result == -1 and ctypes.get_errno() == errno.ENOSYS, (result, ctypes.get_errno())
 """
     result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 0, result.stderr

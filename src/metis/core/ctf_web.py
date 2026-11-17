@@ -619,16 +619,32 @@ class WebWorkflow:
         with sqlite3.connect(self.database) as db:
             existing = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? AND digest=?",
                                   (run_id, fingerprint)).fetchone()
+            if existing and existing[0] != "pending":
+                if existing[0] != verdict:
+                    raise ValueError("candidate already has a different recorded verdict")
+                status = self.session.context(run_id)["status"]
+                if status == RunStatus.VERIFYING.value:
+                    if verdict == "correct":
+                        self.session._emit(run_id, RunStatus.SOLVED, verification="official_browser_observed")
+                    else:
+                        self.session._emit(run_id, RunStatus.REPLANNING, reason="official_incorrect")
+                        self.session._emit(run_id, RunStatus.PLANNING)
+                    status = self.session.context(run_id)["status"]
+                expected_status = RunStatus.SOLVED.value if verdict == "correct" else RunStatus.PLANNING.value
+                if status != expected_status:
+                    raise RuntimeError("recorded browser verdict disagrees with recovered run state")
+                return {"run_id": run_id, "verdict": verdict, "verified": verdict == "correct",
+                        "verification": "official_browser_observed", "status": status,
+                        "idempotent_retry": True,
+                        "next": "record the write-up" if verdict == "correct"
+                                else "record a revised hypothesis; do not resubmit the same candidate"}
             prepared = existing is not None and existing[0] == "pending"
-            if existing and not prepared:
-                raise ValueError("identical candidate already recorded; reconsider the hypothesis")
             if not prepared and db.execute(
                 "SELECT 1 FROM web_attempts WHERE run_id=? AND verdict='pending'", (run_id,)
             ).fetchone():
                 raise ValueError("pending browser submission belongs to a different candidate")
-            if not prepared and db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?",
-                          (run_id,)).fetchone()[0] >= config["max_submissions"]:
-                raise ValueError("submission limit reached")
+            if not prepared:
+                raise ValueError("prepare this exact browser submission before attesting its verdict")
             latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",
                                 (run_id,)).fetchone()
             if latest and latest[0] == "incorrect" and not db.execute(
@@ -636,14 +652,21 @@ class WebWorkflow:
                 (run_id, latest[1]),
             ).fetchone():
                 raise ValueError("record an evidence-based revised hypothesis before recording a new candidate")
-        if not prepared:
-            self.session._reserve(run_id, "official_flag_submission_browser")
-        self.session._emit(run_id, RunStatus.OBSERVING, evidence=evidence)
-        self.session._emit(run_id, RunStatus.VERIFYING)
+        status = self.session.context(run_id)["status"]
+        if status == RunStatus.EXECUTING.value:
+            self.session._emit(run_id, RunStatus.OBSERVING, evidence=evidence)
+            status = RunStatus.OBSERVING.value
+        if status == RunStatus.OBSERVING.value:
+            self.session._emit(run_id, RunStatus.VERIFYING)
+            status = RunStatus.VERIFYING.value
+        if status != RunStatus.VERIFYING.value:
+            raise ValueError("browser submission is not awaiting a verdict")
         with sqlite3.connect(self.database) as db:
-            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,?,?) "
-                       "ON CONFLICT(run_id,digest) DO UPDATE SET verdict=excluded.verdict,created=excluded.created",
-                       (run_id, fingerprint, verdict, time.time()))
+            cursor = db.execute("UPDATE web_attempts SET verdict=?,created=? "
+                                "WHERE run_id=? AND digest=? AND verdict='pending'",
+                                (verdict, time.time(), run_id, fingerprint))
+            if cursor.rowcount != 1:
+                raise ValueError("browser reservation changed before verdict recording")
         if verdict == "correct":
             self.session._emit(run_id, RunStatus.SOLVED, verification="official_browser_observed")
         else:

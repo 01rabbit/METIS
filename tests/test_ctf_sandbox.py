@@ -169,12 +169,16 @@ def test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline(tmp_path,
     target = session.context(run_id)["challenge"]["artifacts"][0]
     original_run = ctf_sandbox.subprocess.run
     original_popen = ctf_sandbox.subprocess.Popen
+    inspection_timed_out = False
 
     def timeout_selected(command, *args, **kwargs):
+        nonlocal inspection_timed_out
         if command[0] == "docker" and (
             (phase == "container-create" and command[1] == "create")
-            or (phase == "oom-inspection" and command[1] == "inspect")
+            or (phase == "oom-inspection" and command[1] == "inspect" and not inspection_timed_out)
         ):
+            if phase == "oom-inspection":
+                inspection_timed_out = True
             raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
         return original_run(command, *args, **kwargs)
 
@@ -221,6 +225,33 @@ def test_cancel_stops_registered_sandbox_worker(tmp_path, engine):
     assert result["worker_teardown"]["status"] == "confirmed"
     assert any(json.loads(line)[:3] == ["rm", "-f", "metis-sandbox-cancel-test"]
                for line in engine.read_text().splitlines())
+
+
+def test_sandbox_cleanup_failure_keeps_worker_registered_until_recovery(tmp_path, engine, monkeypatch):
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    original_remove = ctf_sandbox._remove_container
+    monkeypatch.setattr(ctf_sandbox, "_remove_container",
+                        lambda *_: {"status": "unknown", "reason": "engine did not confirm absence"})
+
+    with pytest.raises(RuntimeError, match="cleanup could not be confirmed"):
+        Sandbox(database).execute(run_id, SandboxRequest(target=target))
+    assert session.context(run_id)["status"] == "executing"
+    with sqlite3.connect(database) as db:
+        row = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
+                         (run_id,)).fetchone()
+    assert row and row[0] == "docker"
+
+    monkeypatch.setattr(ctf_sandbox, "_remove_container", original_remove)
+    recovered = session.recover(run_id)
+    assert recovered["worker_teardown"]["status"] == "confirmed"
+    assert recovered["status"] == "planning"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
 
 
 def test_cli_sandbox(tmp_path, engine, monkeypatch, capsys):

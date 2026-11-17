@@ -374,7 +374,9 @@ FORWARDER = r"""
 import ctypes, errno, os, platform, select, socket, sys
 
 def restrict_process_creation():
-    # classic BPF over struct seccomp_data; only thread-group clone is allowed.
+    # Classic BPF over struct seccomp_data: clone with CLONE_THREAD is allowed;
+    # clone3 is forced to ENOSYS because its flags live behind a pointer. This
+    # prevents process creation, not exec, and permits all valid thread clones.
     machine = platform.machine()
     numbers = {"x86_64": (0xc000003e, 56, 57, 58), "aarch64": (0xc00000b7, 220, None, None)}
     if machine not in numbers:
