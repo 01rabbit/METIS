@@ -213,6 +213,17 @@ Stay vector, or official submission has occurred. Issue #28 and ksnctf #39
 remain open; see `reports/issue28-stay-assessment-2026-11-16.md` and the live
 run evidence.
 
+The Stay primary source was checked against the official archive and its
+embedded citation. It assumes five consecutively encrypted compatible files
+and reports a typical runtime below two hours on a 500 MHz Pentium II; that is
+historical paper evidence, not a METIS or exact-archive benchmark. The
+registered ZIP has seven Info-ZIP 3.0 entries, and its seed-derived random
+bytes constrain the double-encrypted headers but are not ordinary known
+plaintext. An independent METIS wave found no key-recovery implementation or
+vector yet. The Stay feasibility report now distinguishes the standard
+sandbox (1 CPU/512 MiB) from the ZipCrypto profile (4 CPU/2 GiB, up to 300s per
+request). See `reports/issue28-stay-assessment-2026-11-16.md`.
+
 ## Boundaries and remaining work
 
 Issue #1's bounded P0 gate is now accepted for explicit user intake and local
