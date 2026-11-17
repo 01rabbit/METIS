@@ -121,3 +121,38 @@ class RunStore:
     def export_jsonl(self, run_id: str) -> str:
         """Return a consistent validated export; caller chooses output destination."""
         return "".join(event.model_dump_json() + "\n" for event in self.read(run_id))
+
+    def audit_summary(self, run_id: str) -> dict[str, object] | None:
+        """Return a safe lifecycle projection after validating the complete event chain.
+
+        This deliberately omits event details, which may contain free-form text.
+        Read-only callers use a single SQLite snapshot and never create a schema.
+        """
+        with self._connect() as db:
+            db.execute("BEGIN")
+            events = self._read(db, run_id)
+            if not events:
+                return None
+            first_sequence, first_timestamp = db.execute(
+                "SELECT sequence, timestamp FROM events WHERE run_id=? "
+                "ORDER BY sequence ASC LIMIT 1", (run_id,),
+            ).fetchone()
+            last_sequence, last_timestamp, digest = db.execute(
+                "SELECT sequence, timestamp, digest FROM events WHERE run_id=? "
+                "ORDER BY sequence DESC LIMIT 1", (run_id,),
+            ).fetchone()
+        counts = {status.value: 0 for status in RunStatus}
+        for event in events:
+            counts[event.status.value] += 1
+        return {
+            "run_id": run_id,
+            "status": events[-1].status.value,
+            "event_count": len(events),
+            "first_sequence": first_sequence,
+            "last_sequence": last_sequence,
+            "first_timestamp": first_timestamp,
+            "last_timestamp": last_timestamp,
+            "status_counts": counts,
+            "chain_valid": True,
+            "terminal_digest": digest,
+        }

@@ -40,6 +40,52 @@ def test_inspect_does_not_create_missing_database(tmp_path):
     assert not database.exists()
 
 
+def test_audit_is_read_only_and_omits_free_form_event_details(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    prepared = json.loads(cli("prepare", FIXTURE, "--database", database).stdout)
+    from metis.core.contracts import RunEvent, RunStatus
+    from metis.core.store import RunStore
+    RunStore(database).append(RunEvent(run_id=prepared["run_id"], sequence=2,
+                                       status=RunStatus.CLASSIFIED,
+                                       detail={"private": "never-print-this"}))
+    before = database.read_bytes()
+    result = cli("audit", prepared["run_id"], "--database", database)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "classified"
+    assert summary["event_count"] == 3
+    assert summary["first_sequence"] == 0 and summary["last_sequence"] == 2
+    assert summary["status_counts"]["new"] == 1
+    assert summary["status_counts"]["validated"] == 1
+    assert summary["status_counts"]["classified"] == 1
+    assert summary["chain_valid"] is True
+    assert "never-print-this" not in result.stdout
+    assert database.read_bytes() == before
+    repeated = cli("audit", prepared["run_id"], "--database", database)
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout == result.stdout
+
+
+def test_audit_fails_closed_on_corrupt_chain_and_missing_database(tmp_path):
+    missing = tmp_path / "missing.sqlite"
+    assert cli("audit", "absent", "--database", missing).returncode == 2
+    assert not missing.exists()
+
+    database = tmp_path / "runs.sqlite"
+    prepared = json.loads(cli("prepare", FIXTURE, "--database", database).stdout)
+    import sqlite3
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET payload=? WHERE run_id=? AND sequence=0",
+                   ('{"status":"corrupt"}', prepared["run_id"]))
+    before = database.read_bytes()
+    result = cli("audit", prepared["run_id"], "--database", database)
+    assert result.returncode == 2
+    assert "unavailable or corrupt" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert database.read_bytes() == before
+
+
 def test_rejected_inputs_are_not_echoed_or_recorded(tmp_path):
     manifest = tmp_path / "invalid.json"
     database = tmp_path / "runs.sqlite"

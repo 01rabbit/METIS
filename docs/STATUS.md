@@ -386,6 +386,15 @@ sandbox suite includes the real-Docker cross-controller test.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
+A new read-only `metis audit RUN_ID --database PATH` command projects lifecycle
+status, sequence bounds, event timestamps, status counts, and validated chain
+integrity without exposing free-form event details. Local CLI checks confirm
+private-detail omission, no database writes or missing-file creation, and
+fail-closed handling of a corrupt chain. This does not provide cost/provider
+usage or artifact-retention accounting absent structured source data, and is
+not a tamper-proof signature or full operator UI. Issue #9 remains open. See
+[`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md).
+
 Phase 4 autopilot has a synthetic one-wave comparison against direct scheduler
 calls: both produced four inconclusive specialist reports with matching plan,
 enqueue, dispatch, and synthesis counts. Returned activity metrics match their

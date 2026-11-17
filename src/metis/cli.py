@@ -570,6 +570,9 @@ def main() -> int:
     inspect = sub.add_parser("inspect", help="read validated run history without modifying it")
     inspect.add_argument("run_id")
     inspect.add_argument("--database", type=Path, required=True)
+    audit = sub.add_parser("audit", help="show a safe read-only lifecycle summary for one run")
+    audit.add_argument("run_id")
+    audit.add_argument("--database", type=Path, required=True)
     generate = sub.add_parser("generate-fixtures", help="generate two synthetic local puzzles")
     generate.add_argument("directory", type=Path)
     generate.add_argument("--oracle", type=Path, required=True)
@@ -1148,6 +1151,15 @@ def main() -> int:
         if not history:
             parser.exit(2, "run not found\n")
         print(history, end="")
+        return 0
+    if args.command == "audit":
+        try:
+            audit_result = RunStore(args.database, read_only=True).audit_summary(args.run_id)
+        except (OSError, sqlite3.Error, ValueError):
+            parser.exit(2, "run audit unavailable or corrupt\n")
+        if audit_result is None:
+            parser.exit(2, "run not found\n")
+        print(json.dumps(audit_result, sort_keys=True))
         return 0
     return 2
 
