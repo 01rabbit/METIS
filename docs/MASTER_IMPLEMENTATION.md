@@ -78,7 +78,7 @@ Gate: parallel run never exceeds global budget and authorization, race-condition
 
 ### P6 — Autonomous Research (depends on P3+P5)
 Deliver experiment proposals for local challenge fixtures, hypothesis-testing scripts, synthetic challenge family generation, reproducible evaluation of reusable workflows and human-reviewed publication of tool extensions.
-Gate: generated workflows are tested in sandbox; tool additions require explicit maintainer review; no self-modification of policy/verifier or deployment permissions.
+Gate: generated workflows are tested in sandbox; tool additions require explicit maintainer review; no self-modification of policy/verifier or deployment permissions. The current bounded implementation uses a default-deny, digest-bound per-run operator approval for one fixed built-in; future capability implementations still require a reviewed repository change. This local approval does not authenticate a maintainer or complete P6 while P5 remains open.
 
 ### P7 — Competitive Evaluation (depends on P1–P6)
 Deliver held-out benchmark manifest and hidden oracle, categories/difficulty strata, repeated trials with pinned model configurations, ablations (without MUNIN, without planner, single vs multi-agent), cost/time/solve metrics and confidence intervals, contamination checks.

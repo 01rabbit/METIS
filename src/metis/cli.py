@@ -46,6 +46,7 @@ from metis.core.ctf_swarm import handoff as handoff_report
 from metis.core.ctf_swarm import status as swarm_status_report
 from metis.core.ctf_tools import DATA_TOOLS
 from metis.core.ctf_web import WebRequest, WebWorkflow
+from metis.core.ctf_workflow import WorkflowCapabilityApprovals, capability_review_details
 from metis.core.ctf_writeup import WriteupBook, WriteupInput
 from metis.core.fixtures import generate_fixtures
 from metis.core.models import FixtureProvider, ModelProvider
@@ -402,6 +403,19 @@ def main() -> int:
     web_submit.add_argument("run_id")
     web_submit.add_argument("--candidate-file", type=Path,
                             help="read the exact candidate from this file instead of stdin")
+    workflow_parser = sub.add_parser("workflow", help="review fixed declarative-workflow capabilities")
+    workflow_parser.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    workflow_commands = workflow_parser.add_subparsers(dest="workflow_command", required=True)
+    for command, decision, description in (
+        ("approve", "approve", "approve one capability for one run"),
+        ("revoke", "revoke", "revoke one capability for one run"),
+    ):
+        review = workflow_commands.add_parser(command, help=description)
+        review.set_defaults(review_decision=decision)
+        review.add_argument("run_id")
+        review.add_argument("capability", choices=("rot13_decode",))
+    workflow_status = workflow_commands.add_parser("status", help="show approvals and append-only review history")
+    workflow_status.add_argument("run_id")
     form = web_commands.add_parser("configure-form", help="configure a trusted generic POST form before any submission")
     form.add_argument("run_id")
     form.add_argument("--form-index", type=int, required=True)
@@ -886,6 +900,28 @@ def main() -> int:
                 web_reason = ": " + (str(exc).splitlines() or [type(exc).__name__])[0][:300]
             parser.exit(2, "CTF web command rejected" + web_reason
                         + " (check target scope, credentials, form configuration and limits)\n")
+    if args.command == "workflow":
+        try:
+            approvals = WorkflowCapabilityApprovals(args.database)
+            if args.workflow_command == "status":
+                print(json.dumps(approvals.status(args.run_id)))
+                return 0
+            details = capability_review_details(args.capability)
+            print("Reviewed capability descriptor: " + json.dumps(details, sort_keys=True))
+            version = details["descriptor"]["version"]
+            digest = details["capability_sha256"]
+            expected = (f"{args.review_decision.upper()} {args.capability} v{version} "
+                        f"sha256:{digest} {args.run_id}")
+            if input(f"Type exactly '{expected}' to continue: ") != expected:
+                raise ValueError("workflow capability review was not confirmed")
+            output = approvals.record(
+                args.run_id, args.capability, decision=args.review_decision,
+                reviewer=getpass.getuser(), expected_digest=digest)
+            print(json.dumps(output))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error, EOFError) as exc:
+            workflow_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
+            parser.exit(2, "Workflow capability review rejected: " + workflow_reason + "\n")
     if args.command == "remote":
         try:
             remote_workflow = RemoteWorkflow(args.database)

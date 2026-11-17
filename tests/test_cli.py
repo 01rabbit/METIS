@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from metis.core import ctf_workflow
+from metis.core.codex_session import CodexSession
+from metis.core.ctf_workflow import WorkflowCapabilityApprovals
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "challenges/training/fixture-001.json"
 
@@ -101,3 +105,65 @@ def test_agent_slots_can_disable_munin_retrieval(tmp_path):
     result = cli("agent", "--database", tmp_path / "agent.sqlite", "slots", "--no-memory-retrieval")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["memory_retrieval"] is False
+
+
+def test_workflow_capability_requires_exact_operator_confirmation(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "runs.sqlite"
+    fixture = tmp_path / "source.txt"
+    fixture.write_text("local fixture")
+    run_id = CodexSession(database).intake(title="Local workflow review", description="Fixture only",
+                                          paths=[fixture], categories=["misc"])["run_id"]
+    approvals = WorkflowCapabilityApprovals(database)
+    monkeypatch.setattr(sys, "argv", ["metis", "workflow", "--database", str(database),
+                                      "approve", run_id, "rot13_decode"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+    from metis.cli import main
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("unconfirmed capability approval unexpectedly succeeded")
+    assert "rot13_decode" not in approvals.approved_tools(run_id)
+    monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("EOF during capability review unexpectedly succeeded")
+    assert "rot13_decode" not in approvals.approved_tools(run_id)
+
+    v1 = ctf_workflow.capability_review_details("rot13_decode")
+    old_confirmation = (f"APPROVE rot13_decode v{v1['descriptor']['version']} "
+                        f"sha256:{v1['capability_sha256']} {run_id}")
+    original_descriptor = ctf_workflow._capability_descriptor
+    monkeypatch.setattr(ctf_workflow, "_capability_descriptor",
+                        lambda tool: {**original_descriptor(tool), "version": 2})
+    monkeypatch.setattr("builtins.input", lambda _prompt: old_confirmation)
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("confirmation for an old descriptor unexpectedly approved a new version")
+    assert "rot13_decode" not in approvals.approved_tools(run_id)
+    preview = capsys.readouterr().out
+    v2 = ctf_workflow.capability_review_details("rot13_decode")
+    assert '"version": 2' in preview
+    assert v2["capability_sha256"] in preview
+    new_confirmation = (f"APPROVE rot13_decode v{v2['descriptor']['version']} "
+                        f"sha256:{v2['capability_sha256']} {run_id}")
+    monkeypatch.setattr("builtins.input", lambda _prompt: new_confirmation)
+    monkeypatch.setattr("getpass.getuser", lambda: "test-operator")
+    assert main() == 0
+    assert "rot13_decode" in approvals.approved_tools(run_id)
+    approval_output = capsys.readouterr().out
+    assert v2["capability_sha256"] in approval_output
+    assert json.loads(approval_output.splitlines()[-1])["reviewer"] == "test-operator"
+    monkeypatch.setattr(sys, "argv", ["metis", "workflow", "--database", str(database),
+                                      "status", run_id])
+    assert main() == 0
+    status = json.loads(capsys.readouterr().out)
+    assert "rot13_decode" in status["approved_tools"]
+    assert status["reviews"][0]["capability_sha256"]

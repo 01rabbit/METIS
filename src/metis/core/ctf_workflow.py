@@ -12,8 +12,10 @@ import hashlib
 import json
 import re
 import secrets
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -25,11 +27,17 @@ from metis.core.contracts import Contract
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS
 from metis.core.ctf_sandbox import Sandbox, SandboxRequest
 
-WorkflowTool = Literal["base32_decode", "base64_decode", "hex_decode"]
-WORKFLOW_TOOLS = frozenset({"base32_decode", "base64_decode", "hex_decode"})
+WorkflowTool = Literal["base32_decode", "base64_decode", "hex_decode", "rot13_decode"]
+BASE_WORKFLOW_TOOLS = frozenset({"base32_decode", "base64_decode", "hex_decode"})
+WORKFLOW_TOOLS = BASE_WORKFLOW_TOOLS | {"rot13_decode"}
 MAX_WORKFLOW_STEPS = 4
 MAX_WORKFLOW_OUTPUT = 16_384
-if not WORKFLOW_TOOLS <= ARTIFACT_TOOLS:
+ROT13_IMPLEMENTATION = (
+    'value = value.translate(bytes.maketrans('
+    'b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", '
+    'b"NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm"))'
+)
+if not BASE_WORKFLOW_TOOLS <= ARTIFACT_TOOLS:
     raise RuntimeError("workflow tools must be a subset of the existing artifact tool registry")
 
 
@@ -42,6 +50,111 @@ class WorkflowCandidate(Contract):
     input_artifact: str = Field(min_length=1, max_length=128,
                                 pattern=r"^[A-Za-z0-9_.+-]+$")
     steps: list[WorkflowStep] = Field(min_length=1, max_length=MAX_WORKFLOW_STEPS)
+
+
+def _capability_descriptor(tool: str) -> dict[str, Any]:
+    """Return the immutable descriptor whose digest an operator approves."""
+    if tool != "rot13_decode":
+        raise ValueError("unknown review-gated workflow capability")
+    return {"schema_version": 1, "id": tool, "version": 1,
+            "implementation_sha256": hashlib.sha256(ROT13_IMPLEMENTATION.encode("ascii")).hexdigest(),
+            "max_input_bytes": 65_536, "max_output_bytes": MAX_WORKFLOW_OUTPUT}
+
+
+def capability_digest(tool: str) -> str:
+    descriptor = _capability_descriptor(tool)
+    canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def capability_review_details(tool: str) -> dict[str, Any]:
+    """Return the exact public descriptor shown before operator confirmation."""
+    return {"descriptor": _capability_descriptor(tool), "capability_sha256": capability_digest(tool)}
+
+
+class WorkflowCapabilityApprovals:
+    """Append-only per-run operator approvals; proposals never grant capabilities."""
+
+    def __init__(self, database: Path):
+        self.database = database
+        database.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(database, timeout=10) as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS workflow_capability_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                capability_version INTEGER NOT NULL,
+                capability_sha256 TEXT NOT NULL,
+                decision TEXT NOT NULL CHECK(decision IN ('approve', 'revoke')),
+                reviewer TEXT NOT NULL,
+                timestamp TEXT NOT NULL)""")
+            db.execute("""CREATE INDEX IF NOT EXISTS workflow_reviews_by_run
+                         ON workflow_capability_reviews(run_id, capability_id, id)""")
+            for operation in ("UPDATE", "DELETE"):
+                db.execute(f"""CREATE TRIGGER IF NOT EXISTS deny_workflow_reviews_{operation.lower()}
+                    BEFORE {operation} ON workflow_capability_reviews BEGIN
+                    SELECT RAISE(ABORT, 'workflow review history is append-only'); END""")
+
+    def record(self, run_id: str, tool: str, *, decision: str, reviewer: str,
+               expected_digest: str) -> dict[str, Any]:
+        descriptor = _capability_descriptor(tool)
+        current_digest = capability_digest(tool)
+        if expected_digest != current_digest:
+            raise ValueError("workflow capability changed after review; inspect it again")
+        if decision not in {"approve", "revoke"}:
+            raise ValueError("review decision must be approve or revoke")
+        reviewer = reviewer.strip()
+        if not reviewer or len(reviewer) > 128 or any(ord(char) < 32 for char in reviewer):
+            raise ValueError("reviewer identity is required and must be printable")
+        with sqlite3.connect(self.database, timeout=10) as db:
+            # A review is valid only for a real, intact METIS run in this database.
+            from metis.core.store import RunStore
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'").fetchone():
+                raise ValueError("workflow review requires an existing run")
+            if not RunStore(self.database, read_only=True).read(run_id):
+                raise ValueError("workflow review requires an existing run")
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute("""INSERT INTO workflow_capability_reviews
+                (run_id, capability_id, capability_version, capability_sha256,
+                 decision, reviewer, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, tool, descriptor["version"], current_digest, decision,
+                 reviewer, datetime.now(UTC).isoformat()))
+            review_id = cursor.lastrowid
+        return {"review_id": review_id, "run_id": run_id, "capability": tool,
+                "decision": decision, "capability_sha256": current_digest,
+                "reviewer": reviewer}
+
+    def status(self, run_id: str) -> dict[str, Any]:
+        from metis.core.store import RunStore
+        with sqlite3.connect(self.database, timeout=10) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'").fetchone():
+                raise ValueError("workflow review requires an existing run")
+        if not RunStore(self.database, read_only=True).read(run_id):
+            raise ValueError("workflow review requires an existing run")
+        with sqlite3.connect(self.database, timeout=10) as db:
+            rows = db.execute("""SELECT id, capability_id, capability_version,
+                capability_sha256, decision, reviewer, timestamp
+                FROM workflow_capability_reviews WHERE run_id=? ORDER BY id""", (run_id,)).fetchall()
+        return {"run_id": run_id, "approved_tools": sorted(self.approved_tools(run_id)),
+                "reviews": [{"review_id": row[0], "capability": row[1], "version": row[2],
+                             "capability_sha256": row[3], "decision": row[4],
+                             "reviewer": row[5], "timestamp": row[6]} for row in rows]}
+
+    def approved_tools(self, run_id: str) -> frozenset[str]:
+        with sqlite3.connect(self.database, timeout=10) as db:
+            rows = db.execute("""SELECT capability_id, capability_version,
+                capability_sha256, decision FROM workflow_capability_reviews
+                WHERE run_id=? ORDER BY id""", (run_id,)).fetchall()
+        latest: dict[str, tuple[int, str, str]] = {}
+        for capability, version, digest, decision in rows:
+            latest[str(capability)] = (int(version), str(digest), str(decision))
+        allowed = set(BASE_WORKFLOW_TOOLS)
+        for capability, (version, digest, decision) in latest.items():
+            if (decision == "approve" and capability in WORKFLOW_TOOLS
+                    and version == _capability_descriptor(capability)["version"]
+                    and digest == capability_digest(capability)):
+                allowed.add(capability)
+        return frozenset(allowed)
 
 
 @dataclass(frozen=True)
@@ -78,7 +191,8 @@ def generate_seeded_workflow(seed: int) -> SeededWorkflowTrial:
                                challenge_sha256=hashlib.sha256(encoded).hexdigest())
 
 
-def validate_workflow(raw: bytes | str, *, input_artifact: str) -> WorkflowCandidate:
+def validate_workflow(raw: bytes | str, *, input_artifact: str,
+                      approved_tools: frozenset[str] = BASE_WORKFLOW_TOOLS) -> WorkflowCandidate:
     """Validate a plan against one declared input artifact before sandboxing."""
     try:
         workflow = WorkflowCandidate.model_validate_json(raw)
@@ -86,18 +200,20 @@ def validate_workflow(raw: bytes | str, *, input_artifact: str) -> WorkflowCandi
         raise ValueError("workflow candidate violates the fixed schema") from exc
     if workflow.input_artifact != input_artifact:
         raise ValueError("workflow input must name the selected declared artifact")
-    if any(step.tool not in WORKFLOW_TOOLS for step in workflow.steps):
+    if any(step.tool not in approved_tools for step in workflow.steps):
         raise ValueError("workflow contains an unregistered tool")
     return workflow
 
 
-def sandbox_runner_script() -> str:
+def sandbox_runner_script(*, approved_tools: frozenset[str] = BASE_WORKFLOW_TOOLS) -> str:
     """Return the fixed interpreter used inside METIS's isolated container."""
-    return r'''import base64, hashlib, json, os, pathlib, sys
+    if not approved_tools <= WORKFLOW_TOOLS or not BASE_WORKFLOW_TOOLS <= approved_tools:
+        raise ValueError("sandbox workflow tools are not an approved fixed capability set")
+    script = r'''import base64, hashlib, json, os, pathlib, sys
 
 MAX_INPUT_BYTES = 65536
 MAX_OUTPUT_BYTES = 16384
-ALLOWED = {"base32_decode", "base64_decode", "hex_decode"}
+ALLOWED = __ALLOWED_TOOLS__
 if len(sys.argv) != 2:
     raise SystemExit("expected one workflow artifact")
 workflow_name = sys.argv[1]
@@ -124,14 +240,21 @@ for step in steps:
         value = base64.b32decode(value, casefold=False)
     elif step["tool"] == "base64_decode":
         value = base64.b64decode(value, validate=True)
-    else:
+    elif step["tool"] == "hex_decode":
         value = bytes.fromhex(value.decode("ascii"))
+    elif step["tool"] == "rot13_decode":
+        __ROT13_IMPLEMENTATION__
+    else:
+        raise SystemExit("workflow step is not allowlisted")
     if len(value) > MAX_OUTPUT_BYTES:
         raise SystemExit("workflow output exceeds limits")
 print(json.dumps({"schema_version": 1, "steps": len(steps), "output_bytes": len(value),
                   "sha256": hashlib.sha256(value).hexdigest(),
                   "output_b64": base64.b64encode(value).decode("ascii")}, sort_keys=True))
 '''
+    allowed = json.dumps(sorted(approved_tools), separators=(",", ":"))
+    return (script.replace("__ALLOWED_TOOLS__", f"set({allowed})")
+            .replace("__ROT13_IMPLEMENTATION__", ROT13_IMPLEMENTATION))
 
 
 def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
@@ -154,11 +277,13 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     if target_visible == workflow_visible or target_visible.startswith(".metis") \
             or workflow_visible.startswith(".metis") or workflow_visible == ".metis-script":
         raise ValueError("workflow artifact names collide in the sandbox")
-    workflow = validate_workflow(workflow_bytes, input_artifact=target_visible)
+    approved_tools = WorkflowCapabilityApprovals(database).approved_tools(run_id)
+    workflow = validate_workflow(workflow_bytes, input_artifact=target_visible,
+                                 approved_tools=approved_tools)
     result = Sandbox(database).execute(
         run_id,
         SandboxRequest(target=target, mode="script", extra=[workflow_artifact],
-                       args=[workflow_visible], script=sandbox_runner_script(),
+                       args=[workflow_visible], script=sandbox_runner_script(approved_tools=approved_tools),
                        interpreter="python3", timeout=timeout, emulate="off"),
     )
     if not result.get("ok"):

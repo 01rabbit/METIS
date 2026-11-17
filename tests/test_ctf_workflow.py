@@ -4,17 +4,22 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 
 import pytest
 
+from metis.core import ctf_workflow
 from metis.core.artifacts import read_artifact
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS
 from metis.core.ctf_sandbox import configure
 from metis.core.ctf_workflow import (
+    BASE_WORKFLOW_TOOLS,
     MAX_WORKFLOW_OUTPUT,
     WorkflowCandidate,
+    WorkflowCapabilityApprovals,
     _validate_workflow_output,
+    capability_digest,
     generate_seeded_workflow,
     run_workflow_in_sandbox,
     sandbox_runner_script,
@@ -50,11 +55,14 @@ def test_workflow_schema_rejects_new_tool_policy_verifier_and_code():
     ):
         with pytest.raises(ValueError):
             validate_workflow(json.dumps({**valid, **changes}), input_artifact="challenge.txt")
+    proposed = {**valid, "steps": [{"tool": "rot13_decode"}]}
+    with pytest.raises(ValueError, match="unregistered tool"):
+        validate_workflow(json.dumps(proposed), input_artifact="challenge.txt")
 
 
 def test_sandbox_runner_is_fixed_allowlisted_and_returns_bounded_output():
     script = sandbox_runner_script()
-    assert "ALLOWED = {\"base32_decode\", \"base64_decode\", \"hex_decode\"}" in script
+    assert 'ALLOWED = set(["base32_decode","base64_decode","hex_decode"])' in script
     assert "hashlib.sha256(value).hexdigest()" in script
     assert "output_bytes" in script
     assert "MAX_OUTPUT_BYTES = 16384" in script
@@ -62,6 +70,75 @@ def test_sandbox_runner_is_fixed_allowlisted_and_returns_bounded_output():
     assert "subprocess" not in script
     assert "socket" not in script
     assert {"base32_decode", "base64_decode", "hex_decode"} <= ARTIFACT_TOOLS
+    assert "rot13_decode" not in ARTIFACT_TOOLS
+    assert 'ALLOWED = set(["base32_decode","base64_decode","hex_decode"])' in script
+
+
+def test_capability_approval_is_explicit_per_run_digest_bound_and_revocable(tmp_path, monkeypatch):
+    database = tmp_path / "state" / "metis.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"synthetic fixture")
+    session = CodexSession(database)
+    first = session.intake(title="Workflow approval A", description="Local only",
+                           paths=[source], categories=["misc"])
+    second = session.intake(title="Workflow approval B", description="Local only",
+                            paths=[source], categories=["misc"])
+    first_run, second_run = first["run_id"], second["run_id"]
+    approvals = WorkflowCapabilityApprovals(database)
+    assert approvals.approved_tools(first_run) == BASE_WORKFLOW_TOOLS
+    assert approvals.approved_tools(second_run) == BASE_WORKFLOW_TOOLS
+    assert len(capability_digest("rot13_decode")) == 64
+
+    approved = approvals.record(first_run, "rot13_decode", decision="approve", reviewer="operator",
+                                expected_digest=capability_digest("rot13_decode"))
+    assert approved["capability_sha256"] == capability_digest("rot13_decode")
+    assert "rot13_decode" in approvals.approved_tools(first_run)
+    original_function = ctf_workflow._capability_descriptor
+    monkeypatch.setattr(ctf_workflow, "_capability_descriptor",
+                        lambda tool: {**original_function(tool), "version": 2})
+    assert "rot13_decode" not in approvals.approved_tools(first_run)
+    with pytest.raises(ValueError, match="changed after review"):
+        approvals.record(first_run, "rot13_decode", decision="approve", reviewer="operator",
+                         expected_digest=approved["capability_sha256"])
+    monkeypatch.setattr(ctf_workflow, "_capability_descriptor", original_function)
+    assert "rot13_decode" not in approvals.approved_tools(second_run)
+    workflow = {"schema_version": 1, "input_artifact": "source.txt",
+                "steps": [{"tool": "rot13_decode"}]}
+    assert validate_workflow(json.dumps(workflow), input_artifact="source.txt",
+                             approved_tools=approvals.approved_tools(first_run))
+    with pytest.raises(ValueError, match="unregistered tool"):
+        validate_workflow(json.dumps(workflow), input_artifact="source.txt",
+                          approved_tools=approvals.approved_tools(second_run))
+    approved_script = sandbox_runner_script(
+        approved_tools=approvals.approved_tools(first_run))
+    denied_script = sandbox_runner_script(approved_tools=approvals.approved_tools(second_run))
+    assert 'ALLOWED = set(["base32_decode","base64_decode","hex_decode","rot13_decode"])' in approved_script
+    assert 'ALLOWED = set(["base32_decode","base64_decode","hex_decode"])' in denied_script
+
+    approvals.record(first_run, "rot13_decode", decision="revoke", reviewer="operator",
+                     expected_digest=capability_digest("rot13_decode"))
+    assert approvals.approved_tools(first_run) == BASE_WORKFLOW_TOOLS
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"), sqlite3.connect(database) as db:
+        db.execute("UPDATE workflow_capability_reviews SET decision='approve'")
+
+
+def test_workflow_review_requires_existing_run_and_valid_operator_metadata(tmp_path):
+    database = tmp_path / "state" / "metis.sqlite"
+    approvals = WorkflowCapabilityApprovals(database)
+    with pytest.raises(ValueError, match="existing run"):
+        approvals.record("missing", "rot13_decode", decision="approve", reviewer="operator",
+                         expected_digest=capability_digest("rot13_decode"))
+    with pytest.raises(ValueError, match="existing run"):
+        approvals.status("missing")
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"fixture")
+    run = CodexSession(database).intake(title="Workflow review", description="Local only",
+                                        paths=[source], categories=["misc"])["run_id"]
+    with pytest.raises(ValueError, match="reviewer identity"):
+        approvals.record(run, "rot13_decode", decision="approve", reviewer="",
+                         expected_digest=capability_digest("rot13_decode"))
+    with pytest.raises(ValueError, match="unknown review-gated"):
+        approvals.record(run, "shell", decision="approve", reviewer="operator", expected_digest="0" * 64)
 
 
 def test_controller_validates_workflow_output_encoding_length_and_digest():
@@ -180,5 +257,43 @@ def test_generated_workflow_runs_in_isolated_sandbox_and_passes_private_oracle(t
     assert trial.oracle_sha256 not in session.store.export_jsonl(created["run_id"])
     assert result["sandbox"]["network"] == "none"
     assert result["sandbox"]["host_mounts"] is False
+    assert frozenset(ARTIFACT_TOOLS) == registry_before
+    assert verify_workflow_digest.__code__.co_code == verifier_before
+
+
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
+                    reason="requires an immutable METIS_TEST_SANDBOX_IMAGE")
+def test_reviewed_rot13_capability_runs_only_after_run_scoped_approval(tmp_path):
+    database = tmp_path / "state" / "metis.sqlite"
+    configure(database, engine="docker", image=os.environ["METIS_TEST_SANDBOX_IMAGE"],
+              platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"))
+    answer = b"CTF{reviewed_builtin_transform}"
+    encoded = answer.translate(bytes.maketrans(
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        b"NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm"))
+    challenge = tmp_path / "challenge.txt"
+    workflow = tmp_path / "workflow.json"
+    challenge.write_bytes(encoded)
+    workflow.write_text(json.dumps({"schema_version": 1, "input_artifact": "challenge.txt",
+                                    "steps": [{"tool": "rot13_decode"}]}))
+    session = CodexSession(database)
+    created = session.intake(title="Reviewed workflow capability", description="Synthetic local fixture",
+                             paths=[challenge, workflow], categories=["misc"], max_actions=8,
+                             wall_seconds=120, evaluation_split="practice")
+    run_id = created["run_id"]
+    artifacts = session.context(run_id)["challenge"]["artifacts"]
+    approvals = WorkflowCapabilityApprovals(database)
+    registry_before = frozenset(ARTIFACT_TOOLS)
+    verifier_before = verify_workflow_digest.__code__.co_code
+    with pytest.raises(ValueError, match="unregistered tool"):
+        run_workflow_in_sandbox(database, run_id, target=artifacts[0], workflow_artifact=artifacts[1])
+    approvals.record(run_id, "rot13_decode", decision="approve", reviewer="test-operator",
+                     expected_digest=capability_digest("rot13_decode"))
+    result = run_workflow_in_sandbox(database, run_id, target=artifacts[0],
+                                     workflow_artifact=artifacts[1], timeout=20)
+    assert verify_workflow_digest(result, hashlib.sha256(answer).hexdigest())
+    assert result["sandbox"]["network"] == "none"
+    assert result["sandbox"]["host_mounts"] is False
+    assert result["output_is_untrusted"] is True
     assert frozenset(ARTIFACT_TOOLS) == registry_before
     assert verify_workflow_digest.__code__.co_code == verifier_before

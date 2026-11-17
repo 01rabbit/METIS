@@ -280,9 +280,21 @@ oracle. The runner returns up to 16 KiB of transformed bytes; the controller
 validates encoding, length, and digest before storing them as an untrusted,
 run-scoped derived artifact. The real-container integration test and schema,
 tamper, and reproducibility checks passed. This is deterministic fixture
-evidence, not model-generated research or held-out workflow performance. Issue
-#7 remains open. See
+evidence, not model-generated research or held-out workflow performance. A
+follow-up adds a default-deny, per-run approval for the fixed `rot13_decode`
+built-in. An operator must type the exact run/capability confirmation; the
+append-only review records bind to a versioned implementation digest, are
+revocable, and do not change the global artifact registry. Controller and
+sandbox allowlists both enforce the grant; no code, policy, verifier, network,
+or deployment extension is accepted. The pinned sandbox test, CLI confirmation,
+run isolation, revocation, stale-version, Ruff, and mypy checks pass. This is a
+local operator gate, not authenticated maintainer identity or a plugin system.
+Issue #7 remains open because the P5 dependency (Issue #6) and broader P6
+acceptance remain unmet. See
 [`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).
+The review-gate behavior and evidence are in
+[`issue7-capability-review-2026-11-17.md`](reports/issue7-capability-review-2026-11-17.md)
+and [`WORKFLOW_CAPABILITIES.md`](WORKFLOW_CAPABILITIES.md).
 
 Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
 normalized hypothesis and marks a conflict only when that same hypothesis has
