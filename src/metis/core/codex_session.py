@@ -398,11 +398,16 @@ class CodexSession:
     @locked
     def cancel(self, run_id: str) -> dict:
         context = self.context(run_id)
+        worker = {"status": "not_running"}
         if context["status"] not in {RunStatus.SOLVED.value, RunStatus.EXHAUSTED.value,
                                      RunStatus.ERROR.value, RunStatus.CANCELLED.value,
                                      RunStatus.POLICY_DENIED.value}:
             self._emit(run_id, RunStatus.CANCELLED)
-        return self.context(run_id)
+        # The sandbox registers its container under this same run lock before
+        # launch. Keep the lock while removing it so recovery cannot race teardown.
+        from metis.core.ctf_sandbox import cancel_registered_worker
+        worker = cancel_registered_worker(self.database, run_id)
+        return self.context(run_id) | {"worker_teardown": worker}
 
     @locked
     def recover(self, run_id: str) -> dict:

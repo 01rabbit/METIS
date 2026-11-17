@@ -21,6 +21,7 @@ import os
 import platform as platform_module
 import re
 import shutil
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -34,6 +35,7 @@ from pydantic import Field, field_validator
 from metis.core.artifacts import artifact_stream
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import Contract, RunStatus
+from metis.core.run_lock import run_lock
 
 MODES = ("run", "strace", "ltrace", "gdb", "script")
 MAX_INPUT = 64 * 1_048_576
@@ -265,6 +267,35 @@ def _engine_environment() -> dict[str, str]:
     return environment
 
 
+def _remove_container(engine: str, name: str) -> dict[str, Any]:
+    try:
+        removed = subprocess.run([engine, "rm", "-f", name], capture_output=True,
+                                 timeout=30, check=False, env=_engine_environment())
+        inspected = subprocess.run([engine, "inspect", name], capture_output=True,
+                                   timeout=10, check=False, env=_engine_environment())
+        if inspected.returncode == 0:
+            return {"status": "unknown", "reason": "container still exists after removal"}
+        detail = inspected.stderr.lower()
+        if b"no such object" in detail or b"no such container" in detail:
+            return {"status": "confirmed"}
+        if removed.returncode:
+            return {"status": "unknown", "reason": "container removal command failed"}
+        return {"status": "unknown", "reason": "container absence could not be confirmed"}
+    except (OSError, subprocess.TimeoutExpired):
+        return {"status": "unknown", "reason": "container teardown could not be confirmed"}
+
+
+def cancel_registered_worker(database: Path, run_id: str) -> dict[str, Any]:
+    """Stop the registered per-run worker; callers serialize this with run_lock."""
+    with sqlite3.connect(database) as db:
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sandbox_workers'")
+        if not table.fetchone():
+            return {"status": "not_running"}
+        row = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
+                         (run_id,)).fetchone()
+    return _remove_container(*row) if row else {"status": "not_running"}
+
+
 def engine_check(engine: str) -> tuple[bool, str | None]:
     """Return (reachable, reason). The reason explains a failure for diagnosis."""
     if engine not in {"docker", "podman"}:
@@ -395,6 +426,10 @@ class Sandbox:
         if not isinstance(self.image, str) or not IMAGE_PATTERN.fullmatch(self.image):
             raise ValueError("sandbox is not configured; run `metis sandbox build` or `metis sandbox configure`")
         self.image_id: str = self.image
+        with sqlite3.connect(database) as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS sandbox_workers (
+                run_id TEXT PRIMARY KEY, engine TEXT NOT NULL, container_name TEXT NOT NULL,
+                started REAL NOT NULL)""")
 
     def command(self, name: str, *, profile: str = "standard") -> list[str]:
         if profile not in {"standard", "zipcrypto", "zipcrypto_test_lowmem"}:
@@ -471,10 +506,31 @@ class Sandbox:
         oom_killed = False
         try:
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
-                completed = subprocess.run(self.command(name, profile=_profile), input=bundle,
-                                           stdout=output, stderr=error,
-                                           timeout=request.timeout + 60, check=False,
-                                           env=_engine_environment())
+                # Publish the worker before launch while holding the same per-run
+                # lock used by cancel(). Once cancel returns from this lock it can
+                # always identify the container that may be executing.
+                with run_lock(self.session.database, run_id):
+                    if self.session.context(run_id)["status"] == RunStatus.CANCELLED.value:
+                        return {"run_id": run_id, "mode": request.mode, "ok": False,
+                                "error": "cancelled before sandbox launch", "cancelled": True}
+                    with sqlite3.connect(self.session.database) as db:
+                        db.execute("INSERT OR REPLACE INTO sandbox_workers VALUES (?, ?, ?, ?)",
+                                   (run_id, self.engine, name, time.time()))
+                    process = subprocess.Popen(self.command(name, profile=_profile), stdin=subprocess.PIPE,
+                                               stdout=output, stderr=error, env=_engine_environment())
+                try:
+                    process.communicate(input=bundle, timeout=request.timeout + 60)
+                    completed: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+                        process.args, process.returncode or 0)
+                except subprocess.TimeoutExpired:
+                    self._remove_worker(name)
+                    process.communicate()
+                    raise
+                finally:
+                    with (run_lock(self.session.database, run_id),
+                          sqlite3.connect(self.session.database) as db):
+                        db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                                   (run_id, name))
                 if _profile.startswith("zipcrypto"):
                     inspected = subprocess.run(
                         [self.engine, "inspect", "--format={{.State.OOMKilled}}", name],
@@ -520,11 +576,16 @@ class Sandbox:
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     raise RuntimeError("ZipCrypto sandbox cleanup could not be confirmed") from exc
         if not _reserved:
-            self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
-                               exit_code=str(result.get("exit_code")),
-                               elapsed=str(round(time.monotonic() - started, 3)))
-            self.session._emit(run_id, RunStatus.REPLANNING)
-            self.session._emit(run_id, RunStatus.PLANNING)
+            with run_lock(self.session.database, run_id):
+                current_status = self.session.context(run_id)["status"]
+                if current_status == RunStatus.CANCELLED.value:
+                    result = {"ok": False, "cancelled": True, "error": "sandbox worker cancelled"}
+                else:
+                    self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
+                                       exit_code=str(result.get("exit_code")),
+                                       elapsed=str(round(time.monotonic() - started, 3)))
+                    self.session._emit(run_id, RunStatus.REPLANNING)
+                    self.session._emit(run_id, RunStatus.PLANNING)
         files_note = [name for name, _ in files if name != ".metis-script"]
         return {"run_id": run_id, "mode": request.mode, "files_in_sandbox": files_note,
                 "isolation": {"engine": self.engine, "network": "none", "host_mounts": False,
@@ -533,4 +594,7 @@ class Sandbox:
                 "target_arch": target_arch,
                 "emulation": (emulate["qemu"] if emulate else None),
                 "output_is_untrusted": True, **result}
+
+    def _remove_worker(self, name: str) -> dict[str, Any]:
+        return _remove_container(self.engine, name)
 

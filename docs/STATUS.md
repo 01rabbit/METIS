@@ -209,11 +209,12 @@ intake metadata and must be classified correctly. The same increment adds
 bounded-autopilot activity counters; cost stays unknown when the provider does
 not report it. See `docs/ORCHESTRATION_RUNTIME.md` for operational limits.
 
-Issue #9 has a focused deterministic SQLite lifecycle drill for cancellation of
-an executing synthetic Codex session across controller reconstruction. It checks
-that cancellation stays terminal, the reserved action remains charged, and
-recovery does not fabricate a solve. This is control-plane evidence only; it
-does not demonstrate terminating an external worker or deployment recovery.
+Issue #9 now has a local real-container emergency-stop slice: the sandbox
+registers its active worker under the per-run lock; cancellation removes it,
+confirms absence with `inspect`, and prevents a cancelled run from returning to
+planning. A real Docker integration test and the prior SQLite restart/recovery
+test pass. This does not cover host reboot, separate-controller recovery,
+artifact/secret cleanup, Linux VM deployment, or the P7 benchmark release gate.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
