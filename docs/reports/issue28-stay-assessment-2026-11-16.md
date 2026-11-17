@@ -109,3 +109,25 @@ complete source inspection (sequence 105) and full ZIP structure accounting
 (sequence 113). The wave found independent random share generation in PHP and
 no extra unencrypted archive payload; that eliminates alternate plaintext
 routes, not the Stay section 4 route.
+
+## Independent header-compatibility audit (2026-11-18)
+
+A fresh bounded archive inspection recorded seven traditional encrypted,
+stored entries and their 12-byte headers (events 141 and 145). The glibc
+Info-ZIP seed search recorded seven of seven leaked first-byte matches and
+reconstructed the ten PRNG bytes per entry (event 149). This is strong
+compatibility evidence for the PRNG/header mechanism; the current search returns
+the first matching seed and does not enumerate every possible match.
+
+An independent byte-1 necessary-condition check found that the seven residuals
+`C[1] XOR r[1]` are distinct and the 21 pairwise `r[0]` XOR values are all
+distinct. Under the stated Stay relation, this excludes only the zero initial
+stream-byte value and those 21 pairwise values; it neither proves nor disproves
+that one complete ZipCrypto state satisfies all seven headers. The independent
+review therefore recommends a joint state-consistency validator with a known
+positive Info-ZIP vector and a wrong-seed negative control. A surviving state
+would support attack applicability, not recover the keys or validate plaintext.
+
+The official archive remains unbroken. The inverse state search, member CRC
+validation with recovered keys, XOR reconstruction, and official verifier
+response are still absent; no candidate was submitted.

@@ -259,6 +259,13 @@ recovery. The Stay feasibility report now distinguishes the standard
 sandbox (1 CPU/512 MiB) from the ZipCrypto profile (4 CPU/2 GiB, up to 300s per
 request). See `reports/issue28-stay-assessment-2026-11-16.md`.
 
+A fresh #39 header audit records the exact limit of this evidence: 7/7 leaked
+first-byte matches and one regenerated PRNG sequence, but no enumeration of all
+seed matches and no joint full-state consistency test across the encrypted
+headers. The independent residual check excludes only a small set of possible
+initial stream bytes. Stay key recovery and the official #39 verdict remain
+unmet; see the audit section in the linked report.
+
 ## Boundaries and remaining work
 
 Issue #1's bounded P0 gate is now accepted for explicit user intake and local
