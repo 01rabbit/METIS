@@ -37,6 +37,10 @@ METIS's provider-call boundary; METIS cannot reserve or stop those hidden model
 turns. Provider token/cost usage is post-call and may be absent, so this change
 does not claim a hard token cap; missing usage remains `unknown`.
 
+The new unmetered-runner gate and existing reservation suite passed with
+`.venv/bin/pytest -ra tests/test_agent_autopilot.py tests/test_agent_orchestration.py tests/test_codex_specialist.py`
+(`54 passed in 7.15s`). Ruff and mypy also passed on the changed source tree.
+
 Bounded autopilot now requires its runner to explicitly advertise the
 controller-side model-turn reservation contract. A runner without that
 capability stops before dispatch with `host_model_turn_budget_unenforced` and

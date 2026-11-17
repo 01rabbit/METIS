@@ -261,16 +261,28 @@ def test_zipcrypto_production_profile_oom_classification_and_cleanup(tmp_path):
                             paths=[source])["run_id"]
     artifact = session.context(run_id)["challenge"]["artifacts"][0]
     configure(database, engine="docker", image=image, platform=None)
-    pressure = """chunks = []
+    pressure = """from pathlib import Path
+memory_max = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+swap_max = Path("/sys/fs/cgroup/memory.swap.max").read_text().strip()
+memory_events = Path("/sys/fs/cgroup/memory.events").read_text()
+if (not memory_max.isdigit() or not swap_max.isdigit()
+        or not 0 < int(memory_max) <= 2147483648 or int(swap_max) > 2147483648
+        or "oom_kill " not in memory_events):
+    raise SystemExit("finite ZipCrypto memory/swap cgroup was not confirmed")
+chunks = []
 while True:
     block = bytearray(64 * 1024 * 1024)
     for offset in range(0, len(block), 4096):
         block[offset] = 1
     chunks.append(block)
 """
-    result = Sandbox(database).execute(
+    sandbox = Sandbox(database)
+    command = sandbox.command("metis-test", profile="zipcrypto")
+    assert "--memory=2g" in command and "--memory-swap=2g" in command
+    result = sandbox.execute(
         run_id, SandboxRequest(target=artifact, mode="script", script=pressure, timeout=30),
         _profile="zipcrypto")
+    assert result["isolation"]["resource_profile"] == "zipcrypto"
     assert result.get("memory_limit_exceeded") is True, result
     failure = _sandbox_failure(result)
     assert failure == {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
