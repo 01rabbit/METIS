@@ -243,9 +243,10 @@ that a repeated forget is idempotent.
 
 The complete request test file passed (`5 passed`); Ruff and mypy passed. This
 proves local replacement and logical revocation of the active SQLite row. It
-does not prove physical erasure from SQLite pages, WAL or backups, retention
-limits, encrypted-at-rest storage, provider-side credential rotation, or a
-production lifecycle. Issue #9 remains open.
+prevents METIS from sending the stored value but does not invalidate it at the
+CTF provider. It also does not prove physical erasure from SQLite pages, WAL or
+backups, retention limits, encrypted-at-rest storage, provider-side credential
+rotation, or a production lifecycle. Issue #9 remains open.
 
 ## Operator recovery procedure for the verified controller-to-VM path
 

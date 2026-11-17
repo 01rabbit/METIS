@@ -348,9 +348,9 @@ Local synthetic checks confirm per-origin re-auth replaces the prior value and
 the next request uses the new Bearer token; `metis web forget URL` removes the
 active origin record and the next request sends no Authorization header. The
 request test file passed (`5 passed`), along with Ruff and mypy. This does not
-prove physical deletion from SQLite/WAL/backups, retention limits, encrypted
-storage, or provider-side rotation. The P7 benchmark release gate also remains
-uncovered.
+invalidate the token at the CTF provider, or prove physical deletion from
+SQLite/WAL/backups, retention limits, encrypted storage, or provider-side
+rotation. The P7 benchmark release gate also remains uncovered.
 A fresh Python 3.12 venv installed the built METIS wheel with
 lockfile-exported runtime dependencies; the installed CLI validated a training
 manifest and ran a local script in the active Linux VM. A separate fresh

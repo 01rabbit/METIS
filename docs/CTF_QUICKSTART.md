@@ -64,7 +64,8 @@ ksnctfの問題URLは標準の `--adapter auto` で自動認識し、URLから�
 値を会話やコマンド引数へ貼り付けません。
 
 保存済み資格情報の利用を止める場合は、同じオリジンの記録を削除します。
-この操作はSQLiteの物理消去やWAL・バックアップからの消去を保証しません。
+この操作はMETISのローカル利用を止めるだけで、CTFサービス側のトークンを失効しません。
+SQLiteの物理消去やWAL・バックアップからの消去も保証しません。
 
 ```sh
 .venv/bin/metis web forget 'https://ctf.example'
