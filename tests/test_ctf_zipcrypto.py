@@ -243,6 +243,8 @@ def test_zipcrypto_real_low_memory_container_reports_memory_limit(tmp_path):
     }, _profile="zipcrypto_test_lowmem")
     assert result["reason"] == "memory_limit_exceeded", result
     assert result["stage"] == "sandbox-oom"
+    assert result["phase"] in {"worker-startup", "archive-parsing", "candidate-reduction",
+                                "candidate-key-search"}
 
 
 def test_zipcrypto_production_profile_oom_classification_and_cleanup(tmp_path):
@@ -289,6 +291,20 @@ while True:
                        "seconds": result["elapsed"]}
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+
+def test_zipcrypto_oom_preserves_last_worker_phase():
+    from metis.core.ctf_zipcrypto_worker import _sandbox_failure
+
+    failure = _sandbox_failure({"memory_limit_exceeded": True, "elapsed": 0.25,
+                                "stdout": {"text": "METIS_PHASE:worker-startup\n"
+                                                    "METIS_PHASE:candidate-reduction\n"}})
+    assert failure == {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
+                       "seconds": 0.25, "phase": "candidate-reduction"}
+    unknown = _sandbox_failure({"memory_limit_exceeded": True,
+                                "stdout": {"text": "METIS_PHASE:host-secret\n"}})
+    assert unknown == {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
+                       "seconds": None}
 
 
 def test_zipcrypto_worker_enforces_container_deadline(tmp_path, monkeypatch):

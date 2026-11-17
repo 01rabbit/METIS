@@ -141,8 +141,12 @@ end-to-end timeout that kills the entire worker process group. The generic
 512 MiB OOM probe and deadline cleanup tests passed; ZipCrypto's OOM reason
 mapping has a deterministic unit test. A real-container ZipCrypto route OOM
 test passed in CI under a fixed 128 MiB test profile (`5 passed in 76.78s` on
-exact head `9465732`). It reports a route-level `sandbox-oom` stage because startup/import/search
-phases are not distinguished. A new synthetic memory-pressure test in the
+exact head `9465732`). The ZipCrypto worker now emits bounded phase markers for
+worker startup, archive parsing, candidate reduction, and candidate key search;
+OOM and timeout results preserve the last observed marker as diagnostic `phase`
+while keeping the stable `sandbox-oom`/`sandbox-timeout` stage. A real-container
+low-memory test confirms the result carries one of the allowlisted phases. This
+attributes the OOM to a coarse worker phase, not a specific internal loop. A new synthetic memory-pressure test in the
 actual 2 GiB ZipCrypto profile observed the cgroup OOM marker, mapped it to
 `memory_limit_exceeded`, and confirmed worker-registry cleanup. This validates
 production-profile OOM classification and cleanup, but does not show a natural
@@ -156,8 +160,8 @@ and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
 300-second budget. Container creation, engine attach, and OOM inspection timeout
 results now map to `worker_failed` with their infrastructure phase; only the
 in-container supervisor's workload deadline maps to `work_exceeds_budget`. Fake-engine phase tests and
-real-container deadline/OOM tests pass. Stay recovery, OOM phase attribution,
-and natural candidate-search OOM remain unproven. The 2020 two-file attack's
+real-container deadline/OOM tests pass. Stay recovery and natural candidate-search OOM
+remain unproven. The 2020 two-file attack's
 paper and legacy CUDA source were reviewed, not run. Docker-backed budget and
 full-intent integration checks now run in a dedicated GitHub Actions job.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and

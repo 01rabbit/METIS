@@ -13,6 +13,9 @@ _WORKER = r'''
 if __name__ == "__main__":
     import json, os, sys
     from pathlib import Path
+    def mark_phase(name):
+        print("METIS_PHASE:" + name, flush=True)
+    mark_phase("worker-startup")
     request = json.loads(Path(os.environ["METIS_STDIN"]).read_text())
     if (not isinstance(request, dict) or not isinstance(request.get("member"), str)
             or not 1 <= len(request["member"]) <= 256
@@ -40,6 +43,7 @@ if __name__ == "__main__":
     if not limits_ok:
         print(json.dumps({"reason": "isolation_unavailable"}))
         raise SystemExit(0)
+    mark_phase("archive-parsing")
     archive = Path(os.environ["METIS_TARGET"]).read_bytes()
     entries = {entry["name"]: entry for entry in members(archive)
                if entry["encrypted"]}
@@ -59,7 +63,8 @@ if __name__ == "__main__":
         raise SystemExit(0)
     result = known_plaintext_attack(
         member_bytes(archive, entry), plaintext, 12 + offset,
-        extra={11: check_bytes(entry)[11]}, seconds=request["seconds"], workers=8)
+        extra={11: check_bytes(entry)[11]}, seconds=request["seconds"], workers=8,
+        phase_callback=mark_phase)
     print(json.dumps({"result": result}, separators=(",", ":")))
 '''
 
@@ -91,7 +96,10 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     if failure is not None:
         return failure
     try:
-        payload = json.loads(result["stdout"]["text"])
+        worker_lines = result["stdout"]["text"].splitlines()
+        payload_line = next(line for line in reversed(worker_lines)
+                            if line and not line.startswith("METIS_PHASE:"))
+        payload = json.loads(payload_line)
     except (KeyError, TypeError, ValueError):
         return {"found": False, "reason": "worker_failed", "stage": "worker-output"}
     if payload.get("reason") == "isolation_unavailable":
@@ -106,12 +114,24 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
 
 def _sandbox_failure(result: dict[str, Any]) -> dict[str, Any] | None:
     """Map isolated execution failures to stable ZipCrypto reason codes."""
+    stdout = result.get("stdout")
+    text = stdout.get("text", "") if isinstance(stdout, dict) else ""
+    phases = {"worker-startup", "archive-parsing", "candidate-reduction", "candidate-key-search"}
+    worker_phase = next((line.removeprefix("METIS_PHASE:") for line in reversed(text.splitlines())
+                         if line.startswith("METIS_PHASE:")
+                         and line.removeprefix("METIS_PHASE:") in phases), None)
     if result.get("memory_limit_exceeded"):
-        return {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
-                "seconds": result.get("elapsed")}
+        failure = {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
+                   "seconds": result.get("elapsed")}
+        if worker_phase is not None:
+            failure["phase"] = worker_phase
+        return failure
     if result.get("timed_out"):
-        return {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",
-                "seconds": result.get("elapsed")}
+        failure = {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",
+                   "seconds": result.get("elapsed")}
+        if worker_phase is not None:
+            failure["phase"] = worker_phase
+        return failure
     if result.get("engine_timed_out"):
         return {"found": False, "reason": "worker_failed", "stage": result.get("failure_stage", "sandbox-engine"),
                 "detail": "container engine operation exceeded its timeout"}

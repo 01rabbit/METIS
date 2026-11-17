@@ -23,6 +23,7 @@ import os
 import struct
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -326,7 +327,8 @@ class _Attack:
 
 def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, extra: dict[int, int] | None = None,
                            seconds: float = 120.0, max_candidates: int = 1 << 20,
-                           workers: int | None = None) -> dict[str, Any]:
+                           workers: int | None = None,
+                           phase_callback: Callable[[str], None] | None = None) -> dict[str, Any]:
     """Recover the initial keys of an encrypted member (``ciphertext`` includes the 12-byte header).
 
     ``offset`` is the position of ``plaintext`` in ``ciphertext`` (12 = first data byte);
@@ -342,6 +344,8 @@ def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, 
     deadline = started + seconds
     keystream = [p ^ ciphertext[offset + i] for i, p in enumerate(plaintext)]
     try:
+        if phase_callback is not None:
+            phase_callback("candidate-reduction")
         candidates, index = z_reduction(keystream, deadline)
     except BudgetExceeded:
         return {"found": False, "reason": "work_exceeds_budget", "stage": "z-reduction", "seconds": seconds}
@@ -350,6 +354,8 @@ def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, 
         return {**result, "found": False, "reason": "work_exceeds_budget",
                 "detail": "too many key2 candidates; supply more contiguous known plaintext"}
     jobs = max(1, min(workers or (os.cpu_count() or 1), 16))
+    if phase_callback is not None:
+        phase_callback("candidate-key-search")
     order = candidates.tolist()
     shards = [order[i::jobs] for i in range(jobs)]
     arguments = [(ciphertext, plaintext, offset, extra, index, shard, deadline) for shard in shards]

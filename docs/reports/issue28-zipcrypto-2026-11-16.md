@@ -54,5 +54,31 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 ## 未達（#28 は Open のまま）
 
 - Stay の鍵復元（2^39）。ネイティブ実装と `metis sandbox` での実行が必要。
-- `max_candidates` は `z_reduction` 後に適用されるため、reduction中のpeak allocationを候補数だけでは制限しない。専用cgroup上限がプロセス全体の最終防衛線となる。2 GiB production profileで候補探索によるOOMと理由コードを結ぶ試験、ならびにphase attributionは未実施。
+- `max_candidates` は `z_reduction` 後に適用されるため、reduction中のpeak allocationを候補数だけでは制限しない。専用cgroup上限がプロセス全体の最終防衛線となる。自然な候補探索でのOOMは未確認。
 - Stay key recovery（ksnctf #39 の目的）は未実装で、#28 は引き続きOpen。
+
+## 2026-11-17 OOM phase attribution increment
+
+The ZipCrypto worker now emits only allowlisted progress markers: `worker-startup`,
+`archive-parsing`, `candidate-reduction`, and `candidate-key-search`. The bounded
+sandbox wrapper preserves the last marker emitted before an OOM or timeout. The
+stable reason remains `memory_limit_exceeded` with stage `sandbox-oom`; the
+additional `phase` is coarse diagnostic evidence and does not imply a successful
+search or identify a specific allocation site.
+
+Validation on the configured immutable linux/arm64 test image:
+
+```text
+METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b \
+METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/pytest -ra \
+  tests/test_ctf_zipcrypto.py::test_zipcrypto_real_low_memory_container_reports_memory_limit \
+  tests/test_ctf_zipcrypto.py::test_zipcrypto_production_profile_oom_classification_and_cleanup
+2 passed in 2.24s
+```
+
+The low-memory ZipCrypto worker test confirmed a recognized phase accompanies
+the OOM reason, and the production-profile test still confirmed cgroup
+classification and worker cleanup. A deterministic unit test checks marker
+allowlisting and last-phase selection. This does not show a natural search
+reaching the production memory limit. Issue #28 remains open for Stay key
+recovery and the ksnctf #39 solve.
