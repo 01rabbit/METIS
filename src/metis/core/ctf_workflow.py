@@ -7,6 +7,7 @@ filesystem paths.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -27,7 +28,7 @@ from metis.core.ctf_sandbox import Sandbox, SandboxRequest
 WorkflowTool = Literal["base32_decode", "base64_decode", "hex_decode"]
 WORKFLOW_TOOLS = frozenset({"base32_decode", "base64_decode", "hex_decode"})
 MAX_WORKFLOW_STEPS = 4
-MAX_WORKFLOW_OUTPUT = 65_536
+MAX_WORKFLOW_OUTPUT = 16_384
 if not WORKFLOW_TOOLS <= ARTIFACT_TOOLS:
     raise RuntimeError("workflow tools must be a subset of the existing artifact tool registry")
 
@@ -94,7 +95,8 @@ def sandbox_runner_script() -> str:
     """Return the fixed interpreter used inside METIS's isolated container."""
     return r'''import base64, hashlib, json, os, pathlib, sys
 
-MAX_BYTES = 65536
+MAX_INPUT_BYTES = 65536
+MAX_OUTPUT_BYTES = 16384
 ALLOWED = {"base32_decode", "base64_decode", "hex_decode"}
 if len(sys.argv) != 2:
     raise SystemExit("expected one workflow artifact")
@@ -113,7 +115,7 @@ steps = payload["steps"]
 if not isinstance(steps, list) or not 1 <= len(steps) <= 4:
     raise SystemExit("workflow step count exceeds limits")
 value = target_path.read_bytes()
-if len(value) > MAX_BYTES:
+if len(value) > MAX_INPUT_BYTES:
     raise SystemExit("workflow input exceeds limits")
 for step in steps:
     if not isinstance(step, dict) or set(step) != {"tool"} or step["tool"] not in ALLOWED:
@@ -124,16 +126,17 @@ for step in steps:
         value = base64.b64decode(value, validate=True)
     else:
         value = bytes.fromhex(value.decode("ascii"))
-    if len(value) > MAX_BYTES:
+    if len(value) > MAX_OUTPUT_BYTES:
         raise SystemExit("workflow output exceeds limits")
 print(json.dumps({"schema_version": 1, "steps": len(steps), "output_bytes": len(value),
-                  "sha256": hashlib.sha256(value).hexdigest()}, sort_keys=True))
+                  "sha256": hashlib.sha256(value).hexdigest(),
+                  "output_b64": base64.b64encode(value).decode("ascii")}, sort_keys=True))
 '''
 
 
 def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
                             workflow_artifact: str, timeout: int = 20) -> dict[str, Any]:
-    """Run a validated plan on declared artifacts; return only a digest and bounds."""
+    """Run a validated plan and register its bounded, untrusted output as a derived artifact."""
     if not 1 <= timeout <= 300:
         raise ValueError("workflow timeout must be 1..300 seconds")
     session = CodexSession(database)
@@ -160,34 +163,69 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     )
     if not result.get("ok"):
         return {"ok": False, "steps": len(workflow.steps), "sandbox": result}
-    stdout = result.get("stdout", {}).get("text", "")
+    isolation = result.get("isolation")
+    if (not isinstance(isolation, dict) or not isinstance(isolation.get("engine"), str)
+            or not isinstance(isolation.get("image"), str) or isolation.get("network") != "none"
+            or isolation.get("host_mounts") is not False):
+        return {"ok": False, "reason": "sandbox isolation metadata failed validation", "sandbox": result}
+    stdout_result = result.get("stdout")
+    stdout = stdout_result.get("text") if isinstance(stdout_result, dict) else None
+    if not isinstance(stdout, str):
+        return {"ok": False, "reason": "sandbox workflow output was not text", "sandbox": result}
     try:
-        observed = json.loads(stdout)
-    except (TypeError, ValueError):
-        return {"ok": False, "reason": "sandbox workflow output was not valid JSON", "sandbox": result}
-    if (set(observed) != {"schema_version", "steps", "output_bytes", "sha256"}
-            or observed.get("schema_version") != 1
-            or observed.get("steps") != len(workflow.steps)
-            or not isinstance(observed.get("output_bytes"), int)
-            or isinstance(observed.get("output_bytes"), bool)
-            or not 0 <= observed["output_bytes"] <= MAX_WORKFLOW_OUTPUT
-            or not re.fullmatch(r"[0-9a-f]{64}", str(observed.get("sha256", "")))):
-        return {"ok": False, "reason": "sandbox workflow result failed schema validation", "sandbox": result}
+        observed, output = _validate_workflow_output(stdout, expected_steps=len(workflow.steps))
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc), "sandbox": result}
+    output_digest = hashlib.sha256(output).hexdigest()
+    output_artifact = session.store_artifact(run_id, output, directory_name=".metis-derived", suffix=".bin")
     return {"ok": True, "workflow_sha256": hashlib.sha256(workflow_bytes).hexdigest(),
             "steps": observed["steps"], "output_bytes": observed["output_bytes"],
-            "output_sha256": observed["sha256"],
-            "sandbox": {"engine": result["isolation"]["engine"],
-                        "image": result["isolation"]["image"],
-                        "network": result["isolation"]["network"],
-                        "host_mounts": result["isolation"]["host_mounts"]}}
+            "output_sha256": output_digest, "output_artifact": output_artifact,
+            "output_is_untrusted": True,
+            "sandbox": {"engine": isolation["engine"], "image": isolation["image"],
+                        "network": isolation["network"], "host_mounts": isolation["host_mounts"]}}
+
+
+def _validate_workflow_output(stdout: str, *, expected_steps: int) -> tuple[dict[str, Any], bytes]:
+    """Validate bounded worker output and its self-reported digest before registration."""
+    try:
+        observed = json.loads(stdout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sandbox workflow output was not valid JSON") from exc
+    if (not isinstance(observed, dict)
+            or set(observed) != {"schema_version", "steps", "output_bytes", "sha256", "output_b64"}
+            or type(observed.get("schema_version")) is not int or observed["schema_version"] != 1
+            or type(observed.get("steps")) is not int
+            or observed["steps"] != expected_steps
+            or type(observed.get("output_bytes")) is not int
+            or not 0 <= observed["output_bytes"] <= MAX_WORKFLOW_OUTPUT
+            or not re.fullmatch(r"[0-9a-f]{64}", str(observed.get("sha256", "")))
+            or not isinstance(observed.get("output_b64"), str)):
+        raise ValueError("sandbox workflow result failed schema validation")
+    encoded = observed["output_b64"]
+    if len(encoded) > 4 * ((MAX_WORKFLOW_OUTPUT + 2) // 3):
+        raise ValueError("sandbox workflow output exceeds limits")
+    try:
+        output = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (binascii.Error, UnicodeEncodeError, ValueError) as exc:
+        raise ValueError("sandbox workflow output encoding is invalid") from exc
+    if (base64.b64encode(output).decode("ascii") != encoded
+            or len(output) != observed["output_bytes"]
+            or len(output) > MAX_WORKFLOW_OUTPUT):
+        raise ValueError("sandbox workflow output length or encoding is invalid")
+    if hashlib.sha256(output).hexdigest() != observed["sha256"]:
+        raise ValueError("sandbox workflow output digest mismatch")
+    return observed, output
 
 
 def verify_workflow_digest(result: Mapping[str, Any], oracle_sha256: str) -> bool:
     """Compare a sandbox digest with a host-only commitment; never reveal the answer."""
     if not re.fullmatch(r"[0-9a-f]{64}", oracle_sha256):
         raise ValueError("oracle commitment must be a lowercase SHA-256 digest")
-    return result.get("ok") is True and secrets.compare_digest(
-        str(result.get("output_sha256", "")), oracle_sha256)
+    if (result.get("ok") is not True or not isinstance(result.get("output_artifact"), str)
+            or result.get("output_is_untrusted") is not True):
+        return False
+    return secrets.compare_digest(str(result.get("output_sha256", "")), oracle_sha256)
 
 
 def _visible_artifact_name(name: str) -> str:

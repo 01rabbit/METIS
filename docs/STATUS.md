@@ -191,10 +191,12 @@ authenticate what a human saw in the official browser.
 Issue #7 now has a seeded declarative-workflow vertical slice: two bounded
 encoding families, a closed schema over existing artifact tools, a fixed
 no-network sandbox runner, and a controller-side digest check against a private
-oracle. The real-container integration test and five schema/reproducibility
-checks passed. This is deterministic fixture evidence, not model-generated
-research or held-out workflow performance; the runner returns a digest rather
-than model-consumable decoded output. Issue #7 remains open. See
+oracle. The runner returns up to 16 KiB of transformed bytes; the controller
+validates encoding, length, and digest before storing them as an untrusted,
+run-scoped derived artifact. The real-container integration test and schema,
+tamper, and reproducibility checks passed. This is deterministic fixture
+evidence, not model-generated research or held-out workflow performance. Issue
+#7 remains open. See
 [`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).
 
 Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
@@ -245,7 +247,9 @@ third-process idempotent retry without a fabricated solve. This does not cover
 host reboot, real-Docker separate-controller recovery, artifact/secret cleanup,
 Linux VM deployment, or the P7 benchmark release gate. The sandbox/session
 focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped here
-because no image was configured for that command.
+because no image was configured for that command. Exact PR HEAD
+`2950c50` passed all checks, including the full suite (`457 passed, 26 skipped`)
+and Docker integration suite (`6 passed`).
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 

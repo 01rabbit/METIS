@@ -68,3 +68,9 @@ Local validation for the separate-controller fake-engine test:
 .venv/bin/pytest -ra tests/test_ctf_sandbox.py::test_separate_controller_recovers_orphaned_sandbox_idempotently
 1 passed in 0.86s
 ```
+
+Exact PR HEAD `2950c5097414517c77856d7ed4d3401ebdc1ac85` passed all checks.
+The full Python CI suite reported `457 passed, 26 skipped in 86.51s`; the
+Docker sandbox integration suite reported `6 passed in 74.92s`. The process
+boundary case uses a deterministic fake engine and is included in the Python
+suite.
