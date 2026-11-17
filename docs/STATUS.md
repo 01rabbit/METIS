@@ -314,9 +314,11 @@ teardown remains recoverable, and verifies controller B recovery plus a
 third-process idempotent retry without a fabricated solve. A real-Docker
 cross-controller test now kills controller A while its container is running,
 then verifies controller B teardown/recovery, retained action charge, no
-fabricated solve, and idempotent third recovery. Host reboot, artifact/secret cleanup,
-Linux VM deployment, or the P7 benchmark release gate remain uncovered. The sandbox/session
-focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped there
+fabricated solve, and idempotent third recovery. A native macOS controller also
+passed this recovery test against the active Colima Ubuntu 24.04/aarch64 Linux
+VM (`1 passed in 0.68s`), exercising the Mac-to-VM container path. Host/VM
+reboot, artifact/secret cleanup, and the P7 benchmark release gate remain
+uncovered. The sandbox/session focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped there
 because no image was configured. Exact PR HEAD `e33d070` passed all checks:
 Python CI (`459 passed, 27 skipped`), Docker sandbox integration (`7 passed in
 120.72s`), aarch64 seccomp, Ruff, mypy, fixture validation, and build. The

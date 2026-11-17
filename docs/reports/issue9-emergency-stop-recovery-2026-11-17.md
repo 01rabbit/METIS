@@ -56,9 +56,9 @@ Focused real-container validation (configured image
 `linux/arm64`) passed both the new cancellation test and the existing timeout
 process-group teardown test. These real-container tests use a local Docker
 engine and a disposable temporary run. The separate-process test uses a
-deterministic fake engine, not a real daemon restart. The suite does not
-exercise host reboot, Linux VM deployment, model provider cancellation, or
-artifact/secret cleanup. A failed engine response remains `unknown`, not
+deterministic fake engine, not a real daemon restart. At this stage the suite
+did not exercise host reboot, Linux VM deployment, model provider cancellation,
+or artifact/secret cleanup. A failed engine response remains `unknown`, not
 confirmed. The broader Issue #9 acceptance gate and its P7 dependency remain
 open.
 
@@ -92,12 +92,41 @@ aarch64 seccomp, Ruff, mypy, fixture validation, and package build.
 
 The existing sandbox CI job now runs this test against its freshly built
 `linux/amd64` image. This demonstrates controller-process crash recovery with
-a real container engine. Host reboot, Linux VM deployment, model provider
-cancellation, artifact/secret cleanup, and the P7 benchmark gate remain
-uncovered; Issue #9 stays open.
+a real container engine. Host reboot, model provider cancellation,
+artifact/secret cleanup, and the P7 benchmark gate remain uncovered; Issue #9
+stays open.
 
 Exact PR HEAD `2950c5097414517c77856d7ed4d3401ebdc1ac85` passed all checks.
 The full Python CI suite reported `457 passed, 26 skipped in 86.51s`; the
 Docker sandbox integration suite reported `6 passed in 74.92s`. The process
 boundary case uses a deterministic fake engine and is included in the Python
 suite.
+
+## 2026-11-17 macOS controller and Linux VM smoke
+
+This workspace is Apple Silicon macOS (`arm64`). The active Docker context was
+`colima-rosetta`, backed by Colima 0.10.3 and Docker Engine 29.5.2 on Ubuntu
+24.04.4 LTS/aarch64 (kernel 6.8.0-117-generic). The Mac controller invoked the
+real container engine through that Linux VM.
+
+Built the sandbox image from the repository Dockerfile for `linux/arm64`:
+
+```text
+docker build --platform linux/arm64 --tag metis-issue9-smoke:2026-11-17 sandbox
+image ID: sha256:a88e7bdbf35049393a02f4246da183e4bb450b2428570c16201a60590b9ba521
+```
+
+Then ran the existing cross-controller recovery test against that exact image:
+
+```text
+METIS_TEST_SANDBOX_IMAGE=sha256:a88e7bdbf35049393a02f4246da183e4bb450b2428570c16201a60590b9ba521 METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/pytest -vv -s tests/test_ctf_sandbox.py::test_real_engine_separate_controller_recovers_orphaned_sandbox
+1 passed in 0.68s
+```
+
+Controller A ran on macOS and launched the sleeping sandbox in the Linux VM;
+after A was SIGKILLed, controller B stopped the container and recovered the
+SQLite run. The test verified the action remained charged, no solve event was
+created, and a third recovery was idempotent. This is an end-to-end smoke of
+the native Mac controller to the isolated Linux VM execution engine. It does
+not test VM reboot, a clean-machine installer, VM provisioning, or production
+monitoring and retention. Those P8 gates remain open.
