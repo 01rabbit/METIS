@@ -1,9 +1,9 @@
-# Issue #8: AlpacaHack Daily Not so Pyf**k probe (2026-11-18)
+# Issue #8: AlpacaHack Daily `Not so Pyf**k` probe (2026-11-18)
 
 ## Result
 
-The user-authorized, previously unsolved AlpacaHack Daily archive for **Not so
-Pyf**k** (Misc / Medium, released 2026-08-09) was analyzed in a separate METIS
+The user-authorized, previously unsolved AlpacaHack Daily archive for `Not so
+Pyf**k` (Misc / Medium, released 2026-08-09) was analyzed in a separate METIS
 held-out run (`b92de413b0b44a7d9eca470cd57f0320`). The official archive was
 downloaded from the challenge page. Its jail accepts ASCII input, limits the
 number of distinct alphabetic characters to three, and then evaluates the
