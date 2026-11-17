@@ -527,10 +527,19 @@ private-detail omission, no database writes or missing-file creation, and
 fail-closed handling of a corrupt chain. A follow-up adds configured Codex
 action/wall limits and charged/remaining action counters from the same read-only
 snapshot. Failed and interrupted reservations retain their charge; mutable
-session configuration is outside the validated event hash chain. This does not
-provide cost/provider usage or artifact-retention accounting, and is
-not a tamper-proof signature or full operator UI. Issue #9 remains open. See
-[`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md).
+session configuration is outside the validated event hash chain. The follow-up
+also reports run-scoped job states (including `unknown`), pending action and
+model-turn reservations, active-operation and sandbox-worker registrations,
+and pending-candidate counts from the same read-only SQLite snapshot. Missing
+subsystem tables are marked unavailable; inconsistent model-turn reservation
+records fail closed. No identifiers, failure text, candidate values, paths, or
+digests are returned. Reservations are not provider-confirmed usage, and worker
+registration does not prove liveness. This still does not provide cost/provider
+usage or artifact-retention accounting, and is not a tamper-proof signature or
+full operator UI. Focused validation passed: 13 audit tests, Ruff, mypy, and
+`git diff --check`. Issue #9 remains open. See the original
+[`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md)
+and the [unified operational audit](reports/issue9-unified-operational-audit-2026-11-18.md).
 
 A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
 
