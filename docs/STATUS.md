@@ -102,6 +102,22 @@ individual prior-solve state was also not explicit. No submission was made.
 Details and limitations are in
 [`alpacahack-one-more-approval-local-2026-11-17.md`](reports/alpacahack-one-more-approval-local-2026-11-17.md).
 
+The authenticated Daily attachment for `Long Long Flag Printer 2026` was also
+used in a bounded local-only METIS run. Its source hash and artifact provenance
+are recorded in
+[`alpacahack-long-long-flag-printer-static-eval-2026-11-17.md`](reports/alpacahack-long-long-flag-printer-static-eval-2026-11-17.md).
+The `misc-specialist` used read-only artifact intents to establish that the
+redacted 1,024-character value is printed in order, with an index-based sleep
+after each character; the requested delays sum to 523,776 seconds. No challenge
+code ran, no endpoint was granted or contacted, and no answer was submitted.
+The local verifier was unavailable because the attachment redacts the value.
+One specialist produced an evidence-backed report. The other assignments first
+failed closed after attempting a prohibited re-delegation tool; a bounded critic
+retry then exhausted the shared model-call cap after repeatedly citing evidence
+the controller rejected. Synthesis was ready but incomplete. This is a bounded
+real-model static-analysis trace, not a solve or a completed P4/P7 gate. Issue
+#5 and Issue #8 remain open.
+
 Separately, Codex CLI 0.169.0 completed one generated local direct-answer fixture
 through the `CodexProvider`; the private external fixture oracle independently
 verified the candidate. The run observed 6,902 input and 41 output tokens, while
