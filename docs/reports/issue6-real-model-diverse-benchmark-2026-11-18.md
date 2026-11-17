@@ -46,6 +46,14 @@ contains task identifiers and metrics only; the private oracle was removed
 after the run. No candidate, component plaintext, digest, answer, or candidate
 path is included in this report.
 
+The case-level metrics used for this analysis were held in temporary files and
+removed after the run; only the aggregate results are retained here. Therefore
+an independent reviewer can inspect the analysis method and reported summary,
+but cannot recompute the paired intervals from a retained per-trial dataset.
+Future benchmark runs should retain a redacted per-trial metrics artifact with
+task IDs, arm, oracle boolean, completion state, and resource metrics, while
+excluding all candidate and answer material.
+
 This supports a paired gain for this particular synthetic short-text decoding
 set under the tested Codex CLI controller. It does not establish general CTF
 performance, AlpacaHack solve rate, P7 held-out performance, or BridgeHost
