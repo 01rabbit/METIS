@@ -40,6 +40,10 @@ does not claim a hard token cap; missing usage remains `unknown`.
 The new unmetered-runner gate and existing reservation suite passed with
 `.venv/bin/pytest -ra tests/test_agent_autopilot.py tests/test_agent_orchestration.py tests/test_codex_specialist.py`
 (`54 passed in 7.15s`). Ruff and mypy also passed on the changed source tree.
+On exact HEAD `5858577e9b58b21a9c2d4bb29fee736798da7332`, the full GitHub
+Python job passed (`456 passed, 26 skipped in 79.21s`); checks and
+METIS-validation workflows also passed (runs `44025602181`, `44025607567`, and
+`44025607544`).
 
 Bounded autopilot now requires its runner to explicitly advertise the
 controller-side model-turn reservation contract. A runner without that
