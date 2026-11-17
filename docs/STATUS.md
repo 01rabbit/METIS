@@ -214,6 +214,11 @@ synthetic Stay vector, or official submission has occurred. Issue #28 and
 ksnctf #39 remain open; see `reports/issue28-stay-assessment-2026-11-16.md`
 and the live run evidence.
 
+A separate direct bit-vector SMT feasibility probe on two synthetic members
+returned `unknown` at a 60-second timeout. This does not test the target or a
+tuned solver; it rules out treating a naive full-state encoding as an immediate
+replacement for Stay's staged inverse search.
+
 The authenticated AlpacaHack Daily account was rechecked in the browser on
 2026-11-18 before a new held-out evaluation. September, October, and November
 showed 13/13, 11/11, and 6/6 solved, respectively; future November dates were

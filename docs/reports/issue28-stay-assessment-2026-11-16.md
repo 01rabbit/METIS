@@ -131,3 +131,21 @@ would support attack applicability, not recover the keys or validate plaintext.
 The official archive remains unbroken. The inverse state search, member CRC
 validation with recovered keys, XOR reconstruction, and official verifier
 response are still absent; no candidate was submitted.
+
+## Naive bit-vector solver feasibility probe (2026-11-18)
+
+As a separate algorithm-selection check, a temporary SMT-LIB model encoded the
+ZipCrypto state recurrence and the full double-encrypted ten-byte header plus
+two CRC bytes for two independently generated synthetic members. The unknowns
+were only the three 32-bit initial cipher words; both members used one planted
+state, and their random bytes, CRCs, and ciphertexts were generated locally.
+The formula was 175,282 bytes. Z3 4.15.4 returned `unknown` at its 60-second
+timeout without a model. An earlier expression-tree generator expanded
+recurrences exponentially; that process was stopped before it reached the
+solver and no result from it was used.
+
+This is not an attack attempt against #39 and gives no evidence about a tuned
+SAT encoding or the published staged attack. It does show that a direct
+bit-vector transcription is not an immediately usable substitute for Stay's
+23-bit decomposition and carry-pruned candidate-lifting stages. No formula,
+synthetic state, or target-derived candidate is retained in the repository.
