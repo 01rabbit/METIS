@@ -480,6 +480,69 @@ def test_real_engine_cancel_confirms_container_teardown(tmp_path):
                           check=False).returncode != 0
 
 
+def test_real_engine_cli_cancel_confirms_container_teardown(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image,
+              platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"))
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    initial_actions = session.context(run_id)["actions_remaining"]
+    Sandbox(database)
+    outcome = {}
+
+    def execute():
+        outcome.update(Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=60,
+            script="import time; time.sleep(60)\n")))
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    worker = None
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with sqlite3.connect(database) as db:
+                row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                                 (run_id,)).fetchone()
+            if row:
+                worker = row[0]
+                inspected = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.State.Running}}", worker],
+                    capture_output=True, check=False, timeout=10)
+                if inspected.returncode == 0 and inspected.stdout.strip() == b"true":
+                    break
+            time.sleep(0.05)
+        assert worker is not None and inspected.returncode == 0
+        assert inspected.stdout.strip() == b"true"
+
+        cancelled = _metis_cli("codex", "--database", str(database), "cancel", run_id)
+        assert cancelled.returncode == 0, cancelled.stderr
+        result = json.loads(cancelled.stdout)
+        assert result["worker_teardown"]["status"] == "confirmed"
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+        assert session.context(run_id)["status"] == "cancelled"
+        assert session.context(run_id)["actions_remaining"] < initial_actions
+        assert (outcome.get("cancelled") or outcome.get("error")
+                or outcome.get("engine_exit_code") is not None)
+        assert not any(event.status.value == "solved" for event in session.store.read(run_id))
+        assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                              check=False, timeout=10).returncode != 0
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?",
+                              (run_id,)).fetchone() is None
+    finally:
+        if thread.is_alive():
+            session.cancel(run_id)
+            thread.join(timeout=15)
+        if worker:
+            subprocess.run(["docker", "rm", "-f", worker], capture_output=True,
+                           check=False, timeout=30)
+
+
 def test_agent_cancel_interrupts_long_artifact_intent(tmp_path, monkeypatch):
     image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
     if not image:

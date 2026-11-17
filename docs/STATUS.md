@@ -371,10 +371,12 @@ Colima profile then built the sandbox image, ran the wheel-installed CLI with
 network/read-only-root/uid probes, and passed a controller-crash recovery drill
 across VM stop/start (charged action retained, no solve). This confirms fresh
 VM setup and VM reboot recovery, but not a signed VM installer or host reboot.
-The interrupted-controller runbook branch is now exercised through the actual
+The interrupted-controller runbook branch is exercised through the actual
 `inspect`, `sandbox status`, `codex recover`, and `codex board` CLI commands in
-the real-Docker cross-controller test; the live `cancel` sequence is still a
-separate path. This does not meet the host-reboot or P7 regression gates.
+the real-Docker cross-controller test. A separate real-container test now also
+invokes `metis codex cancel` against a running worker and confirms teardown,
+cancelled run state, retained action charge, and no fabricated solve. This does
+not meet the host-reboot or P7 regression gates.
 The sandbox/session focused suite passed
 (`17 passed, 5 skipped`); real-engine tests skipped there
 because no image was configured. Exact PR HEAD `e33d070` passed all checks:

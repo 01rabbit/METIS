@@ -307,3 +307,16 @@ including run-state and board inspection. The separate live-run `cancel` CLI
 branch is still covered by lower-level lifecycle tests rather than this exact
 operator sequence. This does not establish a monitoring dashboard, a macOS
 host reboot procedure, or production support.
+
+## 2026-11-17 live-run CLI cancellation
+
+Added `test_real_engine_cli_cancel_confirms_container_teardown` to exercise the
+operator-facing `metis codex cancel` path while a real sandbox container is
+running. The test verifies confirmed worker teardown, cancelled run state,
+retention of the reserved action, worker-registry cleanup, and absence of a
+fabricated `SOLVED` event. On the pinned local `linux/arm64` image
+`sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b`,
+the focused real-container test passed (`1 passed`); Ruff and mypy passed.
+This closes the live CLI cancellation-path evidence gap, but does not meet the
+P7 benchmark, host-reboot, signed-release, monitoring, or retention gates.
+Issue #9 remains open.
