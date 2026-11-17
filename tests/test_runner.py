@@ -374,10 +374,10 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
 
         def decide(self, context, *, timeout_seconds):
             # Pinned baseline is one-shot: it never uses failure evidence to replan.
-            if context.rejected_candidates:
+            if context.observations:
+                if context.observations[-1].ok:
+                    return Decision(kind="candidate", candidate=context.observations[-1].output)
                 return Decision(kind="halt")
-            if context.observations and context.observations[-1].ok:
-                return Decision(kind="candidate", candidate=context.observations[-1].output)
             planned = json.loads(context.challenge.description)["attempts"]
             return Decision(kind="tool", tool=ToolRequest.model_validate(planned[0]))
 

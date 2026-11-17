@@ -32,8 +32,9 @@ same encoded challenge input; the alternate plan entry does not contain a
 pre-decoded answer. Both arms use the same local transform runtime,
 three-decision cap, 10-second wall-clock limit,
 2-second per-tool timeout, and private oracle. The baseline tries its assigned
-first action once and never revises. The adaptive arm takes the declared
-alternate only after `invalid_input`.
+first action once and halts after a failed observation; it does not rely on the
+runner's duplicate-action guard to enforce one-shot behavior. The adaptive arm
+takes the declared alternate only after `invalid_input`.
 
 | Policy | Verified solves | Mean tool actions |
 | --- | ---: | ---: |
