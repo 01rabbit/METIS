@@ -288,7 +288,22 @@ installer.
    keep the database intact and retry after the engine is available. Do not
    manually mark the run solved or delete the worker record.
 
-The underlying lifecycle behavior is exercised by the recorded real Docker
-controller-crash and VM stop/start tests. The exact CLI sequence above has not
-been rehearsed manually end to end. These tests do not establish a monitoring
-dashboard, a macOS host reboot procedure, or production support.
+The interrupted-controller recovery branch of this runbook is now exercised
+through the actual CLI in the real-Docker cross-controller integration test.
+While the worker is live the test runs `metis inspect` and `metis sandbox
+status`; after killing controller A it runs `metis codex recover`, then
+`inspect`, `codex board`, and a second idempotent `recover`. With the configured
+`linux/arm64` Colima image, the exact test command
+
+```text
+METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b METIS_TEST_SANDBOX_PLATFORM=linux/arm64 .venv/bin/pytest -vv -s tests/test_ctf_sandbox.py::test_real_engine_separate_controller_recovers_orphaned_sandbox
+1 passed in 1.35s
+.venv/bin/ruff check tests/test_ctf_sandbox.py
+All checks passed!
+```
+
+This rehearses the interrupted-controller CLI path against a real container,
+including run-state and board inspection. The separate live-run `cancel` CLI
+branch is still covered by lower-level lifecycle tests rather than this exact
+operator sequence. This does not establish a monitoring dashboard, a macOS
+host reboot procedure, or production support.

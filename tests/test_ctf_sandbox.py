@@ -20,6 +20,12 @@ from metis.core.ctf_sandbox import Sandbox, SandboxRequest, configure, status
 
 IMAGE = "sha256:" + "a" * 64
 
+
+def _metis_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    executable = Path(sys.executable).with_name("metis")
+    return subprocess.run([str(executable), *arguments], capture_output=True, text=True,
+                          check=False, timeout=30)
+
 FAKE_ENGINE = textwrap.dedent('''\
     #!{python}
     """Test double for a container engine: records argv, emulates /work in a temp dir."""
@@ -629,6 +635,14 @@ def test_real_engine_separate_controller_recovers_orphaned_sandbox(tmp_path):
         with sqlite3.connect(database) as db:
             assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone()
 
+        # Exercise the operator runbook's inspection commands while the worker is active.
+        inspected = _metis_cli("inspect", "--database", str(database), run_id)
+        assert inspected.returncode == 0, inspected.stderr
+        assert json.loads(inspected.stdout.splitlines()[-1])["status"] == "executing"
+        engine_status = _metis_cli("sandbox", "--database", str(database), "status")
+        assert engine_status.returncode == 0, engine_status.stderr
+        assert json.loads(engine_status.stdout)["engine_available"] is True
+
         os.killpg(controller_a.pid, signal.SIGKILL)
         controller_a.wait(timeout=10)
         orphan = subprocess.run(["docker", "inspect", "--format={{.State.Running}}", worker],
@@ -636,18 +650,11 @@ def test_real_engine_separate_controller_recovers_orphaned_sandbox(tmp_path):
         assert orphan.returncode == 0 and orphan.stdout.strip() == "true", \
             "the sandbox did not survive controller A termination"
 
-        recovery_code = textwrap.dedent(f"""
-            import json
-            from pathlib import Path
-            from metis.core.codex_session import CodexSession
-            result = CodexSession(Path({str(database)!r})).recover({run_id!r})
-            print(json.dumps({{"status": result["status"], "worker": result["worker_teardown"]}}))
-        """)
-        recovered_process = subprocess.run([sys.executable, "-c", recovery_code],
-                                           capture_output=True, text=True, timeout=30, check=False)
+        recovered_process = _metis_cli("codex", "--database", str(database), "recover", run_id)
         assert recovered_process.returncode == 0, recovered_process.stderr
-        assert json.loads(recovered_process.stdout) == {
-            "status": "planning", "worker": {"status": "confirmed"}}
+        recovered_json = json.loads(recovered_process.stdout)
+        assert recovered_json["status"] == "planning"
+        assert recovered_json["worker_teardown"]["status"] == "confirmed"
         after_recovery = session.context(run_id)
         assert after_recovery["actions_remaining"] == before_recovery["actions_remaining"]
         assert after_recovery["status"] == "planning"
@@ -657,11 +664,16 @@ def test_real_engine_separate_controller_recovers_orphaned_sandbox(tmp_path):
         with sqlite3.connect(database) as db:
             assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
 
-        repeated = subprocess.run([sys.executable, "-c", recovery_code], capture_output=True,
-                                  text=True, timeout=30, check=False)
+        final_inspection = _metis_cli("inspect", "--database", str(database), run_id)
+        assert final_inspection.returncode == 0, final_inspection.stderr
+        assert json.loads(final_inspection.stdout.splitlines()[-1])["status"] == "planning"
+        board = _metis_cli("codex", "--database", str(database), "board")
+        assert board.returncode == 0, board.stderr
+        assert any(item["run_id"] == run_id for item in json.loads(board.stdout)["sessions"])
+
+        repeated = _metis_cli("codex", "--database", str(database), "recover", run_id)
         assert repeated.returncode == 0, repeated.stderr
-        assert json.loads(repeated.stdout) == {
-            "status": "planning", "worker": {"status": "not_running"}}
+        assert json.loads(repeated.stdout)["worker_teardown"]["status"] == "not_running"
         assert session.context(run_id)["actions_remaining"] == before_recovery["actions_remaining"]
     finally:
         if controller_a.poll() is None:
