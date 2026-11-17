@@ -293,7 +293,14 @@ def cancel_registered_worker(database: Path, run_id: str) -> dict[str, Any]:
             return {"status": "not_running"}
         row = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
                          (run_id,)).fetchone()
-    return _remove_container(*row) if row else {"status": "not_running"}
+    if row is None:
+        return {"status": "not_running"}
+    result = _remove_container(*row)
+    if result["status"] == "confirmed":
+        with sqlite3.connect(database) as db:
+            db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                       (run_id, row[1]))
+    return result
 
 
 def engine_check(engine: str) -> tuple[bool, str | None]:
@@ -591,6 +598,9 @@ class Sandbox:
                 current_status = self.session.context(run_id)["status"]
                 if current_status == RunStatus.CANCELLED.value:
                     result = {"ok": False, "cancelled": True, "error": "sandbox worker cancelled"}
+                elif current_status != RunStatus.EXECUTING.value:
+                    result = {"ok": False, "cancelled": True,
+                              "error": "sandbox result discarded after controller recovery"}
                 else:
                     self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
                                        exit_code=str(result.get("exit_code")),

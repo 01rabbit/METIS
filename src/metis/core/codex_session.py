@@ -412,6 +412,13 @@ class CodexSession:
     @locked
     def recover(self, run_id: str) -> dict:
         self._session(run_id)
+        # After a controller restart, never resume a run while its previous
+        # sandbox might still be executing. An unconfirmed engine response is
+        # a hard recovery stop; the operator must reconcile the worker first.
+        from metis.core.ctf_sandbox import cancel_registered_worker
+        worker = cancel_registered_worker(self.database, run_id)
+        if worker["status"] == "unknown":
+            raise RuntimeError("recovery blocked: sandbox worker teardown is unknown")
         events = self.store.read(run_id)
         if not events:
             self._emit(run_id, RunStatus.NEW)
@@ -433,7 +440,7 @@ class CodexSession:
             not context["actions_remaining"] or not context["seconds_remaining"]
         ):
             self._emit(run_id, RunStatus.EXHAUSTED, reason="budget_limit")
-        return self.context(run_id)
+        return self.context(run_id) | {"worker_teardown": worker}
 
     def board(self, limit: int = 30) -> list[dict]:
         if not 1 <= limit <= 100:

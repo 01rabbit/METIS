@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 
@@ -119,6 +120,25 @@ def test_emergency_stop_survives_controller_restart_without_resuming_work(tmp_pa
     assert recovered["actions_remaining"] == 39
     assert not any(event.status == RunStatus.SOLVED for event in restarted.store.read(run_id))
     assert restarted.recover(run_id)["status"] == "cancelled"
+
+
+def test_recovery_refuses_to_resume_when_sandbox_teardown_is_unknown(tmp_path, monkeypatch):
+    database = tmp_path / "session.sqlite"
+    session = CodexSession(database)
+    run_id = session.demo()[0]["run_id"]
+    session._reserve(run_id, "sandboxed_dynamic_execution")
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE sandbox_workers (run_id TEXT PRIMARY KEY, engine TEXT NOT NULL, "
+                   "container_name TEXT NOT NULL, started REAL NOT NULL)")
+        db.execute("INSERT INTO sandbox_workers VALUES (?, 'docker', 'metis-sandbox-unknown', 1)", (run_id,))
+    monkeypatch.setattr("metis.core.ctf_sandbox._remove_container",
+                        lambda *_: {"status": "unknown", "reason": "engine unavailable"})
+
+    with pytest.raises(RuntimeError, match="teardown is unknown"):
+        CodexSession(database).recover(run_id)
+    assert session.context(run_id)["status"] == "executing"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone()
 
 
 def test_intake_accepts_explicit_path_through_symlinked_directory(tmp_path):

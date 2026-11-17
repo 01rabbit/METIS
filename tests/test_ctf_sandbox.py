@@ -290,6 +290,47 @@ def test_real_engine_cancel_confirms_container_teardown(tmp_path):
                           check=False).returncode != 0
 
 
+def test_real_engine_recovery_stops_orphaned_sandbox_before_resuming(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    Sandbox(database)
+    outcome = {}
+
+    def execute():
+        outcome.update(Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=60, script="import time; time.sleep(60)\n")))
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    deadline = time.monotonic() + 15
+    worker = None
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                             (run_id,)).fetchone()
+        if row:
+            worker = row[0]
+        inspected = (subprocess.run(["docker", "inspect", worker], capture_output=True, check=False)
+                     if worker else None)
+        if inspected and inspected.returncode == 0:
+            break
+        time.sleep(0.05)
+    assert worker is not None and inspected is not None and inspected.returncode == 0
+    recovered = CodexSession(database).recover(run_id)
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+    assert recovered["worker_teardown"]["status"] == "confirmed"
+    assert recovered["status"] == "planning"
+    assert not any(event.status.value == "solved" for event in CodexSession(database).store.read(run_id))
+    assert outcome.get("cancelled") is True
+    assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                          check=False).returncode != 0
+
+
 def _elf(machine: int) -> bytes:
     header = bytearray(64)
     header[:4] = b"\x7fELF"

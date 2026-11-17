@@ -213,11 +213,13 @@ bounded-autopilot activity counters; cost stays unknown when the provider does
 not report it. See `docs/ORCHESTRATION_RUNTIME.md` for operational limits.
 
 Issue #9 now has a local real-container emergency-stop slice: the sandbox
-registers its active worker under the per-run lock; cancellation removes it,
-confirms absence with `inspect`, and prevents a cancelled run from returning to
-planning. A real Docker integration test and the prior SQLite restart/recovery
-test pass. This does not cover host reboot, separate-controller recovery,
-artifact/secret cleanup, Linux VM deployment, or the P7 benchmark release gate.
+registers its active worker under the per-run lock; cancellation and recovery
+remove it, confirm absence with `inspect`, and prevent late results from
+overwriting recovered state. Unknown teardown blocks recovery. Real Docker
+integration tests cover cancel and recover, and a synthetic failure test covers
+the unknown path. This does not cover host reboot, separate-controller
+recovery, artifact/secret cleanup, Linux VM deployment, or the P7 benchmark
+release gate.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
