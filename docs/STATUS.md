@@ -202,6 +202,17 @@ full-intent integration checks now run in a dedicated GitHub Actions job.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
 
+On 2026-11-18 the user directed us to use the official #39 distribution source.
+The official page and same-origin PHP source and ZIP were fetched into METIS run
+`0045b063168045c289eaef276dab21c2`. The archive's seven members match the
+Info-ZIP double-encrypted-header profile; the bounded seed search predicted the
+random bytes for every member. This is PRNG/header analysis only: those bytes
+are not known plaintext for the ZIP data stream. A dummy-key decryption was
+rejected by the header check, and no Stay key recovery, independent synthetic
+Stay vector, or official submission has occurred. Issue #28 and ksnctf #39
+remain open; see `reports/issue28-stay-assessment-2026-11-16.md` and the live
+run evidence.
+
 ## Boundaries and remaining work
 
 Issue #1's bounded P0 gate is now accepted for explicit user intake and local

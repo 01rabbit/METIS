@@ -325,5 +325,27 @@ does not resolve the measured Stage 2 throughput bottleneck.
 
 This remains an upstream embedded self-test and a feasibility probe, not an
 independent vector, Stage 3 key validation, Stay recovery, or a #39 solve. The
-test-only patch must not be treated as a production worker change. The KSNCTF
-#39 distribution was unavailable in this environment.
+test-only patch must not be treated as a production worker change. At the time
+of this audit, the KSNCTF #39 distribution was unavailable in this environment;
+the official distribution was later acquired and analyzed as recorded below.
+
+### Official ksnctf #39 distribution (2026-11-18)
+
+Following the user's direction to use the official source, the official
+[ksnctf #39 page](https://ksnctf.sweetduet.info/problem/39) was identified and
+its linked `split_flag.php` and `flag.zip` were retrieved through the scoped
+METIS web adapter. They are registered in run
+`0045b063168045c289eaef276dab21c2`; the same-origin PHP fetch required no
+credentials or external service grant. The PHP source states that the flag is
+padded to avoid information leakage, creates six `random_bytes($n)` shares,
+XORs them into a seventh share, and exits. Archive metadata confirms seven
+encrypted, stored entries with the expected Info-ZIP header shape.
+
+The bounded `infozip_seed` analysis matched the leaked first header byte for
+all seven files and predicted the random bytes. These bytes are encrypted
+twice by Info-ZIP, so this result is not known plaintext for the stored data.
+A dummy-key decryption was rejected by its header check. No Stay key was
+recovered, no independent Stay round-trip vector was validated, and no
+candidate was sent to the official verifier. The archive is acquired, but
+ksnctf #39 and the Stay acceptance gate remain unresolved. The primary
+reference is [Stay's FSE paper](https://math.ucr.edu/~mike/zipattacks.pdf).
