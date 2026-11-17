@@ -136,7 +136,8 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
         catalog = loaded
     return scheduler.configure(global_slots=args.global_slots, per_run_slots=args.per_run_slots,
                                catalog=catalog, current_model=args.current_model,
-                               memory_retrieval=args.memory_retrieval)
+                               memory_retrieval=args.memory_retrieval,
+                               specialist_turn_budget=args.specialist_turn_budget)
 
 
 def _note(args: argparse.Namespace) -> str | None:
@@ -331,9 +332,11 @@ def main() -> int:
     agent_probe.add_argument("--cyber-access-program", choices=("standard", "daybreak_blue", "daybreak_red"),
                              help="Codex access program the operator is enrolled in (some models require one)")
     agent_probe.add_argument("--allow-untested-codex", action="store_true")
-    agent_slots = agent_commands.add_parser("slots", help="show or set global/per-run slots, model catalog")
+    agent_slots = agent_commands.add_parser("slots", help="show or set slots, per-run model-turn budget, model catalog")
     agent_slots.add_argument("--global", dest="global_slots", type=int)
     agent_slots.add_argument("--per-run", dest="per_run_slots", type=int)
+    agent_slots.add_argument("--specialist-turn-budget", type=int,
+                             help="maximum Codex model invocations per run (fixed when its first wave is queued)")
     agent_slots.add_argument("--catalog-file", type=Path,
                              help='JSON [{"id": "<model id shown by the host>", "tier": "lower|standard|strong"}]')
     agent_slots.add_argument("--current-model", help="model the host is running now (reused when no tier fits)")

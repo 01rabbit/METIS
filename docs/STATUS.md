@@ -154,9 +154,14 @@ production readiness.
 
 Issue #6 now also caps each specialist's assigned deadline by the shared run's
 remaining wall-clock and has a regression test for parallel dispatch. Shared run
-action limits already apply to mediated intents. Aggregate specialist model
-turn/token reservation and a controlled multi-agent vs single-agent benchmark
-remain unproven; Issue #6 stays open.
+action limits already apply to mediated intents. The CodexCLI driver now
+atomically reserves Codex call attempts against a per-run model-turn limit fixed
+when the first wave is queued (default 24); concurrency, no-call on
+exhaustion, and immutable-run-limit tests pass. BridgeHost's direct host-native
+subagent calls remain outside that reservation boundary, token/cost limits are
+not enforceable when usage is unknown, and a controlled real-model multi-agent
+vs single-agent benchmark remains outstanding. Issue #6 stays open; see
+[`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
 needs a local container engine and the sandbox image. The bundled Dockerfile

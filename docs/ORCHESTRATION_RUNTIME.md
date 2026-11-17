@@ -10,7 +10,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 | P1 契約・policy | `core/agent_contracts.py` | `SpecialistProfile` `Assignment` `ModelSelection` `ExecutionRecord` `CompactReport` `WaveDecision`（すべて `extra=forbid`、有限値、schema_version 2）。`decide_wave` と `select_model` は純粋関数 |
 | 計画・台帳 | `core/ctf_orchestration.py` | `plan_agent_wave(context, force_mode=)` は決定的。`AgentLedger` は wave と compact report の台帳 |
 | P2 ホスト | `core/agent_host.py` | `capabilities / spawn / poll / send / cancel / collect`。`BridgeHost`（既定）、`SequentialHost`、テスト用 `FakeHost` |
-| P3 scheduler | `core/agent_scheduler.py` | slot予約、attempt、deadline・max turns、cancel/retry/release、tool intent の仲介 |
+| P3 scheduler | `core/agent_scheduler.py` | slot予約、run固定のCodex model-turn予約、attempt、deadline・intent上限、cancel/retry/release、tool intent の仲介 |
 | 単一writer | `core/run_lock.py` | run ごとの排他ロック。予算予約・イベント追記・公式提出をこの下で行う |
 | P5 大会 | `core/ctf_contest.py` | run と問題の同一性検査、dispatch の timebox 強制 |
 
@@ -33,8 +33,12 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - `--mode sequential|delegated` で上書きできる（旧動作の再現は `--mode delegated`）。
 - dispatch時の各assignment deadlineは、そのrunの現在の `seconds_remaining` で上限をかける。
   同一runの並列workerが個別deadlineによってrun全体のwall-clock期限を越えないようにする。
-  Tool intentのaction数もrun単位で共有する。一方、hostが報告しない推論turn/token/costを
-  全worker共通で完全予約・停止する仕組みはなく、Issue #6 の比較ゲートは未達。
+  Tool intentのaction数もrun単位で共有する。CodexCLI driverでは、実際のprovider呼出直前に
+  run固定のmodel-turn予算（既定24、`metis agent slots --specialist-turn-budget N`）をSQLiteで予約する。
+  失敗・timeout・retryも予約消費に数え、run間の設定変更や再起動で上限は増えない。
+  これはBridgeHost経由でDaybreakが直接起動するsubagentには強制できない。token/costは利用量報告が
+  不確実なため上限予約できず、未知なら`unknown`のまま。実モデルの単独対delegated比較も未実施で、
+  Issue #6の受入れゲートは未達。
 
 ### tool intent（担当 → controller）
 
@@ -57,7 +61,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - 拒否は `agent_job_log` に `intent_duplicate` / `intent_variant_limit` として残り、メッセージは引用すべき
   既存のイベント番号を示す。
 - 実行は run lock の下で `CodexSession` を通るため、予算超過・イベント番号衝突は起きない。
-- 1 intent = 1 turn。`max_turns` を超える要求は拒否し、その attempt を `timed_out` にする。
+- 各成功したtool intentはassignment単位の `max_turns` とrun全体の既存action予算を消費する。
+  CodexCLI経路では別に、providerを呼ぶ前にrun-wide model-turn reservationを1つ消費する。
+  model turnは失敗・timeout・再試行でも返金しない。いずれかの上限超過は追加tool/model実行を拒否する。
 
 ### 状態と attempt
 
@@ -71,6 +77,8 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 同時実行数 = `min(ホストの上限, 全体slot, run ごとのslot, wave の担当数)`。
 `metis agent slots --global 4 --per-run 2` で設定（既定 4 / 2）。足りない分は `queued` のまま。
 大会の `max_parallel`（同時に着手する問題数）とは別の上限で、両方が効く。
+model-turn budgetは同コマンドの `--specialist-turn-budget` でrun開始前に指定できる（既定24、範囲1–256）。
+runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設定変更は既存runへ適用しない。
 
 ### モデル
 

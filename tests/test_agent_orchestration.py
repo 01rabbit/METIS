@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -148,6 +149,52 @@ def test_concurrent_dispatch_does_not_double_reserve(state, tmp_path):
         thread.join()
     assert sum(job["state"] == "running" for job in AgentScheduler(state, host).jobs()) == 3
     assert len(host.spawned) == len(set(host.spawned)) == 3
+
+
+def test_concurrent_model_turn_reservations_respect_fixed_run_budget(state, tmp_path):
+    run_id = _run(state, tmp_path, actions=100)
+    scheduler = AgentScheduler(state, FakeHost(script={role: (lambda a, b: {"state": "hang"})
+                                                        for role in PROFILES}))
+    scheduler.configure(per_run_slots=4, specialist_turn_budget=3)
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    jobs = scheduler.dispatch(run_id)["started"]
+    results: list[dict[str, int] | None] = []
+
+    def reserve(job: dict[str, Any]) -> None:
+        results.append(AgentScheduler(state, scheduler.host).reserve_model_turn(
+            run_id, job["assignment_id"], job["attempt_id"]))
+
+    threads = [threading.Thread(target=reserve, args=(job,)) for job in jobs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(result is not None for result in results) == 3
+    assert sum(result is None for result in results) == 1
+    assert scheduler.model_turn_budget(run_id) == {"limit": 3, "reserved": 3, "remaining": 0}
+    assert len(scheduler.jobs(run_id)) == len(jobs)
+    assert sum(job["state"] == "failed" for job in scheduler.jobs(run_id)) == 1
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?", (run_id,)).fetchone()[0] == 3
+
+
+def test_model_turn_budget_is_snapshotted_per_run_at_first_enqueue(state, tmp_path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    scheduler = AgentScheduler(state, FakeHost())
+    scheduler.configure(specialist_turn_budget=3)
+    first = _run(state, first_dir)
+    first_wave = AgentLedger(state).create_wave(first)
+    scheduler.enqueue(first, first_wave["wave_id"])
+    scheduler.configure(specialist_turn_budget=8)
+    assert scheduler.model_turn_budget(first) == {"limit": 3, "reserved": 0, "remaining": 3}
+    second = _run(state, second_dir)
+    second_wave = AgentLedger(state).create_wave(second)
+    scheduler.enqueue(second, second_wave["wave_id"])
+    assert scheduler.model_turn_budget(second) == {"limit": 8, "reserved": 0, "remaining": 8}
 
 
 def test_fake_executor_completes_and_failures_release_slots(state, tmp_path):

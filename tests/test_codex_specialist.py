@@ -1,6 +1,7 @@
 """Claude Code -> Codex CLI specialist driver (Issue #11) with a scripted runner, no network."""
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -95,7 +96,38 @@ def test_intent_then_report_completes_the_attempt(setup):
     with sqlite3.connect(database) as db:
         events = [row[0] for row in db.execute("SELECT event FROM agent_job_log WHERE assignment_id=? ORDER BY id",
                                                (job["assignment_id"],))]
-    assert events == ["started", "codex_turn", "codex_turn", "completed"]
+    assert events == ["started", "model_turn_reserved", "codex_turn", "model_turn_reserved",
+                      "codex_turn", "completed"]
+
+
+def test_exhausted_run_turn_budget_stops_before_provider_call(setup):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    budget = scheduler.model_turn_budget(run_id)
+    assert budget is not None
+    for _ in range(budget["limit"]):
+        assert scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"]) is not None
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "failed"
+    assert result["codex_turns"] == [] and runner.prompts == []
+    assert "budget exhausted" in result["failure"]
+
+
+def test_cancel_racing_with_turn_reservation_returns_stopped_without_provider_call(setup, monkeypatch):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    reserve = scheduler.reserve_model_turn
+
+    def cancel_then_reserve(reservation_run, assignment_id, attempt_id):
+        scheduler.cancel(assignment_id=assignment_id)
+        return reserve(reservation_run, assignment_id, attempt_id)
+
+    monkeypatch.setattr(scheduler, "reserve_model_turn", cancel_then_reserve)
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and result["codex_turns"] == []
+    assert runner.prompts == []
 
 
 def test_daybreak_only_intents_are_refused_and_the_attempt_continues(setup):
@@ -162,7 +194,7 @@ def test_cancelled_or_stale_attempt_stops_the_driver(setup):
     runner = ScriptedRunner([cancel_then_answer, _say(_report(0))])
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert result["job_state"] == "cancelled" and "stale" in result["intents"][0]["refused"]
-    assert result["outcome"]["state"] == "stopped" and len(runner.prompts) == 1
+    assert result["outcome"]["state"] == "cancelled" and len(runner.prompts) == 1
     with pytest.raises(ValueError, match="not the running attempt"):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], ScriptedRunner([]))
 
@@ -277,7 +309,7 @@ def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path):
     began = time.monotonic()
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], cli, turn_timeout=60)
     assert time.monotonic() - began < 15
-    assert result["job_state"] == "cancelled" and result["outcome"]["state"] == "stopped"
+    assert result["job_state"] == "cancelled" and result["outcome"]["state"] == "cancelled"
     assert result["codex_turns"] == [] or result["codex_turns"][-1]["returncode"] != 0
 
 
@@ -401,8 +433,34 @@ def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
     runner = ScriptedRunner([flaky, _say({"action": "fail", "intent": None, "report": None, "reason": "done"})])
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert result["job_state"] == "failed" and result["failure"] == "done" and len(runner.prompts) == 2
+    assert len(result["codex_turns"]) == 2
+    usage = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])["usage"]
+    assert usage["turns"] == 2
     hard = ScriptedRunner([CodexTurn(returncode=1, message=None, stderr_tail="schema error"),
                            CodexTurn(returncode=0, message="{}")])
     second = started[1]
     result = run_assignment(scheduler, run_id, second["assignment_id"], second["attempt_id"], hard)
     assert "codex exited 1" in result["failure"] and len(hard.prompts) == 1
+
+
+def test_transient_retry_does_not_start_after_deadline(setup, monkeypatch):
+    import metis.core.codex_specialist as driver
+
+    monkeypatch.setattr(driver, "TRANSIENT_BACKOFF", 0.0)
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    monkeypatch.setattr(scheduler.host, "cancel", lambda *_args, **_kwargs: False)
+    flaky = CodexTurn(returncode=1, message=None,
+                      stderr_tail="not authenticated with one of your authorized hardware keys")
+
+    def expire_deadline(_prompts):
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=?",
+                       (time.time() - 1, job["assignment_id"]))
+        return flaky
+
+    runner = ScriptedRunner([expire_deadline])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == result["outcome"]["state"] == "unknown"
+    assert len(runner.prompts) == 1
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1

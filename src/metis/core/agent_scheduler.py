@@ -84,6 +84,12 @@ class AgentScheduler:
                 run_id TEXT NOT NULL, identity TEXT NOT NULL, assignment_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL, sequence INTEGER NOT NULL, ok INTEGER NOT NULL, time REAL NOT NULL)""")
             db.execute("CREATE TABLE IF NOT EXISTS agent_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_run_turn_budgets (
+                run_id TEXT PRIMARY KEY, turn_limit INTEGER NOT NULL, turns_reserved INTEGER NOT NULL DEFAULT 0,
+                created REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_turn_reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, assignment_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL, reserved REAL NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS agent_candidates (
                 candidate_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, assignment_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL, digest TEXT NOT NULL, basis TEXT NOT NULL, path TEXT NOT NULL,
@@ -100,13 +106,14 @@ class AgentScheduler:
         with self._db() as db:
             stored = {key: json.loads(value) for key, value in db.execute("SELECT key, value FROM agent_config")}
         return {"global_slots": stored.get("global_slots", 4), "per_run_slots": stored.get("per_run_slots", 2),
+                "specialist_turn_budget": stored.get("specialist_turn_budget", 24),
                 "catalog": stored.get("catalog", []), "current_model": stored.get("current_model"),
                 "memory_retrieval": stored.get("memory_retrieval", True),
                 "host": self.host.capabilities().model_dump()}
 
     def configure(self, *, global_slots: int | None = None, per_run_slots: int | None = None,
                   catalog: list[dict[str, Any]] | None = None, current_model: str | None = None,
-                  memory_retrieval: bool | None = None) -> dict[str, Any]:
+                  memory_retrieval: bool | None = None, specialist_turn_budget: int | None = None) -> dict[str, Any]:
         changes: dict[str, Any] = {}
         if global_slots is not None:
             if not 1 <= global_slots <= 16:
@@ -116,6 +123,10 @@ class AgentScheduler:
             if not 1 <= per_run_slots <= 4:
                 raise ValueError("per-run slots must be 1..4")
             changes["per_run_slots"] = per_run_slots
+        if specialist_turn_budget is not None:
+            if not 1 <= specialist_turn_budget <= 256:
+                raise ValueError("specialist turn budget must be 1..256")
+            changes["specialist_turn_budget"] = specialist_turn_budget
         if catalog is not None:
             if len(catalog) > 32 or any(not isinstance(item, dict) or not isinstance(item.get("id"), str)
                                         or item.get("tier") not in {"lower", "standard", "strong"}
@@ -137,12 +148,71 @@ class AgentScheduler:
         plan = self.ledger._plan(run_id, wave_id)
         now = time.time()
         with self._db() as db:
+            db.execute("INSERT OR IGNORE INTO agent_run_turn_budgets(run_id,turn_limit,turns_reserved,created) "
+                       "VALUES (?,?,0,?)", (run_id, self.config()["specialist_turn_budget"], now))
             for item in plan["assignments"]:
                 db.execute("INSERT OR IGNORE INTO agent_jobs(assignment_id,run_id,wave_id,role,state,"
                            "deadline_seconds,max_turns,created) VALUES (?,?,?,?,?,?,?,?)",
                            (item["assignment_id"], run_id, wave_id, item["role"], "queued",
                             int(item.get("deadline_seconds", 600)), int(item.get("max_turns", 6)), now))
         return self.jobs(run_id, wave_id)
+
+    def reserve_model_turn(self, run_id: str, assignment_id: str, attempt_id: str) -> dict[str, Any] | None:
+        """Atomically reserve one Codex call attempt from the run's immutable turn budget.
+
+        Reservations are charged before the provider call and never refunded on failure or retry.
+        ``None`` means the cap is exhausted; the active assignment is ended and logged.
+        """
+        db = sqlite3.connect(self.database, timeout=30, isolation_level=None)
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT run_id,state,attempt_id,deadline FROM agent_jobs WHERE assignment_id=?",
+                             (assignment_id,)).fetchone()
+            if row is None or row[:3] != (run_id, "running", attempt_id):
+                db.execute("ROLLBACK")
+                raise ValueError("attempt is not the running attempt of this run")
+            if row[3] and time.time() > row[3]:
+                now = time.time()
+                db.execute("UPDATE agent_jobs SET state='timed_out',failure=?,finished=? WHERE assignment_id=? "
+                           "AND attempt_id=?", ("deadline exceeded before model-turn reservation", now,
+                                                 assignment_id, attempt_id))
+                self._log(db, assignment_id, attempt_id, "model_turn_deadline_expired")
+                db.execute("COMMIT")
+                raise ValueError("assignment deadline exceeded before model-turn reservation")
+            budget = db.execute("SELECT turn_limit,turns_reserved FROM agent_run_turn_budgets WHERE run_id=?",
+                                (run_id,)).fetchone()
+            if budget is None:
+                db.execute("ROLLBACK")
+                raise ValueError("run specialist-turn budget is not initialized; enqueue the wave first")
+            limit, used = budget
+            if used >= limit:
+                now = time.time()
+                db.execute("UPDATE agent_jobs SET state='failed',failure=?,finished=? WHERE assignment_id=? "
+                           "AND attempt_id=?", ("run specialist model-turn budget exhausted", now,
+                                                 assignment_id, attempt_id))
+                self._log(db, assignment_id, attempt_id, "model_turn_budget_exhausted", f"{used}/{limit}")
+                db.execute("COMMIT")
+                return None
+            now = time.time()
+            turn_no = used + 1
+            db.execute("UPDATE agent_run_turn_budgets SET turns_reserved=? WHERE run_id=?", (turn_no, run_id))
+            db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id,attempt_id,reserved) "
+                       "VALUES (?,?,?,?)", (run_id, assignment_id, attempt_id, now))
+            self._log(db, assignment_id, attempt_id, "model_turn_reserved", f"{turn_no}/{limit}")
+            db.execute("COMMIT")
+            return {"turn": turn_no, "limit": limit, "remaining": limit - turn_no}
+        except BaseException:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
+
+    def model_turn_budget(self, run_id: str) -> dict[str, int] | None:
+        with self._db() as db:
+            row = db.execute("SELECT turn_limit,turns_reserved FROM agent_run_turn_budgets WHERE run_id=?",
+                             (run_id,)).fetchone()
+        return None if row is None else {"limit": row[0], "reserved": row[1], "remaining": row[0] - row[1]}
 
     def jobs(self, run_id: str | None = None, wave_id: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT * FROM agent_jobs WHERE 1=1"
@@ -278,6 +348,7 @@ class AgentScheduler:
                 if json.loads(row[0])["status"] == "rejected"][:5]
         profile = PROFILES[assignment["role"]]
         prefix = f"--attempt {attempt_id}"
+        turn_budget = self.model_turn_budget(run_id)
         return {
             "run_id": run_id, "wave_id": assignment["assignment_id"].split(":")[0],
             "assignment_id": assignment["assignment_id"], "attempt_id": attempt_id, "role": assignment["role"],
@@ -288,6 +359,7 @@ class AgentScheduler:
             "prior_reports": prior_reports,
             "prior_knowledge": prior_knowledge,
             "tools": profile.recommended_tools, "max_turns": assignment.get("max_turns", profile.max_turns),
+            "run_model_turn_budget": turn_budget,
             "seconds": assignment.get("deadline_seconds"), "max_output_chars": 8000,
             "forbidden": ["official submission", "scope or endpoint grants", "credentials", "re-delegation",
                           "running challenge programs on the host", "putting candidates in reports"],

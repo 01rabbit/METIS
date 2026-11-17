@@ -484,35 +484,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     transcript: list[dict[str, Any]] = []
     turns: list[dict[str, Any]] = []
     attached: dict[str, tuple[str, bytes]] = {}
-    budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
-    outcome: dict[str, Any] = {"state": "running"}
-    for _ in range(budget_calls):
-        current = _job(scheduler, assignment_id)
-        if current["attempt_id"] != attempt_id or current["state"] != "running":
-            outcome = {"state": "stopped", "reason": f"attempt no longer running ({current['state']})"}
-            break
-        remaining = (current["deadline"] or clock() + turn_timeout) - clock()
-        if remaining <= 0:
-            scheduler.tick()
-            outcome = {"state": "timed_out", "reason": "deadline exceeded before the next turn"}
-            break
-        def stopped() -> bool:
-            latest = _job(scheduler, assignment_id)
-            return latest["attempt_id"] != attempt_id or latest["state"] != "running"
 
-        turn = runner.run(render_prompt(brief, transcript, note), model=selected, timeout=min(turn_timeout, remaining),
-                          should_stop=stopped, images=list(attached.values()) or None)
-        if (not turn.stopped and turn.returncode != 0 and not turn.timed_out
-                and any(marker in turn.stderr_tail.lower() for marker in TRANSIENT_MARKERS)):
-            _log(scheduler, assignment_id, attempt_id, "codex_turn_retry", turn.stderr_tail[-160:])
-            time.sleep(TRANSIENT_BACKOFF)
-            turn = runner.run(render_prompt(brief, transcript, note), model=selected,
-                              timeout=min(turn_timeout, max(5.0, remaining - TRANSIENT_BACKOFF)),
-                              should_stop=stopped, images=list(attached.values()) or None)
-        if turn.stopped:
-            _log(scheduler, assignment_id, attempt_id, "codex_killed", "attempt cancelled during a Codex turn")
-            outcome = {"state": "stopped", "reason": "attempt cancelled; Codex process group killed mid-turn"}
-            break
+    def record_turn(turn: CodexTurn) -> None:
         record = {"thread_id": turn.thread_id, "returncode": turn.returncode, "usage": turn.usage,
                   "items": turn.item_types, "timed_out": turn.timed_out, "tool_errors": len(turn.tool_errors),
                   "isolation": turn.isolation}
@@ -522,6 +495,75 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         summary["isolation"] = f"{iso.get('mode', 'none')}:refused={len(iso.get('refused', []))}:{iso.get('auth', '-')}"
         _log(scheduler, assignment_id, attempt_id, "codex_turn", json.dumps(summary))
         _usage(scheduler, assignment_id, turns, selected)
+
+    def stop_outcome(reason: str) -> dict[str, str]:
+        latest = _job(scheduler, assignment_id)
+        state = latest["state"] if latest["state"] != "running" else "stopped"
+        return {"state": state, "reason": reason[:200]}
+
+    def reserve_turn() -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+        try:
+            return scheduler.reserve_model_turn(run_id, assignment_id, attempt_id), None
+        except ValueError as exc:
+            latest = _job(scheduler, assignment_id)
+            if latest["attempt_id"] != attempt_id or latest["state"] != "running":
+                return None, stop_outcome(str(exc))
+            raise
+
+    budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
+    outcome: dict[str, Any] = {"state": "running"}
+    for _ in range(budget_calls):
+        current = _job(scheduler, assignment_id)
+        if current["attempt_id"] != attempt_id or current["state"] != "running":
+            outcome = stop_outcome(f"attempt no longer running ({current['state']})")
+            break
+        remaining = (current["deadline"] or clock() + turn_timeout) - clock()
+        if remaining <= 0:
+            scheduler.tick()
+            outcome = stop_outcome("deadline exceeded before the next turn")
+            break
+        def stopped() -> bool:
+            latest = _job(scheduler, assignment_id)
+            return latest["attempt_id"] != attempt_id or latest["state"] != "running"
+
+        reservation, stopped_result = reserve_turn()
+        if stopped_result is not None:
+            outcome = stopped_result
+            break
+        if reservation is None:
+            outcome = {"state": "failed", "reason": "run specialist model-turn budget exhausted"}
+            break
+        turn = runner.run(render_prompt(brief, transcript, note), model=selected, timeout=min(turn_timeout, remaining),
+                          should_stop=stopped, images=list(attached.values()) or None)
+        record_turn(turn)
+        if (not turn.stopped and turn.returncode != 0 and not turn.timed_out
+                and any(marker in turn.stderr_tail.lower() for marker in TRANSIENT_MARKERS)):
+            _log(scheduler, assignment_id, attempt_id, "codex_turn_retry", turn.stderr_tail[-160:])
+            time.sleep(TRANSIENT_BACKOFF)
+            latest = _job(scheduler, assignment_id)
+            if latest["attempt_id"] != attempt_id or latest["state"] != "running":
+                outcome = stop_outcome("attempt stopped before transient retry")
+                break
+            retry_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
+            if retry_remaining <= 0:
+                scheduler.tick()
+                outcome = stop_outcome("deadline exceeded before transient retry")
+                break
+            retry_reservation, stopped_result = reserve_turn()
+            if stopped_result is not None:
+                outcome = stopped_result
+                break
+            if retry_reservation is None:
+                outcome = {"state": "failed", "reason": "run specialist model-turn budget exhausted before retry"}
+                break
+            turn = runner.run(render_prompt(brief, transcript, note), model=selected,
+                              timeout=min(turn_timeout, retry_remaining),
+                              should_stop=stopped, images=list(attached.values()) or None)
+            record_turn(turn)
+        if turn.stopped:
+            _log(scheduler, assignment_id, attempt_id, "codex_killed", "attempt cancelled during a Codex turn")
+            outcome = stop_outcome("attempt cancelled; Codex process group killed mid-turn")
+            break
         violations = turn.violations()
         if violations:
             outcome = scheduler.fail(assignment_id, attempt_id, "policy_violation: Codex used tools " +
