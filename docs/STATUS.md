@@ -186,3 +186,12 @@ recovery does not fabricate a solve. This is control-plane evidence only; it
 does not demonstrate terminating an external worker or deployment recovery.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
+
+Phase 4 autopilot has a synthetic one-wave comparison against direct scheduler
+calls: both produced four inconclusive specialist reports with matching plan,
+enqueue, dispatch, and synthesis counts. Returned activity metrics match their
+persisted SQLite row; zero-job token usage stays `unknown`. One autopilot
+invocation packages the same control choreography as five direct scheduler
+calls, but the test does not measure real human time or solve performance.
+Continuation selection and sensitive decisions remain with Daybreak. See
+`docs/reports/phase4-autopilot-equivalence-2026-11-17.md`.

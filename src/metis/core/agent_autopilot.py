@@ -42,13 +42,14 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
     tokens: dict[str, int | str] = {}
     for key in usage_keys:
         values = [job["usage"].get(key) for job in jobs]
-        tokens[key] = sum(value for value in values if isinstance(value, int) and not isinstance(value, bool)) \
-            if all(isinstance(value, int) and not isinstance(value, bool) for value in values) else "unknown"
+        tokens[key] = (sum(value for value in values if isinstance(value, int) and not isinstance(value, bool))
+                       if values and all(isinstance(value, int) and not isinstance(value, bool)
+                                        for value in values) else "unknown")
     stop = result["stop"] or "unspecified"
     handoff_stops = {"candidate_for_daybreak", "sequential_work_for_daybreak", "other_wave_needs_reconciliation",
                      "existing_attempt_needs_reconciliation", "slots_unavailable_or_spawn_failed",
                      "failed_attempt_for_daybreak", "unresolved_attempts", "synthesis_for_daybreak",
-                     "continuation_for_daybreak", "invalid_or_repeated_continuation"}
+                     "continuation_for_daybreak", "invalid_or_repeated_continuation", "wave_limit"}
     metrics = {"invocation_id": uuid.uuid4().hex,
                "elapsed_seconds": round(max(0.0, finished - started), 3), "max_waves": max_waves,
                "waves_inspected": len(result["waves"]), "stop_reason": stop,

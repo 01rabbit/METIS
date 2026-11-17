@@ -269,6 +269,9 @@ wave count, stop reason, Daybreak handoff, scheduler operations, specialist turn
 token usage when the provider reports it. Unknown token counts and dollar cost remain
 explicitly unknown. These counters measure controller activity; they do not establish
 improved solve rate or reduced human work.
+The synthetic one-wave comparison and persisted-metric check are recorded in
+`docs/reports/phase4-autopilot-equivalence-2026-11-17.md`; zero specialist jobs leave
+token counts `unknown` rather than reporting a measured zero.
 
 ### P3: MUNIN retrieval and split controls
 

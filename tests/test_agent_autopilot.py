@@ -1,4 +1,6 @@
 """Autopilot drives only scheduler-authorized work and leaves decisions to Daybreak."""
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -107,3 +109,89 @@ def test_candidate_stops_before_next_batch(tmp_path):
     assert result["stop"] == "candidate_for_daybreak"
     assert sum(j["attempt_no"] for j in scheduler.jobs(run)) == 1
     assert "private synthetic answer" not in str(result)
+
+
+def _complete_synthetic_report(scheduler, run_id, assignment, attempt):
+    job = next(job for job in scheduler.jobs(run_id) if job["assignment_id"] == assignment)
+    sequence = CodexSession(scheduler.database).store.read(run_id)[-1].sequence
+    return scheduler.complete(run_id, assignment, attempt, {
+        "hypothesis": f"Role {job['role']} supports a parser hypothesis.",
+        "evidence": f"Run event {sequence} contains the synthetic observation.",
+        "falsifier": f"A failed parser result would falsify role {job['role']}.",
+        "next_action": f"Inspect a different input family for {job['role']}.",
+        "event_sequences": [sequence], "status": "inconclusive"})
+
+
+def test_autopilot_matches_manual_one_wave_control_flow_and_persists_metrics(tmp_path):
+    manual_root, auto_root = tmp_path / "manual", tmp_path / "auto"
+    manual_root.mkdir()
+    auto_root.mkdir()
+    manual, manual_run = setup_run(manual_root)
+    automatic, auto_run = setup_run(auto_root)
+    manual.configure(per_run_slots=2)
+    automatic.configure(per_run_slots=2)
+
+    plan = manual.ledger.create_wave(manual_run)
+    manual_operations = {"plan_created": 1, "enqueue": 1, "dispatch": 0, "spawn_retry": 0,
+                         "synthesize": 0, "continuation_created": 0, "specialists_started": 0}
+    manual.enqueue(manual_run, plan["wave_id"])
+    while any(job["state"] == "queued" for job in manual.jobs(manual_run, plan["wave_id"])):
+        manual_operations["dispatch"] += 1
+        started = manual.dispatch(manual_run)["started"]
+        assert started
+        manual_operations["specialists_started"] += len(started)
+        for job in started:
+            _complete_synthetic_report(manual, manual_run, job["assignment_id"], job["attempt_id"])
+    manual_synthesis = manual.ledger.synthesize(manual_run, plan["wave_id"])
+    manual_operations["synthesize"] += 1
+
+    def drive(scheduler, run_id, assignment, attempt, runner):
+        return _complete_synthetic_report(scheduler, run_id, assignment, attempt)
+
+    auto_result = autopilot(automatic, auto_run, None, max_waves=1, drive=drive)
+    assert auto_result["stop"] == "wave_limit"
+    assert auto_result["metrics"]["daybreak_handoffs"] == 1
+    expected_operations = {"plan_created": 1, "enqueue": 1, "dispatch": 2, "spawn_retry": 0,
+                           "synthesize": 1, "continuation_created": 0, "specialists_started": 4}
+    assert manual_operations == expected_operations
+    assert auto_result["operations"] == expected_operations
+    manual_shape = (manual_synthesis["complete"], len(manual_synthesis["reports"]),
+                    sorted(item["status"] for item in manual_synthesis["reports"]))
+    auto_synthesis = auto_result["waves"][0]
+    auto_shape = (auto_synthesis["complete"], len(auto_synthesis["reports"]),
+                  sorted(item["status"] for item in auto_synthesis["reports"]))
+    assert auto_shape == manual_shape
+
+    metrics = auto_result["metrics"]
+    with sqlite3.connect(automatic.database) as db:
+        row = db.execute("SELECT run_id,started,finished,elapsed_seconds,max_waves,waves_inspected,stop_reason,"
+                         "daybreak_handoffs,operations,specialist_turns,tokens,cost FROM agent_autopilot_runs "
+                         "WHERE invocation_id=?", (metrics["invocation_id"],)).fetchone()
+    assert row is not None
+    (stored_run, started, finished, elapsed, max_waves, waves_inspected, stop, handoffs,
+     operations, specialist_turns, tokens, cost) = row
+    assert stored_run == auto_run and started <= finished
+    assert abs((finished - started) - elapsed) <= 0.001
+    assert elapsed == metrics["elapsed_seconds"]
+    assert max_waves == metrics["max_waves"]
+    assert waves_inspected == metrics["waves_inspected"]
+    assert stop == metrics["stop_reason"] == auto_result["stop"]
+    assert handoffs == metrics["daybreak_handoffs"]
+    assert json.loads(operations) == metrics["operations"]
+    assert specialist_turns == metrics["specialist_turns"]
+    assert json.loads(tokens) == metrics["tokens"]
+    assert cost == metrics["cost"]
+
+
+def test_zero_job_autopilot_records_token_usage_as_unknown(tmp_path):
+    database = tmp_path / "state.sqlite"
+    run_id = CodexSession(database).intake(title="Simple synthetic", description="Decode this",
+                                          categories=["crypto"], paths=[])["run_id"]
+    scheduler = AgentScheduler(database, BridgeHost())
+    result = autopilot(scheduler, run_id, None, max_waves=1)
+    assert result["stop"] == "sequential_work_for_daybreak"
+    assert set(result["metrics"]["tokens"].values()) == {"unknown"}
+    with sqlite3.connect(database) as db:
+        tokens = db.execute("SELECT tokens FROM agent_autopilot_runs WHERE invocation_id=?",
+                            (result["metrics"]["invocation_id"],)).fetchone()[0]
+    assert json.loads(tokens) == result["metrics"]["tokens"]
