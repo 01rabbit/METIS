@@ -444,20 +444,25 @@ class AgentScheduler:
 
     def cancel(self, *, assignment_id: str | None = None, wave_id: str | None = None,
                reason: str = "cancelled by Daybreak") -> list[dict[str, Any]]:
-        targets = [job for job in self.jobs() if (assignment_id and job["assignment_id"] == assignment_id)
-                   or (wave_id and job["wave_id"] == wave_id)]
+        target_runs = sorted({job["run_id"] for job in self.jobs() if
+                              (assignment_id and job["assignment_id"] == assignment_id)
+                              or (wave_id and job["wave_id"] == wave_id)})
         results = []
-        for job in targets:
-            if job["state"] == "queued":
-                with self._db() as db:
-                    db.execute("UPDATE agent_jobs SET state='cancelled', failure=?, finished=? WHERE assignment_id=? "
-                               "AND state='queued'", (reason, time.time(), job["assignment_id"]))
-                results.append({"assignment_id": job["assignment_id"], "state": "cancelled"})
-            elif job["state"] == "running":
-                confirmed = self._stop(job)
-                results.append(self._end(job["assignment_id"], job["attempt_id"],
-                                         "cancelled" if confirmed else "unknown",
-                                         reason if confirmed else reason + " (stop not confirmed)"))
+        for run_id in target_runs:
+            with run_lock(self.database, run_id):
+                targets = [job for job in self.jobs(run_id) if (assignment_id and
+                           job["assignment_id"] == assignment_id) or (wave_id and job["wave_id"] == wave_id)]
+                for job in targets:
+                    if job["state"] == "queued":
+                        with self._db() as db:
+                            db.execute("UPDATE agent_jobs SET state='cancelled', failure=?, finished=? WHERE assignment_id=? "
+                                       "AND state='queued'", (reason, time.time(), job["assignment_id"]))
+                        results.append({"assignment_id": job["assignment_id"], "state": "cancelled"})
+                    elif job["state"] == "running":
+                        confirmed = self._stop(job)
+                        results.append(self._end(job["assignment_id"], job["attempt_id"],
+                                                 "cancelled" if confirmed else "unknown",
+                                                 reason if confirmed else reason + " (stop not confirmed)"))
         return results
 
     def _stop(self, job: dict[str, Any]) -> bool:
@@ -532,26 +537,28 @@ class AgentScheduler:
             intent = ToolIntent.model_validate(raw)
         except ValidationError:
             raise ValueError("intent must be {kind: data|artifact|derive, tool, data|artifact, options}") from None
-        job = self._running(assignment_id, attempt_id)
-        if job["run_id"] != run_id:
-            raise ValueError("assignment belongs to another run")
-        if job["deadline"] and time.time() > job["deadline"]:
-            self._stop(job)
-            self._end(assignment_id, attempt_id, "timed_out", "deadline exceeded")
-            raise ValueError("assignment deadline exceeded")
-        if job["turns_used"] >= job["max_turns"]:
-            self._stop(job)
-            self._end(assignment_id, attempt_id, "timed_out", "max turns reached")
-            raise ValueError("assignment max turns reached")
-        if intent.kind in {"artifact", "derive", "view"}:
-            allowed_artifacts = self._assignment_artifact_scope(job)
-            if allowed_artifacts is not None and intent.artifact not in allowed_artifacts:
-                with self._db() as db:
-                    self._log(db, assignment_id, attempt_id, "intent_scope_refused", "unassigned artifact")
-                raise ValueError("artifact is outside this assignment's scope")
-        identity, family = intent_identity(intent.kind, intent.tool, intent.artifact, intent.options, intent.data,
-                                           self.session.artifact_root(run_id))
         with run_lock(self.database, run_id):
+            # Admission, budget reservation, execution and derived-scope updates share the
+            # same per-run lock, so cancellation and concurrent intents have a defined order.
+            job = self._running(assignment_id, attempt_id)
+            if job["run_id"] != run_id:
+                raise ValueError("assignment belongs to another run")
+            if job["deadline"] and time.time() > job["deadline"]:
+                self._stop(job)
+                self._end(assignment_id, attempt_id, "timed_out", "deadline exceeded")
+                raise ValueError("assignment deadline exceeded")
+            if job["turns_used"] >= job["max_turns"]:
+                self._stop(job)
+                self._end(assignment_id, attempt_id, "timed_out", "max turns reached")
+                raise ValueError("assignment max turns reached")
+            if intent.kind in {"artifact", "derive", "view"}:
+                allowed_artifacts = self._assignment_artifact_scope(job)
+                if allowed_artifacts is not None and intent.artifact not in allowed_artifacts:
+                    with self._db() as db:
+                        self._log(db, assignment_id, attempt_id, "intent_scope_refused", "unassigned artifact")
+                    raise ValueError("artifact is outside this assignment's scope")
+            identity, family = intent_identity(intent.kind, intent.tool, intent.artifact, intent.options, intent.data,
+                                               self.session.artifact_root(run_id))
             self._check_repeat(run_id, assignment_id, attempt_id, identity, family, intent.new_evidence)
             if intent.kind == "data":
                 if intent.data is None:

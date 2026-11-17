@@ -7,6 +7,7 @@ import base64
 import json
 import sqlite3
 import struct
+import threading
 
 import pytest
 
@@ -227,6 +228,66 @@ def test_derived_artifact_scope_stays_with_its_creating_assignment(tmp_path):
     other_report["artifact_refs"] = [names[1]]
     assert scheduler.complete(run_id, non_owner["assignment_id"], non_owner["attempt_id"],
                                other_report)["state"] == "completed"
+
+
+def test_concurrent_intents_cannot_exceed_turn_cap(env):
+    scheduler, run_id, jobs, names, _root = env
+    job = jobs[0]
+    with sqlite3.connect(scheduler.database) as db:
+        db.execute("UPDATE agent_jobs SET max_turns=1, turns_used=0 WHERE assignment_id=?",
+                   (job["assignment_id"],))
+    barrier = threading.Barrier(3)
+    outcomes = []
+
+    def call(index):
+        barrier.wait()
+        try:
+            outcomes.append(("ok", _intent(scheduler, run_id, job, {
+                "kind": "artifact", "tool": "text", "artifact": names[index],
+            })))
+        except ValueError as exc:
+            outcomes.append(("error", str(exc)))
+
+    threads = [threading.Thread(target=call, args=(index,)) for index in (0, 1)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(kind == "ok" for kind, _ in outcomes) == 1
+    assert sum(kind == "error" and "max turns" in result for kind, result in outcomes) == 1
+    actual = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])
+    assert actual["turns_used"] == 1
+
+
+def test_cancel_waits_for_inflight_intent_then_rejects_later_intents(env, monkeypatch):
+    scheduler, run_id, jobs, names, _root = env
+    job = jobs[0]
+    entered, release = threading.Event(), threading.Event()
+    original = scheduler.session.artifact
+
+    def blocked_artifact(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=10)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler.session, "artifact", blocked_artifact)
+    intent_result, cancel_result = [], []
+    intent_thread = threading.Thread(target=lambda: intent_result.append(_intent(
+        scheduler, run_id, job, {"kind": "artifact", "tool": "text", "artifact": names[0]})))
+    intent_thread.start()
+    assert entered.wait(timeout=10)
+    cancel_thread = threading.Thread(target=lambda: cancel_result.extend(
+        scheduler.cancel(assignment_id=job["assignment_id"])))
+    cancel_thread.start()
+    assert cancel_thread.is_alive()
+    release.set()
+    intent_thread.join(timeout=10)
+    cancel_thread.join(timeout=10)
+    assert intent_result and cancel_result[0]["state"] == "cancelled"
+    with pytest.raises(ValueError, match="stale or unknown attempt"):
+        _intent(scheduler, run_id, job, {"kind": "artifact", "tool": "hex", "artifact": names[1]})
 
 
 def test_retest_needs_an_observation_from_a_different_action_and_is_limited(env):
