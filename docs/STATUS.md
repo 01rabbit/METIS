@@ -93,6 +93,15 @@ extraction against live pages. Password, Please was Daybreak-led, and Daybreak
 performed the bounded collision search for Happy Birthday. These are not
 evidence that an autonomous specialist produced the answers.
 
+The `One More Approval` Daily challenge was additionally used for a local-only
+METIS test. Two Codex specialist roles independently identified the
+complementary ECDSA `s` transformation, and the supplied source accepted it in
+an isolated test using a pure-Python compatibility shim. The configured image
+lacks PyCryptodome, so this is not a library-level or official solve; the card's
+individual prior-solve state was also not explicit. No submission was made.
+Details and limitations are in
+[`alpacahack-one-more-approval-local-2026-11-17.md`](reports/alpacahack-one-more-approval-local-2026-11-17.md).
+
 Separately, Codex CLI 0.169.0 completed one generated local direct-answer fixture
 through the `CodexProvider`; the private external fixture oracle independently
 verified the candidate. The run observed 6,902 input and 41 output tokens, while
