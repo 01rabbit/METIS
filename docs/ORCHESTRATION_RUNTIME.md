@@ -36,7 +36,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   Tool intentのaction数もrun単位で共有する。CodexCLI driverでは、実際のprovider呼出直前に
   run固定のmodel-turn予算（既定24、`metis agent slots --specialist-turn-budget N`）をSQLiteで予約する。
   失敗・timeout・retryも予約消費に数え、run間の設定変更や再起動で上限は増えない。
-  これはBridgeHost経由でDaybreakが直接起動するsubagentには強制できない。token/costは利用量報告が
+  bounded autopilot はこの予約機構を明示するrunnerを必須にし、そうでなければdispatch前に停止する。
+  BridgeHost経由でDaybreakが手動で直接起動するsubagentには強制できず、その経路はbounded autopilotの
+  保証外として扱う。token/costは利用量報告が
   不確実なため上限予約できず、未知なら`unknown`のまま。実モデルの単独対delegated比較も未実施で、
   Issue #6の受入れゲートは未達。
 

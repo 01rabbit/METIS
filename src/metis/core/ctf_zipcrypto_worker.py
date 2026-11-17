@@ -87,18 +87,9 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     except (OSError, RuntimeError, ValueError) as exc:
         return {"found": False, "reason": "isolation_unavailable", "stage": "sandbox",
                 "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}
-    if result.get("memory_limit_exceeded"):
-        return {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
-                "seconds": result.get("elapsed")}
-    if result.get("timed_out"):
-        return {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",
-                "seconds": result.get("elapsed")}
-    if result.get("engine_timed_out"):
-        return {"found": False, "reason": "worker_failed", "stage": result.get("failure_stage", "sandbox-engine"),
-                "detail": "container engine operation exceeded its timeout"}
-    if not result.get("ok"):
-        return {"found": False, "reason": "worker_failed", "stage": "sandbox",
-                "exit_code": result.get("exit_code")}
+    failure = _sandbox_failure(result)
+    if failure is not None:
+        return failure
     try:
         payload = json.loads(result["stdout"]["text"])
     except (KeyError, TypeError, ValueError):
@@ -111,3 +102,20 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     if not isinstance(attack, dict):
         return {"found": False, "reason": "worker_failed", "stage": "worker-output"}
     return attack
+
+
+def _sandbox_failure(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Map isolated execution failures to stable ZipCrypto reason codes."""
+    if result.get("memory_limit_exceeded"):
+        return {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
+                "seconds": result.get("elapsed")}
+    if result.get("timed_out"):
+        return {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",
+                "seconds": result.get("elapsed")}
+    if result.get("engine_timed_out"):
+        return {"found": False, "reason": "worker_failed", "stage": result.get("failure_stage", "sandbox-engine"),
+                "detail": "container engine operation exceeded its timeout"}
+    if not result.get("ok"):
+        return {"found": False, "reason": "worker_failed", "stage": "sandbox",
+                "exit_code": result.get("exit_code")}
+    return None

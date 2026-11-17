@@ -11,6 +11,10 @@ from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 
 
+class BudgetedTestRunner:
+    model_turn_budget_enforced = True
+
+
 def setup_run(tmp_path: Path):
     db = tmp_path / "state.sqlite"
     files = []
@@ -36,11 +40,11 @@ def test_drives_batches_and_resumes_completed_wave_without_new_attempts(tmp_path
             "next_action": f"Analyze a different window number {label}.",
             "event_sequences": [seq], "status": "inconclusive"})
 
-    first = autopilot(scheduler, run, None, max_waves=2, drive=drive)
+    first = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=2, drive=drive)
     assert first["stop"] == "continuation_for_daybreak"
     assert first["waves"][0]["complete"]
     assert all(j["attempt_no"] == 1 for j in scheduler.jobs(run))
-    second = autopilot(scheduler, run, None, max_waves=2, drive=drive)
+    second = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=2, drive=drive)
     assert second["stop"] == "continuation_for_daybreak"
     assert all(j["attempt_no"] == 1 for j in scheduler.jobs(run))
 
@@ -50,7 +54,7 @@ def test_existing_running_attempt_is_not_driven_again(tmp_path):
     wave = scheduler.ledger.create_wave(run)
     scheduler.enqueue(run, wave["wave_id"])
     scheduler.dispatch(run)
-    result = autopilot(scheduler, run, None, max_waves=1,
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1,
                        drive=lambda *args: pytest.fail("must not run an existing attempt"))
     assert result["stop"] == "existing_attempt_needs_reconciliation"
 
@@ -58,12 +62,12 @@ def test_existing_running_attempt_is_not_driven_again(tmp_path):
 def test_bounds_and_failed_attempt_stops_without_retry(tmp_path):
     scheduler, run = setup_run(tmp_path)
     with pytest.raises(ValueError, match="max-waves"):
-        autopilot(scheduler, run, None, max_waves=0)
+        autopilot(scheduler, run, BudgetedTestRunner(), max_waves=0)
 
     def fail(scheduler, run_id, assignment, attempt, runner):
         return scheduler.fail(assignment, attempt, "specialist needs Daybreak")
 
-    result = autopilot(scheduler, run, None, max_waves=1, drive=fail)
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=fail)
     assert result["stop"] == "failed_attempt_for_daybreak"
     assert all(j["attempt_no"] == 1 for j in scheduler.jobs(run))
 
@@ -81,15 +85,15 @@ def test_daybreak_continuation_requires_matching_inconclusive_report(tmp_path):
             "next_action": f"Analyze a different window number {label}.",
             "event_sequences": [seq], "status": "inconclusive"})
 
-    first = autopilot(scheduler, run, None, max_waves=2, drive=drive)
+    first = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=2, drive=drive)
     wave = first["waves"][0]
     report = wave["reports"][0]
     selection = {"wave_id": wave["wave_id"], "report_id": report["report_id"],
                  "reason": report["next_action"]}
-    invalid = autopilot(scheduler, run, None, max_waves=2, drive=drive,
+    invalid = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=2, drive=drive,
                         continuations=[{**selection, "reason": "unrelated assumption"}])
     assert invalid["stop"] == "invalid_or_repeated_continuation"
-    result = autopilot(scheduler, run, None, max_waves=2, continuations=[selection],
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=2, continuations=[selection],
                        drive=lambda s, r, a, t, runner: s.fail(a, t, "requires Daybreak"))
     assert len(result["waves"]) == 2
     assert result["stop"] == "failed_attempt_for_daybreak"
@@ -105,7 +109,7 @@ def test_candidate_stops_before_next_batch(tmp_path):
         scheduler.candidate(run_id, assignment, attempt, "private synthetic answer", [seq])
         return scheduler.fail(assignment, attempt, "candidate handed over")
 
-    result = autopilot(scheduler, run, None, max_waves=2, drive=candidate)
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=2, drive=candidate)
     assert result["stop"] == "candidate_for_daybreak"
     assert sum(j["attempt_no"] for j in scheduler.jobs(run)) == 1
     assert "private synthetic answer" not in str(result)
@@ -148,7 +152,7 @@ def test_autopilot_matches_manual_one_wave_control_flow_and_persists_metrics(tmp
     def drive(scheduler, run_id, assignment, attempt, runner):
         return _complete_synthetic_report(scheduler, run_id, assignment, attempt)
 
-    auto_result = autopilot(automatic, auto_run, None, max_waves=1, drive=drive)
+    auto_result = autopilot(automatic, auto_run, BudgetedTestRunner(), max_waves=1, drive=drive)
     assert auto_result["stop"] == "wave_limit"
     assert auto_result["metrics"]["daybreak_handoffs"] == 1
     expected_operations = {"plan_created": 1, "enqueue": 1, "dispatch": 2, "spawn_retry": 0,
@@ -195,3 +199,15 @@ def test_zero_job_autopilot_records_token_usage_as_unknown(tmp_path):
         tokens = db.execute("SELECT tokens FROM agent_autopilot_runs WHERE invocation_id=?",
                             (result["metrics"]["invocation_id"],)).fetchone()[0]
     assert json.loads(tokens) == result["metrics"]["tokens"]
+
+
+def test_autopilot_fails_closed_without_model_turn_reservations(tmp_path):
+    scheduler, run = setup_run(tmp_path)
+    result = autopilot(scheduler, run, object(), max_waves=1,
+                       drive=lambda *args: pytest.fail("unmetered host must not start model work"))
+    assert result["stop"] == "host_model_turn_budget_unenforced"
+    assert result["budget_enforcement"] == "unavailable"
+    assert result["operations"]["dispatch"] == 0
+    assert scheduler.model_turn_budget(run) is None
+    assert scheduler.jobs(run) == []
+    assert result["metrics"]["daybreak_handoffs"] == 1

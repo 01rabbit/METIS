@@ -176,6 +176,8 @@ class CodexTurn:
 
 
 class CodexRunner(Protocol):
+    model_turn_budget_enforced: bool
+
     def run(self, prompt: str, *, model: str | None, timeout: float,
             should_stop: Callable[[], bool] | None = None,
             images: list[tuple[str, bytes]] | None = None) -> CodexTurn: ...
@@ -199,6 +201,8 @@ class CodexCLI:
     :mod:`metis.core.codex_isolation` and refuses to run where it is unavailable.
     ``isolation="none"`` is an explicit opt-out that keeps only the CLI flags; it is recorded.
     """
+
+    model_turn_budget_enforced = True
 
     def __init__(self, executable: str | None = None, *, features: set[str] | None = None,
                  isolation: str = "required", allow_untested: bool = False,

@@ -49,7 +49,8 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
     handoff_stops = {"candidate_for_daybreak", "sequential_work_for_daybreak", "other_wave_needs_reconciliation",
                      "existing_attempt_needs_reconciliation", "slots_unavailable_or_spawn_failed",
                      "failed_attempt_for_daybreak", "unresolved_attempts", "synthesis_for_daybreak",
-                     "continuation_for_daybreak", "invalid_or_repeated_continuation", "wave_limit"}
+                     "continuation_for_daybreak", "invalid_or_repeated_continuation", "wave_limit",
+                     "host_model_turn_budget_unenforced"}
     metrics = {"invocation_id": uuid.uuid4().hex,
                "elapsed_seconds": round(max(0.0, finished - started), 3), "max_waves": max_waves,
                "waves_inspected": len(result["waves"]), "stop_reason": stop,
@@ -96,6 +97,11 @@ def _autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, m
                          (run_id,)).fetchone()
     plan = json.loads(row[0]) if row else scheduler.ledger.create_wave(run_id)
     result["operations"]["plan_created"] += int(row is None)
+    if plan.get("assignments") and getattr(runner, "model_turn_budget_enforced", False) is not True:
+        result["stop"] = "host_model_turn_budget_unenforced"
+        result["budget_enforcement"] = "unavailable"
+        return result
+    result["budget_enforcement"] = "codex_call_reservations" if plan.get("assignments") else "not_applicable"
     for _ in range(max_waves):
         wave_id = plan["wave_id"]
         if plan.get("execution_mode") == "sequential" or not plan["assignments"]:

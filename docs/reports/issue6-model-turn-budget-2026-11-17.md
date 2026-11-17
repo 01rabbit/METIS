@@ -37,6 +37,13 @@ METIS's provider-call boundary; METIS cannot reserve or stop those hidden model
 turns. Provider token/cost usage is post-call and may be absent, so this change
 does not claim a hard token cap; missing usage remains `unknown`.
 
+Bounded autopilot now requires its runner to explicitly advertise the
+controller-side model-turn reservation contract. A runner without that
+capability stops before dispatch with `host_model_turn_budget_unenforced` and
+reports `budget_enforcement: unavailable`. The production `CodexCLI` runner
+advertises the contract; the direct/manual `BridgeHost` subagent route remains
+outside bounded-autopilot guarantees.
+
 No controlled real-model single-agent versus multi-agent benchmark has been
 run. The synthetic scheduler tests prove only reservation, race behavior, and
 failure-before-call mechanics. Issue #6 remains open until a controlled,

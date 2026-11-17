@@ -142,14 +142,18 @@ end-to-end timeout that kills the entire worker process group. The generic
 mapping has a deterministic unit test. A real-container ZipCrypto route OOM
 test passed in CI under a fixed 128 MiB test profile (`5 passed in 76.78s` on
 exact head `9465732`). It reports a route-level `sandbox-oom` stage because startup/import/search
-phases are not distinguished. One full intent search in the isolated
+phases are not distinguished. A new synthetic memory-pressure test in the
+actual 2 GiB ZipCrypto profile observed the cgroup OOM marker, mapped it to
+`memory_limit_exceeded`, and confirmed worker-registry cleanup. This validates
+production-profile OOM classification and cleanup, but does not show a natural
+ZipCrypto candidate search reaching the limit. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
 300-second budget. Container creation, engine attach, and OOM inspection timeout
 results now map to `worker_failed` with their infrastructure phase; only the
 in-container supervisor's workload deadline maps to `work_exceeds_budget`. Fake-engine phase tests and
-real-container deadline/OOM tests pass. Stay recovery and production-profile 2 GiB candidate-search
-OOM classification remain unproven. The 2020 two-file attack's
+real-container deadline/OOM tests pass. Stay recovery, OOM phase attribution,
+and natural candidate-search OOM remain unproven. The 2020 two-file attack's
 paper and legacy CUDA source were reviewed, not run. Docker-backed budget and
 full-intent integration checks now run in a dedicated GitHub Actions job.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
@@ -169,10 +173,12 @@ remaining wall-clock and has a regression test for parallel dispatch. Shared run
 action limits already apply to mediated intents. The CodexCLI driver now
 atomically reserves Codex call attempts against a per-run model-turn limit fixed
 when the first wave is queued (default 24); concurrency, no-call on
-exhaustion, and immutable-run-limit tests pass. BridgeHost's direct host-native
-subagent calls remain outside that reservation boundary, token/cost limits are
-not enforceable when usage is unknown, and a controlled real-model multi-agent
-vs single-agent benchmark remains outstanding. Issue #6 stays open; see
+exhaustion, and immutable-run-limit tests pass. Bounded autopilot now fails
+closed unless its runner explicitly advertises this controller-side reservation
+mechanism. Manual BridgeHost delegation remains outside that guarantee.
+Token/cost limits are not enforceable when usage is unknown, and a controlled
+real-model multi-agent vs single-agent benchmark remains outstanding. Issue #6
+stays open; see
 [`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
 
 Browser verdict attestation now requires a matching pre-reserved candidate;

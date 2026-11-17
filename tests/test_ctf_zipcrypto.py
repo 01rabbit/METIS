@@ -10,6 +10,7 @@ The full Biham-Kocher search takes minutes; it runs when METIS_TEST_SLOW=1.
 import json
 import os
 import random
+import sqlite3
 import struct
 import subprocess
 import time
@@ -242,6 +243,40 @@ def test_zipcrypto_real_low_memory_container_reports_memory_limit(tmp_path):
     }, _profile="zipcrypto_test_lowmem")
     assert result["reason"] == "memory_limit_exceeded", result
     assert result["stage"] == "sandbox-oom"
+
+
+def test_zipcrypto_production_profile_oom_classification_and_cleanup(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built numpy-enabled sandbox image")
+    from metis.core.codex_session import CodexSession
+    from metis.core.ctf_sandbox import Sandbox, SandboxRequest, configure
+    from metis.core.ctf_zipcrypto_worker import _sandbox_failure
+
+    source = tmp_path / "oom-profile.zip"
+    source.write_bytes(_zipcrypto_archive({"known.txt": b"synthetic profile test"}, b"profile-test"))
+    database = tmp_path / "state" / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Synthetic", description="ZipCrypto production profile memory bound",
+                            paths=[source])["run_id"]
+    artifact = session.context(run_id)["challenge"]["artifacts"][0]
+    configure(database, engine="docker", image=image, platform=None)
+    pressure = """chunks = []
+while True:
+    block = bytearray(64 * 1024 * 1024)
+    for offset in range(0, len(block), 4096):
+        block[offset] = 1
+    chunks.append(block)
+"""
+    result = Sandbox(database).execute(
+        run_id, SandboxRequest(target=artifact, mode="script", script=pressure, timeout=30),
+        _profile="zipcrypto")
+    assert result.get("memory_limit_exceeded") is True, result
+    failure = _sandbox_failure(result)
+    assert failure == {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
+                       "seconds": result["elapsed"]}
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
 
 
 def test_zipcrypto_worker_enforces_container_deadline(tmp_path, monkeypatch):
