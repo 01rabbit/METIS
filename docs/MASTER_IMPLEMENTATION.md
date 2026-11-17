@@ -84,6 +84,13 @@ Gate: generated workflows are tested in sandbox; tool additions require explicit
 Deliver held-out benchmark manifest and hidden oracle, categories/difficulty strata, repeated trials with pinned model configurations, ablations (without MUNIN, without planner, single vs multi-agent), cost/time/solve metrics and confidence intervals, contamination checks.
 Gate: reproducible report using unseen problems, verified flags only counted solved, cost and runtime recorded, no unjustified “best” claim. Publish failure analysis.
 
+The current `metis.evaluation.heldout_analysis` interface validates retained
+answer-free trial metrics and generates task-cluster intervals, paired ablation
+contrasts, contamination/failure breakdowns and comparable aggregate cap reports.
+It consumes controller-exported evidence references without authenticating them.
+Its checked-in dataset is an invented analysis fixture, not held-out performance
+evidence; an independently reviewed exporter and fresh experiment remain open.
+
 ### P8 — Production Harness (depends on P7)
 Deliver secure Web UI/API, immutable run evidence and artifact lifecycle, operator pause/cancel, quotas, role separation, release packaging, reproducible deployment on Apple Silicon macOS controller with Linux execution VM, CI and runbooks.
 Gate: end-to-end installer smoke test on target platform; policy boundary penetration tests; operator recovery drills; benchmark regression gate; documented limitations.

@@ -39,7 +39,14 @@ def cluster_interval(rows: list[dict[str, Any]], task_ids: list[str],
 def analyze(data: dict[str, Any]) -> dict[str, Any]:
     task_families = data["encoding_pairs"]
     task_ids = sorted(task_families)
-    records_by_key = {(record["case"], record["arm"]): record for record in data["records"]}
+    cases = [pair["case"] for pair in data["pairs"]]
+    if len(set(cases)) != len(cases):
+        raise ValueError("paired repetitions require distinct case identifiers")
+    record_keys = [(record["case"], record["arm"]) for record in data["records"]]
+    expected_keys = {(case, arm) for case in cases for arm in ("single", "multi")}
+    if len(set(record_keys)) != len(record_keys) or set(record_keys) != expected_keys:
+        raise ValueError("expected exactly one record per paired case and arm")
+    records_by_key = dict(zip(record_keys, data["records"], strict=True))
     rows = []
     for pair in data["pairs"]:
         task_id = pair["case"].rsplit("-rep-", 1)[0]
@@ -63,6 +70,7 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             record = records_by_key[(pair["case"], arm)]
             row[f"{arm}_protocol_complete"] = (
                 record["synthesis_complete"] is True
+                and len(record["job_states"]) == (1 if arm == "single" else 2)
                 and all(state == "completed" for state in record["job_states"])
             )
             row[f"{arm}_workflow_verified"] = (
@@ -189,6 +197,7 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "Synthetic short-text decoding only; no general CTF or AlpacaHack solve-rate claim.",
             "Elapsed time is end-to-end controller time, including setup, synthesis, cleanup, and verification.",
             "Role prompt and decomposition differences are bundled in the two-arm comparison.",
+            "Multi arm receives controller-computed final digest; single arm computes it in-model.",
             "Token totals are the runner-reported aggregates; provider cost remains unknown.",
         ],
     }

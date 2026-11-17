@@ -33,7 +33,7 @@ def fixture_result() -> dict:
                     "usage_complete": True,
                     "usage": {"input_tokens": 10, "output_tokens": 2},
                     "synthesis_complete": True,
-                    "job_states": ["completed"],
+                    "job_states": ["completed"] * (1 if arm == "single" else 2),
                 })
     return {
         "study": "issue6-diverse-real-model-benchmark",
@@ -63,7 +63,7 @@ def test_analysis_bootstraps_task_clusters_and_reports_paired_outcomes():
 def test_analysis_rejects_incomplete_or_unpaired_input():
     data = fixture_result()
     data["pairs"].pop()
-    with pytest.raises(ValueError, match="30 task clusters"):
+    with pytest.raises(ValueError, match="paired case|30 task clusters"):
         analyze(data)
 
 
@@ -85,3 +85,26 @@ def test_analysis_separates_oracle_candidate_from_complete_workflow():
     assert result["arms"]["multi"]["protocol_complete_trials"] == 59
     assert result["arms"]["multi"]["protocol_complete_oracle_verified"] == 59
     assert result["arms"]["multi"]["oracle_verified_but_protocol_incomplete"] == 1
+
+
+@pytest.mark.parametrize("arm_index,states", [(0, []), (1, []), (1, ["completed"])])
+def test_analysis_requires_exact_assigned_job_count(arm_index, states):
+    data = fixture_result()
+    data["records"][arm_index]["job_states"] = states
+    result = analyze(data)
+    arm = "single" if arm_index == 0 else "multi"
+    assert result["arms"][arm]["protocol_complete_trials"] == 59
+
+
+@pytest.mark.parametrize("mutation", ["duplicate_record", "missing_record", "duplicate_pair"])
+def test_analysis_rejects_duplicate_or_missing_evidence(mutation):
+    data = fixture_result()
+    if mutation == "duplicate_record":
+        data["records"].append(data["records"][0].copy())
+    elif mutation == "missing_record":
+        data["records"].pop()
+    else:
+        # Previously two copies of rep-0 satisfied the two-repetition count.
+        data["pairs"][1] = data["pairs"][0].copy()
+    with pytest.raises(ValueError):
+        analyze(data)

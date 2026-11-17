@@ -58,4 +58,8 @@ This demonstrates an explicit local operator approval path for one fixed
 built-in capability, not arbitrary tool registration, autonomous research, or
 human maintainer identity authentication. It does not satisfy Issue #7's P5
 dependency; Issue #6 still lacks a repeated, diverse, pinned-model comparison
-showing a gain. Keep Issue #7 open and PR #31 Draft.
+establishing a gain under current evidence checks. The later historical
+30-task comparison gave only multi an external controller-computed digest,
+and its purged per-trial records cannot be rescored after correcting job-count
+and duplicate-record validation. Its reported 12/60 result does not establish
+the dependency's acceptance. Keep Issue #7 open and PR #31 Draft.

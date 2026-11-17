@@ -2,13 +2,15 @@
 
 ## Result
 
-The preregistered two-specialist arm improved workflow-complete oracle solves
-on this bounded synthetic task set. It completed 12/60 runs with an oracle-
+The historical analysis reported improved workflow-complete oracle solves
+on this bounded synthetic task set. It reported 12/60 runs with an oracle-
 verified answer (20%); the single-specialist arm completed 0/60 (0%). The
 paired difference was **+20.0 percentage points**, with a 95% task-cluster
 bootstrap percentile interval of **[+10.0, +30.0] points**. The interval
 resampled the 30 task IDs 10,000 times with seed `20261118`, retaining both
-repetitions per sampled task.
+repetitions per sampled task. These historical counts and intervals cannot be
+recomputed after the stricter analyzer corrections described below and must
+not count as verified Issue #6 acceptance evidence.
 
 The oracle alone accepted a candidate in 53/60 two-specialist runs (88.3%) and
 0/60 single-specialist runs. However, **41 of those 53 multi-arm candidates
@@ -54,14 +56,27 @@ Future benchmark runs should retain a redacted per-trial metrics artifact with
 task IDs, arm, oracle boolean, completion state, and resource metrics, while
 excluding all candidate and answer material.
 
-This supports a paired gain for this particular synthetic short-text decoding
-set under the tested Codex CLI controller. It does not establish general CTF
+The historical result suggested a paired gain for this particular synthetic
+short-text decoding set under the tested Codex CLI controller, but the retained
+evidence does not establish that gain under the corrected scoring rules. It does not establish general CTF
 performance, AlpacaHack solve rate, P7 held-out performance, or BridgeHost
 budget enforcement. The two-arm contrast bundles role prompts and task
-decomposition. Multi-arm job failures were frequent and materially reduced
-workflow completion. Issue #6 can be considered met for its preregistered
-paired-gain gate, while these reliability limits remain explicit; broader P6
-and issue #7 acceptance still require their own evidence.
+decomposition. In addition, the multi-specialist arm received a final digest
+computed by the controller from its component outputs, while the single arm
+had to compute that digest in-model. Equal aggregate caps therefore do not
+make this an isolated test of specialist count or equal computational help;
+the +20-point contrast compares these asymmetric full workflows. Multi-arm job failures were frequent and materially reduced
+workflow completion. This result must not be used to pass Issue #6's
+paired-gain gate or its Issue #7 dependency. A new retained-data experiment
+with equivalent post-processing and corrected scoring is required; broader P6
+and Issue #7 acceptance still require their own evidence.
+
+The analyzer was subsequently hardened to require exactly one completed job
+for single and two for multi, distinct repetition identifiers, and exactly one
+record per case/arm. Empty job lists and duplicate records previously passed
+or were silently overwritten. Because the original per-trial records were
+purged, the historical counts above cannot be revalidated under those stricter
+checks; passing current unit tests does not re-establish this historical gain.
 
 The aggregate analyzer is
 [`issue6_diverse_analysis.py`](../../src/metis/evaluation/issue6_diverse_analysis.py);
