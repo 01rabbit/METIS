@@ -72,7 +72,10 @@ first-action baseline, with paired bootstrap 95% interval [0.300, 0.633] for
 the solve-rate difference. The mock runtime now distinguishes parser rejection
 from non-text output consistently with the worker. This remains synthetic
 mechanism evidence; broader semantic hypothesis and multi-step strategy
-handling, diverse held-out tasks, and real-model comparison remain open. See
+handling, diverse held-out tasks, and real-model comparison remain open. Issue
+#5's listed acceptance gate was met and the issue was closed on 2026-11-17
+after independent conditional GO and exact-head CI success; the broader P4
+roadmap remains open. See
 `docs/reports/issue5-adaptive-replanning-2026-11-17.md`.
 
 Final test, lint, type, build, bootstrap, and fresh-clone results for this
@@ -279,9 +282,9 @@ matching. The same status in adjacent waves signals a stall, and changing
 strategy clears it. Exact reused wave rationales are rejected. It does not
 infer paraphrased hypothesis equivalence, compare multi-step plans, or choose an
 alternative itself. The independent review found the minimum synthetic gate
-defensible; current PR-head CI remains pending. Held-out evaluation and
-real-model baseline comparison remain open. Issue #5 stays open until the
-current head checks finish. See
+defensible. Exact-head CI passed on `ad4f87c`; Issue #5 was closed against its
+listed minimum gate. Held-out evaluation and real-model baseline comparison
+remain open as broader P4 work. See
 [`issue5-hypothesis-synthesis-2026-11-17.md`](reports/issue5-hypothesis-synthesis-2026-11-17.md).
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
