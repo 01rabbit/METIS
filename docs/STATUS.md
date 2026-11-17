@@ -173,3 +173,11 @@ model behavior or establish a solve-rate improvement. Run-level split labels are
 intake metadata and must be classified correctly. The same increment adds
 bounded-autopilot activity counters; cost stays unknown when the provider does
 not report it. See `docs/ORCHESTRATION_RUNTIME.md` for operational limits.
+
+Issue #9 has a focused deterministic SQLite lifecycle drill for cancellation of
+an executing synthetic Codex session across controller reconstruction. It checks
+that cancellation stays terminal, the reserved action remains charged, and
+recovery does not fabricate a solve. This is control-plane evidence only; it
+does not demonstrate terminating an external worker or deployment recovery.
+See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
+its P7 dependency remain open.

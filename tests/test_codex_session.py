@@ -98,6 +98,29 @@ def test_recovery_preserves_budget_and_never_fabricates_verification(tmp_path):
     assert restored.recover(run_id)["status"] == "cancelled"
 
 
+def test_emergency_stop_survives_controller_restart_without_resuming_work(tmp_path):
+    database = tmp_path / "session.sqlite"
+    controller = CodexSession(database)
+    run_id = controller.demo()[0]["run_id"]
+
+    # Model an operation reserved by the controller when the operator stops it.
+    controller._reserve(run_id, "native_data_transform")
+    before_stop = controller.context(run_id)
+    assert before_stop["status"] == "executing"
+    assert before_stop["actions_remaining"] == 39
+
+    stopped = controller.cancel(run_id)
+    assert stopped["status"] == "cancelled"
+
+    # A newly constructed controller represents a process restart over the same DB.
+    restarted = CodexSession(database)
+    recovered = restarted.recover(run_id)
+    assert recovered["status"] == "cancelled"
+    assert recovered["actions_remaining"] == 39
+    assert not any(event.status == RunStatus.SOLVED for event in restarted.store.read(run_id))
+    assert restarted.recover(run_id)["status"] == "cancelled"
+
+
 def test_intake_accepts_explicit_path_through_symlinked_directory(tmp_path):
     # macOS exposes /tmp as a symlink to /private/tmp.
     real = tmp_path / "private-tmp"
