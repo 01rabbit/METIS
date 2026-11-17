@@ -230,7 +230,12 @@ class CodexSession:
             raise ValueError("no artifact root registered")
         self._reserve(run_id, "read_only_artifact_analysis", tool=tool)
         try:
-            result = inspect_file(root, name, tool, options)
+            zipcrypto_runner = None
+            if tool == "zipcrypto_attack":
+                from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
+                zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
+                    self.database, run_id, name, settings)
+            result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
             output = {"run_id": run_id, "ok": True, "result": result}
         except ARTIFACT_ERRORS as exc:
             output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",

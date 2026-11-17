@@ -11,6 +11,7 @@ import json
 import os
 import random
 import struct
+import subprocess
 import time
 import zipfile
 import zlib
@@ -180,8 +181,72 @@ def test_tools_are_registered_and_bounded(tmp_path):
     with pytest.raises(ValueError):
         inspect_file(tmp_path, "v.zip", "zipcrypto_attack", {"member": "f1.txt", "plaintext_hex": "00",
                                                               "seconds": 301})
-    with pytest.raises(ValueError, match="member"):
+    with pytest.raises(ValueError, match="2048 bytes"):
+        inspect_file(tmp_path, "v.zip", "zipcrypto_attack", {"member": "f1.txt",
+                      "plaintext_hex": "41" * 4097, "seconds": 1},
+                     zipcrypto_runner=lambda *_args: pytest.fail("invalid input reached worker"))
+    with pytest.raises(ValueError):
+        inspect_file(tmp_path, "v.zip", "zipcrypto_attack", {"member": "f1.txt",
+                      "plaintext_hex": "not hex", "seconds": 1},
+                     zipcrypto_runner=lambda *_args: pytest.fail("invalid input reached worker"))
+    with pytest.raises(ValueError, match="isolated worker"):
         inspect_file(tmp_path, "v.zip", "zipcrypto_attack", {"member": "nope", "plaintext_hex": "00"})
+
+
+def test_zipcrypto_worker_maps_container_memory_kill(tmp_path, monkeypatch):
+    from metis.core.codex_session import CodexSession
+    from metis.core.ctf_sandbox import Sandbox, configure
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
+
+    source = tmp_path / "attack.zip"
+    source.write_bytes(_zipcrypto_archive({"known.txt": b"known plaintext for memory test"}, b"pass"))
+    database = tmp_path / "state" / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Synthetic", description="ZipCrypto worker", paths=[source])["run_id"]
+    name = session.context(run_id)["challenge"]["artifacts"][0]
+    configure(database, engine="docker", image="sha256:" + "a" * 64, platform=None)
+    observed = {}
+
+    def memory_killed(self, seen_run, request, *, _reserved=False, _profile="standard"):
+        observed.update(run_id=seen_run, target=request.target, reserved=_reserved, profile=_profile)
+        return {"ok": False, "exit_code": -9, "timed_out": False,
+                "memory_limit_exceeded": True, "elapsed": 0.2}
+
+    monkeypatch.setattr(Sandbox, "execute", memory_killed)
+    result = run_zipcrypto_attack(database, run_id, name,
+                                  {"member": "known.txt", "plaintext_hex": "4142434445464748494a4b4c",
+                                   "offset": 0, "seconds": 5})
+    assert result["reason"] == "memory_limit_exceeded" and result["stage"] == "key-search"
+    assert observed == {"run_id": run_id, "target": name, "reserved": True, "profile": "zipcrypto"}
+
+
+def test_zipcrypto_worker_enforces_container_deadline(tmp_path, monkeypatch):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built numpy-enabled sandbox image")
+    from types import SimpleNamespace
+
+    from metis.core import ctf_sandbox
+    from metis.core.codex_session import CodexSession
+    from metis.core.ctf_sandbox import configure
+
+    archive = _zipcrypto_archive({"known.txt": b"known plaintext for deadline test"}, b"pass")
+    source = tmp_path / "attack.zip"
+    source.write_bytes(archive)
+    database = tmp_path / "state" / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Synthetic", description="ZipCrypto deadline", paths=[source])["run_id"]
+    artifact = session.context(run_id)["challenge"]["artifacts"][0]
+    configure(database, engine="docker", image=image, platform=None)
+    container_name = "metis-sandbox-zipcrypto-deadline"
+    monkeypatch.setattr(ctf_sandbox, "uuid4", lambda: SimpleNamespace(hex="zipcrypto-deadline"))
+    result = session.artifact(run_id, artifact, "zipcrypto_attack", {
+        "member": "known.txt", "plaintext_hex": (b"known plaintext" * 2).hex(), "seconds": 1})
+    assert result["ok"] is True
+    assert result["result"]["found"] is False
+    assert result["result"]["reason"] == "work_exceeds_budget"
+    inspected = subprocess.run(["docker", "inspect", container_name], capture_output=True, check=False)
+    assert inspected.returncode != 0
 
 
 def test_decrypt_tool_through_derive(tmp_path):
@@ -213,20 +278,24 @@ def test_ksnctf_39_seed_is_recovered():
     assert result["found"] and result["matched_leaked_bytes"] == 7 and result["salt"] == "pid"
 
 
-def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=120):
+def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=120, sandbox_image=None):
     from metis.core.agent_host import BridgeHost
     from metis.core.agent_scheduler import AgentScheduler
     from metis.core.codex_session import CodexSession
     from metis.core.ctf_orchestration import AgentLedger
 
-    known = b"A known plaintext for synthetic ZipCrypto testing. " * 2
+    password = b"full-search-test"
+    known = b"The quick brown fox jumps over the lazy dog. " * 2
     secret = b"synthetic xor result"
     encoded = bytes(byte ^ 0x42 for byte in secret).hex().encode()
-    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, b"intent-test", seed=0x28)
+    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, password, seed=0x28)
     source = tmp_path / "input.zip"
     source.write_bytes(archive)
     database = tmp_path / "state" / "metis.sqlite"
     session = CodexSession(database)
+    if sandbox_image:
+        from metis.core.ctf_sandbox import configure
+        configure(database, engine="docker", image=sandbox_image, platform=None)
     run_id = session.intake(title="Synthetic", description="Recover and decode.", paths=[source],
                             categories=["crypto"], max_actions=40)["run_id"]
     wave = AgentLedger(database).create_wave(run_id, mode="delegated")
@@ -235,7 +304,7 @@ def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=12
     job = scheduler.dispatch(run_id)["started"][0]
     name = session.context(run_id)["challenge"]["artifacts"][0]
 
-    keys = zc.Keys.from_password(b"intent-test")
+    keys = zc.Keys.from_password(password)
     if monkeypatch is not None:
         entry = next(e for e in zc.members(archive) if e["name"] == "known.txt")
         ciphertext = zc.member_bytes(archive, entry)
@@ -248,6 +317,11 @@ def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=12
         true_z = state.z & 0xFFFFFFFC
         monkeypatch.setattr(zc, "z_reduction", lambda _stream, _deadline: (
             np.array([true_z ^ 0x100000, true_z], dtype=np.uint32), index))
+        from metis.core import ctf_zipcrypto_worker
+        monkeypatch.setattr(ctf_zipcrypto_worker, "run_zipcrypto_attack",
+                            lambda _db, _run, _artifact, settings: zc.known_plaintext_attack(
+                                ciphertext, known[:60], 12, extra=zc.check_bytes(entry),
+                                seconds=settings["seconds"], workers=2))
 
     def intent(kind, tool, *, artifact=None, options=None, data=None):
         return scheduler.intent(run_id, job["assignment_id"], job["attempt_id"],
@@ -277,7 +351,10 @@ def test_specialist_intents_recover_keys_decrypt_and_xor(tmp_path, monkeypatch):
     _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch)
 
 
-@pytest.mark.skipif(not os.environ.get("METIS_TEST_SLOW"), reason="full intent search takes minutes")
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SLOW")
+                    or not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
+                    reason="set METIS_TEST_SLOW=1 and METIS_TEST_SANDBOX_IMAGE for isolated full search")
 def test_specialist_intents_full_search_decrypt_and_xor(tmp_path):
-    """Exercise full candidate search through specialist intents, then decrypt and combine members."""
-    _specialist_intent_zipcrypto_chain(tmp_path, seconds=300)
+    """Run the full intent chain in the bounded container, then decrypt and combine members."""
+    _specialist_intent_zipcrypto_chain(
+        tmp_path, seconds=300, sandbox_image=os.environ["METIS_TEST_SANDBOX_IMAGE"])

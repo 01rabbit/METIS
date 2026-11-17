@@ -20,6 +20,7 @@ import warnings
 import wave
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -47,7 +48,8 @@ ARTIFACT_ERRORS = (OSError, ValueError, KeyError, TypeError, EOFError, struct.er
                    lzma.LZMAError, subprocess.TimeoutExpired)
 
 
-def inspect_file(root: Path, name: str, tool: str, options: dict | None = None) -> dict:
+def inspect_file(root: Path, name: str, tool: str, options: dict | None = None,
+                 *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     """Window large files; whole-structure parsers retain an eight MiB input cap."""
     import hashlib
 
@@ -120,7 +122,8 @@ def inspect_file(root: Path, name: str, tool: str, options: dict | None = None) 
             return result
         if size > MAX_ARTIFACT:
             raise ValueError("structure parser needs a file no larger than eight MiB; inspect windows instead")
-        return inspect_bytes(stream.read(MAX_ARTIFACT + 1), tool, options)
+        return inspect_bytes(stream.read(MAX_ARTIFACT + 1), tool, options,
+                             zipcrypto_runner=zipcrypto_runner)
 
 
 def bounded_integer(options: dict, name: str, default: int, low: int, high: int) -> int:
@@ -487,7 +490,8 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
 }
 
 
-def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
+def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
+                  *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     options = options or {}
     allowed = ALLOWED_OPTIONS
     if tool not in allowed or not isinstance(options, dict) or set(options) - allowed[tool]:
@@ -560,7 +564,7 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
     if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt"}:
-        return _zipcrypto(data, tool, options)
+        return _zipcrypto(data, tool, options, zipcrypto_runner=zipcrypto_runner)
     if tool in {"tls_decrypt", "tls_http_body"}:
         from metis.core.ctf_tls import http_body, tls_decrypt
         packets = bounded_integer(options, "packets", 1024, 1, 4096)
@@ -806,16 +810,32 @@ def _sqlite(data: bytes, options: dict) -> dict:
         database.close()
 
 
-def _zipcrypto(data: bytes, tool: str, options: dict) -> dict:
+def _zipcrypto(data: bytes, tool: str, options: dict,
+               *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     """ZipCrypto analysis (Issue #28): structure, Info-ZIP seed, known-plaintext attack, decryption."""
     import base64
+
+    if tool == "zipcrypto_attack":
+        seconds = bounded_integer(options, "seconds", 60, 1, 300)
+        name = options.get("member")
+        hexed = options.get("plaintext_hex")
+        if not isinstance(name, str) or not name or len(name) > 256:
+            raise ValueError("member must name an encrypted entry")
+        if not isinstance(hexed, str) or len(hexed) > 4096:
+            raise ValueError("plaintext_hex: known plaintext bytes as hex (at most 2048 bytes)")
+        bytes.fromhex(hexed)  # Reject malformed hex before it enters the sandbox bundle.
+        offset = bounded_integer(options, "offset", 0, 0, MAX_FILE)
+        if zipcrypto_runner is None:
+            raise ValueError("zipcrypto_attack requires the isolated worker runtime")
+        return zipcrypto_runner(data, {"member": name, "plaintext_hex": hexed,
+                                       "offset": offset, "seconds": seconds})
 
     from metis.core import ctf_zipcrypto as zc
 
     if tool == "zipcrypto_info":
         return zc.zipcrypto_info(data)
-    seconds = bounded_integer(options, "seconds", 60, 1, 300)
     if tool == "infozip_seed":
+        seconds = bounded_integer(options, "seconds", 60, 1, 300)
         generator = options.get("generator", "glibc")
         if generator not in {"glibc", "msvc"}:
             raise ValueError("generator must be glibc or msvc")

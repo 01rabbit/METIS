@@ -30,7 +30,9 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 - 2026-11-17 のslow direct-API testをseed付き合成ZIPへ拡張した。`METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_full_known_plaintext_attack` は `1 passed in 17.05s`。8 workerで実候補探索から鍵を復元し、known/encoded両メンバーの平文とCRCを検証した。
 - Specialist intent の高速テストは真の key2 候補とdecoysに縮小して確認する。別のslowテスト `METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_specialist_intents_full_search_decrypt_and_xor` は、候補を差し替えず `zipcrypto_attack` intentで探索し、復元鍵を `zipcrypto_decrypt` intentへ渡し、text/XOR intentまで進んでいた。親プロセスの期限付きworker回収を追加した後、direct APIとintentの両slowテストを連続実行して `2 passed in 125.77s`。これはMETIS controllerのintent経路を呼ぶ決定的なscripted testであり、モデル自身がintentを選んだ実行ではない。
 - 候補workerが1件の処理を終えない場合、親プロセスが残り時間でpoolをterminateするテストを追加した。`.venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_attack_parent_kills_worker_when_candidate_exceeds_time_budget` は `1 passed in 0.69s`。通常のZipCrypto test moduleは `12 passed, 3 skipped in 10.30s`（slow/external-data tests skipped）。この期限はreduction反復とworker待ちを制限するが、候補配列の生成やPool起動を別プロセスから監督するhard end-to-end timeoutではない。
-- 2026-11-17 に、実機の隔離イメージ（512 MiB memory / memory-swap）で700 MiBの確保を試したところ、sandboxプロセスは0.132秒でSIGKILL（signal 9）となり、出力前に停止した。ZipCrypto の攻撃処理が現在このコンテナ内で動く証拠ではないため、#28 の攻撃workerのメモリ制限達成とは扱わない。同じ割当超過を確認する実エンジン用の opt-in regression test `test_real_engine_enforces_memory_limit` を追加した。
+- 2026-11-17 に `zipcrypto_attack` を専用の固定worker routeへ接続した。攻撃本体・NumPy table初期化・全8 workerを同一コンテナ内へ置く。routeは固定 `zipcrypto` profile（2 GiB memory/swap上限、4 CPU、private IPC、network none、host mountなし、read-only root、unprivileged user）を使い、コンテナ内で有限の memory/swap/CPU/PID上限と読み取り可能な `memory.events` を確認してから処理する。sandbox未設定または確認失敗時はホストfallbackせず失敗する。専用imageには `numpy>=2,<3` を追加した。
+- seeded合成ZIPの完全なMETIS intent連鎖をこの固定route内で実行し、全探索で鍵を復元、2メンバーのCRC/平文を検証、`zipcrypto_decrypt` と XOR まで成功した: `METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_specialist_intents_full_search_decrypt_and_xor` → `1 passed in 34.27s`。別の有効な合成キー/既知平文では300秒上限に達した。これは決定的controller intent testであり、モデルがintentを選択した試行ではない。
+- 実機の期限テストでは `seconds=1` で `work_exceeds_budget` を返し、期限後にコンテナが残らないことを確認した。sandbox bootstrapは期限時に実行workerのプロセスグループ全体をSIGKILLする。一般sandboxの700 MiB割当テストでは512 MiB cgroup OOM markerを実測し、ZipCrypto routeの理由コード写像もunit testで確認した。ただしZipCrypto固有の2 GiB OOMを実機で起こして写像するテストは未実施。
 - ksnctf #39: 種を 0.8 秒で復元した（7 メンバーすべて一致。`time ^ pid`）。鍵の復元には至らず、#39 は未解決のまま。
 
 ## 実 Codex の測定（ksnctf #39、新しい DB、note なし、codex-cli 0.169.0）
@@ -49,6 +51,5 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 ## 未達（#28 は Open のまま）
 
 - Stay の鍵復元（2^39）。ネイティブ実装と `metis sandbox` での実行が必要。
-- 攻撃 worker はwall-clock期限で回収するが、OSが強制するメモリ上限はまだない。汎用 `metis sandbox` は512 MiB制限を超えるプロセスを実測でSIGKILLしたが、ZipCrypto workerはsandbox未接続のため、そのworkerへの適用・管理された理由コードは未達。
-- `max_candidates` は `z_reduction` 後に適用されるため、reduction中のpeak allocationを制限しない。OS強制メモリ上限および上限到達時の管理理由コードは未検証。
-- Pool起動・候補配列のmaterializationを含むhard end-to-end wall-clock cutoffは未実装。
+- `max_candidates` は `z_reduction` 後に適用されるため、reduction中のpeak allocationを候補数だけでは制限しない。専用cgroup上限がプロセス全体の最終防衛線となるが、ZipCrypto固有入力による2 GiB OOMと理由コードの結合試験はまだない。
+- Stay key recovery（ksnctf #39 の目的）は未実装で、#28 は引き続きOpen。

@@ -2,10 +2,12 @@
 
 Challenge binaries never run on the host. The controller streams the declared
 run artifacts into a fresh container over stdin (no bind mounts, no ``docker
-cp``), runs one bounded operation, and returns bounded output. The container has
+cp``), runs one bounded operation, and returns bounded output. The standard container has
 no network, a read-only root filesystem, a size-limited executable tmpfs, no
 capabilities, no privilege escalation, an unprivileged user, and CPU, memory and
-PID limits. On macOS, Docker Desktop/Colima/OrbStack add a Linux VM boundary.
+PID limits. A fixed ZipCrypto worker profile raises its bounded memory and CPU
+quotas while retaining the same isolation. On macOS, Docker Desktop/Colima/OrbStack
+add a Linux VM boundary.
 
 Container isolation is defense in depth, not a proof against kernel exploits;
 use a dedicated VM for hostile competitions when that matters.
@@ -72,7 +74,7 @@ def default_platform() -> str:
 # fd 0 with os.read (no buffering past the frame), writes files into /work, runs
 # the requested operation with a timeout, and prints one JSON result line.
 BOOTSTRAP = r'''
-import base64, json, os, struct, subprocess, sys, time
+import base64, json, os, signal, struct, subprocess, sys, time
 def take(n):
     out = bytearray()
     while len(out) < n:
@@ -150,14 +152,30 @@ env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "
        "LANG": "C.UTF-8", "TERM": "dumb", "PWNLIB_NOTERM": "1", "METIS_TARGET": target,
        "METIS_STDIN": "/work/.stdin", "METIS_RUNNER": " ".join(prefix),
        "METIS_TARGET_ARCH": header.get("target_arch") or ""}
+def oom_kills():
+    try:
+        with open("/sys/fs/cgroup/memory.events") as stream:
+            fields = dict(line.split() for line in stream)
+        return int(fields.get("oom_kill", "0"))
+    except (OSError, ValueError):
+        return None
+oom_before = oom_kills()
 started = time.monotonic()
 timed_out = False
 with open("/work/.stdin", "rb") as stdin:
     try:
-        completed = subprocess.run(command, stdin=stdin, capture_output=True, timeout=header["timeout"], env=env)
-        code, out, err = completed.returncode, completed.stdout, completed.stderr
-    except subprocess.TimeoutExpired as exc:
-        timed_out, code, out, err = True, None, exc.stdout or b"", exc.stderr or b""
+        process = subprocess.Popen(command, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env=env, start_new_session=True)
+        try:
+            out, err = process.communicate(timeout=header["timeout"])
+            code = process.returncode
+        except subprocess.TimeoutExpired:
+            timed_out, code = True, None
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, err = process.communicate()
     except OSError as exc:
         code, out, err = 127, b"", str(exc).encode()
 program = b""
@@ -170,6 +188,7 @@ if background is not None:
     with open(program_log, "rb") as stream:
         program = stream.read()
 limit = header["max_stream"]
+oom_after = oom_kills()
 traced = b""
 if trace_from_stderr:
     traced, err = err, b""
@@ -180,7 +199,8 @@ def pack(data):
     return {"b64": base64.b64encode(data[:limit]).decode(), "size": len(data), "truncated": len(data) > limit}
 sys.stdout.write("\n" + json.dumps({"exit_code": code, "timed_out": timed_out,
     "elapsed": round(time.monotonic() - started, 3), "stdout": pack(out), "stderr": pack(err),
-    "trace": pack(traced), "program": pack(program)}) + "\n")
+    "trace": pack(traced), "program": pack(program),
+    "memory_limit_exceeded": (oom_before is not None and oom_after is not None and oom_after > oom_before)}) + "\n")
 '''
 
 
@@ -376,12 +396,16 @@ class Sandbox:
             raise ValueError("sandbox is not configured; run `metis sandbox build` or `metis sandbox configure`")
         self.image_id: str = self.image
 
-    def command(self, name: str) -> list[str]:
-        return [self.engine, "run", "--rm", "-i", "--name", name, "--pull=never",
+    def command(self, name: str, *, profile: str = "standard") -> list[str]:
+        if profile not in {"standard", "zipcrypto"}:
+            raise ValueError("unsupported sandbox resource profile")
+        memory, cpus, ipc = ("2g", "4", "private") if profile == "zipcrypto" else ("512m", "1", "none")
+        return [self.engine, "run", *( ["--rm"] if profile == "standard" else []), "-i", "--name", name,
+                "--pull=never",
                 *(["--platform", self.platform] if self.platform else []),
                 "--network=none", "--read-only", "--cap-drop=ALL",
-                "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=512m",
-                "--memory-swap=512m", "--cpus=1", "--user=65534:65534", "--ipc=none",
+                "--security-opt=no-new-privileges", "--pids-limit=128", f"--memory={memory}",
+                f"--memory-swap={memory}", f"--cpus={cpus}", "--user=65534:65534", f"--ipc={ipc}",
                 "--tmpfs=/work:rw,exec,nosuid,nodev,size=256m,mode=1777",
                 "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
                 "--workdir=/work", "--log-driver=none", "--env=HOME=/work",
@@ -413,7 +437,8 @@ class Sandbox:
             files.append((visible, content))
         return files
 
-    def execute(self, run_id: str, request: SandboxRequest) -> dict[str, Any]:
+    def execute(self, run_id: str, request: SandboxRequest, *, _reserved: bool = False,
+                _profile: str = "standard") -> dict[str, Any]:
         request = SandboxRequest.model_validate(request.model_dump())
         if request.mode == "script" and not request.script:
             raise ValueError("script mode requires a script")
@@ -434,17 +459,25 @@ class Sandbox:
                   "timeout": request.timeout, "max_stream": MAX_STREAM, "emulate": emulate,
                   "target_arch": target_arch}
         bundle = _bundle(header, files, request.stdin)
-        self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
-                              target=request.target,
-                              input_sha256=hashlib.sha256(bundle).hexdigest())
+        if not _reserved:
+            self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
+                                  target=request.target,
+                                  input_sha256=hashlib.sha256(bundle).hexdigest())
         name = "metis-sandbox-" + uuid4().hex[:16]
         started = time.monotonic()
         result: dict[str, Any]
+        oom_killed = False
         try:
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
-                completed = subprocess.run(self.command(name), input=bundle, stdout=output, stderr=error,
+                completed = subprocess.run(self.command(name, profile=_profile), input=bundle,
+                                           stdout=output, stderr=error,
                                            timeout=request.timeout + 60, check=False,
                                            env=_engine_environment())
+                if _profile == "zipcrypto":
+                    inspected = subprocess.run(
+                        [self.engine, "inspect", "--format={{.State.OOMKilled}}", name],
+                        capture_output=True, timeout=10, check=False, env=_engine_environment())
+                    oom_killed = inspected.returncode == 0 and inspected.stdout.strip().lower() == b"true"
                 output.seek(0)
                 raw = output.read(8 * MAX_STREAM)
                 error.seek(0)
@@ -454,6 +487,8 @@ class Sandbox:
                 payload = json.loads(line)
                 result = {"ok": payload["exit_code"] == 0 and not payload["timed_out"],
                           "exit_code": payload["exit_code"], "timed_out": payload["timed_out"],
+                          "memory_limit_exceeded": (payload.get("memory_limit_exceeded", False)
+                                                     or oom_killed),
                           "elapsed": payload["elapsed"], "stdout": _unpack(payload["stdout"]),
                           "stderr": _unpack(payload["stderr"])}
                 if request.mode in {"strace", "ltrace"}:
@@ -463,23 +498,36 @@ class Sandbox:
                 if payload["exit_code"] is not None and payload["exit_code"] < 0:
                     result["signal"] = -payload["exit_code"]
             except (ValueError, KeyError, TypeError):
-                result = {"ok": False, "error": "sandbox engine failed", "engine_exit_code": completed.returncode,
-                          "engine_stderr": engine_error[-1024:]}
+                result = ({"ok": False, "memory_limit_exceeded": True, "exit_code": completed.returncode}
+                          if oom_killed else
+                          {"ok": False, "error": "sandbox engine failed", "engine_exit_code": completed.returncode,
+                           "engine_stderr": engine_error[-1024:]})
         except subprocess.TimeoutExpired:
             subprocess.run([self.engine, "rm", "-f", name], capture_output=True, timeout=30, check=False,
                            env=_engine_environment())
             result = {"ok": False, "error": "sandbox timeout", "timed_out": True}
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
-        self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
-                           exit_code=str(result.get("exit_code")),
-                           elapsed=str(round(time.monotonic() - started, 3)))
-        self.session._emit(run_id, RunStatus.REPLANNING)
-        self.session._emit(run_id, RunStatus.PLANNING)
+        finally:
+            if _profile == "zipcrypto":
+                try:
+                    cleanup = subprocess.run([self.engine, "rm", "-f", name], capture_output=True,
+                                             timeout=10, check=False, env=_engine_environment())
+                    if cleanup.returncode and b"no such container" not in cleanup.stderr.lower():
+                        raise RuntimeError("ZipCrypto sandbox cleanup could not be confirmed")
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise RuntimeError("ZipCrypto sandbox cleanup could not be confirmed") from exc
+        if not _reserved:
+            self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
+                               exit_code=str(result.get("exit_code")),
+                               elapsed=str(round(time.monotonic() - started, 3)))
+            self.session._emit(run_id, RunStatus.REPLANNING)
+            self.session._emit(run_id, RunStatus.PLANNING)
         files_note = [name for name, _ in files if name != ".metis-script"]
         return {"run_id": run_id, "mode": request.mode, "files_in_sandbox": files_note,
                 "isolation": {"engine": self.engine, "network": "none", "host_mounts": False,
-                              "image": self.image, "platform": self.platform},
+                              "image": self.image, "platform": self.platform,
+                              "resource_profile": _profile},
                 "target_arch": target_arch,
                 "emulation": (emulate["qemu"] if emulate else None),
                 "output_is_untrusted": True, **result}

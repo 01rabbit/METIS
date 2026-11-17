@@ -354,6 +354,17 @@ def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, 
     shards = [order[i::jobs] for i in range(jobs)]
     arguments = [(ciphertext, plaintext, offset, extra, index, shard, deadline) for shard in shards]
     tried, found, timed_out = 0, None, False
+    if jobs == 1:
+        tried, found = _attack_shard(arguments[0])
+        elapsed = round(time.monotonic() - started, 1)
+        if found:
+            return {**result, "found": True, "keys": found, "tried": tried, "workers": jobs,
+                    "seconds": elapsed}
+        if time.monotonic() > deadline:
+            return {**result, "found": False, "reason": "work_exceeds_budget", "stage": "key-search",
+                    "tried": tried, "workers": jobs, "seconds": elapsed}
+        return {**result, "found": False, "reason": "no_solution",
+                "detail": "plaintext or offset is probably wrong", "workers": jobs, "seconds": elapsed}
     context = multiprocessing.get_context("spawn")
     with context.Pool(jobs) as pool:
         outcomes = []

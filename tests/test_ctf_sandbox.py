@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -63,6 +64,20 @@ def test_sandbox_requires_immutable_image(tmp_path):
     with pytest.raises(ValueError, match="not configured"):
         Sandbox(database)
     assert status(database)["configured"] is False
+
+
+def test_resource_profiles_are_fixed_and_isolated(tmp_path):
+    database = tmp_path / "state" / "metis.sqlite"
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    sandbox = Sandbox(database)
+    standard = sandbox.command("standard")
+    zipcrypto = sandbox.command("zipcrypto", profile="zipcrypto")
+    assert "--memory=512m" in standard and "--cpus=1" in standard and "--ipc=none" in standard
+    assert "--memory=2g" in zipcrypto and "--memory-swap=2g" in zipcrypto
+    assert "--cpus=4" in zipcrypto and "--ipc=private" in zipcrypto
+    assert "--network=none" in zipcrypto and "--read-only" in zipcrypto
+    with pytest.raises(ValueError, match="resource profile"):
+        sandbox.command("invalid", profile="unbounded")
 
 
 def test_sandbox_isolation_flags_and_execution(tmp_path, engine):
@@ -169,7 +184,31 @@ def test_real_engine_enforces_memory_limit(tmp_path):
                 "print('allocation completed')\n")))
     assert result["ok"] is False
     assert result.get("signal") == 9
+    assert result["memory_limit_exceeded"] is True
     assert result["stdout"]["text"] == ""
+
+
+def test_real_engine_timeout_removes_process_group(tmp_path, monkeypatch):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    from types import SimpleNamespace
+
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    name = "metis-sandbox-timeout-process-group"
+    monkeypatch.setattr(ctf_sandbox, "uuid4", lambda: SimpleNamespace(hex="timeout-process-group"))
+    result = Sandbox(database).execute(run_id, SandboxRequest(
+        target=target, mode="script", timeout=1,
+        script=("import subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "time.sleep(60)\n")))
+    assert result["timed_out"] is True
+    inspected = subprocess.run(["docker", "inspect", name], capture_output=True, check=False)
+    assert inspected.returncode != 0
 
 
 def _elf(machine: int) -> bytes:
