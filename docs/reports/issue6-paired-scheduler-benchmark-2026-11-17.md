@@ -76,7 +76,15 @@ All checks passed!
 All checks passed!
 .venv/bin/mypy src/metis
 Success: no issues found in 52 source files
+.venv/bin/pytest -ra tests/test_intent_identity.py tests/test_agent_benchmark.py tests/test_agent_orchestration.py tests/test_agent_autopilot.py tests/test_codex_specialist.py tests/test_ctf_x509.py
+74 passed, 1 skipped in 8.01s
 ```
+The single skipped regression requires the external ksnctf #33 capture in
+`METIS_TEST_KSNCTF33_PCAP`; assignment-scope and race tests use generated local
+artifacts. Intent admission, turn-cap reservation, controller action, derived-scope
+registration, and cancellation now share the per-run lock. Concurrent calls cannot
+exceed a job turn cap. Cancellation waits for a bounded in-flight controller action
+to finish, then cancels the job; later intents from that attempt are rejected.
 
 ## Limitations
 

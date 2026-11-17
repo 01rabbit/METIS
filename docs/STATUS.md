@@ -193,9 +193,17 @@ evidence. Explicit `assignment.inputs.artifacts` now also limits artifact names
 in each brief, rejects out-of-scope artifact/derive/view intents, and prevents
 reports from citing out-of-scope artifacts. A worker's successfully derived
 artifact stays scoped to its creating assignment; omitted scopes retain
-run-wide access. The scheduler polls workers serially, so the benchmark does not measure real
-elapsed time, concurrent tool execution, or model reasoning. A real-model
-paired pilot then ran one seeded task through both arms using Codex CLI 0.169.0:
+run-wide access. A follow-up race audit moved intent admission, turn-cap checks,
+controller actions, and derived-scope updates into the same per-run lock used by
+cancellation. Cancellation is linearized after any bounded in-flight controller
+action; later intents from that attempt are rejected. Regression tests show two
+concurrent intents cannot exceed a one-turn cap and cancellation cannot race an
+in-flight action. Exact head `17b6fdf` passed 74 focused tests (one external
+ksnctf #33 capture skip), Ruff, mypy, all three Python CI jobs, both sandbox CI
+jobs, and aarch64 seccomp. The scheduler polls workers serially, so the benchmark
+does not measure real elapsed time, concurrent tool execution, or model reasoning.
+A real-model paired pilot then ran one seeded task through both arms using Codex
+CLI 0.169.0:
 both candidates verified, while the two-specialist arm took 21.83s vs 20.95s,
 used 6 vs 3 provider calls, and used 59,627 vs 29,881 input tokens. This is one
 mechanical task with the default model not pinned, so it is not a general
