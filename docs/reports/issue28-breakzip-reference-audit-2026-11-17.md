@@ -290,3 +290,40 @@ coverage, Stage 3 key validation, candidate streaming, checkpoint/resume, or
 Stay recovery. It therefore does not establish that the 420,223,804-byte
 candidate set can be processed end-to-end within the current disk, memory, and
 time limits, and does not change the Issue #28 decision.
+
+### Unfiltered Stage 2 count-only prefix probe
+
+Following independent expert advice, a second bounded probe measured Stage 2
+without the oracle filter and without writing Stage 2 candidates to files. The
+temporary patch
+[`issue28-breakzip-stage2-countonly.patch`](issue28-breakzip-stage2-countonly.patch)
+(SHA-256
+`578c936ab9b33b60418b9738a718bb0472f67ee330d87d053ea6dc0baa48059a`) was
+applied after the count-only patch. It wrote only the first 1,000 Stage 1
+records to a transient `/work/stage1.0` prefix shard, then counted Stage 2
+outputs in memory without merging or serializing them. The source archive was
+the same pinned commit and SHA-256 recorded above.
+
+On the pinned `linux/arm64` image with the 2-GiB memory, four-CPU, 256-MiB
+`/work`, no-network profile, Stage 1 counted 20,804,384 candidates and retained
+only a 20,175-byte 1,000-record prefix. Stage 2 had a 40-second subprocess cap:
+it processed 85 records, counted 300,018 Stage 2 candidates, then hit the cap.
+The sandbox request completed (including build and Stage 1) in 49.505 seconds;
+container `memory.peak` was 1,174,577,152 bytes. `/work` used 2,239,755 bytes
+before Stage 2 and 2,219,580 bytes after the prefix shard was deleted. Stage 2
+candidate outputs were not written or exported.
+
+**Feasibility decision: NO-GO for the upstream default 1,000,000-record Stage 1
+shard under METIS's 300-second sandbox request limit.** The observed prefix rate
+was 2.125 Stage 1 records/second. A linear extrapolation would take about
+130.7 hours per default shard; this estimate is only a warning signal because
+the first 85 Stage 1 records are not a random sample and candidate counts vary.
+Even without extrapolation, processing only 85/1,000 of the bounded prefix
+already used 40 seconds. A useful next step would require a different
+algorithm or much cheaper Stage 2 reduction; merely streaming Stage 1 output
+does not resolve the measured Stage 2 throughput bottleneck.
+
+This remains an upstream embedded self-test and a feasibility probe, not an
+independent vector, Stage 3 key validation, Stay recovery, or a #39 solve. The
+test-only patch must not be treated as a production worker change. The KSNCTF
+#39 distribution was unavailable in this environment.

@@ -1,0 +1,85 @@
+diff --git a/src/mitm_stage1/main.cpp b/src/mitm_stage1/main.cpp
+index 59fc395..35b647d 100644
+--- a/src/mitm_stage1/main.cpp
++++ b/src/mitm_stage1/main.cpp
+@@ -58,6 +58,7 @@ int main(int argc, char *argv[]) {
+                    static_cast<unsigned long long>(count_only_serialized_bytes),
+                    static_cast<unsigned long long>(shards),
+                    static_cast<unsigned long long>(file_bytes));
++            write_stage1_candidates(candidates);
+             return count_only_correct_matches == 1 ? 0 : 2;
+         }
+ 
+diff --git a/src/mitm_stage1/mitm_stage1.cpp b/src/mitm_stage1/mitm_stage1.cpp
+index f228726..d9c336e 100644
+--- a/src/mitm_stage1/mitm_stage1.cpp
++++ b/src/mitm_stage1/mitm_stage1.cpp
+@@ -396,6 +396,9 @@ void mitm_stage1b(const archive_info &info,
+                                     if (nullptr != c && correct_candidate(*c, g)) {
+                                         ++count_only_correct_matches;
+                                     }
++                                    if (count_only_candidates <= 1000) {
++                                        candidates.push_back(g);
++                                    }
+                                 } else {
+                                     candidates.push_back(g);
+                                 }
+diff --git a/src/mitm_stage2/main.cpp b/src/mitm_stage2/main.cpp
+index 7dcadf9..b93f442 100644
+--- a/src/mitm_stage2/main.cpp
++++ b/src/mitm_stage2/main.cpp
+@@ -11,6 +11,7 @@
+ DECLARE_string(target);
+ DECLARE_bool(runtests);
+ DECLARE_bool(only_emit_correct);
++DEFINE_bool(stage2_count_only, false, "Count stage2 candidates without retaining output shards.");
+ DEFINE_string(input_shard, "target.out.0",
+               "The filename of the stage1 shard to run on.");
+ DECLARE_string(output);
+@@ -186,7 +187,7 @@ int main(int argc, char *argv[]) {
+     // Read all the stage1 candidates into memory at once.
+     vector<stage1_candidate> candidates;
+ 
+-    stage2_candidate_array stage2_candidates;
++    stage2_candidate_array stage2_candidates(FLAGS_stage2_count_only ? 1 : FLAGS_stage2_shard_size);
+     stage2_candidate_array stage2_tmp_array(
+         FLAGS_stage2_candidates_per_stage1_candidate);
+ 
+@@ -222,16 +223,18 @@ int main(int argc, char *argv[]) {
+                    candidates.size());
+ 
+             vector<vector<stage2a>> table(0x1000000);
+-            mitm_stage2a(test[FLAGS_test_archive], candidate, table, guess);
++            mitm_stage2a(test[FLAGS_test_archive], candidate, table, nullptr);
+             size_t stage2b_count = 0;
+             mitm_stage2b(test[FLAGS_test_archive], candidate, table,
+                          stage2_tmp_array.ptr(), stage2_tmp_array.size(),
+-                         stage2b_count, guess);
++                         stage2b_count, nullptr);
+             stage2_tmp_array.incr(stage2b_count);
+             stage2_candidate_total += stage2b_count;
+ 
+-            merge_candidates(stage2_candidates, stage2_tmp_array, idx,
+-                             stage2b_count, guess);
++            if (!FLAGS_stage2_count_only) {
++                merge_candidates(stage2_candidates, stage2_tmp_array, idx,
++                                 stage2b_count, guess);
++            }
+ 
+             if (FLAGS_stop_after <= current_stage1_cand) {
+                 fprintf(stderr, "Stopping after %d candidates. Goodbye.\n",
+@@ -302,9 +305,11 @@ int main(int argc, char *argv[]) {
+             stage2_tmp_array.incr(stage2b_count);
+             stage2_candidate_total += stage2b_count;
+ 
+-            merge_candidates(stage2_candidates, stage2_tmp_array, idx,
+-                             stage2b_count, nullptr,
+-                             (candidates.size() - 1 == current_stage1_cand));
++            if (!FLAGS_stage2_count_only) {
++                merge_candidates(stage2_candidates, stage2_tmp_array, idx,
++                                 stage2b_count, nullptr,
++                                 (candidates.size() - 1 == current_stage1_cand));
++            }
+ 
+             if (FLAGS_stop_after <= current_stage1_cand) {
+                 fprintf(stderr,
