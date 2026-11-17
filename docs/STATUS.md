@@ -146,7 +146,11 @@ phases are not distinguished. A new synthetic memory-pressure test in the
 actual 2 GiB ZipCrypto profile observed the cgroup OOM marker, mapped it to
 `memory_limit_exceeded`, and confirmed worker-registry cleanup. This validates
 production-profile OOM classification and cleanup, but does not show a natural
-ZipCrypto candidate search reaching the limit. One full intent search in the isolated
+ZipCrypto candidate search reaching the limit. The final listed #28 resource
+acceptance item is now met: the real-worker deadline and production-profile
+synthetic cgroup OOM tests return bounded reason codes and clean up. All three
+listed acceptance checkboxes are checked; the Issue remains open because Stay
+key recovery and ksnctf #39 remain unresolved. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
 300-second budget. Container creation, engine attach, and OOM inspection timeout
@@ -248,12 +252,11 @@ cross-controller test now kills controller A while its container is running,
 then verifies controller B teardown/recovery, retained action charge, no
 fabricated solve, and idempotent third recovery. Host reboot, artifact/secret cleanup,
 Linux VM deployment, or the P7 benchmark release gate remain uncovered. The sandbox/session
-focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped here
-because no image was configured for that command. Exact PR HEAD
-`2950c50` passed all checks, including the full suite (`457 passed, 26 skipped`)
-and Docker integration suite (`6 passed`). Exact PR HEAD `f03440f` also passed
-all PR checks before the new real-Docker cross-controller test was added; that
-test is now included in the sandbox CI job.
+focused suite passed (`17 passed, 5 skipped`); real-engine tests skipped there
+because no image was configured. Exact PR HEAD `e33d070` passed all checks:
+Python CI (`459 passed, 27 skipped`), Docker sandbox integration (`7 passed in
+120.72s`), aarch64 seccomp, Ruff, mypy, fixture validation, and build. The
+sandbox suite includes the real-Docker cross-controller test.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 

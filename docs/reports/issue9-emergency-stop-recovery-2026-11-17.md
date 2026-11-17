@@ -85,6 +85,11 @@ METIS_TEST_SANDBOX_IMAGE=sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c
 All checks passed!
 ```
 
+Exact PR HEAD `e33d070b042238eb7b8ceb9f1bb7dcb5977fcb52` passed the Docker
+sandbox job with all seven selected integration tests (`7 passed in 120.72s`).
+The same head passed the Python suite (`459 passed, 27 skipped in 86.57s`),
+aarch64 seccomp, Ruff, mypy, fixture validation, and package build.
+
 The existing sandbox CI job now runs this test against its freshly built
 `linux/amd64` image. This demonstrates controller-process crash recovery with
 a real container engine. Host reboot, Linux VM deployment, model provider
