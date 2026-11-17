@@ -53,6 +53,13 @@ knowledge storage, retrieval on a second challenge, and a first-attempt verified
 submission there. Random rehearsal answers were not stored in source or reusable
 knowledge. This is integration evidence, not a general solve-rate measurement.
 
+Issue #4 also has a deterministic same-policy retrieval ablation across three
+distinct synthetic messages. Retrieved ROT13 knowledge changes candidate
+ranking; retrieval-off keeps the generic baseline. All paired outputs passed
+the local commitment oracle, with one action versus two per target. This is
+policy plumbing evidence, not LLM behavior or a general solve-rate claim; see
+`docs/reports/issue4-munin-ablation-2026-11-17.md`.
+
 Final test, lint, type, build, bootstrap, and fresh-clone results for this
 increment are recorded in `docs/reports/codex-native.md` after validation.
 

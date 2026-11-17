@@ -199,7 +199,7 @@ def test_real_engine_timeout_removes_process_group(tmp_path, monkeypatch):
     database, run_id = _run(tmp_path)
     configure(database, engine="docker", image=image, platform=None)
     target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
-    name = "metis-sandbox-timeout-process-group"
+    name = "metis-sandbox-" + "timeout-process-group"[:16]
     monkeypatch.setattr(ctf_sandbox, "uuid4", lambda: SimpleNamespace(hex="timeout-process-group"))
     result = Sandbox(database).execute(run_id, SandboxRequest(
         target=target, mode="script", timeout=1,
@@ -207,6 +207,7 @@ def test_real_engine_timeout_removes_process_group(tmp_path, monkeypatch):
                 "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
                 "time.sleep(60)\n")))
     assert result["timed_out"] is True
+    assert result.get("elapsed") is not None  # the in-container supervisor returned its timeout record
     inspected = subprocess.run(["docker", "inspect", name], capture_output=True, check=False)
     assert inspected.returncode != 0
 

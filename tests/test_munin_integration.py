@@ -30,6 +30,19 @@ def _manifest(challenge_id: str, title: str, description: str) -> dict:
     }
 
 
+def _rank_tools(brief: dict) -> list[str]:
+    """One fixed policy: retrieved card hints reorder the same baseline candidates."""
+    baseline = ["base64_decode", "rot13"]
+    hinted: list[str] = []
+    for item in brief["prior_knowledge"]:
+        card = item["card"]
+        text = " ".join((card["title"], card["summary"], card["conditions"])).lower()
+        for tool in baseline:
+            if tool in text and tool not in hinted:
+                hinted.append(tool)
+    return hinted + [tool for tool in baseline if tool not in hinted]
+
+
 def test_munin_transfers_across_fixtures_and_heldout_retrieval_is_abated(tmp_path: Path):
     database = tmp_path / "state" / "metis.sqlite"
     session = CodexSession(database)
@@ -81,11 +94,10 @@ def test_munin_transfers_across_fixtures_and_heldout_retrieval_is_abated(tmp_pat
             assert "PRIOR EXPERIENCE" in prompt
             if mode == "retrieval":
                 assert brief["prior_knowledge"]
-                tool_order = ["rot13"]
             else:
                 assert brief["prior_knowledge"] == []
-                tool_order = ["base64_decode", "rot13"]
 
+            tool_order = _rank_tools(brief)
             used_actions = 0
             for tool in tool_order:
                 result = session.act(target["run_id"], ToolRequest(tool=tool, data=ciphertext))

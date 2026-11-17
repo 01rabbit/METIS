@@ -238,13 +238,14 @@ def test_zipcrypto_worker_enforces_container_deadline(tmp_path, monkeypatch):
     run_id = session.intake(title="Synthetic", description="ZipCrypto deadline", paths=[source])["run_id"]
     artifact = session.context(run_id)["challenge"]["artifacts"][0]
     configure(database, engine="docker", image=image, platform=None)
-    container_name = "metis-sandbox-zipcrypto-deadline"
+    container_name = "metis-sandbox-" + "zipcrypto-deadline"[:16]
     monkeypatch.setattr(ctf_sandbox, "uuid4", lambda: SimpleNamespace(hex="zipcrypto-deadline"))
     result = session.artifact(run_id, artifact, "zipcrypto_attack", {
         "member": "known.txt", "plaintext_hex": (b"known plaintext" * 2).hex(), "seconds": 1})
     assert result["ok"] is True
     assert result["result"]["found"] is False
     assert result["result"]["reason"] == "work_exceeds_budget"
+    assert result["result"]["seconds"] is not None  # timeout came from the in-container supervisor
     inspected = subprocess.run(["docker", "inspect", container_name], capture_output=True, check=False)
     assert inspected.returncode != 0
 
