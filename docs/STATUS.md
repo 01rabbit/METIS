@@ -125,11 +125,14 @@ reason-code test (`1 passed in 0.69s`). ZipCrypto attacks now use a fixed
 2 GiB/4 CPU no-network container profile with cgroup limit checks and an
 end-to-end timeout that kills the entire worker process group. The generic
 512 MiB OOM probe and deadline cleanup tests passed; ZipCrypto's OOM reason
-mapping has a deterministic unit test. One full intent search in the isolated
+mapping has a deterministic unit test. A real-container ZipCrypto route OOM
+test is now in CI under a fixed 128 MiB test profile; exact-head CI is pending.
+It reports a route-level `sandbox-oom` stage because startup/import/search
+phases are not distinguished. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
-300-second budget. Stay recovery and ZipCrypto-specific real OOM classification
-remain unproven. The 2020 two-file attack's
+300-second budget. Stay recovery and production-profile 2 GiB candidate-search
+OOM classification remain unproven. The 2020 two-file attack's
 paper and legacy CUDA source were reviewed, not run. Docker-backed budget and
 full-intent integration checks now run in a dedicated GitHub Actions job.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and

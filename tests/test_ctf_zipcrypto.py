@@ -216,8 +216,32 @@ def test_zipcrypto_worker_maps_container_memory_kill(tmp_path, monkeypatch):
     result = run_zipcrypto_attack(database, run_id, name,
                                   {"member": "known.txt", "plaintext_hex": "4142434445464748494a4b4c",
                                    "offset": 0, "seconds": 5})
-    assert result["reason"] == "memory_limit_exceeded" and result["stage"] == "key-search"
+    assert result["reason"] == "memory_limit_exceeded" and result["stage"] == "sandbox-oom"
     assert observed == {"run_id": run_id, "target": name, "reserved": True, "profile": "zipcrypto"}
+
+
+def test_zipcrypto_real_low_memory_container_reports_memory_limit(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built numpy-enabled sandbox image")
+    from metis.core.codex_session import CodexSession
+    from metis.core.ctf_sandbox import configure
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
+
+    archive = _zipcrypto_archive({"known.txt": b"known plaintext to exercise bounded key search"}, b"oom-test")
+    source = tmp_path / "oom-test.zip"
+    source.write_bytes(archive)
+    database = tmp_path / "state" / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Synthetic", description="ZipCrypto low-memory integration", paths=[source])["run_id"]
+    artifact = session.context(run_id)["challenge"]["artifacts"][0]
+    configure(database, engine="docker", image=image, platform=None)
+    result = run_zipcrypto_attack(database, run_id, artifact, {
+        "member": "known.txt", "plaintext_hex": b"known plaintext to exercise".hex(),
+        "offset": 0, "seconds": 10,
+    }, _profile="zipcrypto_test_lowmem")
+    assert result["reason"] == "memory_limit_exceeded", result
+    assert result["stage"] == "sandbox-oom"
 
 
 def test_zipcrypto_worker_enforces_container_deadline(tmp_path, monkeypatch):

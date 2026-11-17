@@ -64,8 +64,11 @@ if __name__ == "__main__":
 '''
 
 
-def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: dict[str, Any]) -> dict[str, Any]:
+def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: dict[str, Any],
+                         *, _profile: str = "zipcrypto") -> dict[str, Any]:
     """Fixed-purpose route: no caller-controlled script, image, or resource settings."""
+    if _profile not in {"zipcrypto", "zipcrypto_test_lowmem"}:
+        return {"found": False, "reason": "isolation_unavailable", "stage": "sandbox-profile"}
     source = Path(__file__).with_name("ctf_zipcrypto.py").read_text(encoding="utf-8")
     script = source + "\n" + _WORKER
     if len(script.encode()) > 262_144:
@@ -80,12 +83,12 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     try:
         result = Sandbox(database).execute(run_id, SandboxRequest(
             target=artifact, mode="script", script=script, stdin=json.dumps(request_data).encode(),
-            timeout=seconds), _reserved=True, _profile="zipcrypto")
+            timeout=seconds), _reserved=True, _profile=_profile)
     except (OSError, RuntimeError, ValueError) as exc:
         return {"found": False, "reason": "isolation_unavailable", "stage": "sandbox",
                 "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}
     if result.get("memory_limit_exceeded"):
-        return {"found": False, "reason": "memory_limit_exceeded", "stage": "key-search",
+        return {"found": False, "reason": "memory_limit_exceeded", "stage": "sandbox-oom",
                 "seconds": result.get("elapsed")}
     if result.get("timed_out"):
         return {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",

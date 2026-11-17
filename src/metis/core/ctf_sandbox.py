@@ -397,9 +397,11 @@ class Sandbox:
         self.image_id: str = self.image
 
     def command(self, name: str, *, profile: str = "standard") -> list[str]:
-        if profile not in {"standard", "zipcrypto"}:
+        if profile not in {"standard", "zipcrypto", "zipcrypto_test_lowmem"}:
             raise ValueError("unsupported sandbox resource profile")
-        memory, cpus, ipc = ("2g", "4", "private") if profile == "zipcrypto" else ("512m", "1", "none")
+        memory, cpus, ipc = ({"zipcrypto": ("2g", "4", "private"),
+                              "zipcrypto_test_lowmem": ("128m", "4", "private")}.get(
+                                  profile, ("512m", "1", "none")))
         return [self.engine, "run", *( ["--rm"] if profile == "standard" else []), "-i", "--name", name,
                 "--pull=never",
                 *(["--platform", self.platform] if self.platform else []),
@@ -473,7 +475,7 @@ class Sandbox:
                                            stdout=output, stderr=error,
                                            timeout=request.timeout + 60, check=False,
                                            env=_engine_environment())
-                if _profile == "zipcrypto":
+                if _profile.startswith("zipcrypto"):
                     inspected = subprocess.run(
                         [self.engine, "inspect", "--format={{.State.OOMKilled}}", name],
                         capture_output=True, timeout=10, check=False, env=_engine_environment())
@@ -509,7 +511,7 @@ class Sandbox:
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
         finally:
-            if _profile == "zipcrypto":
+            if _profile.startswith("zipcrypto"):
                 try:
                     cleanup = subprocess.run([self.engine, "rm", "-f", name], capture_output=True,
                                              timeout=10, check=False, env=_engine_environment())

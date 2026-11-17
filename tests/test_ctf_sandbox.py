@@ -72,9 +72,12 @@ def test_resource_profiles_are_fixed_and_isolated(tmp_path):
     sandbox = Sandbox(database)
     standard = sandbox.command("standard")
     zipcrypto = sandbox.command("zipcrypto", profile="zipcrypto")
+    lowmem = sandbox.command("zipcrypto-lowmem", profile="zipcrypto_test_lowmem")
     assert "--memory=512m" in standard and "--cpus=1" in standard and "--ipc=none" in standard
     assert "--memory=2g" in zipcrypto and "--memory-swap=2g" in zipcrypto
     assert "--cpus=4" in zipcrypto and "--ipc=private" in zipcrypto
+    assert "--memory=128m" in lowmem and "--memory-swap=128m" in lowmem
+    assert "--cpus=4" in lowmem and "--ipc=private" in lowmem
     assert "--network=none" in zipcrypto and "--read-only" in zipcrypto
     with pytest.raises(ValueError, match="resource profile"):
         sandbox.command("invalid", profile="unbounded")
