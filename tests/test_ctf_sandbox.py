@@ -154,6 +154,24 @@ def test_real_engine_isolation_smoke(tmp_path):
     assert probe["stdout"]["text"].split() == ["net-blocked", "rootfs-readonly", "uid", "65534"]
 
 
+def test_real_engine_enforces_memory_limit(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    result = Sandbox(database).execute(run_id, SandboxRequest(
+        target=target, mode="script", timeout=20,
+        script=("blocks = []\n"
+                "for _ in range(700):\n"
+                "    blocks.append(bytearray(1024 * 1024))\n"
+                "print('allocation completed')\n")))
+    assert result["ok"] is False
+    assert result.get("signal") == 9
+    assert result["stdout"]["text"] == ""
+
+
 def _elf(machine: int) -> bytes:
     header = bytearray(64)
     header[:4] = b"\x7fELF"

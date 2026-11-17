@@ -105,7 +105,10 @@ intents, decryption and XOR in a combined pair of slow tests (`2 passed in
 now terminates candidate workers at the wall-clock deadline, with a dedicated
 reason-code test (`1 passed in 0.69s`). Pool startup and candidate materialization
 are not under a hard end-to-end supervisor timeout. An OS-enforced memory
-ceiling and Stay key recovery remain incomplete; the 2020 two-file attack's
+ceiling for the ZipCrypto worker and Stay key recovery remain incomplete. A
+real 700 MiB allocation probe in the generic 512 MiB sandbox was SIGKILLed;
+this does not establish that the ZipCrypto worker runs under that limit. The
+2020 two-file attack's
 paper and legacy CUDA source were reviewed, not run.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
