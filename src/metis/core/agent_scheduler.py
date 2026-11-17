@@ -153,6 +153,8 @@ class AgentScheduler:
     # -- jobs ------------------------------------------------------------------------------
     @locked
     def enqueue(self, run_id: str, wave_id: str) -> list[dict[str, Any]]:
+        if self.run_cancelled(run_id):
+            raise ValueError("run is cancelled; enqueue refused")
         plan = self.ledger._plan(run_id, wave_id)
         now = time.time()
         with self._db() as db:
@@ -165,12 +167,16 @@ class AgentScheduler:
                             int(item.get("deadline_seconds", 600)), int(item.get("max_turns", 6)), now))
         return self.jobs(run_id, wave_id)
 
+    @locked
     def reserve_model_turn(self, run_id: str, assignment_id: str, attempt_id: str) -> dict[str, Any] | None:
         """Atomically reserve one Codex call attempt from the run's immutable turn budget.
 
         Reservations are charged before the provider call and never refunded on failure or retry.
         ``None`` means the cap is exhausted; the active assignment is ended and logged.
         """
+        if self.run_cancelled(run_id):
+            self.cancel_run(run_id)
+            raise ValueError("run is cancelled; model-turn reservation refused")
         db = sqlite3.connect(self.database, timeout=30, isolation_level=None)
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -258,28 +264,39 @@ class AgentScheduler:
 
         started = []
         for job in reserved:
-            plan = self.ledger._plan(job["run_id"], job["wave_id"])
-            assignment = next(item for item in plan["assignments"] if item["assignment_id"] == job["assignment_id"])
-            assignment["deadline_seconds"] = job["deadline_seconds"]
-            model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
-            brief = self.brief(job["run_id"], assignment, job["attempt_id"])
-            try:
-                host_job = self.host.spawn(assignment, brief, model)
-            except Exception as exc:  # noqa: BLE001 -- any host failure releases the slot
-                with self._db() as db:
-                    db.execute("UPDATE agent_jobs SET state='failed', failure=?, finished=? WHERE assignment_id=? "
-                               "AND attempt_id=?", (f"spawn_error: {type(exc).__name__}", time.time(),
-                                                     job["assignment_id"], job["attempt_id"]))
-                    self._log(db, job["assignment_id"], job["attempt_id"], "spawn_failed", type(exc).__name__)
-                continue
-            with self._db() as db:
-                db.execute("UPDATE agent_jobs SET host_job_id=?, model=? WHERE assignment_id=? AND attempt_id=?",
-                           (host_job, model.model_dump_json(), job["assignment_id"], job["attempt_id"]))
-            started.append({"assignment_id": job["assignment_id"], "attempt_id": job["attempt_id"],
-                            "host_job_id": host_job, "model": model.model_dump(), "brief": brief})
+            with run_lock(self.database, job["run_id"]):
+                if self.run_cancelled(job["run_id"]):
+                    # Reservation alone starts no host work; this attempt is safe to end.
+                    self._end(job["assignment_id"], job["attempt_id"], "cancelled", "run cancelled before spawn")
+                    continue
+                started_job = self._spawn_reserved_job(job, settings)
+                if started_job is not None:
+                    started.append(started_job)
         queued = sum(1 for job in self.jobs(run_id) if job["state"] == "queued")
         return {"started": started, "queued": queued, "slot_limit": limit,
                 "per_run_slots": settings["per_run_slots"], "host": self.host.name}
+
+    def _spawn_reserved_job(self, job: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any] | None:
+        """The caller holds the run lock through the bounded host launch."""
+        plan = self.ledger._plan(job["run_id"], job["wave_id"])
+        assignment = next(item for item in plan["assignments"] if item["assignment_id"] == job["assignment_id"])
+        assignment["deadline_seconds"] = job["deadline_seconds"]
+        model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
+        brief = self.brief(job["run_id"], assignment, job["attempt_id"])
+        try:
+            host_job = self.host.spawn(assignment, brief, model)
+        except Exception as exc:  # noqa: BLE001 -- any host failure releases the slot
+            with self._db() as db:
+                db.execute("UPDATE agent_jobs SET state='failed', failure=?, finished=? WHERE assignment_id=? "
+                           "AND attempt_id=?", (f"spawn_error: {type(exc).__name__}", time.time(),
+                                                 job["assignment_id"], job["attempt_id"]))
+                self._log(db, job["assignment_id"], job["attempt_id"], "spawn_failed", type(exc).__name__)
+            return None
+        with self._db() as db:
+            db.execute("UPDATE agent_jobs SET host_job_id=?, model=? WHERE assignment_id=? AND attempt_id=?",
+                       (host_job, model.model_dump_json(), job["assignment_id"], job["attempt_id"]))
+        return {"assignment_id": job["assignment_id"], "attempt_id": job["attempt_id"],
+                "host_job_id": host_job, "model": model.model_dump(), "brief": brief}
 
     def _reserve_dispatch_jobs(self, run_id: str | None,
                                locked_runs: set[str]) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
@@ -292,8 +309,8 @@ class AgentScheduler:
                 "SELECT DISTINCT run_id FROM agent_jobs WHERE state='queued'" +
                 (" AND run_id=?" if run_id else ""), [run_id] if run_id else [])
                            if row[0] in locked_runs}
-        run_seconds = {identity: self.session.context(identity)["seconds_remaining"]
-                       for identity in queued_runs}
+        contexts = {identity: self.session.context(identity) for identity in queued_runs}
+        run_seconds = {identity: context["seconds_remaining"] for identity, context in contexts.items()}
         reserved: list[dict[str, Any]] = []
         db = sqlite3.connect(self.database, timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
@@ -317,6 +334,12 @@ class AgentScheduler:
                 query += " AND 0"
                 values = []
             for row in db.execute(query + " ORDER BY created, assignment_id", values):
+                if contexts[row["run_id"]]["status"] == RunStatus.CANCELLED.value:
+                    db.execute("UPDATE agent_jobs SET state='cancelled',failure=?,finished=? "
+                               "WHERE assignment_id=? AND state='queued'",
+                               ("run cancelled", now, row["assignment_id"]))
+                    self._log(db, row["assignment_id"], row["attempt_id"], "cancelled", "run cancelled")
+                    continue
                 if free <= 0:
                     break
                 if per_run.get(row["run_id"], 0) >= settings["per_run_slots"]:
@@ -419,6 +442,9 @@ class AgentScheduler:
                 self._log(db, assignment_id, attempt_id, "rejected_stale",
                           f"current={job['attempt_id']} state={job['state']}")
             raise ValueError("stale or unknown attempt; rejected")
+        if self.run_cancelled(job["run_id"]):
+            self.cancel_run(job["run_id"])
+            raise ValueError("run is cancelled; attempt rejected")
         return job
 
     def _assignment_artifact_scope(self, job: dict[str, Any]) -> set[str] | None:
@@ -520,6 +546,21 @@ class AgentScheduler:
                                                  reason if confirmed else reason + " (stop not confirmed)"))
         return results
 
+    def run_cancelled(self, run_id: str) -> bool:
+        """Read the run stop signal independently of a specialist's job state."""
+        return self.session.store.read(run_id)[-1].status == RunStatus.CANCELLED
+
+    @locked
+    def cancel_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Reconcile a cancelled session with queued/running specialist jobs."""
+        if not self.run_cancelled(run_id):
+            return []
+        changes = []
+        for job in self.jobs(run_id):
+            if job["state"] in {"queued", "running"}:
+                changes.extend(self.cancel(assignment_id=job["assignment_id"], reason="run cancelled"))
+        return changes
+
     def _stop(self, job: dict[str, Any]) -> bool:
         try:
             return bool(job["host_job_id"]) and self.host.cancel(job["host_job_id"])
@@ -538,6 +579,8 @@ class AgentScheduler:
         if job is None:
             raise ValueError("only failed, timed-out or cancelled jobs can be retried")
         with run_lock(self.database, job["run_id"]):
+            if self.run_cancelled(job["run_id"]):
+                raise ValueError("run is cancelled; retry refused")
             job = next((item for item in self.jobs(job["run_id"])
                         if item["assignment_id"] == assignment_id), None)
             if job is None or job["state"] not in {"failed", "timed_out", "cancelled"}:
@@ -556,6 +599,9 @@ class AgentScheduler:
         changes = []
         now = time.time()
         poll_jobs = []
+        for run_id in {job["run_id"] for job in self.jobs() if job["state"] in {"queued", "running"}}:
+            if self.run_cancelled(run_id):
+                changes.extend(self.cancel_run(run_id))
         for job in self.jobs():
             if job["state"] != "running":
                 continue
@@ -589,6 +635,9 @@ class AgentScheduler:
                         statuses[job["assignment_id"]] = {"state": "unknown"}
 
         for job in poll_jobs:
+            if self.run_cancelled(job["run_id"]):
+                changes.extend(self.cancel_run(job["run_id"]))
+                continue
             status = statuses[job["assignment_id"]]
             if status.get("usage"):
                 with self._db() as db:
@@ -603,6 +652,11 @@ class AgentScheduler:
                     changes.append(self.complete(job["run_id"], job["assignment_id"], job["attempt_id"], output))
                 except ValueError as exc:
                     with run_lock(self.database, job["run_id"]):
+                        current = next((item for item in self.jobs(job["run_id"])
+                                        if item["assignment_id"] == job["assignment_id"]), None)
+                        if (current is None or current["attempt_id"] != job["attempt_id"]
+                                or current["state"] != "running"):
+                            continue  # Cancellation or another terminal transition won the race.
                         self.session.cancel_active_operation(job["run_id"], job["assignment_id"],
                                                              job["attempt_id"])
                         changes.append(self._end(job["assignment_id"], job["attempt_id"], "failed",
@@ -703,6 +757,9 @@ class AgentScheduler:
             raise
 
         with run_lock(self.database, run_id):
+            if self.run_cancelled(run_id):
+                self.cancel_run(run_id)
+                raise ValueError("run cancelled while the intent was executing; result discarded")
             current = next((item for item in self.jobs(run_id)
                             if item["assignment_id"] == assignment_id), None)
             with self._db() as db:
@@ -808,6 +865,7 @@ class AgentScheduler:
     def candidate_dir(self, run_id: str) -> Path:
         return self.database.parent / ".metis-candidates" / run_id
 
+    @locked
     def candidate(self, run_id: str, assignment_id: str, attempt_id: str, value: str,
                   basis: list[int]) -> dict[str, Any]:
         """Store a specialist's candidate privately (0600 file, digest in the DB, nothing in logs)."""

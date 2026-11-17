@@ -208,7 +208,7 @@ def test_zipcrypto_worker_maps_container_memory_kill(tmp_path, monkeypatch):
     configure(database, engine="docker", image="sha256:" + "a" * 64, platform=None)
     observed = {}
 
-    def memory_killed(self, seen_run, request, *, _reserved=False, _profile="standard"):
+    def memory_killed(self, seen_run, request, *, _reserved=False, _profile="standard", _operation_id=None):
         observed.update(run_id=seen_run, target=request.target, reserved=_reserved, profile=_profile)
         return {"ok": False, "exit_code": -9, "timed_out": False,
                 "memory_limit_exceeded": True, "elapsed": 0.2}
@@ -218,7 +218,7 @@ def test_zipcrypto_worker_maps_container_memory_kill(tmp_path, monkeypatch):
                                   {"member": "known.txt", "plaintext_hex": "4142434445464748494a4b4c",
                                    "offset": 0, "seconds": 5})
     assert result["reason"] == "memory_limit_exceeded" and result["stage"] == "sandbox-oom"
-    assert observed == {"run_id": run_id, "target": name, "reserved": True, "profile": "zipcrypto"}
+    assert observed == {"run_id": run_id, "target": name, "reserved": False, "profile": "zipcrypto"}
 
 
 def test_zipcrypto_real_low_memory_container_reports_memory_limit(tmp_path):
@@ -413,7 +413,7 @@ def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=12
             np.array([true_z ^ 0x100000, true_z], dtype=np.uint32), index))
         from metis.core import ctf_zipcrypto_worker
         monkeypatch.setattr(ctf_zipcrypto_worker, "run_zipcrypto_attack",
-                            lambda _db, _run, _artifact, settings: zc.known_plaintext_attack(
+                            lambda _db, _run, _artifact, settings, **_kwargs: zc.known_plaintext_attack(
                                 ciphertext, known[:60], 12, extra=zc.check_bytes(entry),
                                 seconds=settings["seconds"], workers=2))
 

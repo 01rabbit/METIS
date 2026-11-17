@@ -35,7 +35,7 @@ from pydantic import Field, field_validator
 from metis.core.artifacts import artifact_stream
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import Contract, RunStatus
-from metis.core.run_lock import run_lock
+from metis.core.run_lock import operation_lock, run_lock
 
 MODES = ("run", "strace", "ltrace", "gdb", "script")
 MAX_INPUT = 64 * 1_048_576
@@ -482,7 +482,27 @@ class Sandbox:
         return files
 
     def execute(self, run_id: str, request: SandboxRequest, *, _reserved: bool = False,
-                _profile: str = "standard") -> dict[str, Any]:
+                _profile: str = "standard", _operation_id: str | None = None) -> dict[str, Any]:
+        # Recovery can interrupt this lock, but another sandbox/artifact call
+        # waits until the old caller observes its revoked operation identity.
+        with operation_lock(self.session.database, run_id):
+            operation_id = _operation_id
+            if not _reserved:
+                operation_id = uuid4().hex
+            elif operation_id is None:
+                raise ValueError("reserved sandbox execution requires an operation identity")
+            try:
+                return self._execute(run_id, request, _reserved=_reserved, _profile=_profile,
+                                     _operation_id=operation_id)
+            finally:
+                if not _reserved:
+                    with run_lock(self.session.database, run_id), sqlite3.connect(self.session.database) as db:
+                        if not db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone():
+                            db.execute("DELETE FROM codex_active_operations WHERE run_id=? AND operation_id=?",
+                                       (run_id, operation_id))
+
+    def _execute(self, run_id: str, request: SandboxRequest, *, _reserved: bool,
+                 _profile: str, _operation_id: str | None) -> dict[str, Any]:
         request = SandboxRequest.model_validate(request.model_dump())
         if request.mode == "script" and not request.script:
             raise ValueError("script mode requires a script")
@@ -504,32 +524,40 @@ class Sandbox:
                   "target_arch": target_arch}
         bundle = _bundle(header, files, request.stdin)
         if not _reserved:
-            self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
-                                  target=request.target,
-                                  input_sha256=hashlib.sha256(bundle).hexdigest())
+            with run_lock(self.session.database, run_id):
+                with sqlite3.connect(self.session.database) as db:
+                    if db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone():
+                        raise ValueError("run has an unreconciled active operation")
+                self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
+                                      target=request.target,
+                                      input_sha256=hashlib.sha256(bundle).hexdigest())
+                with sqlite3.connect(self.session.database) as db:
+                    db.execute("INSERT INTO codex_active_operations "
+                               "(run_id,operation_id,cancel_requested,started) VALUES (?,?,0,?)",
+                               (run_id, _operation_id, time.time()))
         name = "metis-sandbox-" + uuid4().hex[:16]
         started = time.monotonic()
         result: dict[str, Any]
         oom_killed = False
         phase = "container-create"
+        registered = False
         try:
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
                 # Publish the worker before launch while holding the same per-run
                 # lock used by cancel(). Once cancel returns from this lock it can
                 # always identify the container that may be executing.
                 with run_lock(self.session.database, run_id):
-                    if self.session.context(run_id)["status"] == RunStatus.CANCELLED.value:
-                        return {"run_id": run_id, "mode": request.mode, "ok": False,
-                                "error": "cancelled before sandbox launch", "cancelled": True}
                     with sqlite3.connect(self.session.database) as db:
-                        active = db.execute("SELECT cancel_requested FROM codex_active_operations "
+                        active = db.execute("SELECT operation_id,cancel_requested FROM codex_active_operations "
                                             "WHERE run_id=?", (run_id,)).fetchone()
-                    if active and active[0]:
+                    if (active is None or active != (_operation_id, 0)
+                            or self.session.context(run_id)["status"] != RunStatus.EXECUTING.value):
                         return {"run_id": run_id, "mode": request.mode, "ok": False,
                                 "error": "cancelled before sandbox launch", "cancelled": True}
                     with sqlite3.connect(self.session.database) as db:
-                        db.execute("INSERT OR REPLACE INTO sandbox_workers VALUES (?, ?, ?, ?)",
+                        db.execute("INSERT INTO sandbox_workers VALUES (?, ?, ?, ?)",
                                    (run_id, self.engine, name, time.time()))
+                    registered = True
                     created = subprocess.run(self.command(name, profile=_profile), capture_output=True,
                                              timeout=60, check=False, env=_engine_environment())
                     if created.returncode:
@@ -596,19 +624,24 @@ class Sandbox:
             # Keep the persistent record until removal and absence are confirmed.
             # Recovery and cancellation use the same lock, so neither can miss a
             # worker whose teardown is still uncertain.
-            with run_lock(self.session.database, run_id):
-                cleanup = _remove_container(self.engine, name)
-                if cleanup["status"] != "confirmed":
-                    raise RuntimeError("sandbox cleanup could not be confirmed")
-                with sqlite3.connect(self.session.database) as db:
-                    db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
-                               (run_id, name))
+            if registered:
+                with run_lock(self.session.database, run_id):
+                    cleanup = _remove_container(self.engine, name)
+                    if cleanup["status"] != "confirmed":
+                        raise RuntimeError("sandbox cleanup could not be confirmed")
+                    with sqlite3.connect(self.session.database) as db:
+                        db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                                   (run_id, name))
         if not _reserved:
             with run_lock(self.session.database, run_id):
                 current_status = self.session.context(run_id)["status"]
+                with sqlite3.connect(self.session.database) as db:
+                    active = db.execute("SELECT operation_id,cancel_requested FROM codex_active_operations "
+                                        "WHERE run_id=?", (run_id,)).fetchone()
                 if current_status == RunStatus.CANCELLED.value:
                     result = {"ok": False, "cancelled": True, "error": "sandbox worker cancelled"}
-                elif current_status != RunStatus.EXECUTING.value:
+                elif (current_status != RunStatus.EXECUTING.value
+                      or active != (_operation_id, 0)):
                     result = {"ok": False, "cancelled": True,
                               "error": "sandbox result discarded after controller recovery"}
                 else:

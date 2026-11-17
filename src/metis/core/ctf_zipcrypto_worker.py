@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
 
 def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: dict[str, Any],
-                         *, _profile: str = "zipcrypto") -> dict[str, Any]:
+                         *, _profile: str = "zipcrypto", _operation_id: str | None = None) -> dict[str, Any]:
     """Fixed-purpose route: no caller-controlled script, image, or resource settings."""
     if _profile not in {"zipcrypto", "zipcrypto_test_lowmem"}:
         return {"found": False, "reason": "isolation_unavailable", "stage": "sandbox-profile"}
@@ -94,7 +94,8 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     try:
         result = Sandbox(database).execute(run_id, SandboxRequest(
             target=artifact, mode="script", script=script, stdin=json.dumps(request_data).encode(),
-            timeout=seconds), _reserved=True, _profile=_profile)
+            timeout=seconds), _reserved=_operation_id is not None, _profile=_profile,
+            _operation_id=_operation_id)
     except (OSError, RuntimeError, ValueError) as exc:
         return {"found": False, "reason": "isolation_unavailable", "stage": "sandbox",
                 "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}

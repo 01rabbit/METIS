@@ -262,7 +262,7 @@ class CodexSession:
                 if tool == "zipcrypto_attack":
                     from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
                     zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
-                        self.database, run_id, name, settings)
+                        self.database, run_id, name, settings, _operation_id=operation_id)
                 result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
                 output = {"run_id": run_id, "ok": True, "result": result}
             except ARTIFACT_ERRORS as exc:
@@ -617,6 +617,10 @@ class CodexSession:
         worker = cancel_registered_worker(self.database, run_id)
         if worker["status"] == "unknown":
             raise RuntimeError("recovery blocked: sandbox worker teardown is unknown")
+        # Revocation is persistent: an old caller must present its original ID
+        # at launch/finalization and cannot adopt a later operation's identity.
+        with sqlite3.connect(self.database) as db:
+            db.execute("DELETE FROM codex_active_operations WHERE run_id=?", (run_id,))
         events = self.store.read(run_id)
         if not events:
             self._emit(run_id, RunStatus.NEW)

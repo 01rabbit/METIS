@@ -349,3 +349,16 @@ recovered, no independent Stay round-trip vector was validated, and no
 candidate was sent to the official verifier. The archive is acquired, but
 ksnctf #39 and the Stay acceptance gate remain unresolved. The primary
 reference is [Stay's FSE paper](https://math.ucr.edu/~mike/zipattacks.pdf).
+
+The repository's focused official-archive regression was then run against the
+registered ZIP from that METIS run. A short Python wrapper resolved
+`CodexSession.artifact_root(run_id) / "01-00-flag.zip"`, set that path in
+`METIS_TEST_KSNCTF39_ZIP`, and invoked:
+
+```text
+.venv/bin/python -m pytest -ra -v tests/test_ctf_zipcrypto.py::test_ksnctf_39_seed_is_recovered
+1 passed in 1.14s
+```
+
+This verifies the seed-recovery assertion on the official archive only; it
+does not test or establish Stay key recovery.

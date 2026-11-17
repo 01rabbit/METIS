@@ -131,6 +131,62 @@ def test_cancel_racing_with_turn_reservation_returns_stopped_without_provider_ca
     assert runner.prompts == []
 
 
+def test_cancelled_session_stops_before_any_provider_call(setup):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    scheduler.session.cancel(run_id)
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and result["codex_turns"] == []
+    assert runner.prompts == []
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 0
+
+
+def test_session_cancel_after_turn_reservation_keeps_charge_without_provider_call(setup, monkeypatch):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    reserve = scheduler.reserve_model_turn
+
+    def reserve_then_cancel(*args):
+        reservation = reserve(*args)
+        scheduler.session.cancel(run_id)
+        return reservation
+
+    monkeypatch.setattr(scheduler, "reserve_model_turn", reserve_then_cancel)
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and runner.prompts == []
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+
+
+@pytest.mark.parametrize("honors_stop", [True, False])
+def test_session_cancel_during_turn_signals_stop_and_discards_late_output(setup, honors_stop):
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    sequence = scheduler.session.store.read(run_id)[-1].sequence
+
+    class CancellingRunner:
+        calls = 0
+
+        def run(self, _prompt, *, model, timeout, should_stop, images):
+            self.calls += 1
+            assert not should_stop()
+            scheduler.session.cancel(run_id)
+            # The job has not yet been reconciled: the run status must stop it directly.
+            assert next(item for item in scheduler.jobs(run_id)
+                        if item["assignment_id"] == job["assignment_id"])["state"] == "running"
+            assert should_stop()
+            return _say(_report(sequence), stopped=honors_stop)
+
+    runner = CancellingRunner()
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and runner.calls == 1
+    assert result["outcome"]["state"] == "cancelled"
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM ctf_agent_reports WHERE run_id=?", (run_id,)).fetchone()[0] == 0
+
+
 def test_daybreak_only_intents_are_refused_and_the_attempt_continues(setup):
     database, scheduler, run_id, _wave, started, _artifact = setup
     job = started[0]
@@ -187,6 +243,7 @@ def test_flag_in_report_is_rejected_then_corrected(setup):
 def test_cancelled_or_stale_attempt_stops_the_driver(setup):
     _database, scheduler, run_id, _wave, started, artifact = setup
     job = started[0]
+    other = started[1]
 
     def cancel_then_answer(_prompts):
         scheduler.cancel(assignment_id=job["assignment_id"])
@@ -196,6 +253,8 @@ def test_cancelled_or_stale_attempt_stops_the_driver(setup):
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert result["job_state"] == "cancelled" and "stale" in result["intents"][0]["refused"]
     assert result["outcome"]["state"] == "cancelled" and len(runner.prompts) == 1
+    assert next(item for item in scheduler.jobs(run_id)
+                if item["assignment_id"] == other["assignment_id"])["state"] == "running"
     with pytest.raises(ValueError, match="not the running attempt"):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], ScriptedRunner([]))
 
@@ -310,7 +369,8 @@ def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):
     assert Path(database).exists()
 
 
-def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path):
+@pytest.mark.parametrize("cancel_target", ["assignment", "session"])
+def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path, cancel_target):
     """Real subprocess: a fake `codex` that hangs is killed within seconds of Daybreak's cancel."""
     import threading
     import time
@@ -322,13 +382,16 @@ def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path):
                     "cat >/dev/null\nsleep 120\n")
     fake.chmod(0o755)
     cli = CodexCLI(str(fake), isolation="none", allow_untested=True)
-    timer = threading.Timer(1.0, lambda: scheduler.cancel(assignment_id=job["assignment_id"]))
+    cancel = (lambda: scheduler.cancel(assignment_id=job["assignment_id"])) if cancel_target == "assignment" \
+        else lambda: scheduler.session.cancel(run_id)
+    timer = threading.Timer(1.0, cancel)
     timer.start()
     began = time.monotonic()
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], cli, turn_timeout=60)
     assert time.monotonic() - began < 15
     assert result["job_state"] == "cancelled" and result["outcome"]["state"] == "cancelled"
     assert result["codex_turns"] == [] or result["codex_turns"][-1]["returncode"] != 0
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
 
 
 def test_daybreak_note_is_shown_but_cannot_widen_authority(setup):

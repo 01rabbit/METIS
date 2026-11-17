@@ -38,7 +38,10 @@ tamper-proof ledger against the database owner, or an independent signature.
 are consistent; it does not authenticate provenance or independently verify
 the semantic validity of every state transition.
 The current event schema does not provide reliable structured cost, provider
-usage, artifact-retention, or complete action-budget counters, so the command
-does not infer or report those values. Issue #9 remains open for its P7
+usage or artifact-retention counters, so the command does not infer those
+values. A follow-up adds Codex action-budget accounting from structured session
+configuration and charged `EXECUTING` reservations; see
+[`issue9-budget-recovery-fencing-2026-11-18.md`](issue9-budget-recovery-fencing-2026-11-18.md).
+Issue #9 remains open for its P7
 dependency, host reboot, signed release provenance, artifact and credential
 retention, secure storage, and provider-side revocation evidence.

@@ -232,16 +232,26 @@ closed unless its runner explicitly advertises this controller-side reservation
 mechanism. Manual BridgeHost delegation remains outside that guarantee.
 Token/cost limits are not enforceable when usage is unknown.
 
-The preregistered 30-task diverse real-model benchmark is now complete: the
-two-specialist arm produced 12/60 workflow-complete oracle solves versus 0/60
-for one specialist, a paired gain of 20 percentage points (task-cluster 95%
-bootstrap interval [10, 30] points). The oracle accepted 53/60 multi-arm
-candidates, but 41 came from incomplete job/synthesis workflows and score zero
-under the preregistered rule. Multi-arm workflow completion was 15/60, so
-reliability remains a substantial limitation. This synthetic result meets the
-paired-gain gate for Issue #6 only; it does not establish general CTF or P7
-performance. See
+The historical 30-task diverse real-model benchmark reported 12/60 multi-arm
+workflow-complete oracle solves versus 0/60 single, a 20-point difference
+(task-cluster interval [10, 30] points), and 53/60 raw multi-arm oracle hits.
+These are unrevalidated historical aggregates: the per-trial data were purged,
+so corrected checks for exact assigned-job counts, duplicate records and
+distinct repetitions cannot be reapplied. Only multi received an external
+controller-computed final digest; equal caps did not isolate specialist count
+or match post-processing. The old 12/60 claim must not count as verified
+Issue #6 acceptance or satisfy Issue #7's dependency. A fresh experiment with
+retained redacted metrics, corrected scoring and equivalent post-processing
+is required. See
 [`issue6-real-model-diverse-benchmark-2026-11-18.md`](reports/issue6-real-model-diverse-benchmark-2026-11-18.md).
+
+Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
+with matched cap checks, complete paired repetitions, contamination exclusions,
+independent-verifier provenance filtering, task-cluster intervals and explicit
+failure/resource reporting. Its retained 24-row dataset is invented test data,
+not a model benchmark or verified solve evidence. An evidence-backed controller
+exporter and fresh held-out experiment remain necessary; Issue #8 stays open.
+See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
 
 For Issue #8, a separate held-out AlpacaHack Daily Misc task (`Not so Pyf**k`)
 was locally exercised from its official archive in the no-network, no-host-
@@ -425,10 +435,37 @@ A new read-only `metis audit RUN_ID --database PATH` command projects lifecycle
 status, sequence bounds, event timestamps, status counts, and validated chain
 integrity without exposing free-form event details. Local CLI checks confirm
 private-detail omission, no database writes or missing-file creation, and
-fail-closed handling of a corrupt chain. This does not provide cost/provider
-usage or artifact-retention accounting absent structured source data, and is
+fail-closed handling of a corrupt chain. A follow-up adds configured Codex
+action/wall limits and charged/remaining action counters from the same read-only
+snapshot. Failed and interrupted reservations retain their charge; mutable
+session configuration is outside the validated event hash chain. This does not
+provide cost/provider usage or artifact-retention accounting, and is
 not a tamper-proof signature or full operator UI. Issue #9 remains open. See
 [`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md).
+
+Sandbox recovery now revokes persisted operation identities after confirmed
+teardown. A stale caller must pass its original identity under the launch lock
+before registering a worker or accepting results, and cannot replace another
+worker row. A barrier regression confirms recovery between reservation and
+registration prevents engine launch, preserves the spent action, and permits a
+fresh charged execution. Six checks on the pinned Linux arm64 sandbox image
+also pass for isolation smoke, cancellation and orphan recovery. Host reboot
+and P7 acceptance remain open. See
+[`issue9-budget-recovery-fencing-2026-11-18.md`](reports/issue9-budget-recovery-fencing-2026-11-18.md).
+
+Run cancellation is now enforced by the specialist scheduler as well as the
+session controller: cancelled runs refuse enqueue, retry, dispatch, model-turn
+reservation, new intents, candidate handoff and late reports. In-flight Codex
+processes poll the run stop state; already reserved turns remain charged, and
+an unconfirmed host stop keeps its slot as `unknown`. A stale completion race
+now preserves terminal job states. The focused orchestration suites pass 97
+tests. After the final direct cancel-intent/candidate regressions, the whole
+suite passed `568 passed, 17 skipped in 90.41s` with the pinned arm64 sandbox
+image and the registered official #39 ZIP. Remaining skips require Linux
+bubblewrap/seccomp, browser dependencies, the #33 PCAP, slow exhaustive search,
+or a separate runner/runtime image. Ruff and mypy pass on all changed source
+modules. See
+[`issue9-run-cancellation-scheduler-2026-11-18.md`](reports/issue9-run-cancellation-scheduler-2026-11-18.md).
 
 `metis codex purge-derived RUN_ID` now previews run-scoped generated artifacts;
 `--apply` unlinks only registered `.metis-derived` files and removes their

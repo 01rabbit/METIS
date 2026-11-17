@@ -533,6 +533,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         _usage(scheduler, assignment_id, turns, selected)
 
     def stop_outcome(reason: str) -> dict[str, str]:
+        scheduler.cancel_run(run_id)
         latest = _job(scheduler, assignment_id)
         state = latest["state"] if latest["state"] != "running" else "stopped"
         return {"state": state, "reason": reason[:200]}
@@ -549,6 +550,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
     outcome: dict[str, Any] = {"state": "running"}
     for _ in range(budget_calls):
+        if scheduler.run_cancelled(run_id):
+            outcome = stop_outcome("run cancelled before the next turn")
+            break
         current = _job(scheduler, assignment_id)
         if current["attempt_id"] != attempt_id or current["state"] != "running":
             outcome = stop_outcome(f"attempt no longer running ({current['state']})")
@@ -560,7 +564,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             break
         def stopped() -> bool:
             latest = _job(scheduler, assignment_id)
-            return latest["attempt_id"] != attempt_id or latest["state"] != "running"
+            return (scheduler.run_cancelled(run_id)
+                    or latest["attempt_id"] != attempt_id or latest["state"] != "running")
 
         reservation, stopped_result = reserve_turn()
         if stopped_result is not None:
@@ -569,9 +574,15 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if reservation is None:
             outcome = {"state": "failed", "reason": "run specialist model-turn budget exhausted"}
             break
+        if stopped():
+            outcome = stop_outcome("run or attempt stopped before provider call")
+            break
         turn = runner.run(render_prompt(brief, transcript, note), model=selected, timeout=min(turn_timeout, remaining),
                           should_stop=stopped, images=list(attached.values()) or None)
         record_turn(turn)
+        if scheduler.run_cancelled(run_id):
+            outcome = stop_outcome("run cancelled during a Codex turn; result discarded")
+            break
         if (not turn.stopped and turn.returncode != 0 and not turn.timed_out
                 and any(marker in turn.stderr_tail.lower() for marker in TRANSIENT_MARKERS)):
             _log(scheduler, assignment_id, attempt_id, "codex_turn_retry", turn.stderr_tail[-160:])
@@ -592,10 +603,16 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             if retry_reservation is None:
                 outcome = {"state": "failed", "reason": "run specialist model-turn budget exhausted before retry"}
                 break
+            if stopped():
+                outcome = stop_outcome("run or attempt stopped before transient retry")
+                break
             turn = runner.run(render_prompt(brief, transcript, note), model=selected,
                               timeout=min(turn_timeout, retry_remaining),
                               should_stop=stopped, images=list(attached.values()) or None)
             record_turn(turn)
+            if scheduler.run_cancelled(run_id):
+                outcome = stop_outcome("run cancelled during retry; result discarded")
+                break
         if turn.stopped:
             _log(scheduler, assignment_id, attempt_id, "codex_killed", "attempt cancelled during a Codex turn")
             outcome = stop_outcome("attempt cancelled; Codex process group killed mid-turn")

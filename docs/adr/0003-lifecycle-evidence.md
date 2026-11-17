@@ -20,6 +20,19 @@ Decisions:
 - Keep secrets, flags and raw tool output out of event details. CLI validation
   errors omit rejected input because Pydantic errors can otherwise disclose it.
   This increment provides no general-purpose automatic secret redactor.
+- `metis audit` projects only validated lifecycle metadata and, for Codex
+  sessions, structured action/wall limits and charged action reservations from
+  one read-only SQLite snapshot. An `EXECUTING` event charges an action even
+  when the tool fails or the controller is interrupted. Session configuration
+  is mutable and outside the event hash chain; chain validity does not
+  authenticate budget configuration. Missing Codex configuration is reported
+  as unavailable. The projection omits manifests, commitments and free-form
+  details, and does not estimate provider cost, live time remaining or retention.
+- Sandbox execution persists an operation identity with its charged reservation
+  under the run lock and validates that identity again before worker registration
+  and result acceptance. Recovery revokes the identity after confirmed worker
+  teardown. Per-run sandbox/artifact serialization lets old callers discard their work
+  without adopting a new caller's reservation or overwriting its worker record.
 - `metis prepare` records NEW and VALIDATED only. It does not execute tools,
   contact a model, inspect artifact contents or claim a solve. Failure between
   these appends can leave an auditable NEW run; automatic resume is not implemented.

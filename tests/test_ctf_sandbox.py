@@ -144,6 +144,106 @@ def test_sandbox_isolation_flags_and_execution(tmp_path, engine):
     assert session.context(run_id)["status"] == "planning"
 
 
+def test_recovery_revokes_reserved_sandbox_before_launch_and_allows_fresh_operation(tmp_path, engine, monkeypatch):
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    sandbox = Sandbox(database)
+    target = sandbox.session.context(run_id)["challenge"]["artifacts"][0]
+    reserved = threading.Event()
+    release = threading.Event()
+    original_file = ctf_sandbox.tempfile.TemporaryFile
+    paused = False
+
+    def pause_before_launch(*args, **kwargs):
+        nonlocal paused
+        if not paused:
+            paused = True
+            reserved.set()
+            assert release.wait(10), "launch barrier not released"
+        return original_file(*args, **kwargs)
+
+    monkeypatch.setattr(ctf_sandbox.tempfile, "TemporaryFile", pause_before_launch)
+    results = []
+    errors = []
+
+    def execute():
+        try:
+            results.append(sandbox.execute(run_id, SandboxRequest(target=target, stdin=b"x\n")))
+        except BaseException as exc:  # noqa: BLE001 -- report thread failures to the test caller
+            errors.append(exc)
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    try:
+        assert reserved.wait(10), "sandbox did not reserve"
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=?",
+                              (run_id,)).fetchone()
+        recovered = CodexSession(database).recover(run_id)
+        assert recovered["status"] == "planning"
+        assert recovered["actions_remaining"] == 79
+        assert recovered["worker_teardown"]["status"] == "not_running"
+        # A stale launch must not replace even an already registered newer worker.
+        with sqlite3.connect(database) as db:
+            assert not db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone()
+            db.execute("INSERT INTO sandbox_workers VALUES (?, 'docker', 'newer-worker', 0)", (run_id,))
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert not errors, errors
+    assert results[0]["cancelled"] is True
+    assert not engine.exists(), "stale operation contacted the container engine"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() == (
+            "newer-worker",)
+        db.execute("DELETE FROM sandbox_workers WHERE run_id=?", (run_id,))
+    fresh = sandbox.execute(run_id, SandboxRequest(target=target, stdin=b"fresh\n"))
+    assert fresh["ok"] is True
+    assert fresh["stdout"]["text"] == "hello fresh\n"
+    assert sandbox.session.context(run_id)["actions_remaining"] == 78
+
+
+def test_recovery_clears_interrupted_artifact_operation_before_standalone_sandbox(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    session._reserve(run_id, "interrupted_artifact")
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO codex_active_operations "
+                   "(run_id,operation_id,cancel_requested,started) VALUES (?, 'old-operation', 0, 0)", (run_id,))
+    recovered = session.recover(run_id)
+    assert recovered["status"] == "planning" and recovered["actions_remaining"] == 79
+    with sqlite3.connect(database) as db:
+        assert not db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone()
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    assert Sandbox(database).execute(run_id, SandboxRequest(target=target, stdin=b"x\n"))["ok"]
+    assert session.context(run_id)["actions_remaining"] == 78
+
+
+def test_reserved_sandbox_cannot_adopt_another_operation_identity(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    session._reserve(run_id, "new-operation")
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO codex_active_operations "
+                   "(run_id,operation_id,cancel_requested,started) VALUES (?, 'new-operation', 0, 0)", (run_id,))
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    result = Sandbox(database).execute(run_id, SandboxRequest(target=target),
+                                       _reserved=True, _operation_id="old-operation")
+    assert result["cancelled"] is True
+    assert not engine.exists()
+    assert session.context(run_id)["status"] == "executing"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=?",
+                          (run_id,)).fetchone() == ("new-operation",)
+    with pytest.raises(ValueError, match="requires an operation identity"):
+        Sandbox(database).execute(run_id, SandboxRequest(target=target), _reserved=True)
+
+
 def test_sandbox_script_mode_and_scope(tmp_path, engine):
     database, run_id = _run(tmp_path)
     configure(database, engine="docker", image=IMAGE, platform=None)
@@ -569,9 +669,12 @@ def test_agent_cancel_interrupts_long_artifact_intent(tmp_path, monkeypatch):
     job = next(item for item in scheduler.jobs(run_id) if item["state"] == "running")
 
     def run_long_tool(_root, _name, _tool, _options, **_kwargs):
+        with sqlite3.connect(database) as db:
+            operation_id = db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=?",
+                                      (run_id,)).fetchone()[0]
         return Sandbox(database).execute(run_id, SandboxRequest(
             target=target, mode="script", timeout=300,
-            script="import time; time.sleep(300)\n"), _reserved=True)
+            script="import time; time.sleep(300)\n"), _reserved=True, _operation_id=operation_id)
 
     monkeypatch.setattr(codex_session, "inspect_file", run_long_tool)
     errors = []

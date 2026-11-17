@@ -259,6 +259,163 @@ def test_model_turn_budget_is_snapshotted_per_run_at_first_enqueue(state, tmp_pa
     assert scheduler.model_turn_budget(second) == {"limit": 8, "reserved": 0, "remaining": 8}
 
 
+@pytest.mark.parametrize("global_dispatch", [False, True])
+def test_cancelled_session_never_dispatches_queued_specialists(state, tmp_path, global_dispatch):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    scheduler.session.cancel(run_id)
+
+    assert scheduler.dispatch(None if global_dispatch else run_id)["started"] == []
+    assert scheduler.host.spawned == []
+    assert {job["state"] for job in scheduler.jobs(run_id)} == {"cancelled"}
+    with pytest.raises(ValueError, match="run is cancelled"):
+        scheduler.enqueue(run_id, wave["wave_id"])
+    with pytest.raises(ValueError, match="run is cancelled"):
+        scheduler.retry(scheduler.jobs(run_id)[0]["assignment_id"])
+
+
+def test_cancel_between_slot_reservation_and_spawn_never_starts_host(state, tmp_path, monkeypatch):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    reserve = scheduler._reserve_dispatch_jobs
+
+    def reserve_then_cancel(*args):
+        result = reserve(*args)
+        scheduler.session.cancel(run_id)
+        return result
+
+    monkeypatch.setattr(scheduler, "_reserve_dispatch_jobs", reserve_then_cancel)
+    assert scheduler.dispatch(run_id)["started"] == []
+    assert scheduler.host.spawned == []
+
+
+def test_cancelled_session_refuses_new_model_turn_without_refunding_reserved_turn(state, tmp_path):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost(script={role: (lambda a, b: {"state": "hang"})
+                                                        for role in PROFILES}))
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"])
+    before = scheduler.model_turn_budget(run_id)
+    scheduler.session.cancel(run_id)
+
+    with pytest.raises(ValueError, match="run is cancelled"):
+        scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"])
+    assert scheduler.model_turn_budget(run_id) == before
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?", (run_id,)).fetchone()[0] == 1
+    assert {item["state"] for item in scheduler.jobs(run_id)} == {"cancelled"}
+
+
+def test_cancelled_session_rejects_late_report_before_scheduler_tick(state, tmp_path):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    sequence = scheduler.session.store.read(run_id)[-1].sequence
+    scheduler.session.cancel(run_id)
+    with pytest.raises(ValueError, match="run is cancelled"):
+        scheduler.complete(run_id, job["assignment_id"], job["attempt_id"], _report(sequence, "cancelled"))
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM ctf_agent_reports WHERE run_id=?", (run_id,)).fetchone()[0] == 0
+
+
+def test_cancelled_session_rejects_intent_before_reservation_or_execution(state, tmp_path, monkeypatch):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    scheduler.session.cancel(run_id)
+    assert next(item for item in scheduler.jobs(run_id)
+                if item["assignment_id"] == job["assignment_id"])["state"] == "running"
+
+    def unexpected_execution(*_args, **_kwargs):
+        pytest.fail("cancelled run executed a data transform")
+
+    monkeypatch.setattr(scheduler.session, "act", unexpected_execution)
+    with pytest.raises(ValueError, match="run is cancelled"):
+        scheduler.intent(run_id, job["assignment_id"], job["attempt_id"],
+                         {"kind": "data", "tool": "base64_decode", "data": "aGVsbG8="})
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_action_reservations WHERE run_id=?", (run_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM agent_actions WHERE run_id=?", (run_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM agent_job_log WHERE assignment_id=? AND event='intent_started'",
+                          (job["assignment_id"],)).fetchone()[0] == 0
+        assert db.execute("SELECT turns_used FROM agent_jobs WHERE assignment_id=?",
+                          (job["assignment_id"],)).fetchone()[0] == 0
+
+
+def test_cancelled_session_rejects_candidate_before_private_file_or_database_write(state, tmp_path):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    sequence = scheduler.session.store.read(run_id)[-1].sequence
+    scheduler.session.cancel(run_id)
+    assert next(item for item in scheduler.jobs(run_id)
+                if item["assignment_id"] == job["assignment_id"])["state"] == "running"
+
+    with pytest.raises(ValueError, match="run is cancelled"):
+        scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], "synthetic-answer", [sequence])
+    assert not scheduler.candidate_dir(run_id).exists()
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_candidates WHERE run_id=?", (run_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM agent_job_log WHERE assignment_id=? AND event='candidate_received'",
+                          (job["assignment_id"],)).fetchone()[0] == 0
+
+
+def test_cancelled_session_keeps_unconfirmed_specialist_slots_until_release(state, tmp_path):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost(cancel_confirmed=False))
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    started = scheduler.dispatch(run_id)["started"]
+    scheduler.session.cancel(run_id)
+    scheduler.tick()
+    assert {job["state"] for job in scheduler.jobs(run_id)
+            if job["assignment_id"] in {item["assignment_id"] for item in started}} == {"unknown"}
+    assert scheduler.dispatch(run_id)["started"] == []
+    for job in started:
+        assert scheduler.release(job["assignment_id"])["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("transition", ["cancelled", "completed", "timed_out", "new_attempt"])
+def test_stale_report_collection_preserves_current_attempt_state(state, tmp_path, monkeypatch, transition):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    sequence = scheduler.session.store.read(run_id)[-1].sequence
+
+    def collect_then_transition(host_job_id):
+        if host_job_id != job["host_job_id"]:
+            return None
+        if transition == "cancelled":
+            scheduler.session.cancel(run_id)
+        elif transition == "new_attempt":
+            with sqlite3.connect(state) as db:
+                db.execute("UPDATE agent_jobs SET attempt_id='replacement' WHERE assignment_id=?",
+                           (job["assignment_id"],))
+        else:
+            scheduler._end(job["assignment_id"], job["attempt_id"], transition, "terminal transition before collect")
+        return _report(sequence, "late")
+
+    monkeypatch.setattr(scheduler.host, "collect", collect_then_transition)
+    scheduler.tick()
+    current = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])
+    assert current["state"] == ("running" if transition == "new_attempt" else transition)
+    assert current["attempt_id"] == ("replacement" if transition == "new_attempt" else job["attempt_id"])
+
+
 def test_fake_executor_completes_and_failures_release_slots(state, tmp_path):
     run_id = _run(state, tmp_path)
     session = CodexSession(state)

@@ -40,6 +40,12 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   Tool intentのaction数もrun単位で共有する。CodexCLI driverでは、実際のprovider呼出直前に
   run固定のmodel-turn予算（既定24、`metis agent slots --specialist-turn-budget N`）をSQLiteで予約する。
   失敗・timeout・retryも予約消費に数え、run間の設定変更や再起動で上限は増えない。
+  `codex cancel RUN_ID` 後は enqueue・retry・dispatch・model-turn予約を拒否する。
+  dispatchのslot予約とhost起動の間にもrun状態を再確認し、host起動はrun lock内で行う。
+  schedulerのtickとspecialist driverはrunのcancel状態をjob状態とは独立に確認し、
+  queued jobを取消し、実行中jobを停止する。停止未確認は`unknown`としてslotを保持する。
+  実行中のCodexも同じrun状態を停止signalとして使い、取消後の出力・reportをcommitしない。
+  取消前に予約したmodel turnは、provider未呼出や実行中取消の場合も消費したままにする。
   bounded autopilot はこの予約機構を明示するrunnerを必須にし、そうでなければdispatch前に停止する。
   BridgeHost経由でDaybreakが手動で直接起動するsubagentには強制できず、その経路はbounded autopilotの
   保証外として扱う。token/costは利用量報告が

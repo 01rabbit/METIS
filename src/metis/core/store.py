@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from metis.core.contracts import RunEvent, RunStatus
 
 TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
@@ -25,6 +27,14 @@ TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
 }
 STOP_STATES = frozenset({RunStatus.EXHAUSTED, RunStatus.POLICY_DENIED,
                          RunStatus.ERROR, RunStatus.CANCELLED})
+
+
+class _AuditBudget(BaseModel):
+    """Only structured, validated configuration may enter the safe projection."""
+
+    model_config = ConfigDict(strict=True)
+    max_actions: int = Field(ge=1)
+    wall_seconds: int = Field(ge=1)
 
 
 class RunStore:
@@ -141,9 +151,17 @@ class RunStore:
                 "SELECT sequence, timestamp, digest FROM events WHERE run_id=? "
                 "ORDER BY sequence DESC LIMIT 1", (run_id,),
             ).fetchone()
+            budget = None
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='codex_sessions'").fetchone():
+                row = db.execute("SELECT max_actions, wall_seconds FROM codex_sessions "
+                                 "WHERE run_id=?", (run_id,)).fetchone()
+                if row is not None:
+                    budget = _AuditBudget(max_actions=row[0], wall_seconds=row[1])
         counts = {status.value: 0 for status in RunStatus}
         for event in events:
             counts[event.status.value] += 1
+        charged = counts[RunStatus.EXECUTING.value]
         return {
             "run_id": run_id,
             "status": events[-1].status.value,
@@ -155,4 +173,9 @@ class RunStore:
             "status_counts": counts,
             "chain_valid": True,
             "terminal_digest": digest,
+            "codex_budget": None if budget is None else {
+                **budget.model_dump(),
+                "actions_charged": charged,
+                "actions_remaining": max(0, budget.max_actions - charged),
+            },
         }
