@@ -511,6 +511,7 @@ class Sandbox:
         started = time.monotonic()
         result: dict[str, Any]
         oom_killed = False
+        phase = "container-create"
         try:
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
                 # Publish the worker before launch while holding the same per-run
@@ -531,6 +532,7 @@ class Sandbox:
                             created.args, created.returncode)
                         process = None
                     else:
+                        phase = "workload"
                         # `create` completes only after the named container exists.
                         # Starting that existing name avoids a cancel/create race.
                         process = subprocess.Popen(
@@ -546,10 +548,12 @@ class Sandbox:
                         process.communicate()
                         raise
                 if _profile.startswith("zipcrypto"):
+                    phase = "oom-inspection"
                     inspected = subprocess.run(
                         [self.engine, "inspect", "--format={{.State.OOMKilled}}", name],
                         capture_output=True, timeout=10, check=False, env=_engine_environment())
                     oom_killed = inspected.returncode == 0 and inspected.stdout.strip().lower() == b"true"
+                    phase = "result-collection"
                 output.seek(0)
                 raw = output.read(8 * MAX_STREAM)
                 error.seek(0)
@@ -577,7 +581,9 @@ class Sandbox:
         except subprocess.TimeoutExpired:
             subprocess.run([self.engine, "rm", "-f", name], capture_output=True, timeout=30, check=False,
                            env=_engine_environment())
-            result = {"ok": False, "error": "sandbox timeout", "timed_out": True}
+            timed_out = phase == "workload"
+            result = {"ok": False, "error": "sandbox timeout", "timed_out": timed_out,
+                      "engine_timed_out": not timed_out, "failure_stage": phase}
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
         finally:

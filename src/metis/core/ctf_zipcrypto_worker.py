@@ -93,6 +93,9 @@ def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: di
     if result.get("timed_out"):
         return {"found": False, "reason": "work_exceeds_budget", "stage": "sandbox-timeout",
                 "seconds": result.get("elapsed")}
+    if result.get("engine_timed_out"):
+        return {"found": False, "reason": "worker_failed", "stage": result.get("failure_stage", "sandbox-engine"),
+                "detail": "container engine operation exceeded its timeout"}
     if not result.get("ok"):
         return {"found": False, "reason": "worker_failed", "stage": "sandbox",
                 "exit_code": result.get("exit_code")}

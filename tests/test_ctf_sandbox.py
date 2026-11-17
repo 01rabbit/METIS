@@ -158,6 +158,33 @@ def test_sandbox_reports_timeout_and_nonzero_exit(tmp_path, engine):
     assert failed["exit_code"] == 3 and failed["ok"] is False
 
 
+@pytest.mark.parametrize("phase", ["container-create", "oom-inspection"])
+def test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline(tmp_path, monkeypatch, phase):
+    from metis.core import ctf_sandbox
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    original_run = ctf_sandbox.subprocess.run
+
+    def timeout_selected(command, *args, **kwargs):
+        if command[0] == "docker" and command[1] == ("create" if phase == "container-create" else "inspect"):
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(ctf_sandbox.subprocess, "run", timeout_selected)
+    result = run_zipcrypto_attack(database, run_id, target, {
+        "member": "known.txt", "plaintext_hex": "4142434445464748494a4b4c", "offset": 0, "seconds": 5,
+    })
+    assert result["found"] is False
+    if phase == "container-create":
+        assert result["reason"] == "worker_failed" and result["stage"] == "container-create"
+    else:
+        assert result["reason"] == "worker_failed" and result["stage"] == "oom-inspection"
+
+
 def test_cancel_stops_registered_sandbox_worker(tmp_path, engine):
     database, run_id = _run(tmp_path)
     configure(database, engine="docker", image=IMAGE, platform=None)
