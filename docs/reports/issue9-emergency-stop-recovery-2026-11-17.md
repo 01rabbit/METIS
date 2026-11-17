@@ -232,7 +232,7 @@ reboot, credential retention, provider-side token revocation, secure secret
 storage, production monitoring, and the P7 benchmark regression gate remain
 uncovered. Issue #9 stays open.
 
-## 2026-11-17 local credential rotation and revocation
+## 2026-11-17 local credential replacement and forgetting
 
 The local synthetic re-auth test calls `WebWorkflow.auth` twice for one origin,
 then confirms that the next request uses the replacement Bearer credential and
