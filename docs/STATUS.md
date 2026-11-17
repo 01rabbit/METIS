@@ -344,10 +344,13 @@ passed this recovery test against the active Colima Ubuntu 24.04/aarch64 Linux
 VM (`1 passed in 0.68s`), exercising the Mac-to-VM container path. A separate
 fresh-profile recovery drill also passed across VM stop/start. Host reboot,
 artifact/credential retention, revocation, and secure storage remain uncovered.
-A local synthetic re-auth test confirms the existing per-origin upsert replaces
-the old value and the next request uses the new Bearer token (`1 passed`); it
-does not prove provider-side rotation or a production secret lifecycle. The P7
-benchmark release gate also remains uncovered.
+Local synthetic checks confirm per-origin re-auth replaces the prior value and
+the next request uses the new Bearer token; `metis web forget URL` removes the
+active origin record and the next request sends no Authorization header. The
+request test file passed (`5 passed`), along with Ruff and mypy. This does not
+prove physical deletion from SQLite/WAL/backups, retention limits, encrypted
+storage, or provider-side rotation. The P7 benchmark release gate also remains
+uncovered.
 A fresh Python 3.12 venv installed the built METIS wheel with
 lockfile-exported runtime dependencies; the installed CLI validated a training
 manifest and ran a local script in the active Linux VM. A separate fresh

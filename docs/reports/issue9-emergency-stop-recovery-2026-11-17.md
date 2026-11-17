@@ -232,15 +232,20 @@ reboot, credential revocation/retention, secure secret storage, production
 monitoring, and the P7 benchmark regression gate remain uncovered. Issue #9
 stays open.
 
-## 2026-11-17 local credential replacement check
+## 2026-11-17 local credential rotation and revocation
 
-A new local test calls `WebWorkflow.auth` twice for one synthetic platform
-origin, then confirms the next request uses the replacement Bearer credential
-and the old fixture value is absent from the stored payload. The focused test
-passed (`1 passed`); Ruff and mypy also passed. This proves the existing
-per-origin upsert replacement behavior in a local test, not revocation,
-retention limits, encrypted-at-rest storage, provider-side credential
-rotation, or production lifecycle controls. Issue #9 remains open.
+The local synthetic re-auth test calls `WebWorkflow.auth` twice for one origin,
+then confirms that the next request uses the replacement Bearer credential and
+the old fixture value is absent from the stored payload. A new `metis web
+forget URL` command removes the active credential record for one origin. Its
+local CLI test confirms that a later request sends no Authorization header and
+that a repeated forget is idempotent.
+
+The complete request test file passed (`5 passed`); Ruff and mypy passed. This
+proves local replacement and logical revocation of the active SQLite row. It
+does not prove physical erasure from SQLite pages, WAL or backups, retention
+limits, encrypted-at-rest storage, provider-side credential rotation, or a
+production lifecycle. Issue #9 remains open.
 
 ## Operator recovery procedure for the verified controller-to-VM path
 

@@ -366,6 +366,8 @@ def main() -> int:
     auth.add_argument("--kind", choices=("cookie", "token", "rctf-team-token"), required=True,
                       help="rctf-team-token logs in once and stores only the derived Bearer auth token")
     auth.add_argument("--scheme", choices=("Token", "Bearer"), default="Token")
+    forget = web_commands.add_parser("forget", help="remove the stored credential for a CTF origin")
+    forget.add_argument("url")
     web_context = web_commands.add_parser("context")
     web_context.add_argument("run_id")
     web_grant = web_commands.add_parser("grant", help="add a user-authorized challenge origin to a run")
@@ -827,6 +829,8 @@ def main() -> int:
                     output = workflow.rctf_login(args.url, private_value)
                 else:
                     output = workflow.auth(args.url, kind=args.kind, value=private_value, scheme=args.scheme)
+            elif args.web_command == "forget":
+                output = workflow.forget_auth(args.url)
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
             elif args.web_command == "prepare-browser":

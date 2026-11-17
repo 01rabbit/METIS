@@ -143,6 +143,22 @@ def test_reauth_replaces_stored_platform_credential(tmp_path, sites):
     assert "platform-secret-token" not in payload
 
 
+def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatch, capsys):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(workflow.database),
+                                      "forget", platform_url])
+
+    assert main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"origin": platform_url, "credential_removed": True}
+    assert "platform-secret-token" not in json.dumps(output)
+
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_auth"][-1] is None
+    assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):
     platform_url, challenge_url, _ = sites
     workflow, run_id = _open(tmp_path, platform_url)

@@ -152,6 +152,14 @@ class WebWorkflow:
         return {"origin": key, "credential_stored": True, "kind": kind,
                 "storage": "private local state; excluded from Git"}
 
+    def forget_auth(self, url: str) -> dict:
+        """Remove the active local credential record for one origin."""
+        key = origin(url)
+        with sqlite3.connect(self.database) as db:
+            cursor = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
+            removed = cursor.rowcount > 0
+        return {"origin": key, "credential_removed": removed}
+
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
