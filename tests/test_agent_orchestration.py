@@ -377,6 +377,37 @@ def test_dispatch_refuses_reservation_that_expires_before_host_spawn(state, tmp_
     assert {job["state"] for job in scheduler.jobs(run_id) if job["attempt_id"]} == {"timed_out"}
 
 
+def test_dispatch_rechecks_deadline_after_slow_brief_generation(state, tmp_path, monkeypatch):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    reserve = scheduler._reserve_dispatch_jobs
+
+    def reserve_with_short_deadline(*args):
+        jobs, settings, limit = reserve(*args)
+        deadline = time.time() + 0.02
+        for job in jobs:
+            job["deadline"] = deadline
+            with sqlite3.connect(state) as db:
+                db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=? AND attempt_id=?",
+                           (deadline, job["assignment_id"], job["attempt_id"]))
+        return jobs, settings, limit
+
+    brief = scheduler.brief
+
+    def slow_brief(*args):
+        result = brief(*args)
+        time.sleep(0.04)
+        return result
+
+    monkeypatch.setattr(scheduler, "_reserve_dispatch_jobs", reserve_with_short_deadline)
+    monkeypatch.setattr(scheduler, "brief", slow_brief)
+    assert scheduler.dispatch(run_id)["started"] == []
+    assert scheduler.host.spawned == []
+    assert {job["state"] for job in scheduler.jobs(run_id) if job["attempt_id"]} == {"timed_out"}
+
+
 def test_tick_timeout_holds_run_lock_from_stop_through_terminal_update(state, tmp_path, monkeypatch):
     import metis.core.agent_scheduler as scheduler_module
 

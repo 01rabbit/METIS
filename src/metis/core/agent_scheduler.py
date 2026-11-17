@@ -292,6 +292,12 @@ class AgentScheduler:
         assignment["deadline_seconds"] = job["deadline_seconds"]
         model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
         brief = self.brief(job["run_id"], assignment, job["attempt_id"])
+        # Building a brief can be nontrivial. Recheck after it completes so a
+        # reservation that expires during rendering never starts host work.
+        if job["deadline"] and time.time() > job["deadline"]:
+            self._end(job["assignment_id"], job["attempt_id"], "timed_out",
+                      "deadline exceeded while preparing host brief")
+            return None
         try:
             host_job = self.host.spawn(assignment, brief, model)
         except Exception as exc:  # noqa: BLE001 -- any host failure releases the slot
@@ -371,7 +377,8 @@ class AgentScheduler:
                 self._log(db, row["assignment_id"], attempt, "started")
                 per_run[row["run_id"]] = per_run.get(row["run_id"], 0) + 1
                 free -= 1
-                reserved.append({**dict(row), "deadline_seconds": deadline_seconds,
+                reserved.append({**dict(row), "deadline": now + deadline_seconds,
+                                 "deadline_seconds": deadline_seconds,
                                  "attempt_id": attempt})
             db.execute("COMMIT")
         except BaseException:

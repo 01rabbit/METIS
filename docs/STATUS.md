@@ -461,8 +461,9 @@ an unconfirmed host stop keeps its slot as `unknown`. A stale completion race
 now preserves terminal job states. Assignment/wave cancellation is fenced
 between reservation and spawn for fresh and retry attempts; deadline timeout
 holds the same lock through confirmed stop and terminal timeout, while expired
-reservations are refused before spawn. The focused orchestration suites pass
-103 tests. The whole suite passed `564 passed, 31 skipped in 81.50s` on this
+reservations are refused before spawn, including expiry while preparing the
+host brief. The focused orchestration suites pass 104 tests. The whole suite
+passed `564 passed, 31 skipped in 81.50s` on this
 host. Remaining skips require Linux
 bubblewrap/seccomp, browser dependencies, the #33 PCAP, slow exhaustive search,
 or a separate runner/runtime image. Ruff and mypy pass on all changed source

@@ -22,12 +22,12 @@
 .venv/bin/pytest -o addopts='' -q tests/test_agent_orchestration.py tests/test_codex_specialist.py tests/test_agent_autopilot.py tests/test_intent_identity.py tests/test_agent_benchmark.py
 ```
 
-103件すべて成功、exit code 0。分割取得した出力を連結:
+104件すべて成功、exit code 0。分割取得した出力を連結:
 
 ```text
 ........................................................................ [ 69%]
-...............................                                          [100%]
-103 passed in 15.61s
+................................                                         [100%]
+104 passed in 15.65s
 ```
 
 新しい回帰検査は、取消後のrun指定/global dispatch、enqueue/retry拒否、予約後spawn前の
@@ -68,7 +68,9 @@ deadline処理も同じ境界で直列化した。tickはrun lock内でattempt�
 再確認し、host停止からtimed_out保存までlockを保持する。dispatchは起動lock内で予約の期限を
 確認し、期限切れならhostを起動せずtimed_outへ進める。追加のbarrier試験はtickが停止確認後に
 一時停止している間、dispatchが同じlockを越えられず、timeout確定後もspawnしないことを確認した。
-別の試験で予約後に期限が切れた場合のpre-spawn拒否も確認した。
+brief生成が遅れて期限を超えた場合もspawn前に再検査して拒否する。予約情報には新attemptの期限を
+反映し、retry時に前attemptの期限を誤用しない。試験で予約後の期限切れ、brief生成中の期限切れ、
+timeout停止中のlock保持を確認した。
 
 ## 適用範囲
 
