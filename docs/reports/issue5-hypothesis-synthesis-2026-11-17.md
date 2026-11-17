@@ -16,8 +16,8 @@ normalization; paraphrased hypotheses remain separate. A stuckness signal
 detects the same action and hypothesis with one unchanged status across
 adjacent waves. New reports can include a structured `next_action_intent`
 declaring a bounded future METIS tool request; the controller validates its
-tool, options and assignment artifact scope, then derives its canonical
-identity. This catches equivalent single-tool requests with different wording
+request shape, supported tool, option names and assignment artifact scope, then
+derives its canonical identity. This catches equivalent single-tool requests with different wording
 or normalized inputs (for example, hex strings with different whitespace).
 Free-text-only reports retain the exact normalized text fallback. The signal is
 advisory and permits a justified retest when newer evidence is cited. Changing

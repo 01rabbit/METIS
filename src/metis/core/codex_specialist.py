@@ -428,7 +428,8 @@ You have no shell, files, network or other agents. You act only by returning ONE
   returned to you; artifact_refs only registered artifact names. Status supported|rejected|inconclusive.
   Include next_action_intent when you can specify the proposed next tool request precisely; it enables
   controller-checked repeated-action detection even when next_action is paraphrased. It is a proposal, not
-  execution authorization. The controller validates tool, options and assignment artifact scope.
+  execution authorization. The controller validates request shape, supported tool, known option names and
+  assignment artifact scope.
   NEVER put a flag or flag candidate in the report: describe the exact recorded transformation (tool, input,
   event number) that produces it, so Daybreak can reproduce and verify it.
 - {{"action":"fail", "reason":"..."}}: stop when the assignment cannot be done with these tools.

@@ -256,16 +256,19 @@ def test_codex_environment_drops_secrets(monkeypatch):
 
 
 def test_decision_schema_is_strict():
-    def walk(node):
+    def walk(node, path=()):
         if isinstance(node, dict):
             if node.get("type") == "object":
                 assert node["additionalProperties"] is False
-                assert set(node.get("required", [])) <= set(node["properties"])
-            for value in node.values():
-                walk(value)
+                if path[-1:] == ("options",):
+                    assert not node.get("required", [])
+                else:
+                    assert set(node["required"]) == set(node["properties"])
+            for key, value in node.items():
+                walk(value, (*path, key))
         elif isinstance(node, list):
             for value in node:
-                walk(value)
+                walk(value, path)
     walk(DECISION_SCHEMA)
 
 
