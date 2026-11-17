@@ -1,57 +1,68 @@
-# Issue #5 adaptive replanning micro-evaluation
+# Issue #5 adaptive replanning evaluation (2026-11-17)
 
 ## Scope
 
-This offline demonstration covers one deliberately blocked strategy: Base64
-decoding an input that is actually hex encoded. `FixtureProvider` observes the
-controlled invalid-input result and selects the distinct `hex_decode` action.
-The runtime classifies parser rejection as `failure_kind=invalid_input` without
-writing decoded payloads to the event log. The run trace records that failed
-tool observation, then logs the rationale
-`Base64 decoder rejected input; test hex representation.` alongside the
-selected alternate action before its runtime execution. Other failures such as
-container/runtime errors halt the fixture provider instead of implying a
-different encoding. Valid Base64 that produces non-UTF-8 bytes is separately
-classified as `invalid_text` in the worker and cannot trigger the hex
-hypothesis. A container regression for `/w==` covers that classification but
-was skipped in this host run because Docker/cgroup-backed tests are unavailable.
-A separate pinned baseline always selects Base64 first and
-never changes strategy after its first action. Exact duplicate actions are
-blocked by the runner.
+`FixtureProvider` now accepts bounded, declarative fallback routes in the local
+fixture plan. A route identifies the failed attempt, the only permitted evidence
+(`invalid_input`), the untried alternate, and a rationale. The provider selects
+that alternate only after the specified parser rejection. `invalid_text`,
+execution errors, timeouts, policy failures, unclassified failures, malformed
+plans, and already-tried alternates halt. Routes cannot add tools: each action
+must be a distinct `ToolRequest` already present in the plan. A parser-rejection
+route must preserve the exact input so that the failure is evidence about the
+challenge payload rather than a separate probe. The benchmark below exercises
+two different decoders. The fixture runtime's static allowlist remains
+authoritative. The runner tracks attempted requests, enforces its existing
+action/model/time budgets, rejects duplicate actions, and records the rationale
+before execution.
+
+Generated Crypto and Misc fixtures now also declare the exact parse failure
+that justifies their alternate decoder. The paired evaluation's lightweight
+runtime now matches the production worker's distinction between parser
+rejection (`invalid_input`) and decoded non-text (`invalid_text`); Unicode
+decoding errors are no longer counted as parser rejection.
 
 ## Paired comparison
 
-The test uses 30 deterministic private-oracle fixtures (15 Base64, 15 hex),
-generation seed `20261117`. Both policies receive the same initial Base64
-action, local tool runtime, three-action cap, ten-second wall clock and
-two-second per-tool timeout. Candidates count as solves only when the separate
-mode-0600 fixture oracle verifies them. The paired bootstrap uses seed
-`20261118`, 10,000 resamples, and percentile bounds.
+The test uses 30 seeded private-oracle fixtures (15 Base64, 15 hex), with
+distinct tool orders shuffled using a separate seed `20261120`. The assigned
+first tool is the same for both arms on each fixture and its balanced order is
+generated independently of the encoding fixture seed. Both tools receive the
+same encoded challenge input; the alternate plan entry does not contain a
+pre-decoded answer. Both arms use the same local transform runtime,
+three-decision cap, 10-second wall-clock limit,
+2-second per-tool timeout, and private oracle. The baseline tries its assigned
+first action once and never revises. The adaptive arm takes the declared
+alternate only after `invalid_input`.
 
 | Policy | Verified solves | Mean tool actions |
 | --- | ---: | ---: |
-| Evidence-conditioned fallback | 30/30 | 1.5 |
-| Pinned first-action baseline | 15/30 | 1.0 |
+| Evidence-conditioned fallback | 30/30 | 1.467 |
+| Fixed first-action baseline | 16/30 | 1.0 |
 
-The paired solve-rate difference is 0.5, with a 95% paired bootstrap interval
-of [0.333, 0.667]. The extra adaptive action on hex fixtures is the intended
-cost of recovering from the invalid Base64 parse. This is deterministic,
-synthetic mechanism evidence; it does not estimate real-model performance or
-general CTF solve rates.
+The paired solve-rate difference is 0.467, with a 95% paired bootstrap interval
+of [0.300, 0.633] (seed `20261118`, 10,000 resamples, percentile bounds). The
+result demonstrates the declared alternative route in both tool orders on
+synthetic strings. It does not estimate real-model performance, held-out CTF
+performance, or a general solve rate.
 
-## Reproduction
+## Reproduction and limits
 
 ```text
-.venv/bin/python -m pytest -q tests/test_runner.py
-...............ss                                                        [100%]
-.venv/bin/python -m pytest -q tests/test_runner.py tests/test_runtime.py
-.......................sssssssss                                         [100%]
+.venv/bin/pytest -ra tests/test_runner.py
+26 passed, 2 skipped in 0.88s
+.venv/bin/ruff check src/metis/core/models.py src/metis/core/runner.py src/metis/core/fixtures.py tests/test_runner.py
+All checks passed!
+.venv/bin/mypy src/metis
+Success: no issues found in 51 source files
+.venv/bin/pytest -ra -q
+exit 0; optional Docker, platform-specific, and KSNCTF integration cases skipped
 ```
 
-The nine skipped tests require the optional real Docker integration image and
-available cgroup v2 enforcement; this means the worker's `/w==` regression is
-present but not observed on this host. Ruff and mypy also passed on the changed
-source and full source tree. Broader P4 gates remain open: generalized
-hypothesis confidence scores, contradiction and stuckness handling,
-semantic-equivalence repeat detection, diverse held-out dead ends, and
-real-model controlled comparisons.
+The two skips require the optional Docker image. The measured pair used a
+lightweight local transform runtime, not the isolated container worker. The
+test therefore validates the decision transition and oracle accounting, but
+does not measure model usage/cost or prove Docker behavior. Broader P4 gates
+remain open: generalized hypothesis evidence scores, contradiction and
+stuckness tracking, semantic-equivalence repeat detection, diverse held-out
+problems, and controlled real-model comparisons.

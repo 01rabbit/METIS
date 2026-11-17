@@ -9,7 +9,7 @@ import pytest
 from metis.core.budgets import BudgetExhausted, BudgetTracker, Cancelled
 from metis.core.contracts import ChallengeManifest, RunBudget, RunStatus
 from metis.core.fixtures import generate_fixtures
-from metis.core.models import Decision, FixtureProvider
+from metis.core.models import Decision, FixtureProvider, SolverContext
 from metis.core.runner import Runner
 from metis.core.runtime import FixtureRuntime, ToolResult
 from metis.core.store import RunStore
@@ -88,18 +88,140 @@ def test_fixture_provider_does_not_replan_on_unclassified_runtime_failure(local_
 
     manifest, _, _ = local_fixture
     manifest = manifest.model_copy(update={"description": json.dumps({"attempts": [
-        {"tool": "base64_decode", "data": "payload"},
-        {"tool": "hex_decode", "data": "7061796c6f6164"},
-    ]})})
+        {"tool": "base64_decode", "data": "/w=="},
+        {"tool": "hex_decode", "data": "/w=="},
+    ], "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                      "rationale": "Parser rejection tests the alternate representation."}]})})
     context = SolverContext(
         challenge=manifest,
         observations=(ToolResult(ok=False, output="decoded data is not UTF-8 text",
                                  failure_kind="invalid_text"),),
-        last_tool=ToolRequest(tool="base64_decode", data="payload"),
+        last_tool=ToolRequest(tool="base64_decode", data="/w=="),
     )
     decision = FixtureProvider().decide(context, timeout_seconds=1)
     assert decision.kind == "halt"
-    assert "stop before guessing hex" in (decision.rationale or "")
+    assert "not parser-rejection evidence" in (decision.rationale or "")
+
+
+@pytest.mark.parametrize(("first", "alternate", "shared_data"), [
+    ("base64_decode", "hex_decode", "48"),
+    ("hex_decode", "base64_decode", "SGVsbG8="),
+])
+def test_fixture_provider_uses_declared_parser_evidence_routes(
+        local_fixture, first, alternate, shared_data):
+    from metis.core.models import SolverContext
+    from metis.core.runtime import ToolRequest
+
+    manifest, _, _ = local_fixture
+    primary = ToolRequest(tool=first, data=shared_data)
+    alternate_request = ToolRequest(tool=alternate, data=shared_data)
+    manifest = manifest.model_copy(update={"description": json.dumps({
+        "attempts": [primary.model_dump(), alternate_request.model_dump()],
+        "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                       "rationale": "Parser rejection supports the declared alternate strategy."}],
+    })})
+    context = SolverContext(
+        challenge=manifest,
+        observations=(ToolResult(ok=False, output="invalid transform input", failure_kind="invalid_input"),),
+        last_tool=primary,
+        attempted_tools=(primary,),
+    )
+    decision = FixtureProvider().decide(context, timeout_seconds=1)
+    assert decision.kind == "tool" and decision.tool == alternate_request
+    assert decision.rationale == "Parser rejection supports the declared alternate strategy."
+
+
+@pytest.mark.parametrize("failure_kind", ["invalid_text", "execution_error", "timeout", "policy", None])
+def test_fixture_provider_halts_configured_fallback_on_non_parser_failure(local_fixture, failure_kind):
+    from metis.core.models import SolverContext
+    from metis.core.runtime import ToolRequest
+
+    manifest, _, _ = local_fixture
+    primary = ToolRequest(tool="base64_decode", data="%%%")
+    alternate = ToolRequest(tool="hex_decode", data="%%%")
+    manifest = manifest.model_copy(update={"description": json.dumps({
+        "attempts": [primary.model_dump(), alternate.model_dump()],
+        "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                       "rationale": "Parser rejection supports testing hex."}],
+    })})
+    context = SolverContext(challenge=manifest,
+                            observations=(ToolResult(ok=False, output="controlled failure",
+                                                    failure_kind=failure_kind),),
+                            last_tool=primary, attempted_tools=(primary,))
+    assert FixtureProvider().decide(context, timeout_seconds=1).kind == "halt"
+
+
+def test_fixture_provider_does_not_repeat_an_already_tried_alternate(local_fixture):
+    from metis.core.models import SolverContext
+    from metis.core.runtime import ToolRequest
+
+    manifest, _, _ = local_fixture
+    primary = ToolRequest(tool="base64_decode", data="%%%")
+    alternate = ToolRequest(tool="hex_decode", data="%%%")
+    manifest = manifest.model_copy(update={"description": json.dumps({
+        "attempts": [primary.model_dump(), alternate.model_dump()],
+        "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                       "rationale": "Parser rejection supports testing hex."}],
+    })})
+    context = SolverContext(challenge=manifest,
+                            observations=(ToolResult(ok=False, output="invalid", failure_kind="invalid_input"),),
+                            last_tool=primary, attempted_tools=(primary, alternate))
+    decision = FixtureProvider().decide(context, timeout_seconds=1)
+    assert decision.kind == "halt"
+    assert "already attempted" in (decision.rationale or "")
+
+
+def test_fixture_plan_rejects_fallbacks_on_infrastructure_failures(local_fixture):
+    manifest, _, _ = local_fixture
+    manifest = manifest.model_copy(update={"description": json.dumps({
+        "attempts": [
+            {"tool": "base64_decode", "data": "%%%"},
+            {"tool": "hex_decode", "data": "%%%"},
+        ],
+        "fallbacks": [{"after": 0, "on": "execution_error", "try": 1,
+                       "rationale": "Runtime failure tries a second tool."}],
+    })})
+    with pytest.raises(ValueError, match="only use invalid_input"):
+        FixtureProvider().decide(SolverContext(challenge=manifest), timeout_seconds=1)
+
+
+def test_fixture_plan_rejects_fallback_evidence_from_a_different_input(local_fixture):
+    manifest, _, _ = local_fixture
+    manifest = manifest.model_copy(update={"description": json.dumps({
+        "attempts": [
+            {"tool": "hex_decode", "data": "unrelated-probe"},
+            {"tool": "base64_decode", "data": "SGVsbG8="},
+        ],
+        "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                       "rationale": "Probe rejection is incorrectly used to infer challenge encoding."}],
+    })})
+    with pytest.raises(ValueError, match="must preserve the challenge input"):
+        FixtureProvider().decide(SolverContext(challenge=manifest), timeout_seconds=1)
+
+
+def test_fixture_fallback_respects_action_budget(local_fixture):
+    from metis.core.runtime import ToolRequest
+
+    manifest, oracle, store = local_fixture
+    primary = ToolRequest(tool="base64_decode", data="%%%")
+    alternate = ToolRequest(tool="hex_decode", data="%%%")
+    manifest = manifest.model_copy(update={"description": json.dumps({
+        "attempts": [primary.model_dump(), alternate.model_dump()],
+        "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                       "rationale": "Parser rejection supports testing hex."}],
+    })})
+
+    class CountingRuntime:
+        calls = 0
+
+        def execute(self, request, *, timeout_seconds):
+            self.calls += 1
+            return ToolResult(ok=False, output="invalid transform input", failure_kind="invalid_input")
+
+    runtime = CountingRuntime()
+    run_id = Runner(store, FixtureProvider(), runtime, oracle, RunBudget(max_actions=1)).run(manifest)
+    assert runtime.calls == 1
+    assert store.read(run_id)[-1].status == RunStatus.EXHAUSTED
 
 
 def test_cancelled_run_never_calls_provider(local_fixture):
@@ -215,7 +337,9 @@ def test_deterministic_provider_solves_two_fixture_categories_without_docker(tmp
                           else bytes.fromhex(request.data).decode()
                           if request.tool == "hex_decode" else "")
                 return ToolResult(ok=True, output=output)
-            except (ValueError, UnicodeDecodeError):
+            except UnicodeDecodeError:
+                return ToolResult(ok=False, output="decoded data is not UTF-8 text", failure_kind="invalid_text")
+            except ValueError:
                 return ToolResult(ok=False, output="invalid encoded input", failure_kind="invalid_input")
 
     store = RunStore(tmp_path / f"{category}.sqlite")
@@ -239,7 +363,9 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
                           else bytes.fromhex(request.data).decode()
                           if request.tool == "hex_decode" else "")
                 return ToolResult(ok=True, output=output)
-            except (ValueError, UnicodeDecodeError):
+            except UnicodeDecodeError:
+                return ToolResult(ok=False, output="decoded data is not UTF-8 text", failure_kind="invalid_text")
+            except ValueError:
                 return ToolResult(ok=False, output="invalid encoded input", failure_kind="invalid_input")
 
     class FirstActionBaseline:
@@ -252,7 +378,8 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
                 return Decision(kind="halt")
             if context.observations and context.observations[-1].ok:
                 return Decision(kind="candidate", candidate=context.observations[-1].output)
-            return Decision(kind="tool", tool=ToolRequest(tool="base64_decode", data=encoded))
+            planned = json.loads(context.challenge.description)["attempts"]
+            return Decision(kind="tool", tool=ToolRequest.model_validate(planned[0]))
 
     rng = random.Random(20261117)
     samples = [("base64", "METIS{" + f"{rng.getrandbits(128):032x}" + "}")
@@ -267,6 +394,8 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
         except ValueError:
             samples.append(("hex", value))
     del rng
+    initial_tools = ["base64_decode"] * 15 + ["hex_decode"] * 15
+    random.Random(20261120).shuffle(initial_tools)
     oracle_path = tmp_path / "private" / "answers.json"
     oracle_path.parent.mkdir()
     answers = {f"adaptive-{i}": value for i, (_, value) in enumerate(samples)}
@@ -279,13 +408,18 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
     adaptive_actions: list[int] = []
     baseline_actions: list[int] = []
     for i, (encoding, answer) in enumerate(samples):
-        encoded = base64.b64encode(answer.encode()).decode() if encoding == "base64" else answer.encode().hex()
+        encoded = (base64.b64encode(answer.encode()).decode()
+                   if encoding == "base64" else answer.encode().hex())
+        first_tool = initial_tools[i]
+        alternate_tool = "hex_decode" if first_tool == "base64_decode" else "base64_decode"
         manifest = ChallengeManifest.model_validate({
             "challenge_id": f"adaptive-{i}", "title": "Paired decoder fixture",
             "description": json.dumps({"attempts": [
-                {"tool": "base64_decode", "data": encoded},
-                {"tool": "hex_decode", "data": encoded},
-            ]}), "categories": ["crypto"],
+                {"tool": first_tool, "data": encoded},
+                {"tool": alternate_tool, "data": encoded},
+            ], "fallbacks": [{"after": 0, "on": "invalid_input", "try": 1,
+                              "rationale": f"{first_tool} parser rejection supports testing {alternate_tool}."}]}),
+            "categories": ["crypto"],
             "scope": {"authorized": True, "granted_by": "offline-paired-ablation",
                       "challenge_id": f"adaptive-{i}"},
         })
@@ -306,18 +440,18 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
                                if event.status == RunStatus.EXECUTING
                                and event.detail.get("operation") == "isolated_fixture_tool"]
             assert len(action_requests) == len(set(action_requests))
-            if arm == "adaptive" and encoding == "hex":
+            if arm == "adaptive" and first_tool != f"{encoding}_decode":
                 failed_observation = next(i for i, event in enumerate(events)
                                           if event.status == RunStatus.OBSERVING
                                           and event.detail.get("tool_ok") == "false"
-                                          and event.detail.get("tool") == "base64_decode"
+                                          and event.detail.get("tool") == first_tool
                                           and event.detail.get("failure_kind") == "invalid_input")
                 alternate_action = next(i for i, event in enumerate(events)
                                         if event.status == RunStatus.EXECUTING
-                                        and event.detail.get("tool") == "hex_decode")
+                                        and event.detail.get("tool") == alternate_tool)
                 assert failed_observation < alternate_action
-                assert "Base64 decoder rejected" in events[alternate_action].detail["rationale"]
-        assert arm_actions[0] == (2 if encoding == "hex" else 1)
+                assert "parser rejection supports testing" in events[alternate_action].detail["rationale"]
+        assert arm_actions[0] == (2 if first_tool != f"{encoding}_decode" else 1)
         assert arm_actions[1] == 1
         deltas.append(int(arm_success[0]) - int(arm_success[1]))
         adaptive_actions.append(arm_actions[0])
@@ -329,9 +463,9 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
                  for _ in range(10_000)]
     estimates.sort()
     interval = (estimates[249], estimates[9749])
-    assert sum(deltas) == 15
-    assert interval == (1 / 3, 2 / 3)
-    assert sum(adaptive_actions) / 30 == 1.5
+    assert sum(deltas) == 14
+    assert interval == (0.3, 0.6333333333333333)
+    assert sum(adaptive_actions) == 44
     assert sum(baseline_actions) / 30 == 1
 
 

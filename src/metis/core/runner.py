@@ -119,6 +119,7 @@ class Runner:
                 context = context.model_copy(update={
                     "observations": (*context.observations, observation),
                     "last_tool": decision.tool,
+                    "attempted_tools": (*context.attempted_tools, decision.tool),
                 })
                 emit(RunStatus.OBSERVING, tool_ok=str(observation.ok).lower(), tool=decision.tool.tool,
                      failure_kind=observation.failure_kind or "none")
