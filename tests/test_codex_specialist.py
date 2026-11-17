@@ -96,8 +96,8 @@ def test_intent_then_report_completes_the_attempt(setup):
     with sqlite3.connect(database) as db:
         events = [row[0] for row in db.execute("SELECT event FROM agent_job_log WHERE assignment_id=? ORDER BY id",
                                                (job["assignment_id"],))]
-    assert events == ["started", "model_turn_reserved", "codex_turn", "model_turn_reserved",
-                      "codex_turn", "completed"]
+    assert events == ["started", "model_turn_reserved", "codex_turn", "intent_started",
+                      "model_turn_reserved", "codex_turn", "completed"]
 
 
 def test_exhausted_run_turn_budget_stops_before_provider_call(setup):

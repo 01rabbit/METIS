@@ -81,10 +81,16 @@ Success: no issues found in 52 source files
 ```
 The single skipped regression requires the external ksnctf #33 capture in
 `METIS_TEST_KSNCTF33_PCAP`; assignment-scope and race tests use generated local
-artifacts. Intent admission, turn-cap reservation, controller action, derived-scope
-registration, and cancellation now share the per-run lock. Concurrent calls cannot
-exceed a job turn cap. Cancellation waits for a bounded in-flight controller action
-to finish, then cancels the job; later intents from that attempt are rejected.
+artifacts. Intent admission, turn-cap reservation, and action identity reservation
+use the short per-run state lock. Tool execution uses a separate cancellable
+per-run operation lock, so cancellation and deadlines can stop a sandbox worker
+without waiting for the tool's bounded timeout. Results and derived-scope updates
+are committed only after rechecking the assignment attempt and deadline. Each
+action carries its exact observation sequence through commit, so interleaved
+intents cannot cite another action's event. Concurrent calls cannot exceed a job
+turn cap; canceled or late results are discarded. A real
+Docker integration test verifies cancellation removes a running long-lived sandbox
+worker and does not commit its observation or action.
 
 ## Limitations
 

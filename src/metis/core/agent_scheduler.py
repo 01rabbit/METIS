@@ -8,11 +8,13 @@
   attempt are rejected and logged.
 * Deadlines and max turns are enforced by ``tick()`` and by ``intent()``.
 * The controller is the run's single writer: specialists send *tool intents*; the
-  controller validates them, takes the run lock, spends the run budget and returns
-  the observation. Submission, scope, credentials and delegation are not intents.
+  controller reserves turns and identities under the run lock, executes within a
+  cancellable per-run operation lock, then revalidates the attempt before committing
+  evidence. Submission, scope, credentials and delegation are not intents.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -83,6 +85,9 @@ class AgentScheduler:
             db.execute("""CREATE TABLE IF NOT EXISTS agent_actions (
                 run_id TEXT NOT NULL, identity TEXT NOT NULL, assignment_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL, sequence INTEGER NOT NULL, ok INTEGER NOT NULL, time REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_action_reservations (
+                action_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, identity TEXT NOT NULL,
+                assignment_id TEXT NOT NULL, attempt_id TEXT NOT NULL, family TEXT, created REAL NOT NULL)""")
             db.execute("CREATE TABLE IF NOT EXISTS agent_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             db.execute("""CREATE TABLE IF NOT EXISTS agent_run_turn_budgets (
                 run_id TEXT PRIMARY KEY, turn_limit INTEGER NOT NULL, turns_reserved INTEGER NOT NULL DEFAULT 0,
@@ -419,26 +424,46 @@ class AgentScheduler:
                       "own derived artifact")
 
     def complete(self, run_id: str, assignment_id: str, attempt_id: str, report: dict[str, Any]) -> dict[str, Any]:
-        job = self._running(assignment_id, attempt_id)
-        if job["run_id"] != run_id:
-            raise ValueError("assignment belongs to another run")
-        if len(json.dumps(report)) > 8000 + 2000:
-            raise ValueError("report exceeds the output limit")
-        stored = self.ledger.record_report(run_id, job["wave_id"], assignment_id, report, attempt_id=attempt_id)
-        with self._db() as db:
-            db.execute("UPDATE agent_jobs SET state='completed', finished=? WHERE assignment_id=? AND attempt_id=?",
-                       (time.time(), assignment_id, attempt_id))
-            self._log(db, assignment_id, attempt_id, "completed")
-        return {**stored, "state": "completed"}
+        with run_lock(self.database, run_id):
+            job = self._running(assignment_id, attempt_id)
+            if job["run_id"] != run_id:
+                raise ValueError("assignment belongs to another run")
+            if job["deadline"] and time.time() > job["deadline"]:
+                self._stop(job)
+                self.session.cancel_active_operation(run_id, assignment_id, attempt_id)
+                self._end(assignment_id, attempt_id, "timed_out", "deadline exceeded before report")
+                raise ValueError("assignment deadline exceeded before report")
+            with self._db() as db:
+                pending = db.execute("SELECT 1 FROM agent_action_reservations WHERE assignment_id=? AND attempt_id=?",
+                                     (assignment_id, attempt_id)).fetchone()
+            if pending:
+                raise ValueError("cannot complete while a controller intent is still in flight")
+            if len(json.dumps(report)) > 8000 + 2000:
+                raise ValueError("report exceeds the output limit")
+            stored = self.ledger.record_report(run_id, job["wave_id"], assignment_id, report,
+                                               attempt_id=attempt_id)
+            with self._db() as db:
+                db.execute("UPDATE agent_jobs SET state='completed', finished=? WHERE assignment_id=? AND attempt_id=?",
+                           (time.time(), assignment_id, attempt_id))
+                self._log(db, assignment_id, attempt_id, "completed")
+            return {**stored, "state": "completed"}
 
     def fail(self, assignment_id: str, attempt_id: str, reason: str) -> dict[str, Any]:
-        self._running(assignment_id, attempt_id)
-        return self._end(assignment_id, attempt_id, "failed", reason[:300] or "failed")
+        job = self._running(assignment_id, attempt_id)
+        with run_lock(self.database, job["run_id"]):
+            current = self._running(assignment_id, attempt_id)
+            self.session.cancel_active_operation(current["run_id"], assignment_id, attempt_id)
+            return self._end(assignment_id, attempt_id, "failed", reason[:300] or "failed")
 
     def _end(self, assignment_id: str, attempt_id: str, state: str, failure: str) -> dict[str, Any]:
-        with self._db() as db:
+        target = next((job for job in self.jobs() if job["assignment_id"] == assignment_id), None)
+        if target is None:
+            raise ValueError("unknown assignment")
+        with run_lock(self.database, target["run_id"]), self._db() as db:
             db.execute("UPDATE agent_jobs SET state=?, failure=?, finished=? WHERE assignment_id=? AND attempt_id=?",
                        (state, failure, time.time(), assignment_id, attempt_id))
+            db.execute("DELETE FROM agent_action_reservations WHERE assignment_id=? AND attempt_id=?",
+                       (assignment_id, attempt_id))
             self._log(db, assignment_id, attempt_id, state, failure)
         return {"assignment_id": assignment_id, "attempt_id": attempt_id, "state": state, "reason": failure}
 
@@ -460,6 +485,7 @@ class AgentScheduler:
                         results.append({"assignment_id": job["assignment_id"], "state": "cancelled"})
                     elif job["state"] == "running":
                         confirmed = self._stop(job)
+                        self.session.cancel_active_operation(run_id, job["assignment_id"], job["attempt_id"])
                         results.append(self._end(job["assignment_id"], job["attempt_id"],
                                                  "cancelled" if confirmed else "unknown",
                                                  reason if confirmed else reason + " (stop not confirmed)"))
@@ -498,8 +524,13 @@ class AgentScheduler:
                 continue
             if job["deadline"] and now > job["deadline"]:
                 confirmed = self._stop(job)
-                changes.append(self._end(job["assignment_id"], job["attempt_id"],
-                                         "timed_out" if confirmed else "unknown", "deadline exceeded"))
+                with run_lock(self.database, job["run_id"]):
+                    current = next((item for item in self.jobs(job["run_id"])
+                                    if item["assignment_id"] == job["assignment_id"]), None)
+                    if current and current["attempt_id"] == job["attempt_id"] and current["state"] == "running":
+                        self.session.cancel_active_operation(job["run_id"], job["assignment_id"], job["attempt_id"])
+                        changes.append(self._end(job["assignment_id"], job["attempt_id"],
+                                                 "timed_out" if confirmed else "unknown", "deadline exceeded"))
                 continue
             if not job["host_job_id"]:
                 continue
@@ -518,12 +549,29 @@ class AgentScheduler:
                 try:
                     changes.append(self.complete(job["run_id"], job["assignment_id"], job["attempt_id"], output))
                 except ValueError as exc:
-                    changes.append(self._end(job["assignment_id"], job["attempt_id"], "failed",
-                                             f"invalid report: {str(exc)[:200]}"))
+                    with run_lock(self.database, job["run_id"]):
+                        self.session.cancel_active_operation(job["run_id"], job["assignment_id"],
+                                                             job["attempt_id"])
+                        changes.append(self._end(job["assignment_id"], job["attempt_id"], "failed",
+                                                 f"invalid report: {str(exc)[:200]}"))
             elif status["state"] == "failed":
-                changes.append(self._end(job["assignment_id"], job["attempt_id"], "failed", "host reported failure"))
+                with run_lock(self.database, job["run_id"]):
+                    current = next((item for item in self.jobs(job["run_id"])
+                                    if item["assignment_id"] == job["assignment_id"]), None)
+                    if current and current["attempt_id"] == job["attempt_id"] and current["state"] == "running":
+                        self.session.cancel_active_operation(job["run_id"], job["assignment_id"],
+                                                             job["attempt_id"])
+                        changes.append(self._end(job["assignment_id"], job["attempt_id"], "failed",
+                                                 "host reported failure"))
             elif status["state"] == "unknown" and job["lease_until"] and now > job["lease_until"]:
-                changes.append(self._end(job["assignment_id"], job["attempt_id"], "unknown", "lease expired"))
+                with run_lock(self.database, job["run_id"]):
+                    current = next((item for item in self.jobs(job["run_id"])
+                                    if item["assignment_id"] == job["assignment_id"]), None)
+                    if current and current["attempt_id"] == job["attempt_id"] and current["state"] == "running":
+                        self.session.cancel_active_operation(job["run_id"], job["assignment_id"],
+                                                             job["attempt_id"])
+                        changes.append(self._end(job["assignment_id"], job["attempt_id"], "unknown",
+                                                 "lease expired"))
         return changes
 
     # -- controller-mediated tool use ---------------------------------------------------------
@@ -537,9 +585,10 @@ class AgentScheduler:
             intent = ToolIntent.model_validate(raw)
         except ValidationError:
             raise ValueError("intent must be {kind: data|artifact|derive, tool, data|artifact, options}") from None
+        identity, family = intent_identity(intent.kind, intent.tool, intent.artifact, intent.options, intent.data,
+                                           self.session.artifact_root(run_id))
+        action_id = uuid4().hex
         with run_lock(self.database, run_id):
-            # Admission, budget reservation, execution and derived-scope updates share the
-            # same per-run lock, so cancellation and concurrent intents have a defined order.
             job = self._running(assignment_id, attempt_id)
             if job["run_id"] != run_id:
                 raise ValueError("assignment belongs to another run")
@@ -557,9 +606,18 @@ class AgentScheduler:
                     with self._db() as db:
                         self._log(db, assignment_id, attempt_id, "intent_scope_refused", "unassigned artifact")
                     raise ValueError("artifact is outside this assignment's scope")
-            identity, family = intent_identity(intent.kind, intent.tool, intent.artifact, intent.options, intent.data,
-                                               self.session.artifact_root(run_id))
             self._check_repeat(run_id, assignment_id, attempt_id, identity, family, intent.new_evidence)
+            with self._db() as db:
+                db.execute("INSERT INTO agent_action_reservations "
+                           "(action_id,run_id,identity,assignment_id,attempt_id,family,created) "
+                           "VALUES (?,?,?,?,?,?,?)", (action_id, run_id, identity, assignment_id,
+                                                       attempt_id, family, time.time()))
+                db.execute("UPDATE agent_jobs SET turns_used=turns_used+1 "
+                           "WHERE assignment_id=? AND attempt_id=?", (assignment_id, attempt_id))
+                self._log(db, assignment_id, attempt_id, "intent_started", action_id)
+            turns_left = job["max_turns"] - job["turns_used"] - 1
+
+        try:
             if intent.kind == "data":
                 if intent.data is None:
                     raise ValueError("data intents need data")
@@ -568,7 +626,8 @@ class AgentScheduler:
             elif intent.kind == "view":
                 if not intent.artifact:
                     raise ValueError("view intents need an image artifact name")
-                result = self.session.artifact(run_id, intent.artifact, "image", {})
+                result = self.session.artifact(run_id, intent.artifact, "image", {},
+                                               _owner=(assignment_id, attempt_id))
                 details = result.get("result") or {}
                 ok = bool(result.get("ok")) and str(details.get("format", "")).upper() in VIEWABLE
                 result = {**result, "view": {"artifact": intent.artifact, "attached_next_turn": ok}}
@@ -577,23 +636,58 @@ class AgentScheduler:
             else:
                 if not intent.artifact:
                     raise ValueError("artifact intents need an artifact name")
-                operation = self.session.artifact if intent.kind == "artifact" else self.session.derive
-                result = operation(run_id, intent.artifact, intent.tool, intent.options)
+                if intent.kind == "artifact":
+                    result = self.session.artifact(run_id, intent.artifact, intent.tool, intent.options,
+                                                   _owner=(assignment_id, attempt_id))
+                else:
+                    result = self.session.derive(run_id, intent.artifact, intent.tool, intent.options,
+                                                 _owner=(assignment_id, attempt_id), _defer_store=True)
                 ok = bool(result.get("ok"))
-            sequence = [event.sequence for event in self.session.store.read(run_id)
-                        if event.status == RunStatus.OBSERVING][-1]
+        except BaseException:
+            with run_lock(self.database, run_id), self._db() as db:
+                db.execute("DELETE FROM agent_action_reservations WHERE action_id=?", (action_id,))
+                self._log(db, assignment_id, attempt_id, "intent_failed", action_id)
+            raise
+
+        with run_lock(self.database, run_id):
+            current = next((item for item in self.jobs(run_id)
+                            if item["assignment_id"] == assignment_id), None)
+            with self._db() as db:
+                db.execute("DELETE FROM agent_action_reservations WHERE action_id=?", (action_id,))
+            if current is None or current["attempt_id"] != attempt_id or current["state"] != "running":
+                with self._db() as db:
+                    self._log(db, assignment_id, attempt_id, "intent_result_discarded", action_id)
+                raise ValueError("assignment ended while the intent was executing; result discarded")
+            if current["deadline"] and time.time() > current["deadline"]:
+                self._stop(current)
+                self._end(assignment_id, attempt_id, "timed_out", "deadline exceeded during intent")
+                raise ValueError("assignment deadline exceeded during intent")
+            if result.get("cancelled") is True:
+                with self._db() as db:
+                    self._log(db, assignment_id, attempt_id, "intent_cancelled", action_id)
+                raise ValueError("intent was cancelled; result discarded")
+            sequence = result.pop("_evidence_sequence", None)
+            events = self.session.store.read(run_id)
+            if type(sequence) is not int or sequence < 0 or sequence >= len(events) \
+                    or events[sequence].status != RunStatus.OBSERVING:
+                with self._db() as db:
+                    self._log(db, assignment_id, attempt_id, "intent_result_discarded", "no observation")
+                raise ValueError("intent completed without an observation")
+            if intent.kind == "derive" and result.get("ok") is True:
+                encoded = result.pop("_derived_content", None)
+                suffix = result.pop("_derived_suffix", None)
+                if not isinstance(encoded, str) or not isinstance(suffix, str):
+                    raise ValueError("derived operation returned no pending content")
+                content = base64.b64decode(encoded, validate=True)
+                artifact = self.session.store_artifact(run_id, content, suffix=suffix)
+                self._register_derived_artifact(current, artifact)
+                result["artifact"] = artifact
             with self._db() as db:
                 db.execute("INSERT INTO agent_actions(run_id,identity,assignment_id,attempt_id,sequence,ok,time,"
-                           "family) VALUES (?,?,?,?,?,?,?,?)", (run_id, identity, assignment_id, attempt_id, sequence,
-                                                                int(ok), time.time(), family))
-                db.execute("UPDATE agent_jobs SET turns_used=turns_used+1 WHERE assignment_id=? AND attempt_id=?",
-                           (assignment_id, attempt_id))
-            if (intent.kind == "derive" and result.get("ok") is True
-                    and isinstance(result.get("artifact"), str)):
-                self._register_derived_artifact(job, result["artifact"])
+                           "family) VALUES (?,?,?,?,?,?,?,?)", (run_id, identity, assignment_id, attempt_id,
+                                                                sequence, int(ok), time.time(), family))
         return {"assignment_id": assignment_id, "attempt_id": attempt_id, "action_identity": identity,
-                "evidence_sequence": sequence, "turns_left": job["max_turns"] - job["turns_used"] - 1,
-                "observation": result}
+                "evidence_sequence": sequence, "turns_left": turns_left, "observation": result}
 
     def _check_repeat(self, run_id: str, assignment_id: str, attempt_id: str, identity: str, family: str | None,
                       new_evidence: list[int]) -> None:
@@ -618,11 +712,20 @@ class AgentScheduler:
         with self._db() as db:
             prior = db.execute("SELECT sequence, attempt_id FROM agent_actions WHERE run_id=? AND identity=? "
                                "ORDER BY sequence", (run_id, identity)).fetchall()
-            variants = db.execute("SELECT COUNT(DISTINCT identity) FROM agent_actions WHERE attempt_id=? AND "
-                                  "family=?", (attempt_id, family)).fetchone()[0] if family else 0
+            pending = db.execute("SELECT identity FROM agent_action_reservations WHERE run_id=? AND identity=?",
+                                 (run_id, identity)).fetchall()
+            pending_variants = {row[0] for row in db.execute(
+                "SELECT identity FROM agent_action_reservations WHERE attempt_id=? AND family=?",
+                (attempt_id, family))} if family else set()
+            completed_variants = {row[0] for row in db.execute(
+                "SELECT DISTINCT identity FROM agent_actions WHERE attempt_id=? AND family=?",
+                (attempt_id, family))} if family else set()
+            variants = len(pending_variants | completed_variants)
         mine = [row for row in prior if row[1] == attempt_id]
-        refusal: tuple[str, str, str] | None = None
-        if mine:
+        refusal: tuple[str, str, str] | None = (
+            ("intent_duplicate", "identical action is in progress",
+             "duplicate action: the same canonical request is already in progress") if pending else None)
+        if refusal is None and mine:
             last = mine[-1][0]
             same = {row[0] for row in prior}
             fresh = [item for item in new_evidence if item > last and item in observed and item not in same]
@@ -635,11 +738,11 @@ class AgentScheduler:
                            (f"duplicate action: you already ran the same canonical request at event {last}; use "
                             "that observation, or cite a newer observation from a different action in "
                             "new_evidence to re-test"))
-        elif len(prior) >= RUN_REPLAY_LIMIT:
+        elif refusal is None and len(prior) + len(pending) >= RUN_REPLAY_LIMIT:
             refusal = ("intent_duplicate", f"run replay limit; event {prior[-1][0]}",
                        (f"duplicate action: this canonical request already ran {len(prior)} times in this run "
                         f"(last at event {prior[-1][0]}); use a different action"))
-        elif family and variants >= FAMILY_LIMIT:
+        elif refusal is None and family and variants >= FAMILY_LIMIT:
             refusal = ("intent_variant_limit", f"{variants} variants",
                        (f"variant limit: {variants} option variants of this tool on this artifact already ran in "
                         "this attempt; use a different tool or report what is known"))

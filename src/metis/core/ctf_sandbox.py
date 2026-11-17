@@ -522,6 +522,12 @@ class Sandbox:
                         return {"run_id": run_id, "mode": request.mode, "ok": False,
                                 "error": "cancelled before sandbox launch", "cancelled": True}
                     with sqlite3.connect(self.session.database) as db:
+                        active = db.execute("SELECT cancel_requested FROM codex_active_operations "
+                                            "WHERE run_id=?", (run_id,)).fetchone()
+                    if active and active[0]:
+                        return {"run_id": run_id, "mode": request.mode, "ok": False,
+                                "error": "cancelled before sandbox launch", "cancelled": True}
+                    with sqlite3.connect(self.session.database) as db:
                         db.execute("INSERT OR REPLACE INTO sandbox_workers VALUES (?, ?, ?, ?)",
                                    (run_id, self.engine, name, time.time()))
                     created = subprocess.run(self.command(name, profile=_profile), capture_output=True,

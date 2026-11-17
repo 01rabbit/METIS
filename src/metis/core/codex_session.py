@@ -20,7 +20,7 @@ from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_ERRORS, ARTIFACT_TOOLS, MAX_FILE, inspect_file
 from metis.core.ctf_tools import DATA_TOOLS, transform
 from metis.core.ctf_triage import triage
-from metis.core.run_lock import locked
+from metis.core.run_lock import locked, operation_lock, run_lock
 from metis.core.runtime import ToolRequest
 from metis.core.store import RunStore
 
@@ -65,11 +65,15 @@ class CodexSession:
             if "evaluation_split" not in columns:
                 # Unknown/unlisted sessions are treated conservatively by MUNIN retrieval.
                 db.execute("ALTER TABLE codex_sessions ADD COLUMN evaluation_split TEXT NOT NULL DEFAULT 'unlisted'")
+            db.execute("""CREATE TABLE IF NOT EXISTS codex_active_operations (
+                run_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, assignment_id TEXT,
+                attempt_id TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0, started REAL NOT NULL)""")
 
-    def _emit(self, run_id: str, status: RunStatus, **detail: str) -> None:
+    def _emit(self, run_id: str, status: RunStatus, **detail: str) -> int:
         events = self.store.read(run_id)
-        self.store.append(RunEvent(run_id=run_id, sequence=len(events),
-                                   status=status, detail=detail))
+        sequence = len(events)
+        self.store.append(RunEvent(run_id=run_id, sequence=sequence, status=status, detail=detail))
+        return sequence
 
     def start(self, manifest: ChallengeManifest, *, commitment: str | None = None,
               max_actions: int = 40, wall_seconds: int = 1200,
@@ -196,11 +200,11 @@ class CodexSession:
                       tool=request.tool if request.tool in NATIVE_TOOLS else "denied",
                       request_sha256=hashlib.sha256(request.model_dump_json().encode()).hexdigest())
         result = transform(request)
-        self._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result.ok).lower())
+        evidence_sequence = self._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result.ok).lower())
         self._emit(run_id, RunStatus.REPLANNING)
         self._emit(run_id, RunStatus.PLANNING)
         # Return data to Codex, but never persist decoded answers in evidence.
-        return {"run_id": run_id, **result.model_dump()}
+        return {"run_id": run_id, **result.model_dump(), "_evidence_sequence": evidence_sequence}
 
     @locked
     def submit(self, run_id: str, candidate: str) -> dict:
@@ -220,32 +224,86 @@ class CodexSession:
             self._emit(run_id, RunStatus.PLANNING)
         return {"run_id": run_id, "verified": accepted, "status": self.context(run_id)["status"]}
 
-    @locked
-    def artifact(self, run_id: str, name: str, tool: str, options: dict | None = None) -> dict:
-        manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
-        if name not in manifest.artifacts or tool not in ARTIFACT_TOOLS:
-            raise ValueError("artifact or operation is outside the declared scope")
-        root = self.artifact_root(run_id)
-        if root is None:
-            raise ValueError("no artifact root registered")
-        self._reserve(run_id, "read_only_artifact_analysis", tool=tool)
-        try:
-            zipcrypto_runner = None
-            if tool == "zipcrypto_attack":
-                from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
-                zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
-                    self.database, run_id, name, settings)
-            result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
-            output = {"run_id": run_id, "ok": True, "result": result}
-        except ARTIFACT_ERRORS as exc:
-            output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",
-                      "error_type": type(exc).__name__}
-            if type(exc) in (ValueError, TypeError):  # METIS's own bounded messages explain how to fix the call
-                output["detail"] = str(exc).splitlines()[0][:200] if str(exc) else ""
-        self._emit(run_id, RunStatus.OBSERVING, tool_ok=str(output["ok"]).lower())
-        self._emit(run_id, RunStatus.REPLANNING)
-        self._emit(run_id, RunStatus.PLANNING)
-        return output
+    def artifact(self, run_id: str, name: str, tool: str, options: dict | None = None, *,
+                 _owner: tuple[str, str] | None = None, _retain_operation: bool = False) -> dict:
+        operation_id = uuid4().hex
+        with operation_lock(self.database, run_id):
+            with run_lock(self.database, run_id):
+                manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
+                if name not in manifest.artifacts or tool not in ARTIFACT_TOOLS:
+                    raise ValueError("artifact or operation is outside the declared scope")
+                root = self.artifact_root(run_id)
+                if root is None:
+                    raise ValueError("no artifact root registered")
+                if _owner is not None:
+                    with sqlite3.connect(self.database) as db:
+                        job = db.execute("SELECT state,attempt_id,deadline FROM agent_jobs "
+                                         "WHERE assignment_id=?", (_owner[0],)).fetchone()
+                    if job is None or job[:2] != ("running", _owner[1]):
+                        raise ValueError("assignment ended before its artifact operation started")
+                    if job[2] and time.time() > job[2]:
+                        raise ValueError("assignment deadline expired before its artifact operation started")
+                self._reserve(run_id, "read_only_artifact_analysis", tool=tool)
+                with sqlite3.connect(self.database) as db:
+                    db.execute("INSERT OR REPLACE INTO codex_active_operations "
+                               "(run_id,operation_id,assignment_id,attempt_id,cancel_requested,started) "
+                               "VALUES (?,?,?,?,0,?)", (run_id, operation_id,
+                                                         _owner[0] if _owner else None,
+                                                         _owner[1] if _owner else None, time.time()))
+            try:
+                zipcrypto_runner = None
+                if tool == "zipcrypto_attack":
+                    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
+                    zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
+                        self.database, run_id, name, settings)
+                result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
+                output = {"run_id": run_id, "ok": True, "result": result}
+            except ARTIFACT_ERRORS as exc:
+                output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",
+                          "error_type": type(exc).__name__}
+                if type(exc) in (ValueError, TypeError):
+                    output["detail"] = str(exc).splitlines()[0][:200] if str(exc) else ""
+            except BaseException:
+                self._finish_artifact_operation(run_id, operation_id, {"ok": False})
+                raise
+            return self._finish_artifact_operation(run_id, operation_id, output,
+                                                  retain=_retain_operation and output.get("ok") is True)
+
+    def _finish_artifact_operation(self, run_id: str, operation_id: str, output: dict,
+                                   *, retain: bool = False) -> dict:
+        with run_lock(self.database, run_id):
+            with sqlite3.connect(self.database) as db:
+                row = db.execute("SELECT cancel_requested FROM codex_active_operations "
+                                  "WHERE run_id=? AND operation_id=?", (run_id, operation_id)).fetchone()
+                if not retain or row is None or row[0]:
+                    db.execute("DELETE FROM codex_active_operations WHERE run_id=? AND operation_id=?",
+                               (run_id, operation_id))
+            if row is None or row[0] or self.context(run_id)["status"] != RunStatus.EXECUTING.value:
+                if self.context(run_id)["status"] == RunStatus.EXECUTING.value:
+                    self._emit(run_id, RunStatus.OBSERVING, tool_ok="false", cancelled="true")
+                    self._emit(run_id, RunStatus.REPLANNING)
+                    self._emit(run_id, RunStatus.PLANNING)
+                return {"run_id": run_id, "ok": False, "cancelled": True,
+                        "error": "artifact result discarded after cancellation or recovery"}
+            evidence_sequence = self._emit(run_id, RunStatus.OBSERVING, tool_ok=str(output["ok"]).lower())
+            self._emit(run_id, RunStatus.REPLANNING)
+            self._emit(run_id, RunStatus.PLANNING)
+            return {**output, "_evidence_sequence": evidence_sequence}
+
+    def cancel_active_operation(self, run_id: str, assignment_id: str, attempt_id: str) -> dict:
+        """Request cancellation of this assignment's active artifact operation."""
+        with run_lock(self.database, run_id):
+            with sqlite3.connect(self.database) as db:
+                row = db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=? "
+                                 "AND assignment_id=? AND attempt_id=?", (run_id, assignment_id,
+                                                                           attempt_id)).fetchone()
+                if row is None:
+                    return {"status": "not_running"}
+                db.execute("UPDATE codex_active_operations SET cancel_requested=1 WHERE run_id=? "
+                           "AND operation_id=?", (run_id, row[0]))
+            from metis.core.ctf_sandbox import cancel_registered_worker
+            teardown = cancel_registered_worker(self.database, run_id)
+            return {"status": "requested", "worker_teardown": teardown}
 
     def intake(self, *, title: str, description: str, paths: list[Path],
                categories: list[str] | None = None, commitment: str | None = None,
@@ -287,20 +345,45 @@ class CodexSession:
             shutil.rmtree(workspace)
             raise
 
-    @locked
-    def derive(self, run_id: str, name: str, tool: str, options: dict | None = None) -> dict:
+    def derive(self, run_id: str, name: str, tool: str, options: dict | None = None, *,
+               _owner: tuple[str, str] | None = None, _defer_store: bool = False) -> dict:
         if tool not in {"zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz",
                         "base64_decode", "base32_decode", "hex_decode", "tls_http_body", "zipcrypto_decrypt"}:
             raise ValueError("only bounded archive decoding can derive an artifact")
-        observation = self.artifact(run_id, name, tool, options)
-        if not observation["ok"]:
-            return observation
-        content = base64.b64decode(observation["result"]["base64"], validate=True)
-        if len(content) > 1_048_576:
-            raise ValueError("derived artifact exceeds one MiB")
-        relative = self.store_artifact(run_id, content, suffix=_suffix(content))
-        return {"run_id": run_id, "ok": True, "artifact": relative,
-                "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        with operation_lock(self.database, run_id):
+            observation = self.artifact(run_id, name, tool, options, _owner=_owner, _retain_operation=True)
+            if not observation["ok"]:
+                return observation
+            try:
+                content = base64.b64decode(observation["result"]["base64"], validate=True)
+                if len(content) > 1_048_576:
+                    raise ValueError("derived artifact exceeds one MiB")
+                with run_lock(self.database, run_id):
+                    with sqlite3.connect(self.database) as db:
+                        active = db.execute("SELECT operation_id,cancel_requested FROM codex_active_operations "
+                                             "WHERE run_id=?", (run_id,)).fetchone()
+                    if (active is None or active[1]
+                            or self.context(run_id)["status"] != RunStatus.PLANNING.value):
+                        return {"run_id": run_id, "ok": False, "cancelled": True,
+                                "error": "derived output discarded after cancellation"}
+                    if _defer_store:
+                        return {"run_id": run_id, "ok": True,
+                                "_derived_content": base64.b64encode(content).decode("ascii"),
+                                "_derived_suffix": _suffix(content), "size": len(content),
+                                "sha256": hashlib.sha256(content).hexdigest(),
+                                "_evidence_sequence": observation["_evidence_sequence"]}
+                    relative = self.store_artifact(run_id, content, suffix=_suffix(content))
+                    with sqlite3.connect(self.database) as db:
+                        db.execute("DELETE FROM codex_active_operations WHERE run_id=? AND operation_id=?",
+                                   (run_id, active[0]))
+                return {"run_id": run_id, "ok": True, "artifact": relative,
+                        "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+                        "_evidence_sequence": observation["_evidence_sequence"]}
+            finally:
+                with sqlite3.connect(self.database) as db:
+                    db.execute("DELETE FROM codex_active_operations WHERE run_id=? AND assignment_id IS ? "
+                               "AND attempt_id IS ?", (run_id, _owner[0] if _owner else None,
+                                                        _owner[1] if _owner else None))
 
     def artifact_root(self, run_id: str) -> Path | None:
         """Snapshot directory of a run; relative roots live beside the database."""
@@ -399,6 +482,8 @@ class CodexSession:
     def cancel(self, run_id: str) -> dict:
         context = self.context(run_id)
         worker = {"status": "not_running"}
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE codex_active_operations SET cancel_requested=1 WHERE run_id=?", (run_id,))
         if context["status"] not in {RunStatus.SOLVED.value, RunStatus.EXHAUSTED.value,
                                      RunStatus.ERROR.value, RunStatus.CANCELLED.value,
                                      RunStatus.POLICY_DENIED.value}:
@@ -412,6 +497,8 @@ class CodexSession:
     @locked
     def recover(self, run_id: str) -> dict:
         self._session(run_id)
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE codex_active_operations SET cancel_requested=1 WHERE run_id=?", (run_id,))
         # After a controller restart, never resume a run while its previous
         # sandbox might still be executing. An unconfirmed engine response is
         # a hard recovery stop; the operator must reconcile the worker first.

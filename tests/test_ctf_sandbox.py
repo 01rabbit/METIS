@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 from metis.cli import main
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_sandbox import Sandbox, SandboxRequest, configure, status
 
@@ -455,8 +457,9 @@ def test_real_engine_cancel_confirms_container_teardown(tmp_path):
                              (run_id,)).fetchone()
         if row:
             worker = row[0]
-            inspected = subprocess.run(["docker", "inspect", worker], capture_output=True, check=False)
-            if inspected.returncode == 0:
+            inspected = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", worker],
+                                       capture_output=True, check=False)
+            if inspected.returncode == 0 and inspected.stdout.strip() == b"true":
                 break
         time.sleep(0.05)
     assert worker is not None
@@ -469,6 +472,74 @@ def test_real_engine_cancel_confirms_container_teardown(tmp_path):
             or outcome.get("engine_exit_code") is not None)
     assert subprocess.run(["docker", "inspect", worker], capture_output=True,
                           check=False).returncode != 0
+
+
+def test_agent_cancel_interrupts_long_artifact_intent(tmp_path, monkeypatch):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    from metis.core import codex_session
+
+    database = tmp_path / "state" / "metis.sqlite"
+    target_path = tmp_path / "challenge.txt"
+    target_path.write_text("bounded sandbox cancellation target")
+    run_id = CodexSession(database).intake(title="Agent cancellation", description="Synthetic local operation",
+                                           paths=[target_path], categories=["crypto", "forensics"])["run_id"]
+    configure(database, engine="docker", image=image, platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"))
+    Sandbox(database)  # initialize the worker registry before the intent thread starts
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    scheduler = AgentScheduler(database, FakeHost(script={
+        role: lambda _assignment, _brief: {"state": "hang"}
+        for role in ("crypto-specialist", "forensics-specialist")
+    }, max_parallel=2))
+    scheduler.configure(global_slots=2, per_run_slots=2)
+    wave = scheduler.ledger.create_wave(run_id, mode="delegated")
+    scheduler.enqueue(run_id, wave["wave_id"])
+    scheduler.dispatch(run_id)
+    job = next(item for item in scheduler.jobs(run_id) if item["state"] == "running")
+
+    def run_long_tool(_root, _name, _tool, _options, **_kwargs):
+        return Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=300,
+            script="import time; time.sleep(300)\n"), _reserved=True)
+
+    monkeypatch.setattr(codex_session, "inspect_file", run_long_tool)
+    errors = []
+    def intent():
+        try:
+            scheduler.intent(run_id, job["assignment_id"], job["attempt_id"],
+                             {"kind": "artifact", "tool": "text", "artifact": target})
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    thread = threading.Thread(target=intent)
+    thread.start()
+    deadline = time.monotonic() + 20
+    worker = None
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone()
+        if row:
+            worker = row[0]
+            inspected = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", worker],
+                                       capture_output=True, check=False)
+            if inspected.returncode == 0 and inspected.stdout.strip() == b"true":
+                break
+        time.sleep(0.05)
+    assert worker is not None and inspected is not None and inspected.returncode == 0
+    assert inspected.stdout.strip() == b"true"
+
+    cancelled = scheduler.cancel(assignment_id=job["assignment_id"])
+    thread.join(timeout=20)
+    assert not thread.is_alive() and errors
+    assert cancelled[0]["state"] == "cancelled"
+    assert subprocess.run(["docker", "inspect", worker], capture_output=True, check=False).returncode != 0
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM codex_active_operations WHERE run_id=?", (run_id,)
+                          ).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM agent_actions WHERE assignment_id=?",
+                          (job["assignment_id"],)).fetchone()[0] == 0
 
 
 def test_real_engine_recovery_stops_orphaned_sandbox_before_resuming(tmp_path):
