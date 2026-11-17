@@ -31,7 +31,8 @@ def test_empty_problem_is_sequential_and_forced_delegation_keeps_legacy_roles():
 def test_agent_reports_persist_evidence_and_synthesize_without_submission(tmp_path):
     database = tmp_path / "metis.sqlite"
     session = CodexSession(database)
-    run_id = session.demo()[0]["run_id"]
+    run_id = session.intake(title="Synthetic hypotheses", description="Compare independent parser hypotheses.",
+                            categories=["crypto", "web", "misc"], paths=[])["run_id"]
     sequence = session.store.read(run_id)[-1].sequence
     ledger = AgentLedger(database)
     wave = ledger.create_wave(run_id, mode="delegated")
@@ -52,6 +53,64 @@ def test_agent_reports_persist_evidence_and_synthesize_without_submission(tmp_pa
     assert result["supported_hypotheses"]
     assert result["submission"] == {"owner": "orchestrator", "allowed": False,
                                     "reason": "official_verifier_required"}
+
+
+def _record_synthesis_reports(ledger, run_id, wave, sequence, *, conflict):
+    assignments = wave["assignments"]
+    assert len(assignments) >= 2
+    for index, assignment in enumerate(assignments):
+        if index == 0:
+            hypothesis, status = "The payload is base64 encoded.", "supported"
+        elif index == 1 and conflict:
+            hypothesis, status = "  THE   PAYLOAD IS BASE64 ENCODED. ", "rejected"
+        else:
+            hypothesis, status = "The archive uses compression.", "rejected"
+        ledger.record_report(run_id, wave["wave_id"], assignment["assignment_id"], {
+            "hypothesis": hypothesis,
+            "evidence": f"Distinct role {index} cites the observed input representation.",
+            "falsifier": f"A bounded parse result can test role {index}'s hypothesis.",
+            "next_action": f"Inspect distinct representation window {index}.",
+            "event_sequences": [sequence],
+            "status": status,
+        })
+
+
+def test_synthesis_scores_hypotheses_and_reports_only_matching_contradictions(tmp_path):
+    database = tmp_path / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Synthetic hypotheses", description="Compare independent parser hypotheses.",
+                            categories=["crypto", "web", "misc"], paths=[])["run_id"]
+    sequence = session.store.read(run_id)[-1].sequence
+    ledger = AgentLedger(database)
+    wave = ledger.create_wave(run_id, mode="delegated")
+    _record_synthesis_reports(ledger, run_id, wave, sequence, conflict=True)
+
+    result = ledger.synthesize(run_id, wave["wave_id"])
+    by_hypothesis = {item["hypothesis"].casefold(): item for item in result["hypothesis_scores"]}
+    matching = by_hypothesis["the payload is base64 encoded."]
+    unrelated = by_hypothesis["the archive uses compression."]
+    assert matching["score"] == 0 and matching["contradicted"] is True
+    assert matching["supported"] == matching["rejected"] == 1
+    assert unrelated["score"] < 0 and unrelated["contradicted"] is False
+    assert len(result["contradicted_hypotheses"]) == 1
+    assert len(result["contradictions"]) == 1
+    assert result["decision"]["new_wave"]["allowed"] is True
+
+
+def test_unrelated_supported_and_rejected_hypotheses_are_not_conflicted(tmp_path):
+    database = tmp_path / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.demo()[0]["run_id"]
+    sequence = session.store.read(run_id)[-1].sequence
+    ledger = AgentLedger(database)
+    wave = ledger.create_wave(run_id, mode="delegated")
+    _record_synthesis_reports(ledger, run_id, wave, sequence, conflict=False)
+
+    result = ledger.synthesize(run_id, wave["wave_id"])
+    assert result["contradicted_hypotheses"] == []
+    assert result["contradictions"] == []
+    assert result["decision"]["new_wave"]["allowed"] is False
+    assert "no open or contradicted hypothesis" in result["decision"]["new_wave"]["blocked_by"]
 
 
 def test_agent_reports_reject_unknown_evidence_duplicates_and_flags(tmp_path):

@@ -229,7 +229,26 @@ class AgentLedger:
         unresolved = [assignment for assignment in missing if assignment not in ended]
         supported = [item for item in reports if item["status"] == "supported"]
         open_hypotheses = [item["hypothesis"] for item in reports if item["status"] == "inconclusive"]
-        contradicted = bool(supported) and any(item["status"] == "rejected" for item in reports)
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in reports:
+            key = " ".join(item["hypothesis"].casefold().split())
+            group = grouped.setdefault(key, {"hypothesis": item["hypothesis"], "supported": 0,
+                                             "rejected": 0, "inconclusive": 0,
+                                             "event_sequences": set()})
+            group[item["status"]] += 1
+            group["event_sequences"].update(item["event_sequences"])
+        hypothesis_scores = [
+            {"hypothesis": group["hypothesis"], "supported": group["supported"],
+             "rejected": group["rejected"], "inconclusive": group["inconclusive"],
+             "score": group["supported"] - group["rejected"],
+             "event_sequences": sorted(group["event_sequences"]),
+             "contradicted": bool(group["supported"] and group["rejected"])}
+            for key, group in sorted(grouped.items())
+        ]
+        contradicted_hypotheses = [item for item in hypothesis_scores if item["contradicted"]]
+        contradiction_keys = {" ".join(item["hypothesis"].casefold().split())
+                              for item in contradicted_hypotheses}
+        contradicted = bool(contradicted_hypotheses)
         budget = bool(context["actions_remaining"] and context["seconds_remaining"])
         new_wave_reasons = []
         if unresolved:
@@ -245,8 +264,11 @@ class AgentLedger:
             "missing_assignments": missing,
             "reports": reports,
             "supported_hypotheses": [item["hypothesis"] for item in supported],
+            "hypothesis_scores": hypothesis_scores,
+            "contradicted_hypotheses": contradicted_hypotheses,
             "contradictions": [item["falsifier"] for item in reports
-                               if item["status"] == "rejected"],
+                               if item["status"] == "rejected"
+                               and " ".join(item["hypothesis"].casefold().split()) in contradiction_keys],
             "next_actions": [item["next_action"] for item in reports],
             "submission": {"owner": "orchestrator", "allowed": status == "solved",
                            "reason": "official_verifier_required" if status != "solved"

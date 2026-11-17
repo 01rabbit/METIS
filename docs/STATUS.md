@@ -181,6 +181,13 @@ research or held-out workflow performance; the runner returns a digest rather
 than model-consumable decoded output. Issue #7 remains open. See
 [`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).
 
+Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
+normalized hypothesis and marks a conflict only when that same hypothesis has
+both outcomes. The count difference is not a confidence measure; semantic
+equivalence, stuckness detection, held-out evaluation, and real-model baseline
+comparison remain open. Issue #5 stays open. See
+[`issue5-hypothesis-synthesis-2026-11-17.md`](reports/issue5-hypothesis-synthesis-2026-11-17.md).
+
 Untrusted challenge programs are not executed on the host; dynamic analysis
 needs a local container engine and the sandbox image. The bundled Dockerfile
 build itself was not run in validation because registries were unreachable
