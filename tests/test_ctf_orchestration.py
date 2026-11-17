@@ -159,6 +159,20 @@ def test_synthesis_flags_repeated_next_action_across_waves(tmp_path):
     with pytest.raises(ValueError, match="distinct reason"):
         ledger.create_wave(run_id, mode="delegated",
                            reason="Retest decoder after the new parser observation.")
+    third = ledger.create_wave(run_id, mode="delegated",
+                                reason="Switch to a length-based decoder after the latest observation.")
+    third_assignment = third["assignments"][0]
+    ledger.record_report(run_id, third["wave_id"], third_assignment["assignment_id"], {
+        "hypothesis": "Encoding hypothesis 0 has not been falsified.",
+        "evidence": "The latest observation motivates testing another route.",
+        "falsifier": "A strict decoder rejection falsifies this decoder hypothesis.",
+        "next_action": "Inspect the decoded length before trying another parser.",
+        "event_sequences": [events[3].sequence],
+        "status": "inconclusive",
+    })
+    moved = ledger.synthesize(run_id, third["wave_id"])
+    assert moved["stuckness"]["detected"] is False
+    assert all(not item["stalled"] for item in moved["stuckness"]["repeated_actions"])
 
 
 def test_agent_reports_reject_unknown_evidence_duplicates_and_flags(tmp_path):

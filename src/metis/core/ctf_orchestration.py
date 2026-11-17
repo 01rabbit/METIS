@@ -228,6 +228,9 @@ class AgentLedger:
                 "SELECT wave_id,payload,action_key FROM ctf_agent_reports WHERE run_id=? ORDER BY created",
                 (run_id,),
             ).fetchall()
+            wave_order = [row[0] for row in db.execute(
+                "SELECT wave_id FROM ctf_agent_waves WHERE run_id=? ORDER BY created", (run_id,)
+            ).fetchall()]
         reports = [{"report_id": identity, "assignment_id": assignment,
                     **json.loads(payload)} for identity, assignment, payload in rows]
         expected = {item["assignment_id"] for item in plan["assignments"]}
@@ -264,15 +267,20 @@ class AgentLedger:
             hypothesis_key = " ".join(report["hypothesis"].casefold().split())
             history = strategy_history.setdefault((action_key, hypothesis_key), {
                 "action": report["next_action"], "hypothesis": report["hypothesis"],
-                "waves": set(), "statuses": set(),
+                "wave_statuses": {},
             })
-            history["waves"].add(prior_wave_id)
-            history["statuses"].add(report["status"])
+            history["wave_statuses"].setdefault(prior_wave_id, set()).add(report["status"])
+        current_index = wave_order.index(wave_id)
+        previous_wave_id = wave_order[current_index - 1] if current_index > 0 else None
         repeated_actions = [
             {"action": history["action"], "hypothesis": history["hypothesis"],
-             "wave_count": len(history["waves"]), "stalled": len(history["statuses"]) == 1,
-             "statuses": sorted(history["statuses"])}
-            for _key, history in sorted(strategy_history.items()) if len(history["waves"]) > 1
+             "wave_count": len(history["wave_statuses"]),
+             "stalled": (wave_id in history["wave_statuses"] and previous_wave_id is not None
+                         and previous_wave_id in history["wave_statuses"]
+                         and len(history["wave_statuses"][wave_id]) == 1
+                         and history["wave_statuses"][wave_id] == history["wave_statuses"][previous_wave_id]),
+             "statuses": sorted(set().union(*history["wave_statuses"].values()))}
+            for _key, history in sorted(strategy_history.items()) if len(history["wave_statuses"]) > 1
         ]
         stuck = any(item["stalled"] for item in repeated_actions)
         stuckness = {"detected": stuck, "repeated_actions": repeated_actions,

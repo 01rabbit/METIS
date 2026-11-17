@@ -14,10 +14,11 @@ The score is a report-count difference, not a calibrated confidence or an
 independence-weighted evidence measure. Grouping is exact text after minimal
 normalization; paraphrases and punctuation variants can remain separate. A
 separate stuckness signal now detects the same normalized next action and
-hypothesis with an unchanged report status across multiple waves. A retest with
-a different hypothesis or outcome remains visible as a repeated action without
-being called stuck. Reusing the exact normalized wave rationale is rejected.
-This does not detect semantic equivalence between paraphrases.
+hypothesis with the same single report status in the immediately preceding and
+current waves. Changing strategy in the current wave clears the signal; older
+repeated actions remain visible as history. Reusing the exact normalized wave
+rationale is rejected. This does not detect semantic equivalence between
+paraphrases.
 
 ## Validation
 
@@ -35,7 +36,8 @@ external KSNCTF distributions, slow-search opt-in, or a sandbox image.
 
 An independent read-only code review of the earlier scoring change found no
 blocker for its grouping and score behavior. The current deterministic tests
-cover the added cross-wave stuckness condition and exact reason reuse.
+cover the added cross-wave stuckness condition, clearing after a strategy
+change, and exact reason reuse.
 
 ## Remaining gate
 

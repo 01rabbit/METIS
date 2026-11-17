@@ -184,10 +184,11 @@ than model-consumable decoded output. Issue #7 remains open. See
 Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
 normalized hypothesis and marks a conflict only when that same hypothesis has
 both outcomes. The count difference is not a confidence measure. Synthesis now
-also detects the same normalized action and hypothesis with unchanged status
-across waves, and rejects exact reused wave rationales. It does not identify
-paraphrased strategies or select an alternative itself. Held-out evaluation and
-real-model baseline comparison remain open. Issue #5 stays open. See
+also detects the same normalized action and hypothesis with the same single
+status in consecutive waves; a current strategy change clears the signal.
+Exact reused wave rationales are rejected. It does not identify paraphrased
+strategies or select an alternative itself. Held-out evaluation and real-model
+baseline comparison remain open. Issue #5 stays open. See
 [`issue5-hypothesis-synthesis-2026-11-17.md`](reports/issue5-hypothesis-synthesis-2026-11-17.md).
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
