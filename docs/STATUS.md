@@ -184,7 +184,11 @@ Token/cost limits are not enforceable when usage is unknown. A 30-case paired
 synthetic scheduler benchmark verifies the same tasks in both arms (30/30) and
 measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
 single assignment vs two dispatched specialists under matched two-turn/two-
-action budgets. This is virtual scheduler evidence; it does not measure real
+action budgets. A deterministic `FakeHost` worker now reads only its assigned
+artifact subset and itself reserves turns, issues mediated intents, and
+submits evidence-backed reports; the test driver advances scheduler ticks and
+scores the combined result through the private oracle. This is virtual scheduler
+evidence; the scheduler polls workers serially, so it does not measure real
 elapsed time, concurrent tool execution, or model reasoning. A real-model
 paired pilot then ran one seeded task through both arms using Codex CLI 0.169.0:
 both candidates verified, while the two-specialist arm took 21.83s vs 20.95s,

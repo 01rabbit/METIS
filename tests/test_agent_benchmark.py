@@ -19,6 +19,69 @@ from metis.core.ctf_orchestration import AgentLedger
 from metis.core.verification import FixtureOracle
 
 
+class DeterministicWorkerHost(FakeHost):
+    """A non-model worker that uses only its assignment and mediated controller intents."""
+
+    def __init__(self):
+        super().__init__(script={
+            role: lambda assignment, _brief: {
+                "after": len(assignment["inputs"]["artifacts"]), "state": "finished", "output": None,
+            }
+            for role in ("crypto-specialist", "forensics-specialist")
+        }, max_parallel=2)
+        self.scheduler: AgentScheduler | None = None
+        self.decoded: dict[tuple[str, str], bytes] = {}
+        self.evidence: dict[str, list[int]] = {}
+        self.worker_turns: dict[str, int] = {}
+
+    def poll(self, job_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
+        if self.scheduler is None:
+            raise RuntimeError("worker host is not bound to the scheduler")
+        status = super().poll(job_id, timeout=timeout)
+        if status["state"] not in {"running", "finished"}:
+            return status
+        job = self.jobs[job_id]
+        assignment = job["assignment"]
+        brief = job["brief"]
+        run_id = brief["run_id"]
+        assignment_id = assignment["assignment_id"]
+        attempt_id = brief["attempt_id"]
+        artifacts = assignment["inputs"]["artifacts"]
+        index = job["polls"] - 1
+        if index >= len(artifacts):
+            return status
+
+        reservation = self.scheduler.reserve_model_turn(run_id, assignment_id, attempt_id)
+        if reservation is None:
+            raise AssertionError("worker could not reserve its assigned model turn")
+        artifact = artifacts[index]
+        suffix = Path(artifact).suffix
+        tool = "base64_decode" if suffix == ".b64" else "hex_decode"
+        observed = self.scheduler.intent(run_id, assignment_id, attempt_id, {
+            "kind": "artifact", "tool": tool, "artifact": artifact,
+        })
+        result = observed["observation"]
+        if not result["ok"]:
+            raise AssertionError("the deterministic worker's declared decoder should succeed")
+        component = base64.b64decode(result["result"]["base64"], validate=True)
+        self.decoded[(run_id, artifact)] = component
+        self.evidence.setdefault(assignment_id, []).append(observed["evidence_sequence"])
+        self.worker_turns[assignment_id] = self.worker_turns.get(assignment_id, 0) + 1
+        if index == len(artifacts) - 1:
+            report = {
+                "hypothesis": "The assigned encoded component contains one candidate fragment.",
+                "evidence": f"A bounded decoder returned {len(component)} bytes at event "
+                            f"{observed['evidence_sequence']}.",
+                "falsifier": "A strict decoder rejection would refute this representation.",
+                "next_action": f"Combine assigned fragments after both bounded decodes, role {assignment['role']}.",
+                "event_sequences": self.evidence[assignment_id],
+                "artifact_refs": artifacts,
+                "status": "supported",
+            }
+            self.scheduler.complete(run_id, assignment_id, attempt_id, report)
+        return status
+
+
 def _benchmark_wave(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
     """Create test-only one-agent or two-specialist plans with identical inputs."""
     plan = ledger.create_wave(run_id, mode="delegated")
@@ -46,65 +109,17 @@ def _benchmark_wave(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any
     return plan
 
 
-def _run_arm(scheduler: AgentScheduler, run_id: str, arm: str) -> dict[str, Any]:
+def _run_arm(scheduler: AgentScheduler, host: DeterministicWorkerHost,
+             run_id: str, arm: str) -> dict[str, Any]:
     plan = _benchmark_wave(scheduler.ledger, run_id, arm)
     jobs = scheduler.enqueue(run_id, plan["wave_id"])
     started = scheduler.dispatch(run_id)
     assert len(started["started"]) == len(jobs) == len(plan["assignments"])
-    assigned = {item["assignment_id"]: item for item in plan["assignments"]}
-    decoded: dict[str, bytes] = {}
-    evidence: dict[str, list[int]] = {identity: [] for identity in assigned}
-    max_rounds = max(len(item["inputs"]["artifacts"]) for item in assigned.values())
-    observed_poll_states: dict[str, str] = {}
-    original_poll = scheduler.host.poll
-
-    def record_poll(job_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
-        result = original_poll(job_id, timeout=timeout)
-        observed_poll_states[job_id] = result["state"]
-        return result
-
-    scheduler.host.poll = record_poll  # type: ignore[method-assign]
-
-    try:
-        for provider_round in range(1, max_rounds + 1):
-            scheduler.tick()
-            for attempt in started["started"]:
-                host_job = scheduler.host.jobs[attempt["host_job_id"]]
-                assert host_job["polls"] == provider_round
-                expected_state = "finished" if provider_round >= host_job["plan"]["after"] else "running"
-                assert observed_poll_states[attempt["host_job_id"]] == expected_state
-            for attempt in started["started"]:
-                assignment_id = attempt["assignment_id"]
-                artifacts = assigned[assignment_id]["inputs"]["artifacts"]
-                if provider_round > len(artifacts):
-                    continue
-                reservation = scheduler.reserve_model_turn(run_id, assignment_id, attempt["attempt_id"])
-                assert reservation is not None
-                artifact = artifacts[provider_round - 1]
-                suffix = Path(artifact).suffix
-                tool = "base64_decode" if suffix == ".b64" else "hex_decode"
-                observed = scheduler.intent(run_id, assignment_id, attempt["attempt_id"], {
-                    "kind": "artifact", "tool": tool, "artifact": artifact,
-                })
-                result = observed["observation"]
-                assert result["ok"] is True
-                component = base64.b64decode(result["result"]["base64"], validate=True)
-                decoded[artifact] = component
-                evidence[assignment_id].append(observed["evidence_sequence"])
-                if provider_round == len(artifacts):
-                    report = {
-                        "hypothesis": "The declared encoded component contains one candidate fragment.",
-                        "evidence": f"A bounded decoder returned {len(component)} bytes at event "
-                                   f"{observed['evidence_sequence']}.",
-                        "falsifier": "A strict decoder rejection would refute this representation.",
-                        "next_action": f"Combine the decoded fragment from {artifact} with its paired fragment.",
-                        "event_sequences": evidence[assignment_id],
-                        "artifact_refs": artifacts,
-                        "status": "supported",
-                    }
-                    scheduler.complete(run_id, assignment_id, attempt["attempt_id"], report)
-    finally:
-        scheduler.host.poll = original_poll  # type: ignore[method-assign]
+    ticks = 0
+    while any(job["state"] == "running" for job in scheduler.jobs(run_id, plan["wave_id"])):
+        scheduler.tick()
+        ticks += 1
+        assert ticks <= 2
 
     synthesis = scheduler.ledger.synthesize(run_id, plan["wave_id"])
     assert synthesis["complete"] is True
@@ -116,20 +131,20 @@ def _run_arm(scheduler: AgentScheduler, run_id: str, arm: str) -> dict[str, Any]
         tool_actions = db.execute("SELECT COUNT(*) FROM agent_actions WHERE run_id=?", (run_id,)).fetchone()[0]
         turns = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?", (run_id,)).fetchone()[0]
     assert tool_actions == 2 and turns == 2
-    return {"ticks": max_rounds, "decoded": decoded, "synthesis": synthesis}
+    assert all(host.worker_turns.get(item["assignment_id"], 0) == item["max_turns"]
+               for item in plan["assignments"])
+    artifacts = [artifact for item in plan["assignments"] for artifact in item["inputs"]["artifacts"]]
+    decoded = {artifact: host.decoded[(run_id, artifact)] for artifact in artifacts}
+    return {"ticks": ticks, "decoded": decoded, "synthesis": synthesis}
 
 
 def test_issue6_paired_synthetic_scheduler_benchmark_uses_matched_budgets(tmp_path):
     seed = 20261117
     rng = random.Random(seed)
     database = tmp_path / "state.sqlite"
-    host = FakeHost(script={
-        role: lambda assignment, _brief: {
-            "after": len(assignment["inputs"]["artifacts"]), "state": "finished", "output": None,
-        }
-        for role in ("crypto-specialist", "forensics-specialist")
-    }, max_parallel=2)
+    host = DeterministicWorkerHost()
     scheduler = AgentScheduler(database, host)
+    host.scheduler = scheduler
     scheduler.configure(global_slots=2, per_run_slots=2, specialist_turn_budget=2)
 
     cases: list[dict[str, Any]] = []
@@ -170,7 +185,7 @@ def test_issue6_paired_synthetic_scheduler_benchmark_uses_matched_budgets(tmp_pa
         run_outputs = {}
         arms = ("multi", "single") if int(case["case_id"].split("-")[-1]) % 2 else ("single", "multi")
         for arm in arms:
-            output = _run_arm(scheduler, case["run_ids"][arm], arm)
+            output = _run_arm(scheduler, host, case["run_ids"][arm], arm)
             ordered_artifacts = scheduler.session.context(case["run_ids"][arm])["challenge"]["artifacts"]
             candidate = hashlib.sha256(
                 output["decoded"][ordered_artifacts[0]] + b"\0" + output["decoded"][ordered_artifacts[1]]
