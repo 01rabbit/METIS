@@ -124,6 +124,8 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
     rows = {(trial.task_id, trial.repetition, trial.arm): trial for trial in study.trials}
     exclusions: Counter[str] = Counter()
     scored: dict[tuple[str, int, str], int] = {}
+    acceptance_scored: dict[tuple[str, int, str], int] = {}
+    resource_ineligible: Counter[str] = Counter()
     overruns: Counter[str] = Counter()
     for key, trial in rows.items():
         task = tasks[trial.task_id]
@@ -142,17 +144,33 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
         scored[key] = int(eligible and not exceeded and trial.failure == "none"
                           and trial.oracle in {"official", "protected_fixture"}
                           and trial.oracle_verified and trial.workflow_complete)
+        resources_complete = (trial.tokens is not None and trial.cost_usd is not None
+                              and budget.cost_usd is not None)
+        if not resources_complete:
+            resource_ineligible[trial.arm] += 1
+        acceptance_scored[key] = scored[key] * int(resources_complete)
     arms = {}
     task_means: dict[str, list[float]] = {}
+    acceptance_task_means: dict[str, list[float]] = {}
     for arm in study.arms:
         trials = [trial for trial in study.trials if trial.arm == arm]
         means = [statistics.mean(scored[(task, rep, arm)]
                                  for rep in range(study.repetitions)) for task in tasks]
         task_means[arm] = means
+        acceptance_means = [statistics.mean(acceptance_scored[(task, rep, arm)]
+                                            for rep in range(study.repetitions)) for task in tasks]
+        acceptance_task_means[arm] = acceptance_means
         arms[arm] = {
             "trials": len(trials), "scored_solves": sum(scored[(t.task_id, t.repetition, arm)]
                                                         for t in trials),
             "solve_rate": statistics.mean(means),
+            "acceptance_eligible_solves": sum(acceptance_scored[(t.task_id, t.repetition, arm)]
+                                              for t in trials),
+            "acceptance_eligible_solve_rate": statistics.mean(acceptance_means),
+            "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": _interval(
+                acceptance_means, seed=study.seed, samples=samples),
+            "acceptance_ineligible_resource_trials": resource_ineligible[arm],
+            "cost_cap_declared": study.budgets[arm].cost_usd is not None,
             "solve_rate_cluster_bootstrap_95_interval": _interval(
                 means, seed=study.seed, samples=samples),
             "mean_seconds": statistics.mean(t.seconds for t in trials),
@@ -181,11 +199,22 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
             "paired_cluster_bootstrap_95_interval": _interval(
                 deltas, seed=study.seed, samples=samples),
         }
+        acceptance_deltas = [value - baseline for value, baseline in zip(
+            acceptance_task_means[arm], acceptance_task_means[study.baseline], strict=True)]
+        comparisons[f"{arm}_minus_{study.baseline}"].update({
+            "paired_acceptance_eligible_solve_rate_difference": statistics.mean(acceptance_deltas),
+            "paired_acceptance_eligible_cluster_bootstrap_95_interval": _interval(
+                acceptance_deltas, seed=study.seed, samples=samples),
+        })
     return {
         "study_id": study.study_id, "measurement": study.measurement,
         "model_pin": study.model_pin, "runtime_pin": study.runtime_pin,
         "distinct_task_clusters": len(tasks), "repetitions": study.repetitions,
         "matched_aggregate_budgets": {a: b.model_dump() for a, b in study.budgets.items()},
+        "solve_metric_roles": {
+            "scored_solves": "diagnostic; unknown tokens/cost or absent cost cap may remain",
+            "acceptance_eligible_solves": "requires actual tokens/cost and declared cost cap",
+        },
         "arms": arms, "comparisons": comparisons,
         "contamination_excluded_trials": dict(exclusions),
         "unresolved_solvability_control_excluded_trials": sum(
@@ -198,6 +227,7 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
             "Evidence references and exposure declarations require independent ledger review.",
             "Synthetic fixtures measure the analysis path, not model or CTF performance.",
             "Unknown usage/cost remain null; equal caps do not imply equal actual consumption.",
+            "Resource-incomplete trials score zero for acceptance eligibility and remain in denominators.",
             "Cluster intervals describe selected tasks; all-equal samples give degenerate intervals.",
             "Prior model-training exposure cannot be ruled out by a clean local exposure declaration.",
         ],

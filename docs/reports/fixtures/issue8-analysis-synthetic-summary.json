@@ -1,7 +1,15 @@
 {
   "arms": {
     "full": {
+      "acceptance_eligible_solve_rate": 0,
+      "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "acceptance_eligible_solves": 0,
+      "acceptance_ineligible_resource_trials": 6,
       "budget_overrun_trials": 0,
+      "cost_cap_declared": false,
       "declared_failures": {},
       "mean_actions": 1,
       "mean_model_calls": 2,
@@ -21,7 +29,15 @@
       "untrusted_oracle_trials": 0
     },
     "single_agent": {
+      "acceptance_eligible_solve_rate": 0,
+      "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "acceptance_eligible_solves": 0,
+      "acceptance_ineligible_resource_trials": 6,
       "budget_overrun_trials": 0,
+      "cost_cap_declared": false,
       "declared_failures": {
         "incorrect": 4
       },
@@ -43,7 +59,15 @@
       "untrusted_oracle_trials": 0
     },
     "without_memory": {
+      "acceptance_eligible_solve_rate": 0,
+      "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "acceptance_eligible_solves": 0,
+      "acceptance_ineligible_resource_trials": 6,
       "budget_overrun_trials": 0,
+      "cost_cap_declared": false,
       "declared_failures": {
         "incorrect": 4
       },
@@ -65,7 +89,15 @@
       "untrusted_oracle_trials": 0
     },
     "without_planner": {
+      "acceptance_eligible_solve_rate": 0,
+      "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "acceptance_eligible_solves": 0,
+      "acceptance_ineligible_resource_trials": 6,
       "budget_overrun_trials": 0,
+      "cost_cap_declared": false,
       "declared_failures": {
         "incorrect": 4
       },
@@ -94,6 +126,11 @@
   },
   "comparisons": {
     "full_minus_single_agent": {
+      "paired_acceptance_eligible_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "paired_acceptance_eligible_solve_rate_difference": 0,
       "paired_cluster_bootstrap_95_interval": [
         0,
         1
@@ -101,6 +138,11 @@
       "paired_solve_rate_difference": 0.6666666666666666
     },
     "without_memory_minus_single_agent": {
+      "paired_acceptance_eligible_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "paired_acceptance_eligible_solve_rate_difference": 0,
       "paired_cluster_bootstrap_95_interval": [
         0,
         0
@@ -108,6 +150,11 @@
       "paired_solve_rate_difference": 0
     },
     "without_planner_minus_single_agent": {
+      "paired_acceptance_eligible_cluster_bootstrap_95_interval": [
+        0,
+        0
+      ],
+      "paired_acceptance_eligible_solve_rate_difference": 0,
       "paired_cluster_bootstrap_95_interval": [
         0,
         0
@@ -121,6 +168,7 @@
     "Evidence references and exposure declarations require independent ledger review.",
     "Synthetic fixtures measure the analysis path, not model or CTF performance.",
     "Unknown usage/cost remain null; equal caps do not imply equal actual consumption.",
+    "Resource-incomplete trials score zero for acceptance eligibility and remain in denominators.",
     "Cluster intervals describe selected tasks; all-equal samples give degenerate intervals.",
     "Prior model-training exposure cannot be ruled out by a clean local exposure declaration."
   ],
@@ -159,6 +207,10 @@
   "repetitions": 2,
   "runtime_pin": "pytest-no-runtime",
   "solvability_controls_missing": 0,
+  "solve_metric_roles": {
+    "acceptance_eligible_solves": "requires actual tokens/cost and declared cost cap",
+    "scored_solves": "diagnostic; unknown tokens/cost or absent cost cap may remain"
+  },
   "strata_task_counts": {
     "crypto:easy": 1,
     "misc:medium": 1,

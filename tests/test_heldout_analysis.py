@@ -111,6 +111,28 @@ def test_unknown_usage_and_overruns_are_not_hidden():
     assert summary["arms"]["full"]["scored_solves"] == 5
 
 
+@pytest.mark.parametrize("missing", ["tokens", "cost_usd", "cost_cap", None])
+def test_acceptance_scoring_requires_complete_resources_and_a_cost_cap(missing):
+    data = fixture_metrics()
+    for budget in data["budgets"].values():
+        budget["cost_usd"] = 1.0
+    for trial in data["trials"]:
+        trial["cost_usd"] = 0.1
+    if missing == "cost_cap":
+        for budget in data["budgets"].values():
+            budget["cost_usd"] = None
+    elif missing is not None:
+        data["trials"][0][missing] = None
+    result = analyze(Study.model_validate(data), samples=100)
+    arm = result["arms"]["full"]
+    assert arm["trials"] == 6
+    assert arm["scored_solves"] == 6  # A diagnostic correctness count, not acceptance.
+    assert arm["acceptance_eligible_solves"] == (0 if missing == "cost_cap" else
+                                                 6 if missing is None else 5)
+    assert arm["acceptance_ineligible_resource_trials"] == (6 if missing == "cost_cap" else
+                                                           0 if missing is None else 1)
+
+
 @pytest.mark.parametrize("field,value", [("candidate", "SECRET_SENTINEL"),
                                          ("seconds", float("nan")),
                                          ("tokens", True)])
