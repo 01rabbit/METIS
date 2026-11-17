@@ -69,7 +69,8 @@ Gate: at least one cross-challenge transfer exercise on non-identical fixtures, 
 
 ### P4 — Adaptive Reasoning (depends on P1+P3)
 Deliver hypotheses ranked by evidence, contradiction tracking, novelty-aware actions, stuckness detection, alternative-plan generation, bounded lookahead, reproducible cost-aware policy.
-Gate: a known dead-end fixture triggers a distinct strategy; same failing action is not repeated blindly; fixed-budget benchmark comparison with baseline and error bars.
+Minimum gate evidence: a seeded fixture route switches to a distinct predeclared transform only after its named `invalid_input` observation; the 30-case paired synthetic comparison reports a 95% bootstrap interval. Synthesis counts support/rejection per normalized hypothesis and flags a cross-wave stall only when unchanged status accompanies the same controller-recorded single-tool action cited by the report. This is an advisory signal and fixture-policy evidence; it is not model-selected planning. The report count is not a calibrated confidence score.
+Broader P4 work: expand beyond exact-normalized hypotheses and single-tool identities, demonstrate model-selected evidence-backed alternatives, and run a fixed-budget held-out/model comparison with uncertainty, cost and latency.
 
 ### P5 — Multi-Agent Orchestration (depends on P2+P4)
 Deliver bounded parallel specialists, delegated tasks and scoped capabilities, controlled shared observations, conflict adjudication, state reconciliation, cancellation and deterministic serialization of decisions.

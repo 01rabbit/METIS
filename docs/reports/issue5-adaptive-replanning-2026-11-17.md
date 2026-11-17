@@ -63,7 +63,10 @@ exit 0; optional Docker, platform-specific, and KSNCTF integration cases skipped
 The two skips require the optional Docker image. The measured pair used a
 lightweight local transform runtime, not the isolated container worker. The
 test therefore validates the decision transition and oracle accounting, but
-does not measure model usage/cost or prove Docker behavior. Broader P4 gates
-remain open: generalized hypothesis evidence scores, contradiction and
-stuckness tracking, semantic-equivalence repeat detection, diverse held-out
-problems, and controlled real-model comparisons.
+does not measure model usage/cost or prove Docker behavior. The bounded minimum
+gate is supported by this synthetic fallback comparison and the complementary
+controller synthesis tests in
+[`issue5-hypothesis-synthesis-2026-11-17.md`](issue5-hypothesis-synthesis-2026-11-17.md).
+Broader P4 work remains open: model-selected alternatives, paraphrased
+hypothesis and multi-step strategy equivalence, held-out problems, and
+controlled real-model comparisons with cost and latency.
