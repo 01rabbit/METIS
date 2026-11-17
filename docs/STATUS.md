@@ -244,7 +244,10 @@ both candidates verified, while the two-specialist arm took 21.83s vs 20.95s,
 used 6 vs 3 provider calls, and used 59,627 vs 29,881 input tokens. This is one
 mechanical task with the default model not pinned, so it is not a general
 performance estimate and shows no gain. Repeated, diverse, pinned-model runs
-with uncertainty and cost reporting remain outstanding. Issue #6 stays open;
+with uncertainty and cost reporting remain outstanding. The independent
+acceptance review returned NO-GO because the synthetic round-count reduction
+is a scheduler model, while the single unpinned real-model pair was slightly
+slower and used about twice the calls and input tokens. Issue #6 stays open;
 see
 [`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
 The paired benchmark protocol is in
