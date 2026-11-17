@@ -189,7 +189,11 @@ model independent of artifact count. A deterministic `FakeHost` worker now reads
 artifact subset and itself reserves turns, issues mediated intents, and
 submits evidence-backed reports; the test driver advances scheduler ticks and
 scores the combined result through the private oracle. This is virtual scheduler
-evidence; the scheduler polls workers serially, so it does not measure real
+evidence. Explicit `assignment.inputs.artifacts` now also limits artifact names
+in each brief, rejects out-of-scope artifact/derive/view intents, and prevents
+reports from citing out-of-scope artifacts. A worker's successfully derived
+artifact stays scoped to its creating assignment; omitted scopes retain
+run-wide access. The scheduler polls workers serially, so the benchmark does not measure real
 elapsed time, concurrent tool execution, or model reasoning. A real-model
 paired pilot then ran one seeded task through both arms using Codex CLI 0.169.0:
 both candidates verified, while the two-specialist arm took 21.83s vs 20.95s,

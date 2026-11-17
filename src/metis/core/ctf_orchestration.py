@@ -25,6 +25,25 @@ from metis.core.agent_contracts import (
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_knowledge import abstract_text
 
+
+def assigned_artifact_scope(assignment: dict[str, Any], declared_artifacts: set[str]) -> set[str] | None:
+    """Validate an optional assignment-level artifact capability.
+
+    A missing ``inputs.artifacts`` preserves run-wide artifact access. An
+    explicit empty list grants no artifact access.
+    """
+    inputs = assignment.get("inputs", {})
+    if not isinstance(inputs, dict):
+        raise TypeError("invalid assignment inputs")
+    if "artifacts" not in inputs:
+        return None
+    refs = inputs["artifacts"]
+    if (not isinstance(refs, list) or len(refs) > 32
+            or any(not isinstance(ref, str) for ref in refs)
+            or len(refs) != len(set(refs)) or not set(refs) <= declared_artifacts):
+        raise ValueError("invalid assignment artifact scope")
+    return set(refs)
+
 CATEGORY_OBJECTIVES = {
     "crypto": "Identify the primitive and test the cheapest discriminating decode or attack.",
     "web": "Map supplied application evidence and propose one scoped, verifiable web hypothesis.",
@@ -178,6 +197,10 @@ class AgentLedger:
         declared = set(self.session.context(run_id)["challenge"].get("artifacts", []))
         if set(parsed.artifact_refs) - declared:
             raise ValueError("report references artifacts that are not registered in this run")
+        assignment = next(item for item in plan["assignments"] if item["assignment_id"] == assignment_id)
+        allowed_artifacts = assigned_artifact_scope(assignment, declared)
+        if allowed_artifacts is not None and set(parsed.artifact_refs) - allowed_artifacts:
+            raise ValueError("report references artifacts outside this assignment's scope")
         action_key = hashlib.sha256(" ".join(values["next_action"].lower().split()).encode()).hexdigest()
         newest = max(sequences)
         with sqlite3.connect(self.database) as db:

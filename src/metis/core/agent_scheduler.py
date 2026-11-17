@@ -28,7 +28,7 @@ from metis.core.agent_contracts import PROFILES, Contract, select_model
 from metis.core.agent_host import AgentHost
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
-from metis.core.ctf_orchestration import AgentLedger
+from metis.core.ctf_orchestration import AgentLedger, assigned_artifact_scope
 from metis.core.intent_identity import intent_identity
 from metis.core.run_lock import run_lock
 from metis.core.runtime import ToolRequest
@@ -319,6 +319,10 @@ class AgentScheduler:
     def brief(self, run_id: str, assignment: dict[str, Any], attempt_id: str) -> dict[str, Any]:
         """Minimal no-history brief (spec 5.1): only references, never raw data or candidates."""
         context = self.session.context(run_id)
+        declared_artifacts = context["challenge"].get("artifacts", [])[:32]
+        artifact_scope = assigned_artifact_scope(assignment, set(declared_artifacts))
+        visible_artifacts = (declared_artifacts if artifact_scope is None
+                             else [name for name in declared_artifacts if name in artifact_scope])
         prior_knowledge: list[dict[str, Any]] = []
         if self.config()["memory_retrieval"]:
             from metis.core.ctf_knowledge import KnowledgeBase
@@ -354,7 +358,7 @@ class AgentScheduler:
             "assignment_id": assignment["assignment_id"], "attempt_id": attempt_id, "role": assignment["role"],
             "objective": assignment["objective"], "deliverable": assignment["deliverable"],
             "evidence_required": profile.evidence_required,
-            "artifacts": context["challenge"].get("artifacts", [])[:32],
+            "artifacts": visible_artifacts,
             "evidence_refs": observations, "hypotheses": hypotheses, "rejected_actions": rejected,
             "prior_reports": prior_reports,
             "prior_knowledge": prior_knowledge,
@@ -382,6 +386,37 @@ class AgentScheduler:
                           f"current={job['attempt_id']} state={job['state']}")
             raise ValueError("stale or unknown attempt; rejected")
         return job
+
+    def _assignment_artifact_scope(self, job: dict[str, Any]) -> set[str] | None:
+        """Return the explicit artifact capability for a job; ``None`` means run-wide access."""
+        plan = self.ledger._plan(job["run_id"], job["wave_id"])
+        assignment = next((item for item in plan["assignments"]
+                           if item.get("assignment_id") == job["assignment_id"]), None)
+        if assignment is None:
+            raise ValueError("assignment is not in its wave plan")
+        declared = set(self.session.context(job["run_id"])["challenge"].get("artifacts", []))
+        return assigned_artifact_scope(assignment, declared)
+
+    def _register_derived_artifact(self, job: dict[str, Any], artifact: str) -> None:
+        """Extend only the producing assignment's explicit scope with its derived output."""
+        plan = self.ledger._plan(job["run_id"], job["wave_id"])
+        assignment = next(item for item in plan["assignments"]
+                          if item.get("assignment_id") == job["assignment_id"])
+        declared = set(self.session.context(job["run_id"])["challenge"].get("artifacts", []))
+        allowed = assigned_artifact_scope(assignment, declared)
+        if allowed is None:
+            return  # No explicit subset: the run-wide scope already includes derived files.
+        if artifact not in declared:
+            raise ValueError("derived artifact is not registered in the run")
+        if artifact in allowed:
+            return
+        inputs = assignment["inputs"]
+        inputs["artifacts"] = [*inputs["artifacts"], artifact]
+        with self._db() as db:
+            db.execute("UPDATE ctf_agent_waves SET plan=? WHERE wave_id=?",
+                       (json.dumps(plan, sort_keys=True), job["wave_id"]))
+            self._log(db, job["assignment_id"], job["attempt_id"], "derived_scope_extended",
+                      "own derived artifact")
 
     def complete(self, run_id: str, assignment_id: str, attempt_id: str, report: dict[str, Any]) -> dict[str, Any]:
         job = self._running(assignment_id, attempt_id)
@@ -508,6 +543,12 @@ class AgentScheduler:
             self._stop(job)
             self._end(assignment_id, attempt_id, "timed_out", "max turns reached")
             raise ValueError("assignment max turns reached")
+        if intent.kind in {"artifact", "derive", "view"}:
+            allowed_artifacts = self._assignment_artifact_scope(job)
+            if allowed_artifacts is not None and intent.artifact not in allowed_artifacts:
+                with self._db() as db:
+                    self._log(db, assignment_id, attempt_id, "intent_scope_refused", "unassigned artifact")
+                raise ValueError("artifact is outside this assignment's scope")
         identity, family = intent_identity(intent.kind, intent.tool, intent.artifact, intent.options, intent.data,
                                            self.session.artifact_root(run_id))
         with run_lock(self.database, run_id):
@@ -540,6 +581,9 @@ class AgentScheduler:
                                                                 int(ok), time.time(), family))
                 db.execute("UPDATE agent_jobs SET turns_used=turns_used+1 WHERE assignment_id=? AND attempt_id=?",
                            (assignment_id, attempt_id))
+            if (intent.kind == "derive" and result.get("ok") is True
+                    and isinstance(result.get("artifact"), str)):
+                self._register_derived_artifact(job, result["artifact"])
         return {"assignment_id": assignment_id, "attempt_id": attempt_id, "action_identity": identity,
                 "evidence_sequence": sequence, "turns_left": job["max_turns"] - job["turns_used"] - 1,
                 "observation": result}

@@ -3,6 +3,9 @@
 The cases reproduce what a Codex specialist did in the ksnctf E2E run: re-running a read by
 changing an option that does not change the result, and citing unrelated events as "new evidence".
 """
+import base64
+import json
+import sqlite3
 import struct
 
 import pytest
@@ -97,6 +100,133 @@ def test_identity_normalises_types_key_order_and_hex_spelling(env):
     one = intent_identity("data", "xor", None, {}, '{"data":"6162","key":"01"}', root)
     two = intent_identity("data", "xor", None, {}, '{"key":"01","data":"6162"}', root)
     assert one == two and one[1] is None
+
+
+def test_explicit_assignment_artifact_scope_is_enforced_for_intents_and_reports(env):
+    scheduler, run_id, jobs, names, _root = env
+    job = jobs[0]
+    scheduled = next(item for item in scheduler.jobs(run_id)
+                     if item["assignment_id"] == job["assignment_id"])
+    wave_id = scheduled["wave_id"]
+    plan = scheduler.ledger._plan(run_id, wave_id)
+    assignment = next(item for item in plan["assignments"] if item["assignment_id"] == job["assignment_id"])
+
+    def save_plan():
+        with sqlite3.connect(scheduler.database) as db:
+            db.execute("UPDATE ctf_agent_waves SET plan=? WHERE wave_id=?",
+                       (json.dumps(plan, sort_keys=True), wave_id))
+
+    assignment["inputs"] = {"artifacts": []}
+    save_plan()
+    assert scheduler.brief(run_id, assignment, job["attempt_id"])["artifacts"] == []
+    with pytest.raises(ValueError, match="outside this assignment's scope"):
+        _intent(scheduler, run_id, job, {"kind": "artifact", "tool": "text", "artifact": names[0]})
+
+    assignment["inputs"] = {"artifacts": ["../outside.txt"]}
+    save_plan()
+    with pytest.raises(ValueError, match="invalid assignment artifact scope"):
+        scheduler.brief(run_id, assignment, job["attempt_id"])
+
+    assignment["inputs"] = {"artifacts": [names[0]]}
+    save_plan()
+    brief = scheduler.brief(run_id, assignment, job["attempt_id"])
+    assert brief["artifacts"] == [names[0]]
+
+    remaining = scheduler.session.context(run_id)["actions_remaining"]
+    with pytest.raises(ValueError, match="outside this assignment's scope"):
+        _intent(scheduler, run_id, job, {"kind": "artifact", "tool": "text", "artifact": names[1]})
+    assert scheduler.session.context(run_id)["actions_remaining"] == remaining
+
+    observed = _intent(scheduler, run_id, job, {"kind": "artifact", "tool": "text", "artifact": names[0]})
+    report = {
+        "hypothesis": "The assigned text artifact contains the relevant representation.",
+        "evidence": "The bounded text reader returned the assigned artifact at the cited event.",
+        "falsifier": "A different representation would refute this hypothesis.",
+        "next_action": "Inspect the assigned text artifact for its declared encoding.",
+        "event_sequences": [observed["evidence_sequence"]],
+        "artifact_refs": [names[1]],
+        "status": "inconclusive",
+    }
+    with pytest.raises(ValueError, match="outside this assignment's scope"):
+        scheduler.complete(run_id, job["assignment_id"], job["attempt_id"], report)
+    assert scheduler.jobs(run_id)[0]["state"] == "running"
+    report["artifact_refs"] = [names[0]]
+    assert scheduler.complete(run_id, job["assignment_id"], job["attempt_id"], report)["state"] == "completed"
+
+
+def test_derived_artifact_scope_stays_with_its_creating_assignment(tmp_path):
+    database = tmp_path / "state.sqlite"
+    source = tmp_path / "source.b64"
+    source.write_text(base64.b64encode(b"scoped derived content").decode())
+    other = tmp_path / "other.txt"
+    other.write_text("other assignment input")
+    session = CodexSession(database)
+    run_id = session.intake(title="Scoped derived artifacts", description="Keep derived data local to its worker.",
+                            paths=[source, other], categories=["crypto", "forensics"], max_actions=20)["run_id"]
+    scheduler = AgentScheduler(database, FakeHost(script={
+        role: lambda _assignment, _brief: {"state": "hang"}
+        for role in ("crypto-specialist", "forensics-specialist")
+    }, max_parallel=2))
+    scheduler.configure(global_slots=2, per_run_slots=2)
+    plan = scheduler.ledger.create_wave(run_id, mode="delegated")
+    by_role = {item["role"]: item for item in plan["assignments"]}
+    assignments = [by_role["crypto-specialist"], by_role["forensics-specialist"]]
+    plan["assignments"] = assignments
+    plan["decision"]["required_roles"] = [item["role"] for item in assignments]
+    names = session.context(run_id)["challenge"]["artifacts"]
+    assignments[0]["inputs"] = {"artifacts": [names[0]]}
+    assignments[1]["inputs"] = {"artifacts": [names[1]]}
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE ctf_agent_waves SET plan=? WHERE wave_id=?",
+                   (json.dumps(plan, sort_keys=True), plan["wave_id"]))
+    scheduler.enqueue(run_id, plan["wave_id"])
+    scheduler.dispatch(run_id)
+    started = {job["assignment_id"]: job for job in scheduler.jobs(run_id, plan["wave_id"])}
+    owner_assignment, other_assignment = assignments
+    owner = started[owner_assignment["assignment_id"]]
+    non_owner = started[other_assignment["assignment_id"]]
+
+    derived_result = _intent(scheduler, run_id, owner, {
+        "kind": "derive", "tool": "base64_decode", "artifact": names[0],
+    })
+    derived = derived_result["observation"]["artifact"]
+    updated_plan = scheduler.ledger._plan(run_id, plan["wave_id"])
+    updated_assignments = {item["assignment_id"]: item for item in updated_plan["assignments"]}
+    assert derived in scheduler.brief(run_id, updated_assignments[owner["assignment_id"]],
+                                      owner["attempt_id"])["artifacts"]
+    assert derived not in scheduler.brief(run_id, updated_assignments[non_owner["assignment_id"]],
+                                          non_owner["attempt_id"])["artifacts"]
+    with pytest.raises(ValueError, match="outside this assignment's scope"):
+        _intent(scheduler, run_id, non_owner, {"kind": "artifact", "tool": "text", "artifact": derived})
+
+    owner_observation = _intent(scheduler, run_id, owner, {
+        "kind": "artifact", "tool": "text", "artifact": derived,
+    })
+    other_observation = _intent(scheduler, run_id, non_owner, {
+        "kind": "artifact", "tool": "text", "artifact": names[1],
+    })
+    owner_report = {
+        "hypothesis": "The assigned decoded artifact contains the expected text.",
+        "evidence": "The assigned worker created and read the decoded artifact through bounded tools.",
+        "falsifier": "A different decoded representation would refute the hypothesis.",
+        "next_action": "Use the decoded content from this assignment only.",
+        "event_sequences": [derived_result["evidence_sequence"], owner_observation["evidence_sequence"]],
+        "artifact_refs": [names[0], derived], "status": "supported",
+    }
+    assert scheduler.complete(run_id, owner["assignment_id"], owner["attempt_id"], owner_report)["state"] == "completed"
+    other_report = {
+        "hypothesis": "The second assigned artifact has a separate representation.",
+        "evidence": "A bounded reader inspected the second assignment's own file.",
+        "falsifier": "Evidence from the other assignment would not support this hypothesis.",
+        "next_action": "Continue with the second assignment's registered file.",
+        "event_sequences": [other_observation["evidence_sequence"]],
+        "artifact_refs": [derived], "status": "inconclusive",
+    }
+    with pytest.raises(ValueError, match="outside this assignment's scope"):
+        scheduler.complete(run_id, non_owner["assignment_id"], non_owner["attempt_id"], other_report)
+    other_report["artifact_refs"] = [names[1]]
+    assert scheduler.complete(run_id, non_owner["assignment_id"], non_owner["attempt_id"],
+                               other_report)["state"] == "completed"
 
 
 def test_retest_needs_an_observation_from_a_different_action_and_is_limited(env):

@@ -18,6 +18,12 @@ outside every run's artifact root; only the controller-side evaluator loads it.
 The deterministic service model is fixed before measuring outcomes: each
 worker requires one fake-host poll per assigned model turn, regardless of how
 many artifacts it receives.
+The scheduler enforces each explicit `inputs.artifacts` assignment: only its
+listed artifact names appear in that worker's brief, artifact/derive/view
+intents outside the set are rejected, and reports cannot reference artifacts
+outside the set. A successful derived artifact is added only to the creating
+assignment's scope. The two-agent arm uses disjoint, registered subsets; the
+single-agent arm receives both artifacts.
 
 - **Single-agent baseline:** one generalized assignment decodes both artifacts
   sequentially, reserving two model turns and making two controller-mediated
@@ -61,9 +67,15 @@ Reproduction:
 
 ```text
 .venv/bin/pytest -ra tests/test_agent_benchmark.py
-1 passed in 2.57s
+1 passed in 2.40s
 .venv/bin/ruff check tests/test_agent_benchmark.py
 All checks passed!
+.venv/bin/pytest -ra tests/test_intent_identity.py tests/test_agent_benchmark.py tests/test_agent_orchestration.py
+31 passed in 4.19s
+.venv/bin/ruff check src/metis/core/agent_scheduler.py src/metis/core/ctf_orchestration.py tests/test_intent_identity.py tests/test_agent_benchmark.py
+All checks passed!
+.venv/bin/mypy src/metis
+Success: no issues found in 52 source files
 ```
 
 ## Limitations

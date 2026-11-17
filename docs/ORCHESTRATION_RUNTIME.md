@@ -31,6 +31,10 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - **delegated**: 2カテゴリ以上、または宣言/推定カテゴリ＋配布物2件以上のとき。2〜4件の異なる role。
   カテゴリの出所（declared / triage / default）と理由を `decision` に記録する。triage 推定は「未検証」と明記。
 - `--mode sequential|delegated` で上書きできる（旧動作の再現は `--mode delegated`）。
+- `assignment.inputs.artifacts` を明示すると、その割当の brief には許可された artifact 名だけを渡す。
+  `artifact / derive / view` intent と report の `artifact_refs` も同じ集合に制限し、範囲外は fail closed。
+  フィールド省略時は既存互換で run の artifact scope を使い、明示した空リストは artifact 権限なし。
+  成功した `derive` が生成した artifact だけは、その作成元 assignment の集合に追加する。
 - dispatch時の各assignment deadlineは、そのrunの現在の `seconds_remaining` で上限をかける。
   同一runの並列workerが個別deadlineによってrun全体のwall-clock期限を越えないようにする。
   Tool intentのaction数もrun単位で共有する。CodexCLI driverでは、実際のprovider呼出直前に
