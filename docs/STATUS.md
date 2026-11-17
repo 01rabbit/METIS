@@ -179,8 +179,11 @@ probe also compiled temporary CPU-only targets. The original embedded test
 run OOMed at both 512 MiB and 2 GiB before producing a stage-one shard. A
 compact-bucket Stage 1 prototype completed Stage 1a (84,148,224 candidates)
 but OOMed in Stage 1b at 2 GiB before writing a shard. This narrows the next
-memory target to Stage 1b's in-memory candidate accumulation; neither run is
-a passing reference vector. One full intent search in the isolated
+memory target to Stage 1b's in-memory candidate accumulation. A separate
+oracle-assisted `-only_emit_correct` self-test retained exactly one known
+candidate, validated its 18-byte shard, and peaked at 1,167,056,896 bytes;
+normal attack mode was unchanged and still has no passing resource result.
+Neither run is an independent reference vector. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
 300-second budget. Container creation, engine attach, and OOM inspection timeout

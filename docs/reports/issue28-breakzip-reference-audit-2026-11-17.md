@@ -98,6 +98,21 @@ experiment, but has not been implemented or validated. There is still no
 recovered key, and this upstream-authored embedded vector is not an independent
 acceptance vector. No #39 data was used; Issue #28 remains open.
 
+The expert-reviewed next experiment specialized only the upstream self-test's
+existing `-only_emit_correct` mode: Stage 1b continued its complete search, but
+retained a candidate only when `correct_candidate(*c, g)` matched the known
+embedded answer. It required exactly one retained candidate and kept the
+normal attack path unchanged. The same test then exited 0 in 8.25 seconds,
+reported exactly one correct candidate, and wrote `stage1.0` with a one-record
+little-endian count header and 18 total bytes. The cgroup peak was
+1,167,056,896 bytes (2 GiB cap), with no network or host mounts, using image
+`sha256:bd2742212e2f8c094f787fa421439e90dadfee8c5fecd4b478895523dbeb7133`
+on `linux/arm64`. This is oracle-assisted self-test evidence only: the normal
+attack path still accumulates all Stage 1b candidates in memory, so it does
+not establish the production resource bound or unblock #39. The output file
+was validated for its one-record count and serialized length; a full Stage 2
+and CPU Stage 3 recovery was not run.
+
 The inspected source also documents assumptions that must be resolved before
 an adapter can safely accept arbitrary METIS artifacts: stage-three code
 comments that the MITM structures support only two files, and stage-three
