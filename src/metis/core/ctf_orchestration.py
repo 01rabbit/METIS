@@ -128,7 +128,7 @@ class AgentLedger:
                 assignment_id TEXT NOT NULL, payload TEXT NOT NULL, action_key TEXT NOT NULL,
                 created REAL NOT NULL, UNIQUE(wave_id, assignment_id))""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(ctf_agent_reports)")}
-            for name in ("attempt_id", "action_identity"):
+            for name in ("attempt_id", "action_identity", "evidence_action_identity"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE ctf_agent_reports ADD COLUMN {name} TEXT")
 
@@ -205,7 +205,7 @@ class AgentLedger:
         allowed_artifacts = assigned_artifact_scope(assignment, declared)
         if allowed_artifacts is not None and set(parsed.artifact_refs) - allowed_artifacts:
             raise ValueError("report references artifacts outside this assignment's scope")
-        action_identity = None
+        proposed_identity = None
         if parsed.next_action_intent is not None:
             try:
                 proposed = ProposedAction.model_validate(parsed.next_action_intent)
@@ -224,19 +224,33 @@ class AgentLedger:
                     raise ValueError("next_action_intent references an undeclared artifact")
                 if allowed_artifacts is not None and proposed.artifact not in allowed_artifacts:
                     raise ValueError("next_action_intent artifact is outside this assignment's scope")
-            action_identity, _family = intent_identity(proposed.kind, proposed.tool, proposed.artifact,
-                                                        proposed.options, proposed.data,
-                                                        self.session.artifact_root(run_id))
-            if parsed.action_identity is not None and parsed.action_identity != action_identity:
+            proposed_identity, _family = intent_identity(proposed.kind, proposed.tool, proposed.artifact,
+                                                         proposed.options, proposed.data,
+                                                         self.session.artifact_root(run_id))
+            if parsed.action_identity is not None and parsed.action_identity != proposed_identity:
                 raise ValueError("action_identity must match next_action_intent")
         elif parsed.action_identity is not None:
             raise ValueError("action_identity requires a controller-checkable next_action_intent")
         action_key = hashlib.sha256(" ".join(values["next_action"].lower().split()).encode()).hexdigest()
         newest = max(sequences)
         with sqlite3.connect(self.database) as db:
-            if action_identity:
+            # A proposal is not proof that an operation actually ran. Only use its
+            # structured identity for stuckness when the report cites an observation
+            # produced by that exact controller-recorded action.
+            evidence_action_identity = None
+            if proposed_identity and db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_actions'").fetchone():
+                placeholders = ",".join("?" for _ in sequences)
+                matched = db.execute(
+                    f"SELECT 1 FROM agent_actions WHERE run_id=? AND identity=? "
+                    f"AND sequence IN ({placeholders}) LIMIT 1",
+                    (run_id, proposed_identity, *sequences),
+                ).fetchone()
+                if matched:
+                    evidence_action_identity = proposed_identity
+            if proposed_identity:
                 rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND action_identity=?",
-                                  (run_id, action_identity)).fetchall()
+                                  (run_id, proposed_identity)).fetchall()
             else:
                 rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND action_identity IS NULL "
                                   "AND action_key=?", (run_id, action_key)).fetchall()
@@ -247,10 +261,10 @@ class AgentLedger:
             payload = {**values, "status": status, "event_sequences": sequences,
                        "artifact_refs": parsed.artifact_refs, "schema_version": SCHEMA_VERSION}
             db.execute("""INSERT INTO ctf_agent_reports
-                (report_id,wave_id,run_id,assignment_id,payload,action_key,created,attempt_id,action_identity)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (report_id,wave_id,run_id,assignment_id,payload,action_key,created,attempt_id,action_identity,
+                 evidence_action_identity) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (report_id, wave_id, run_id, assignment_id, json.dumps(payload, sort_keys=True), action_key,
-                 time.time(), attempt_id, action_identity))
+                 time.time(), attempt_id, proposed_identity, evidence_action_identity))
         return {"report_id": report_id, "wave_id": wave_id, "assignment_id": assignment_id,
                 "stored": True, "candidate_stored": False}
 
@@ -282,7 +296,8 @@ class AgentLedger:
                 jobs = dict(db.execute("SELECT assignment_id, state FROM agent_jobs WHERE wave_id=?",
                                        (wave_id,)).fetchall())
             all_rows = db.execute(
-                "SELECT wave_id,payload,action_key,action_identity FROM ctf_agent_reports WHERE run_id=? ORDER BY created",
+                "SELECT wave_id,payload,action_key,evidence_action_identity FROM ctf_agent_reports "
+                "WHERE run_id=? ORDER BY created",
                 (run_id,),
             ).fetchall()
             wave_order = [row[0] for row in db.execute(

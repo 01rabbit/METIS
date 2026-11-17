@@ -1,5 +1,7 @@
 import pytest
 
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_orchestration import AgentLedger, plan_agent_wave
 
@@ -175,55 +177,98 @@ def test_synthesis_flags_repeated_next_action_across_waves(tmp_path):
     assert all(not item["stalled"] for item in moved["stuckness"]["repeated_actions"])
 
 
-@pytest.mark.parametrize("second_status, expected_stalled", [
-    ("inconclusive", True),
-    ("rejected", False),
+@pytest.mark.parametrize("second_data, second_status, expected_stalled", [
+    ("61 62", "inconclusive", True),
+    ("61 62", "rejected", False),
+    ("6163", "inconclusive", False),
 ])
 def test_synthesis_detects_controller_identity_across_paraphrased_proposals(
-        tmp_path, second_status, expected_stalled):
+        tmp_path, second_data, second_status, expected_stalled):
     database = tmp_path / "metis.sqlite"
     session = CodexSession(database)
     run_id = session.demo()[0]["run_id"]
-    events = session.store.read(run_id)
     ledger = AgentLedger(database)
-    first = ledger.create_wave(run_id, mode="delegated")
-    proposal = {"kind": "data", "tool": "hex_decode", "data": "6162", "artifact": None,
-                "options": {}, "new_evidence": []}
-    for index, assignment in enumerate(first["assignments"]):
+    scheduler = AgentScheduler(database, FakeHost())
+    scheduler.configure(global_slots=1, per_run_slots=1)
+
+    def run_wave(wave, data, status, description):
+        scheduler.enqueue(run_id, wave["wave_id"])
+        job = scheduler.dispatch(run_id)["started"][0]
+        intent = {"kind": "data", "tool": "hex_decode", "data": data}
+        observed = scheduler.intent(run_id, job["assignment_id"], job["attempt_id"], intent)
         report = {
             "hypothesis": "The supplied payload is hexadecimal text.",
-            "evidence": "The recorded text observation shows hexadecimal characters.",
+            "evidence": description,
             "falsifier": "A strict hexadecimal parse failure would reject this hypothesis.",
-            "next_action": ("Decode the payload as hex." if index == 0 else
-                            f"Inspect an independent representation layer {index}."),
-            "event_sequences": [events[0].sequence],
-            "status": "inconclusive",
+            "next_action": description,
+            "next_action_intent": intent,
+            "event_sequences": [observed["evidence_sequence"]],
+            "status": status,
         }
-        if index == 0:
-            report["next_action_intent"] = proposal
-        ledger.record_report(run_id, first["wave_id"], assignment["assignment_id"], report)
+        scheduler.complete(run_id, job["assignment_id"], job["attempt_id"], report)
+        scheduler.cancel(wave_id=wave["wave_id"], reason="unused synthetic assignments")
 
+    first = ledger.create_wave(run_id, mode="delegated")
+    run_wave(first, "6162", "inconclusive", "Decode the payload as hex.")
     second = ledger.create_wave(run_id, mode="delegated",
                                 reason="Use the latest event to recheck the same encoding hypothesis.")
-    for index, assignment in enumerate(second["assignments"]):
-        report = {
-            "hypothesis": "The supplied payload is hexadecimal text.",
-            "evidence": "A newer recorded event preserves the payload representation.",
-            "falsifier": "A strict hexadecimal parse failure would reject this hypothesis.",
-            "next_action": ("Apply hexadecimal decoding to the observed bytes." if index == 0 else
-                            f"Inspect a separate payload property {index}."),
-            "event_sequences": [events[1].sequence],
-            "status": second_status if index == 0 else "inconclusive",
-        }
-        if index == 0:
-            report["next_action_intent"] = {**proposal, "data": "61 62"}
-        ledger.record_report(run_id, second["wave_id"], assignment["assignment_id"], report)
+    run_wave(second, second_data, second_status, "Apply hexadecimal decoding to the observed bytes.")
 
     result = ledger.synthesize(run_id, second["wave_id"])
-    repeated = next(item for item in result["stuckness"]["repeated_actions"]
-                    if item["hypothesis"] == "The supplied payload is hexadecimal text.")
     assert result["stuckness"]["detected"] is expected_stalled
-    assert repeated["stalled"] is expected_stalled
+    if second_data == "61 62":
+        repeated = next(item for item in result["stuckness"]["repeated_actions"]
+                        if item["hypothesis"] == "The supplied payload is hexadecimal text.")
+        assert repeated["stalled"] is expected_stalled
+    else:
+        assert result["stuckness"]["repeated_actions"] == []
+
+
+def test_synthesis_does_not_trust_unexecuted_proposal_identity(tmp_path):
+    database = tmp_path / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.demo()[0]["run_id"]
+    initial_sequence = session.store.read(run_id)[0].sequence
+    ledger = AgentLedger(database)
+    scheduler = AgentScheduler(database, FakeHost())
+    scheduler.configure(global_slots=1, per_run_slots=1)
+    proposal = {"kind": "data", "tool": "hex_decode", "data": "6162"}
+
+    def report_wave(wave, executed, evidence_text, next_action, *, cited_sequence=None):
+        scheduler.enqueue(run_id, wave["wave_id"])
+        job = scheduler.dispatch(run_id)["started"][0]
+        observed = scheduler.intent(run_id, job["assignment_id"], job["attempt_id"], executed)
+        report = {
+            "hypothesis": "The supplied payload is hexadecimal text.",
+            "evidence": evidence_text,
+            "falsifier": "A strict hexadecimal parse failure would reject this hypothesis.",
+            "next_action": next_action,
+            "next_action_intent": proposal,
+            "event_sequences": [cited_sequence if cited_sequence is not None
+                                else observed["evidence_sequence"]],
+            "status": "inconclusive",
+        }
+        scheduler.complete(run_id, job["assignment_id"], job["attempt_id"], report)
+        scheduler.cancel(wave_id=wave["wave_id"], reason="unused synthetic assignments")
+        return observed["evidence_sequence"]
+
+    first = ledger.create_wave(run_id, mode="delegated")
+    first_sequence = report_wave(
+        first, {"kind": "data", "tool": "hex_decode", "data": "6162"},
+        "The initial metadata observation supports text decoding.", "Decode the supplied hex text.",
+        cited_sequence=initial_sequence,
+    )
+    second = ledger.create_wave(run_id, mode="delegated",
+                                reason="Use the newer decode result to test another representation.")
+    report_wave(
+        second, {"kind": "data", "tool": "base64_decode", "data": "YWI="},
+        "A newer base64 decode observation supports a representation comparison.",
+        "Apply hexadecimal decoding to the original payload.", cited_sequence=first_sequence,
+    )
+
+    result = ledger.synthesize(run_id, second["wave_id"])
+    assert result["stuckness"]["detected"] is False
+    assert result["stuckness"]["repeated_actions"] == []
 
 
 def test_report_cannot_supply_unbound_action_identity(tmp_path):

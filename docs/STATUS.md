@@ -71,9 +71,8 @@ three-decision/time limits. It scored
 first-action baseline, with paired bootstrap 95% interval [0.300, 0.633] for
 the solve-rate difference. The mock runtime now distinguishes parser rejection
 from non-text output consistently with the worker. This remains synthetic
-mechanism evidence; generalized hypothesis scoring, contradiction/stuckness
-handling, semantic repeat detection, diverse held-out tasks, and real-model
-comparison remain open. See
+mechanism evidence; broader semantic hypothesis and multi-step strategy
+handling, diverse held-out tasks, and real-model comparison remain open. See
 `docs/reports/issue5-adaptive-replanning-2026-11-17.md`.
 
 Final test, lint, type, build, bootstrap, and fresh-clone results for this
@@ -270,15 +269,19 @@ evidence, not model-generated research or held-out workflow performance. Issue
 
 Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
 normalized hypothesis and marks a conflict only when that same hypothesis has
-both outcomes. The count difference is not a confidence measure. Synthesis now
-also derives canonical identity for structured, bounded single-tool
-`next_action_intent` proposals, detecting equivalent requests despite wording
-or input-normalization changes; free-text reports retain exact normalized
+both outcomes. The count difference is not a confidence measure. Structured,
+bounded single-tool `next_action_intent` proposals are canonicalized; synthesis
+uses that identity for stuckness only when the report cites an observation
+sequence recorded for the same controller action. This detects equivalent
+single-tool requests despite wording or input-normalization changes without
+trusting a proposal hash on its own. Free-text reports retain exact normalized
 matching. The same status in adjacent waves signals a stall, and changing
 strategy clears it. Exact reused wave rationales are rejected. It does not
 infer paraphrased hypothesis equivalence, compare multi-step plans, or choose an
-alternative itself. Held-out evaluation and real-model baseline comparison
-remain open. Issue #5 stays open. See
+alternative itself. The independent review found the minimum synthetic gate
+defensible; current PR-head CI remains pending. Held-out evaluation and
+real-model baseline comparison remain open. Issue #5 stays open until the
+current head checks finish. See
 [`issue5-hypothesis-synthesis-2026-11-17.md`](reports/issue5-hypothesis-synthesis-2026-11-17.md).
 
 Untrusted challenge programs are not executed on the host; dynamic analysis
