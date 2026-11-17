@@ -172,6 +172,15 @@ not enforceable when usage is unknown, and a controlled real-model multi-agent
 vs single-agent benchmark remains outstanding. Issue #6 stays open; see
 [`issue6-model-turn-budget-2026-11-17.md`](reports/issue6-model-turn-budget-2026-11-17.md).
 
+Issue #7 now has a seeded declarative-workflow vertical slice: two bounded
+encoding families, a closed schema over existing artifact tools, a fixed
+no-network sandbox runner, and a controller-side digest check against a private
+oracle. The real-container integration test and five schema/reproducibility
+checks passed. This is deterministic fixture evidence, not model-generated
+research or held-out workflow performance; the runner returns a digest rather
+than model-consumable decoded output. Issue #7 remains open. See
+[`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).
+
 Untrusted challenge programs are not executed on the host; dynamic analysis
 needs a local container engine and the sandbox image. The bundled Dockerfile
 build itself was not run in validation because registries were unreachable
