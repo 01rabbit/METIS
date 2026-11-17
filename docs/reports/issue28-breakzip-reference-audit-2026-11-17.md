@@ -204,3 +204,56 @@ cryptanalytic validation. It does not implement shard streaming, persistent
 checkpoints, resume validation, cancellation, or a usable multi-stage data
 channel. Therefore it does not satisfy Issue #28's acceptance gates, and no
 change to the production worker or sandbox resource defaults is justified.
+
+#### Reproduction materials for count-only diagnostic
+
+The exact temporary source change is preserved in
+[`issue28-breakzip-countonly.patch`](issue28-breakzip-countonly.patch)
+(SHA-256 `ea38e73e404663b62e099838bc3a65c4328ca0a1b3110fc60acab23cc542b83c`).
+It applies to the public BreakZip source at commit
+`f2e30c525309c7eb60514ecfa42ec58a829d2b22`. The data-only source tarball
+used for the build, excluding `.git` and `third-party/`, had SHA-256
+`3498a97b58745108909a60a7423453cc5e9cfd7fe6d7cfd1e139687716d1e1f3`.
+The pinned image was
+`sha256:bd2742212e2f8c094f787fa421439e90dadfee8c5fecd4b478895523dbeb7133`
+(`linux/arm64`); its in-container compiler was GCC 12.2.
+
+The sandbox build request used `mode="script"`, `interpreter="sh"`,
+`timeout=300`, and `_profile="zipcrypto"`. The build script was:
+
+```sh
+set -eu
+mkdir -p /work/src
+tar -xzf "$METIS_TARGET" -C /work/src --strip-components=1
+python3 - <<'PY2'
+from pathlib import Path
+p=Path('/work/src/CMakeLists.txt')
+s=p.read_text().replace('project (breakzip CUDA CXX)','project (breakzip CXX)')
+s=s.replace('find_third_party_pkg(check)','')
+s=s.replace('SET(CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES src/cuda_common/inc /usr/local/cuda/include)','')
+p.write_text(s)
+p=Path('/work/src/src/CMakeLists.txt')
+s=p.read_text().replace('add_subdirectory(test)','').replace('add_subdirectory(gpu_stage3)','')
+p.write_text(s)
+PY2
+cmake -S /work/src -B /work/src/build.out -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+cmake --build /work/src/build.out --target mitm_stage1 -j2 >/dev/null 2>&1
+base64 -w 0 /work/src/build.out/src/mitm_stage1/mitm_stage1
+```
+
+The controller decoded that build artifact without executing it on the host,
+then intook it as a declared artifact and ran it in a second fresh sandbox
+request using `mode="run"`, `args=["--count_only=true", "--test_archive=0"]`,
+`timeout=300`, and the same `zipcrypto` profile and image. The returned stdout
+was exactly:
+
+```json
+{"ok":true,"stage1a_entries":84148224,"stage1b_candidates":20804384,"correct_matches":1,"serialized_candidate_bytes":420223720,"shards":21,"serialized_file_bytes":420223804}
+```
+
+The serializer stores each record as eight fixed bytes plus three bytes per
+`k20` value. The measured byte total therefore corresponds to 84,596,216
+aggregate `k20` values. The 21 shard headers add 84 bytes. These figures allow
+recomputation of the 420,223,804-byte total without retaining or exporting any
+candidate or key material. Reproduction still validates only an upstream
+self-test; it is not a Stay solve or an independent attack vector.
