@@ -532,7 +532,7 @@ class Sandbox:
                             created.args, created.returncode)
                         process = None
                     else:
-                        phase = "workload"
+                        phase = "engine-attach"
                         # `create` completes only after the named container exists.
                         # Starting that existing name avoids a cancel/create race.
                         process = subprocess.Popen(
@@ -547,6 +547,7 @@ class Sandbox:
                         self._remove_worker(name)
                         process.communicate()
                         raise
+                    phase = "workload-completed"
                 if _profile.startswith("zipcrypto"):
                     phase = "oom-inspection"
                     inspected = subprocess.run(
@@ -581,9 +582,8 @@ class Sandbox:
         except subprocess.TimeoutExpired:
             subprocess.run([self.engine, "rm", "-f", name], capture_output=True, timeout=30, check=False,
                            env=_engine_environment())
-            timed_out = phase == "workload"
-            result = {"ok": False, "error": "sandbox timeout", "timed_out": timed_out,
-                      "engine_timed_out": not timed_out, "failure_stage": phase}
+            result = {"ok": False, "error": "sandbox engine timeout", "timed_out": False,
+                      "engine_timed_out": True, "failure_stage": phase}
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
         finally:

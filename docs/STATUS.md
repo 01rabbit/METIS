@@ -145,9 +145,9 @@ exact head `9465732`). It reports a route-level `sandbox-oom` stage because star
 phases are not distinguished. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
-300-second budget. Container creation and OOM inspection timeout results now
-map to `worker_failed` with their infrastructure phase; only an in-container
-workload deadline maps to `work_exceeds_budget`. Fake-engine phase tests and
+300-second budget. Container creation, engine attach, and OOM inspection timeout
+results now map to `worker_failed` with their infrastructure phase; only the
+in-container supervisor's workload deadline maps to `work_exceeds_budget`. Fake-engine phase tests and
 real-container deadline/OOM tests pass. Stay recovery and production-profile 2 GiB candidate-search
 OOM classification remain unproven. The 2020 two-file attack's
 paper and legacy CUDA source were reviewed, not run. Docker-backed budget and

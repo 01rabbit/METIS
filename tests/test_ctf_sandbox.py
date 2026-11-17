@@ -158,8 +158,8 @@ def test_sandbox_reports_timeout_and_nonzero_exit(tmp_path, engine):
     assert failed["exit_code"] == 3 and failed["ok"] is False
 
 
-@pytest.mark.parametrize("phase", ["container-create", "oom-inspection"])
-def test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline(tmp_path, monkeypatch, phase):
+@pytest.mark.parametrize("phase", ["container-create", "engine-attach", "oom-inspection"])
+def test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline(tmp_path, monkeypatch, engine, phase):
     from metis.core import ctf_sandbox
     from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
 
@@ -168,19 +168,43 @@ def test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline(tmp_path,
     session = CodexSession(database)
     target = session.context(run_id)["challenge"]["artifacts"][0]
     original_run = ctf_sandbox.subprocess.run
+    original_popen = ctf_sandbox.subprocess.Popen
 
     def timeout_selected(command, *args, **kwargs):
-        if command[0] == "docker" and command[1] == ("create" if phase == "container-create" else "inspect"):
+        if command[0] == "docker" and (
+            (phase == "container-create" and command[1] == "create")
+            or (phase == "oom-inspection" and command[1] == "inspect")
+        ):
             raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
         return original_run(command, *args, **kwargs)
 
+    class StalledAttach:
+        def __init__(self, command):
+            self.args = command
+            self.returncode = -9
+            self.expired = False
+
+        def communicate(self, input=None, timeout=None):
+            if not self.expired:
+                self.expired = True
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            return b"", b""
+
+    def attach_selected(command, *args, **kwargs):
+        if phase == "engine-attach" and command[:3] == ["docker", "start", "--attach"]:
+            return StalledAttach(command)
+        return original_popen(command, *args, **kwargs)
+
     monkeypatch.setattr(ctf_sandbox.subprocess, "run", timeout_selected)
+    monkeypatch.setattr(ctf_sandbox.subprocess, "Popen", attach_selected)
     result = run_zipcrypto_attack(database, run_id, target, {
         "member": "known.txt", "plaintext_hex": "4142434445464748494a4b4c", "offset": 0, "seconds": 5,
     })
     assert result["found"] is False
     if phase == "container-create":
         assert result["reason"] == "worker_failed" and result["stage"] == "container-create"
+    elif phase == "engine-attach":
+        assert result["reason"] == "worker_failed" and result["stage"] == "engine-attach", result
     else:
         assert result["reason"] == "worker_failed" and result["stage"] == "oom-inspection"
 
