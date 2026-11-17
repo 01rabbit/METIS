@@ -43,9 +43,9 @@ critic roles. The Misc specialist completed a concise evidence report in three
 Codex calls, using two artifact intents. Artifact triage and independent critic
 both stopped with `policy_violation: Codex used tools sub_agent_attempt`; neither
 performed an intent or produced a report. The guard failed closed. A retry of
-the critic on the standard model did not use tools, but its report cited
-evidence sequences the controller rejected; after three corrections, the
-shared eight-call budget was exhausted. Synthesis returned
+the critic on the standard model did not use tools, but the controller rejected
+each report attempt with `event_sequences must reference observed run evidence`;
+after three corrections, the shared eight-call budget was exhausted. Synthesis returned
 `ready_for_synthesis: true` but `complete: false`, with the triage and critic
 assignments listed as ended without reports. It prohibited another wave because
 no open or contradicted hypothesis remained. No candidate was created. This is
