@@ -27,7 +27,7 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 - 実際の glibc（Debian、ctypes）の `rand()` の出力と、小さい種・大きい種の両方で一致した。移植の途中、`__srandom_r` の int32 の切り詰めを誤っていた不具合をこの照合で見つけて直した。
 - 実際の Info-ZIP zip 3.0（Debian glibc 2.41）で作った 7 メンバーの zip（`tests/fixtures/infozip-glibc-vector.zip`、パスワード `testpass`、内容は合成の乱数）で、種を 1.7 秒で復元した。予測した 70 バイトの乱数は、パスワードで 2 段の暗号化を戻した値とすべて一致した。
 - 既知平文攻撃: 60 バイトの既知平文で、正しい鍵を 145 秒・210 秒で復元した（15 ワーカー）。CI では、候補を絞ったパイプラインのテストのみを実行する。網羅的な探索は `METIS_TEST_SLOW=1` のときだけ実行する。
-- 2026-11-17 のslow testを決定的な合成ZIPへ拡張した。`METIS_TEST_SLOW=1 .venv/bin/python -m pytest -q tests/test_ctf_zipcrypto.py::test_full_known_plaintext_attack` は、8 workerで実候補探索から鍵を復元し、known/encoded両メンバーのCRC検証まで成功した。2 workerでは同じ300秒の予算内に回復できなかった。このslow試験はMETIS specialist intent経由の全探索ではない。
+- 2026-11-17 のslow testをseed付き合成ZIPへ拡張した。`METIS_TEST_SLOW=1 .venv/bin/python -m pytest -v tests/test_ctf_zipcrypto.py::test_full_known_plaintext_attack` は `1 passed in 17.05s`。8 workerで実候補探索から鍵を復元し、known/encoded両メンバーの復号内容とCRCを検証した。このslow試験はMETIS specialist intent経由の全探索ではない。初回の2-worker探索は300秒以内に完了しなかったが、当時はヘッダー乱数をseed固定していなかったため、速度比較の根拠にはしない。
 - 専門家 intent の合成テストは `zipcrypto_attack` → 同じ鍵で全メンバーを復号して CRC を検証 → encoded メンバーを `zipcrypto_decrypt` で導出 → XOR まで進む。これは真の key2 候補と decoys に縮小したテストで、探索空間全体の成功を示すものではない。実行: `.venv/bin/pytest tests/test_ctf_zipcrypto.py -q`。
 - 極小の wall-clock 予算で `work_exceeds_budget` と `z-reduction` 段階の理由コードを返すテストを追加した。
 - ksnctf #39: 種を 0.8 秒で復元した（7 メンバーすべて一致。`time ^ pid`）。鍵の復元には至らず、#39 は未解決のまま。

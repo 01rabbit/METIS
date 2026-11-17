@@ -9,6 +9,7 @@ The full Biham-Kocher search takes minutes; it runs when METIS_TEST_SLOW=1.
 """
 import json
 import os
+import random
 import struct
 import zipfile
 import zlib
@@ -27,13 +28,15 @@ GLIBC = {1: [138, 71, 48, 144, 184, 185, 40, 177, 62, 249, 177, 175],
          2147483648: [26, 181, 78, 101, 201, 156, 80, 64, 167, 12, 126, 87]}
 
 
-def _zipcrypto_archive(entries: dict[str, bytes], password: bytes, *, compress: bool = False) -> bytes:
+def _zipcrypto_archive(entries: dict[str, bytes], password: bytes, *, compress: bool = False,
+                       seed: int | None = None) -> bytes:
     """Minimal writer for traditional-encryption ZIPs (Python's zipfile can read but not write them)."""
+    random_bytes = random.Random(seed).randbytes if seed is not None else os.urandom
     out, central = bytearray(), bytearray()
     for name, body in entries.items():
         crc = zlib.crc32(body) & 0xFFFFFFFF
         payload = zlib.compress(body)[2:-4] if compress else body
-        header = os.urandom(10) + struct.pack("<H", crc >> 16)
+        header = random_bytes(10) + struct.pack("<H", crc >> 16)
         encrypted = zc.Keys.from_password(password).encrypt(header + payload)
         local = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 1, 8 if compress else 0, 0, 0, crc, len(encrypted),
                             len(body), len(name), 0) + name.encode()
@@ -134,7 +137,8 @@ def test_full_known_plaintext_attack():
     known = b"The quick brown fox jumps over the lazy dog. " * 2
     secret = b"independent member with a known ZipCrypto key"
     encoded = bytes(byte ^ 0x42 for byte in secret).hex().encode("ascii")
-    archive = _zipcrypto_archive({"known.txt": known, "encoded.txt": encoded}, password)
+    members = {"known.txt": known, "encoded.txt": encoded}
+    archive = _zipcrypto_archive(members, password, seed=0x28)
     entry = next(item for item in zc.members(archive) if item["name"] == "known.txt")
     ciphertext = zc.member_bytes(archive, entry)
     result = zc.known_plaintext_attack(ciphertext, known[:60], 12, extra=zc.check_bytes(entry), seconds=300,
@@ -142,9 +146,9 @@ def test_full_known_plaintext_attack():
     assert result["found"], result
     assert result["keys"] == zc.Keys.from_password(password).hex()
     recovered = zc.parse_keys(",".join(result["keys"][name] for name in ("x", "y", "z")))
-    for member in ("known.txt", "encoded.txt"):
+    for member, expected in members.items():
         decrypted = zc.decrypt_member(archive, member, recovered)
-        assert decrypted["crc_ok"]
+        assert decrypted["crc_ok"] and decrypted["plaintext"] == expected
 
 
 # -- METIS tool surface ----------------------------------------------------------------------------------
