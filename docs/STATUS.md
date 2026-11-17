@@ -118,7 +118,7 @@ failed closed after attempting a prohibited re-delegation tool; a bounded critic
 retry then exhausted the shared model-call cap after repeatedly citing evidence
 the controller rejected. Synthesis was ready but incomplete. This is a bounded
 real-model static-analysis trace, not a solve or a completed P4/P7 gate. Issue
-#5 and Issue #8 remain open.
+#5 is closed; Issue #8 remains open.
 
 Separately, Codex CLI 0.169.0 completed one generated local direct-answer fixture
 through the `CodexProvider`; the private external fixture oracle independently
@@ -458,10 +458,12 @@ session controller: cancelled runs refuse enqueue, retry, dispatch, model-turn
 reservation, new intents, candidate handoff and late reports. In-flight Codex
 processes poll the run stop state; already reserved turns remain charged, and
 an unconfirmed host stop keeps its slot as `unknown`. A stale completion race
-now preserves terminal job states. The focused orchestration suites pass 97
-tests. After the reserved-job cancellation races and resource-eligibility
-regressions, the whole suite passed `576 passed, 17 skipped in 91.67s` with the pinned arm64 sandbox
-image and the registered official #39 ZIP. Remaining skips require Linux
+now preserves terminal job states. Assignment/wave cancellation is fenced
+between reservation and spawn for fresh and retry attempts; deadline timeout
+holds the same lock through confirmed stop and terminal timeout, while expired
+reservations are refused before spawn. The focused orchestration suites pass
+103 tests. The whole suite passed `564 passed, 31 skipped in 81.50s` on this
+host. Remaining skips require Linux
 bubblewrap/seccomp, browser dependencies, the #33 PCAP, slow exhaustive search,
 or a separate runner/runtime image. Ruff and mypy pass on all changed source
 modules. See

@@ -270,6 +270,10 @@ class AgentScheduler:
                 if (current is None or current["attempt_id"] != job["attempt_id"]
                         or current["state"] != "running"):
                     continue  # Assignment/wave cancellation may have ended a reserved attempt.
+                if current["deadline"] and time.time() > current["deadline"]:
+                    self._end(job["assignment_id"], job["attempt_id"], "timed_out",
+                              "deadline exceeded before host spawn")
+                    continue
                 if self.run_cancelled(job["run_id"]):
                     # Reservation alone starts no host work; this attempt is safe to end.
                     self._end(job["assignment_id"], job["attempt_id"], "cancelled", "run cancelled before spawn")
@@ -619,11 +623,13 @@ class AgentScheduler:
             if job["state"] != "running":
                 continue
             if job["deadline"] and now > job["deadline"]:
-                confirmed = self._stop(job)
                 with run_lock(self.database, job["run_id"]):
                     current = next((item for item in self.jobs(job["run_id"])
                                     if item["assignment_id"] == job["assignment_id"]), None)
-                    if current and current["attempt_id"] == job["attempt_id"] and current["state"] == "running":
+                    if (current and current["attempt_id"] == job["attempt_id"]
+                            and current["state"] == "running" and current["deadline"]
+                            and time.time() > current["deadline"]):
+                        confirmed = self._stop(current)
                         self.session.cancel_active_operation(job["run_id"], job["assignment_id"], job["attempt_id"])
                         changes.append(self._end(job["assignment_id"], job["attempt_id"],
                                                  "timed_out" if confirmed else "unknown", "deadline exceeded"))

@@ -357,6 +357,107 @@ def test_assignment_cancel_after_reservation_prevents_host_spawn(state, tmp_path
     assert scheduler.host.cancelled == []  # Nothing had been launched for the cancelled jobs.
 
 
+def test_dispatch_refuses_reservation_that_expires_before_host_spawn(state, tmp_path, monkeypatch):
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    reserve = scheduler._reserve_dispatch_jobs
+
+    def reserve_then_expire(*args):
+        result = reserve(*args)
+        with sqlite3.connect(state) as db:
+            db.execute("UPDATE agent_jobs SET deadline=? WHERE run_id=? AND state='running'",
+                       (time.time() - 1, run_id))
+        return result
+
+    monkeypatch.setattr(scheduler, "_reserve_dispatch_jobs", reserve_then_expire)
+    assert scheduler.dispatch(run_id)["started"] == []
+    assert scheduler.host.spawned == []
+    assert {job["state"] for job in scheduler.jobs(run_id) if job["attempt_id"]} == {"timed_out"}
+
+
+def test_tick_timeout_holds_run_lock_from_stop_through_terminal_update(state, tmp_path, monkeypatch):
+    import metis.core.agent_scheduler as scheduler_module
+
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    scheduler.configure(per_run_slots=1)
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    reserved = threading.Event()
+    dispatch_proceed = threading.Event()
+    spawn_lock_requested = threading.Event()
+    stopped = threading.Event()
+    timeout_proceed = threading.Event()
+    dispatch_finished = threading.Event()
+    errors: list[BaseException] = []
+    results: list[Any] = []
+    original_lock = scheduler_module.run_lock
+    original_stop = scheduler._stop
+    paused = False
+
+    @contextmanager
+    def pause_dispatch_after_reservation(database, identity, **kwargs):
+        nonlocal paused
+        is_dispatch = threading.current_thread().name == "dispatch-timeout-race"
+        if is_dispatch and paused:
+            spawn_lock_requested.set()
+        with original_lock(database, identity, **kwargs):
+            yield
+        if is_dispatch and not paused:
+            paused = True
+            reserved.set()
+            assert dispatch_proceed.wait(5)
+
+    def pause_timeout_after_stop(job):
+        confirmed = original_stop(job)
+        stopped.set()
+        assert timeout_proceed.wait(5)
+        return confirmed
+
+    monkeypatch.setattr(scheduler_module, "run_lock", pause_dispatch_after_reservation)
+    monkeypatch.setattr(scheduler, "_stop", pause_timeout_after_stop)
+
+    def dispatch():
+        try:
+            results.append(scheduler.dispatch(run_id))
+        except Exception as exc:  # noqa: BLE001 -- capture worker-thread assertions for parent checks
+            errors.append(exc)
+        finally:
+            dispatch_finished.set()
+
+    def tick():
+        try:
+            scheduler.tick()
+        except Exception as exc:  # noqa: BLE001 -- capture worker-thread assertions for parent checks
+            errors.append(exc)
+
+    dispatcher = threading.Thread(target=dispatch, name="dispatch-timeout-race")
+    ticker = threading.Thread(target=tick, name="tick-timeout-race")
+    dispatcher.start()
+    try:
+        assert reserved.wait(2)
+        with sqlite3.connect(state) as db:
+            db.execute("UPDATE agent_jobs SET deadline=? WHERE run_id=? AND state='running'",
+                       (time.time() - 1, run_id))
+        ticker.start()
+        assert stopped.wait(2)
+        dispatch_proceed.set()
+        assert spawn_lock_requested.wait(2)
+        assert not dispatch_finished.wait(0.1)
+        assert scheduler.host.spawned == []
+    finally:
+        dispatch_proceed.set()
+        timeout_proceed.set()
+        dispatcher.join(5)
+        if ticker.ident is not None:
+            ticker.join(5)
+    assert not dispatcher.is_alive() and not ticker.is_alive() and not errors
+    assert results[0]["started"] == [] and scheduler.host.spawned == []
+    assert {job["state"] for job in scheduler.jobs(run_id) if job["attempt_id"]} == {"timed_out"}
+
+
 def test_cancelled_session_refuses_new_model_turn_without_refunding_reserved_turn(state, tmp_path):
     run_id = _run(state, tmp_path)
     scheduler = AgentScheduler(state, FakeHost(script={role: (lambda a, b: {"state": "hang"})
