@@ -20,6 +20,7 @@ import json
 import os
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -516,9 +517,10 @@ class AgentScheduler:
         return {"assignment_id": assignment_id, "state": "queued", "next_attempt": job["attempt_no"] + 1}
 
     def tick(self) -> list[dict[str, Any]]:
-        """Enforce deadlines, collect finished host jobs and recover expired leases."""
+        """Enforce deadlines, collect finished jobs, recover expired leases."""
         changes = []
         now = time.time()
+        poll_jobs = []
         for job in self.jobs():
             if job["state"] != "running":
                 continue
@@ -532,16 +534,32 @@ class AgentScheduler:
                         changes.append(self._end(job["assignment_id"], job["attempt_id"],
                                                  "timed_out" if confirmed else "unknown", "deadline exceeded"))
                 continue
-            if not job["host_job_id"]:
-                continue
-            try:
-                status = self.host.poll(job["host_job_id"])
-            except Exception:  # noqa: BLE001
-                status = {"state": "unknown"}
+            if job["host_job_id"]:
+                poll_jobs.append(job)
+
+        # Poll independent jobs concurrently, bounded by configured slots and
+        # the execution host's declared parallelism. State changes remain below
+        # on the controller thread, after every poll has returned.
+        statuses: dict[str, dict[str, Any]] = {}
+        if poll_jobs:
+            host_limit = self.host.capabilities().max_parallel
+            workers = max(1, min(len(poll_jobs), self.config()["global_slots"], host_limit))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="metis-poll") as executor:
+                futures = {executor.submit(self.host.poll, job["host_job_id"]): job for job in poll_jobs}
+                for future in as_completed(futures):
+                    job = futures[future]
+                    try:
+                        statuses[job["assignment_id"]] = future.result()
+                    except Exception:  # noqa: BLE001 -- host transport failures become unknown
+                        statuses[job["assignment_id"]] = {"state": "unknown"}
+
+        for job in poll_jobs:
+            status = statuses[job["assignment_id"]]
             if status.get("usage"):
                 with self._db() as db:
-                    db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id=?",
-                               (json.dumps(status["usage"]), job["assignment_id"]))
+                    db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id=? AND attempt_id=? "
+                               "AND state='running'",
+                               (json.dumps(status["usage"]), job["assignment_id"], job["attempt_id"]))
             if status["state"] == "finished":
                 output = self.host.collect(job["host_job_id"])
                 if output is None:

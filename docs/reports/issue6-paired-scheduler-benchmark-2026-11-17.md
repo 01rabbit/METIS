@@ -56,12 +56,10 @@ persisted events and reports.
 The scheduler model completes all tasks in both arms. It reduces the simulated
 serial provider rounds by 50% because the two specialist assignments are
 dispatched in one batch. These rounds are deterministic `FakeHost` poll units,
-not measured elapsed seconds. Under the stated one-poll-per-turn model,
-`AgentScheduler.tick` polls the fake workers
-serially, so this does not measure real tool-call concurrency or latency. The
-workers use a fixed deterministic policy, not model output, and therefore
-cannot show a model solve-rate advantage. A confidence
-interval would be misleading for this fixed latency model, so none is reported.
+not measured elapsed seconds. The workers use a fixed deterministic policy,
+not model output, and therefore cannot show a model solve-rate advantage. A
+confidence interval would be misleading for this fixed latency model, so none
+is reported.
 
 Reproduction:
 
@@ -98,6 +96,34 @@ This establishes a narrow scheduler/concurrency mechanism result with matched
 turn and tool-action caps. It does not establish that specialist models solve
 more tasks, use fewer tokens, or have lower real-world latency than a single
 agent. BridgeHost-native calls remain outside METIS's call reservation
-boundary. The fake workers' scheduler calls are advanced serially within each
-tick, and a controlled matched-budget comparison with a real model is still needed;
-Issue #6 remains open.
+boundary. A controlled matched-budget comparison with a real model is still
+needed; Issue #6 remains open.
+
+## Controller poll-concurrency increment
+
+`AgentScheduler.tick()` now polls independent running host jobs concurrently,
+with worker count bounded by the configured global slot count and the host's
+declared `max_parallel` (validated as 1–16). Poll results are applied serially
+on the controller thread. Usage writes are guarded by the current assignment
+attempt and running state, so a late poll cannot overwrite a retried job's
+usage.
+
+A barrier-backed fake host test confirms that two polls overlap when two host
+slots are declared, while dispatch leaves the remaining jobs queued. This proves
+bounded concurrent polling in the controller. It is not a wall-clock benchmark
+of a real host and does not show improved solve rate, model latency, or cost.
+Focused validation:
+
+```text
+.venv/bin/pytest -ra tests/test_agent_orchestration.py tests/test_agent_autopilot.py tests/test_agent_benchmark.py
+30 passed in 7.00s
+.venv/bin/ruff check src/metis/core/agent_scheduler.py tests/test_agent_orchestration.py
+All checks passed!
+.venv/bin/mypy src/metis
+Success: no issues found in 52 source files
+.venv/bin/pytest -ra
+469 passed, 29 skipped in 72.60s
+```
+The full-suite skips require Linux namespace/seccomp features, external browser
+or KSNCTF distributions, or configured isolated container images; the complete
+skip reasons are printed by pytest.

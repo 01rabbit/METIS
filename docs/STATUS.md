@@ -225,9 +225,13 @@ canceled and late results are discarded. Regression tests cover concurrent
 turn-cap admission, observation attribution, cancellation and deadline races, and
 a real Docker integration cancels a running long-lived sandbox worker. The latest
 focused suite passed 122 tests with seven
-environment-dependent skips; Ruff and mypy passed. The scheduler polls workers
-serially, so the benchmark
-does not measure real elapsed time, concurrent tool execution, or model reasoning.
+environment-dependent skips; Ruff and mypy passed. `AgentScheduler.tick()` now
+polls independent host jobs concurrently within the global and host parallel
+limits; a barrier-backed regression proves two declared host slots overlap.
+Focused orchestration/autopilot/benchmark validation passed 30 tests, Ruff, and
+mypy. The full local suite passed `469 passed, 29 skipped`; skips require
+platform features, external distributions, or configured integration images.
+This mechanism test does not measure real host latency or model reasoning.
 A real-model paired pilot then ran one seeded task through both arms using Codex
 CLI 0.169.0:
 both candidates verified, while the two-specialist arm took 21.83s vs 20.95s,

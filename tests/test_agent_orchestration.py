@@ -11,7 +11,7 @@ import pytest
 
 from metis.cli import main
 from metis.core.agent_contracts import PROFILES, decide_wave, select_model
-from metis.core.agent_host import FakeHost, SequentialHost
+from metis.core.agent_host import FakeHost, HostCapabilities, SequentialHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_contest import ContestBoard
@@ -92,6 +92,15 @@ def test_model_selection_uses_only_the_active_catalog():
     escalated = select_model("standard", catalog + [{"id": "host-big", "tier": "strong"}], escalate=True,
                              escalation_reason="bounded attempt inconclusive")
     assert escalated.model == "host-big" and escalated.escalated and escalated.usage_known is False
+
+
+def test_host_parallel_capacity_must_be_positive_and_bounded():
+    with pytest.raises(ValueError):
+        HostCapabilities(name="bad", can_spawn=True, max_parallel=0, can_send=False,
+                         cancel_confirmed=True, reports_models=False, reports_usage=False)
+    with pytest.raises(ValueError):
+        HostCapabilities(name="bad", can_spawn=True, max_parallel=17, can_send=False,
+                         cancel_confirmed=True, reports_models=False, reports_usage=False)
 
 
 # -- P3 scheduler ----------------------------------------------------------------------------
@@ -218,6 +227,48 @@ def test_fake_executor_completes_and_failures_release_slots(state, tmp_path):
     synthesis = AgentLedger(state).synthesize(run_id, wave["wave_id"])
     assert not synthesis["complete"]  # failures are not reports
     assert roles and synthesis["decision"]["ended_without_report"]
+
+
+def test_scheduler_polls_host_jobs_concurrently_within_host_limit(state, tmp_path):
+    class BarrierPollingHost(FakeHost):
+        def __init__(self):
+            super().__init__(script={role: (lambda a, b: {"state": "hang"}) for role in PROFILES},
+                             max_parallel=2)
+            self.poll_barrier = threading.Barrier(2)
+            self.poll_lock = threading.Lock()
+            self.poll_active = 0
+            self.max_poll_active = 0
+            self.barrier_joined = 0
+
+        def poll(self, job_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
+            with self.poll_lock:
+                self.poll_active += 1
+                self.max_poll_active = max(self.max_poll_active, self.poll_active)
+            try:
+                self.poll_barrier.wait(timeout=1.0)
+                with self.poll_lock:
+                    self.barrier_joined += 1
+                return super().poll(job_id, timeout=timeout)
+            except threading.BrokenBarrierError:
+                return {"state": "unknown"}
+            finally:
+                with self.poll_lock:
+                    self.poll_active -= 1
+
+    run_id = _run(state, tmp_path)
+    wave = AgentLedger(state).create_wave(run_id)
+    host = BarrierPollingHost()
+    scheduler = AgentScheduler(state, host)
+    scheduler.configure(global_slots=4, per_run_slots=4)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    started = scheduler.dispatch(run_id)["started"]
+    assert len(started) == 2  # The host's declared parallel cap is two.
+
+    assert scheduler.tick() == []
+    assert host.max_poll_active == 2 and host.barrier_joined == 2
+    jobs = {job["assignment_id"]: job["state"] for job in scheduler.jobs(run_id, wave["wave_id"])}
+    assert all(jobs[item["assignment_id"]] == "running" for item in started)
+    assert sum(state == "queued" for state in jobs.values()) == len(jobs) - len(started)
 
 
 def test_deadlines_turns_and_stale_attempts(state, tmp_path):
