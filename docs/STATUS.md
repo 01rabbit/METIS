@@ -172,15 +172,19 @@ ZipCrypto candidate search reaching the limit. The final listed #28 resource
 acceptance item is now met: the real-worker deadline and production-profile
 synthetic cgroup OOM tests return bounded reason codes and clean up. All three
 listed acceptance checkboxes are checked; the Issue remains open because Stay
-key recovery and ksnctf #39 remain unresolved. One full intent search in the isolated
+key recovery and ksnctf #39 remain unresolved. A bounded upstream reference
+probe also compiled the temporary CPU-only targets, but the embedded test run
+OOMed at both 512 MiB and 2 GiB before producing a stage-one shard; this is not
+a passing reference vector. One full intent search in the isolated
 route recovered keys, checked both members' plaintext and CRC, then decrypted
 and XORed (`1 passed in 34.27s`); a different synthetic input exceeded its
 300-second budget. Container creation, engine attach, and OOM inspection timeout
 results now map to `worker_failed` with their infrastructure phase; only the
 in-container supervisor's workload deadline maps to `work_exceeds_budget`. Fake-engine phase tests and
 real-container deadline/OOM tests pass. Stay recovery and natural candidate-search OOM
-remain unproven. The 2020 two-file attack's
-paper and legacy CUDA source were reviewed, not run. Docker-backed budget and
+remain unproven. The 2020 two-file attack's paper was reviewed; legacy CPU code
+was compiled and attempted only in the bounded temporary probe documented in
+`docs/reports/issue28-breakzip-reference-audit-2026-11-17.md`. Docker-backed budget and
 full-intent integration checks now run in a dedicated GitHub Actions job.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.

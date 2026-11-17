@@ -38,12 +38,44 @@ three through CUDA. The `cpu_stage3.cpp` translation unit includes
 functions when `__CUDACC__` is not defined. The CPU route is therefore present
 in source; the earlier statement in this audit that this file only supplied a
 helper and `main` was incorrect. The root CMake project still declares CUDA as
-a required project language, and no CPU-only build or recovered-key run has
-been performed, so the practical availability of the target remains
-unverified. The shown normal run script invokes `cuda_stage3`. The existing
+a required project language. The practical upstream CPU-only build remains
+unverified; the bounded probe below used a temporary CMake rewrite. No
+recovered-key run has been performed. The shown normal run script invokes
+`cuda_stage3`. The existing
 stage shard files are useful intermediates, but the scripts do not define a
 durable checkpoint manifest, atomic checkpoint protocol, resume validation,
 cancellation contract, or bounded progress/reason-code interface.
+
+## Bounded CPU build probe (2026-11-17)
+
+To check whether the existing host CPU code can at least compile without a
+CUDA toolchain, the Git-tracked upstream source was copied into a temporary
+no-network METIS sandbox on `linux/arm64`. The temporary CMake configuration
+removed the CUDA project-language requirement and the unavailable Check-based
+test target, and selected `cpu_stage3` with the existing stage-one and stage-two
+targets. This was a local probe only; it did not alter or validate an upstream
+release configuration. Commit `f2e30c525309c7eb60514ecfa42ec58a829d2b22`,
+source archive SHA-256
+`07f98af2fc96886a5fff975fa7a40e6ee8631a5f78cf4e413be52edca9fc4abb`, and
+sandbox image digest
+`sha256:fcb7943910b387fb0f441b5d35c97c1b52eee7e98bd56527e4baa997efd0d16f`
+are recorded for this probe.
+
+All three targets compiled successfully with GCC 12.2 on Debian Bookworm for
+`linux/arm64`. The next step ran BreakZip's own embedded two-file test archive
+with `-only_emit_correct`. It exhausted the sandbox's 2 GiB memory limit during
+stage one (container reported OOM, exit 247) in 5.74 seconds. No stage-one
+shard, later stage, or recovered key was produced. Retrying at the generic
+512 MiB limit also OOMed, so the higher-limit attempt did not change the
+outcome. This is compile evidence and an observed resource failure, not a
+passing synthetic-vector test or proof that a 2 GiB/30-minute adapter meets the
+issue's acceptance conditions. The embedded vector is upstream-authored; it is
+not an independently generated vector. The #39 archive was not present and no
+challenge data was used.
+
+The configured limits constrain the sandbox, but source-level memory bounding,
+streaming/shard design, checkpointing, cancellation/progress, and a tractable
+independent vector remain unresolved. Keep Issue #28 open.
 
 The inspected source also documents assumptions that must be resolved before
 an adapter can safely accept arbitrary METIS artifacts: stage-three code
