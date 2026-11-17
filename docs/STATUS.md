@@ -100,7 +100,8 @@ test covers recovered-key decryption with CRC checks for every member, then XOR,
 using a reduced candidate set. A separate opt-in slow test now confirms full
 Biham–Kocher candidate search and all-member CRC validation on a synthetic ZIP
 (8 workers); 2 workers did not recover within the 300-second budget. Wall-time
-exhaustion has a tested reason code. Full-search specialist-intent coverage, an
+exhaustion has a tested reason code. The 2-worker observation used unseeded
+header bytes and is not treated as a comparable performance result. Full-search specialist-intent coverage, an
 OS-enforced memory ceiling, and Stay key recovery remain incomplete; the 2020
 two-file attack's paper and legacy CUDA source were reviewed, not run.
 See `docs/reports/issue28-zipcrypto-2026-11-16.md` and
