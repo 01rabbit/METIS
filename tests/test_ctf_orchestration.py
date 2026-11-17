@@ -113,6 +113,54 @@ def test_unrelated_supported_and_rejected_hypotheses_are_not_conflicted(tmp_path
     assert "no open or contradicted hypothesis" in result["decision"]["new_wave"]["blocked_by"]
 
 
+def test_synthesis_flags_repeated_next_action_across_waves(tmp_path):
+    database = tmp_path / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.demo()[0]["run_id"]
+    events = session.store.read(run_id)
+    ledger = AgentLedger(database)
+    first = ledger.create_wave(run_id, mode="delegated")
+    repeated_action = "Inspect decoder padding at the declared offset."
+    for index, assignment in enumerate(first["assignments"]):
+        ledger.record_report(run_id, first["wave_id"], assignment["assignment_id"], {
+            "hypothesis": f"Encoding hypothesis {index} has not been falsified.",
+            "evidence": "The declared input is a bounded local fixture.",
+            "falsifier": "A strict parser rejection falsifies this decoder hypothesis.",
+            "next_action": repeated_action if index == 0 else f"Inspect representation layer {index}.",
+            "event_sequences": [events[0].sequence],
+            "status": "inconclusive",
+        })
+    second = ledger.create_wave(run_id, mode="delegated",
+                                reason="Retest decoder after the new parser observation.")
+    assignment = second["assignments"][0]
+    ledger.record_report(run_id, second["wave_id"], assignment["assignment_id"], {
+        "hypothesis": "Encoding hypothesis 0 has not been falsified.",
+        "evidence": "The parser feedback event is now present in the run ledger.",
+        "falsifier": "A strict parser rejection falsifies this decoder hypothesis.",
+        "next_action": repeated_action,
+        "event_sequences": [events[1].sequence],
+        "status": "inconclusive",
+    })
+    result = ledger.synthesize(run_id, second["wave_id"])
+    assert result["stuckness"]["detected"] is True
+    assert result["stuckness"]["repeated_actions"] == [{
+        "action": repeated_action, "hypothesis": "Encoding hypothesis 0 has not been falsified.",
+        "wave_count": 2, "stalled": True, "statuses": ["inconclusive"],
+    }]
+    for index, extra_assignment in enumerate(second["assignments"][1:], 1):
+        ledger.record_report(run_id, second["wave_id"], extra_assignment["assignment_id"], {
+            "hypothesis": f"Alternative representation hypothesis {index} remains open.",
+            "evidence": "The next event records a distinct local observation.",
+            "falsifier": "A strict decoder rejection would falsify this hypothesis.",
+            "next_action": f"Inspect alternative representation layer {index}.",
+            "event_sequences": [events[2].sequence],
+            "status": "inconclusive",
+        })
+    with pytest.raises(ValueError, match="distinct reason"):
+        ledger.create_wave(run_id, mode="delegated",
+                           reason="Retest decoder after the new parser observation.")
+
+
 def test_agent_reports_reject_unknown_evidence_duplicates_and_flags(tmp_path):
     database = tmp_path / "metis.sqlite"
     session = CodexSession(database)

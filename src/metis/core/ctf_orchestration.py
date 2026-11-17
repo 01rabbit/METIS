@@ -127,6 +127,13 @@ class AgentLedger:
             if not reason or len(reason.strip()) < 10:
                 raise ValueError("a new wave needs --reason naming the unresolved, different hypothesis")
             abstract_text(reason)
+            normalized_reason = " ".join(reason.casefold().split())
+            with sqlite3.connect(self.database) as db:
+                prior_plans = [json.loads(row[0]) for row in db.execute(
+                    "SELECT plan FROM ctf_agent_waves WHERE run_id=?", (run_id,)).fetchall()]
+            if any(" ".join(str(plan.get("reason", "")).casefold().split()) == normalized_reason
+                   for plan in prior_plans):
+                raise ValueError("a new wave needs a distinct reason; this rationale was already used")
         plan = plan_agent_wave(context, force_mode=mode)
         wave_id = uuid4().hex
         plan["wave_id"] = wave_id
@@ -217,6 +224,10 @@ class AgentLedger:
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_jobs'").fetchone():
                 jobs = dict(db.execute("SELECT assignment_id, state FROM agent_jobs WHERE wave_id=?",
                                        (wave_id,)).fetchall())
+            all_rows = db.execute(
+                "SELECT wave_id,payload,action_key FROM ctf_agent_reports WHERE run_id=? ORDER BY created",
+                (run_id,),
+            ).fetchall()
         reports = [{"report_id": identity, "assignment_id": assignment,
                     **json.loads(payload)} for identity, assignment, payload in rows]
         expected = {item["assignment_id"] for item in plan["assignments"]}
@@ -245,6 +256,28 @@ class AgentLedger:
              "contradicted": bool(group["supported"] and group["rejected"])}
             for key, group in sorted(grouped.items())
         ]
+        strategy_history: dict[tuple[str, str], dict[str, Any]] = {}
+        for prior_wave_id, payload, action_key in all_rows:
+            if action_key is None:
+                continue
+            report = json.loads(payload)
+            hypothesis_key = " ".join(report["hypothesis"].casefold().split())
+            history = strategy_history.setdefault((action_key, hypothesis_key), {
+                "action": report["next_action"], "hypothesis": report["hypothesis"],
+                "waves": set(), "statuses": set(),
+            })
+            history["waves"].add(prior_wave_id)
+            history["statuses"].add(report["status"])
+        repeated_actions = [
+            {"action": history["action"], "hypothesis": history["hypothesis"],
+             "wave_count": len(history["waves"]), "stalled": len(history["statuses"]) == 1,
+             "statuses": sorted(history["statuses"])}
+            for _key, history in sorted(strategy_history.items()) if len(history["waves"]) > 1
+        ]
+        stuck = any(item["stalled"] for item in repeated_actions)
+        stuckness = {"detected": stuck, "repeated_actions": repeated_actions,
+                     "rule": "same normalized action and hypothesis with unchanged status across waves",
+                     "recommendation": "select a distinct evidence-backed strategy" if stuck else None}
         contradicted_hypotheses = [item for item in hypothesis_scores if item["contradicted"]]
         contradiction_keys = {" ".join(item["hypothesis"].casefold().split())
                               for item in contradicted_hypotheses}
@@ -266,6 +299,7 @@ class AgentLedger:
             "supported_hypotheses": [item["hypothesis"] for item in supported],
             "hypothesis_scores": hypothesis_scores,
             "contradicted_hypotheses": contradicted_hypotheses,
+            "stuckness": stuckness,
             "contradictions": [item["falsifier"] for item in reports
                                if item["status"] == "rejected"
                                and " ".join(item["hypothesis"].casefold().split()) in contradiction_keys],
