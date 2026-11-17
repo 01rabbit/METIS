@@ -22,12 +22,12 @@
 .venv/bin/pytest -o addopts='' -q tests/test_agent_orchestration.py tests/test_codex_specialist.py tests/test_agent_autopilot.py tests/test_intent_identity.py tests/test_agent_benchmark.py
 ```
 
-97件すべて成功、exit code 0。分割取得した出力を連結:
+101件すべて成功、exit code 0。分割取得した出力を連結:
 
 ```text
-........................................................................ [ 74%]
-.........................                                                [100%]
-97 passed in 14.84s
+........................................................................ [ 71%]
+.............................                                            [100%]
+101 passed in 15.91s
 ```
 
 新しい回帰検査は、取消後のrun指定/global dispatch、enqueue/retry拒否、予約後spawn前の
@@ -55,7 +55,14 @@ assignment取消ではno-opとなる。追加検査はexit code 0。
 run取消チェックを通ることを確認した。`complete` の既存回帰検査に加え、取消後かつ
 tick前のrunning jobへ直接intent/candidateを渡す試験を追加した。intentは実行関数を
 呼ばず、action予約・intent開始記録・turn消費を増やさない。candidateはprivate file・
-database行・受信記録を作らない。上記97件に含めて成功している。
+database行・受信記録を作らない。上記101件に含めて成功している。
+
+slot予約後・host起動前のassignment/wave取消もrun lock解放後のbarrierで検査した。
+dispatchはhost起動lock内でattempt一致とrunning状態を再確認し、取消済みattemptを
+起動しない。`_stop` は同じlock内で現在のhost identityを再取得し、未起動なら停止確認済み
+としてcancelledへ進める。retry予約時は前attemptのhost identityを消去する。
+fresh/retry × assignment/waveの4ケースで、取消後のspawn・host identity保存・不要な
+host cancelが発生しないことを検証した。停止済みか不明な実hostの既存unknown契約は維持する。
 
 ## 適用範囲
 

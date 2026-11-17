@@ -459,8 +459,8 @@ reservation, new intents, candidate handoff and late reports. In-flight Codex
 processes poll the run stop state; already reserved turns remain charged, and
 an unconfirmed host stop keeps its slot as `unknown`. A stale completion race
 now preserves terminal job states. The focused orchestration suites pass 97
-tests. After the final direct cancel-intent/candidate regressions, the whole
-suite passed `568 passed, 17 skipped in 90.41s` with the pinned arm64 sandbox
+tests. After the reserved-job cancellation races and resource-eligibility
+regressions, the whole suite passed `576 passed, 17 skipped in 91.67s` with the pinned arm64 sandbox
 image and the registered official #39 ZIP. Remaining skips require Linux
 bubblewrap/seccomp, browser dependencies, the #33 PCAP, slow exhaustive search,
 or a separate runner/runtime image. Ruff and mypy pass on all changed source

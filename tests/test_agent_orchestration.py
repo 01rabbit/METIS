@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -291,6 +292,69 @@ def test_cancel_between_slot_reservation_and_spawn_never_starts_host(state, tmp_
     monkeypatch.setattr(scheduler, "_reserve_dispatch_jobs", reserve_then_cancel)
     assert scheduler.dispatch(run_id)["started"] == []
     assert scheduler.host.spawned == []
+
+
+@pytest.mark.parametrize("cancel_target", ["assignment", "wave"])
+@pytest.mark.parametrize("attempt", ["fresh", "retry"])
+def test_assignment_cancel_after_reservation_prevents_host_spawn(state, tmp_path, monkeypatch, cancel_target, attempt):
+    import metis.core.agent_scheduler as scheduler_module
+
+    run_id = _run(state, tmp_path)
+    scheduler = AgentScheduler(state, FakeHost())
+    wave = AgentLedger(state).create_wave(run_id)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    if attempt == "retry":
+        scheduler.configure(per_run_slots=1)
+        initial = scheduler.dispatch(run_id)["started"][0]
+        scheduler.fail(initial["assignment_id"], initial["attempt_id"], "retry fixture")
+        scheduler.retry(initial["assignment_id"])
+        scheduler.host.spawned.clear()
+        scheduler.host.cancelled.clear()
+    reserved = threading.Event()
+    proceed = threading.Event()
+    outcomes: list[Any] = []
+    errors: list[BaseException] = []
+    original_lock = scheduler_module.run_lock
+    paused = False
+
+    @contextmanager
+    def pause_after_reservation(database, identity, **kwargs):
+        nonlocal paused
+        with original_lock(database, identity, **kwargs):
+            yield
+        if threading.current_thread().name == "dispatch-cancel-race" and not paused:
+            paused = True
+            reserved.set()
+            assert proceed.wait(5)
+
+    monkeypatch.setattr(scheduler_module, "run_lock", pause_after_reservation)
+
+    def dispatch():
+        try:
+            outcomes.append(scheduler.dispatch(run_id))
+        except Exception as exc:  # noqa: BLE001 -- capture worker-thread assertions for parent checks
+            errors.append(exc)
+
+    worker = threading.Thread(target=dispatch, name="dispatch-cancel-race")
+    worker.start()
+    try:
+        assert reserved.wait(2)
+        jobs = [job for job in scheduler.jobs(run_id) if job["state"] == "running"]
+        assert jobs and all(job["host_job_id"] is None for job in jobs)
+        target_ids = ({jobs[0]["assignment_id"]} if cancel_target == "assignment"
+                      else {job["assignment_id"] for job in scheduler.jobs(run_id)})
+        results = (scheduler.cancel(assignment_id=jobs[0]["assignment_id"]) if cancel_target == "assignment"
+                   else scheduler.cancel(wave_id=wave["wave_id"]))
+        assert results and all(item["state"] == "cancelled" for item in results)
+    finally:
+        proceed.set()
+        worker.join(5)
+    assert not worker.is_alive() and not errors and len(outcomes) == 1
+    assert not target_ids.intersection(scheduler.host.spawned)
+    assert not target_ids.intersection(item["assignment_id"] for item in outcomes[0]["started"])
+    assert all(job["state"] == "cancelled" and job["host_job_id"] is None
+               for job in scheduler.jobs(run_id) if job["assignment_id"] in target_ids)
+    assert scheduler.host.cancelled == []  # Nothing had been launched for the cancelled jobs.
 
 
 def test_cancelled_session_refuses_new_model_turn_without_refunding_reserved_turn(state, tmp_path):

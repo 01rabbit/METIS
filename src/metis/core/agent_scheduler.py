@@ -265,6 +265,11 @@ class AgentScheduler:
         started = []
         for job in reserved:
             with run_lock(self.database, job["run_id"]):
+                current = next((item for item in self.jobs(job["run_id"])
+                                if item["assignment_id"] == job["assignment_id"]), None)
+                if (current is None or current["attempt_id"] != job["attempt_id"]
+                        or current["state"] != "running"):
+                    continue  # Assignment/wave cancellation may have ended a reserved attempt.
                 if self.run_cancelled(job["run_id"]):
                     # Reservation alone starts no host work; this attempt is safe to end.
                     self._end(job["assignment_id"], job["attempt_id"], "cancelled", "run cancelled before spawn")
@@ -354,7 +359,7 @@ class AgentScheduler:
                     continue
                 attempt = uuid4().hex[:16]
                 db.execute("UPDATE agent_jobs SET state='running', attempt_id=?, attempt_no=attempt_no+1, host=?, "
-                           "started=?, deadline=?, lease_until=?, deadline_seconds=?, turns_used=0, "
+                           "host_job_id=NULL, started=?, deadline=?, lease_until=?, deadline_seconds=?, turns_used=0, "
                            "failure=NULL, finished=NULL "
                            "WHERE assignment_id=? AND state='queued'",
                            (attempt, self.host.name, now, now + deadline_seconds,
@@ -562,10 +567,18 @@ class AgentScheduler:
         return changes
 
     def _stop(self, job: dict[str, Any]) -> bool:
-        try:
-            return bool(job["host_job_id"]) and self.host.cancel(job["host_job_id"])
-        except Exception:  # noqa: BLE001 -- an unconfirmed stop is reported as unknown
-            return False
+        with run_lock(self.database, job["run_id"]):
+            current = next((item for item in self.jobs(job["run_id"])
+                            if item["assignment_id"] == job["assignment_id"]), None)
+            if current is None or current["attempt_id"] != job["attempt_id"]:
+                return True
+            if not current["host_job_id"]:
+                # Spawn and identity persistence share this lock; no host has launched.
+                return True
+            try:
+                return self.host.cancel(current["host_job_id"])
+            except Exception:  # noqa: BLE001 -- an unconfirmed stop is reported as unknown
+                return False
 
     def release(self, assignment_id: str) -> dict[str, Any]:
         """Operator confirms an ``unknown`` job is stopped; its slot becomes free."""
