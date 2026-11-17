@@ -228,5 +228,16 @@ DOCKER_HOST=unix:///Users/mao/.colima/metis-p8-fresh/docker.sock METIS_TEST_SAND
 This is VM stop/start recovery, not a macOS host reboot test. The sandbox image
 was built from current Debian and Python package repositories rather than a
 fully version-pinned image recipe; it is not a signed release installer. Host
-reboot, secret rotation/retention, production monitoring, and the P7 benchmark
-regression gate remain uncovered. Issue #9 stays open.
+reboot, credential revocation/retention, secure secret storage, production
+monitoring, and the P7 benchmark regression gate remain uncovered. Issue #9
+stays open.
+
+## 2026-11-17 local credential replacement check
+
+A new local test calls `WebWorkflow.auth` twice for one synthetic platform
+origin, then confirms the next request uses the replacement Bearer credential
+and the old fixture value is absent from the stored payload. The focused test
+passed (`1 passed`); Ruff and mypy also passed. This proves the existing
+per-origin upsert replacement behavior in a local test, not revocation,
+retention limits, encrypted-at-rest storage, provider-side credential
+rotation, or production lifecycle controls. Issue #9 remains open.

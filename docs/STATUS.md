@@ -342,7 +342,11 @@ fabricated solve, and idempotent third recovery. A native macOS controller also
 passed this recovery test against the active Colima Ubuntu 24.04/aarch64 Linux
 VM (`1 passed in 0.68s`), exercising the Mac-to-VM container path. A separate
 fresh-profile recovery drill also passed across VM stop/start. Host reboot,
-artifact/secret cleanup, and the P7 benchmark release gate remain uncovered.
+artifact/credential retention, revocation, and secure storage remain uncovered.
+A local synthetic re-auth test confirms the existing per-origin upsert replaces
+the old value and the next request uses the new Bearer token (`1 passed`); it
+does not prove provider-side rotation or a production secret lifecycle. The P7
+benchmark release gate also remains uncovered.
 A fresh Python 3.12 venv installed the built METIS wheel with
 lockfile-exported runtime dependencies; the installed CLI validated a training
 manifest and ran a local script in the active Linux VM. A separate fresh

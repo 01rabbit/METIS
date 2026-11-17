@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import threading
 import urllib.parse
@@ -125,6 +126,21 @@ def test_platform_credentials_cannot_be_overridden(tmp_path, sites):
     assert "unsupported request header" in result["responses"][0]["error"]
     with pytest.raises(ValueError):
         WebRequest(url=platform_url, data="a", form={"b": "c"}).body()
+
+
+def test_reauth_replaces_stored_platform_credential(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+
+    workflow.auth(platform_url, kind="token", value="replacement-token", scheme="Bearer")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/rotate-check")])
+
+    assert seen["platform_auth"][-1] == "Bearer replacement-token"
+    with sqlite3.connect(workflow.database) as db:
+        payload, = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
+                              (platform_url,)).fetchone()
+    assert "replacement-token" in payload
+    assert "platform-secret-token" not in payload
 
 
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):
