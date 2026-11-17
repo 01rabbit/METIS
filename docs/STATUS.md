@@ -207,11 +207,12 @@ The official page and same-origin PHP source and ZIP were fetched into METIS run
 `0045b063168045c289eaef276dab21c2`. The archive's seven members match the
 Info-ZIP double-encrypted-header profile; the bounded seed search predicted the
 random bytes for every member. This is PRNG/header analysis only: those bytes
-are not known plaintext for the ZIP data stream. A dummy-key decryption was
-rejected by the header check, and no Stay key recovery, independent synthetic
-Stay vector, or official submission has occurred. Issue #28 and ksnctf #39
-remain open; see `reports/issue28-stay-assessment-2026-11-16.md` and the live
-run evidence.
+are not Biham–Kocher known plaintext for the ZIP data stream; they are the
+stream-byte XOR constraints used by Stay section 4. A dummy-key decryption was
+rejected by the header check, and no Stay inverse recovery, independent
+synthetic Stay vector, or official submission has occurred. Issue #28 and
+ksnctf #39 remain open; see `reports/issue28-stay-assessment-2026-11-16.md`
+and the live run evidence.
 
 The authenticated AlpacaHack Daily account was rechecked in the browser on
 2026-11-18 before a new held-out evaluation. September, October, and November
