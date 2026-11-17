@@ -1,5 +1,18 @@
 # AlpacaHack Daily evaluation — 2026-11-17
 
+## Availability recheck (2026-11-18)
+
+The authenticated Daily account was rechecked in the browser before selecting
+another held-out task. September showed 13/13 solved, October 11/11, and
+November 6/6; the November page showed `SOLVED!` for the current challenge and
+future calendar dates as `準備中`. Opening the October `fsbase modification`
+calendar entry showed a disabled answer field labeled `解答済みの問題です`
+and a disabled `Solved` button. The account therefore has no unsolved Daily
+problem currently available for this evaluation pass. No challenge instance
+was started and no submission was attempted during this recheck. The prior
+August entries below remain completed live-evaluation evidence and must not be
+counted as fresh held-out trials for Issue #8.
+
 ## Scope and result
 
 The user-authorized evaluation board was AlpacaHack Daily for August 2026. Before

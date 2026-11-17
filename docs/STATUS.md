@@ -213,6 +213,15 @@ Stay vector, or official submission has occurred. Issue #28 and ksnctf #39
 remain open; see `reports/issue28-stay-assessment-2026-11-16.md` and the live
 run evidence.
 
+The authenticated AlpacaHack Daily account was rechecked in the browser on
+2026-11-18 before a new held-out evaluation. September, October, and November
+showed 13/13, 11/11, and 6/6 solved, respectively; future November dates were
+still being prepared. The October `fsbase modification` detail had a disabled
+solved form. No unsolved Daily item was available, and no server or submission
+was initiated in this recheck. This is an availability blocker, not a new
+benchmark result; the August solves in the prior evaluation report are not
+fresh repeated held-out trials. Issue #8 remains open.
+
 A separate forward-only interoperability check generated a synthetic seven-
 member stored archive with Info-ZIP Zip 3.0. METIS matched all known payloads
 and CRCs, its header check bytes matched the DOS time fields on all seven
@@ -272,8 +281,17 @@ controller-computed final digest; equal caps did not isolate specialist count
 or match post-processing. The old 12/60 claim must not count as verified
 Issue #6 acceptance or satisfy Issue #7's dependency. A fresh experiment with
 retained redacted metrics, corrected scoring and equivalent post-processing
-is required. See
+was required; a symmetric prospective replication was run on 2026-11-18. Both arms used the same controller-side
+component composition and protected-oracle check. Single completed 60/60
+workflows and verified 56/60; multi completed only 16/60 and verified 11/60
+within completed workflows. Its workflow-complete paired difference was -75
+points (task-cluster 95% interval [-86.67, -61.67]); it was faster by 17.112
+seconds on average, with materially worse completion and correctness. This
+does not meet the paired-gain gate; #6 and dependent #7 remain open. The
+answer-free 120-run dataset and reproducible runner/analysis are retained. See
 [`issue6-real-model-diverse-benchmark-2026-11-18.md`](reports/issue6-real-model-diverse-benchmark-2026-11-18.md).
+The historical asymmetric study remains separately documented and is not
+pooled with this symmetric replication.
 
 Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
 with matched cap checks, complete paired repetitions, contamination exclusions,

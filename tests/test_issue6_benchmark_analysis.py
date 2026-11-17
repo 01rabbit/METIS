@@ -87,6 +87,15 @@ def test_analysis_separates_oracle_candidate_from_complete_workflow():
     assert result["arms"]["multi"]["oracle_verified_but_protocol_incomplete"] == 1
 
 
+def test_analysis_reports_job_state_patterns_for_incomplete_multi_workflow():
+    data = fixture_result()
+    data["records"][1]["job_states"] = ["failed", "completed"]
+    data["records"][1]["synthesis_complete"] = False
+    result = analyze(data)
+    assert result["arms"]["multi"]["job_state_patterns"]["failed,completed"] == 1
+    assert result["arms"]["multi"]["job_state_patterns"]["completed,completed"] == 59
+
+
 @pytest.mark.parametrize("arm_index,states", [(0, []), (1, []), (1, ["completed"])])
 def test_analysis_requires_exact_assigned_job_count(arm_index, states):
     data = fixture_result()

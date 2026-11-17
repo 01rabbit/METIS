@@ -1,0 +1,1271 @@
+{
+  "arms": {
+    "multi": {
+      "job_state_patterns": {
+        "completed,completed": 16,
+        "completed,failed": 16,
+        "failed,completed": 8,
+        "failed,failed": 20
+      },
+      "mean_action_budget_fraction": 1.0,
+      "mean_actions": 4,
+      "mean_calls_observed": 8,
+      "mean_calls_reserved": 8,
+      "mean_end_to_end_seconds": 26.169,
+      "mean_input_tokens_reported": 82213.2,
+      "mean_observed_call_budget_fraction": 1.0,
+      "mean_output_tokens_reported": 798.3,
+      "mean_wall_budget_fraction": 0.0436,
+      "oracle_verified": 44,
+      "oracle_verified_but_protocol_incomplete": 33,
+      "protocol_complete_oracle_verified": 11,
+      "protocol_complete_trials": 16,
+      "trials": 60,
+      "usage_complete_for_all_trials": true,
+      "usage_complete_trials_reported": 60
+    },
+    "single": {
+      "job_state_patterns": {
+        "completed": 60
+      },
+      "mean_action_budget_fraction": 1.0,
+      "mean_actions": 4,
+      "mean_calls_observed": 6.733,
+      "mean_calls_reserved": 6.733,
+      "mean_end_to_end_seconds": 43.281,
+      "mean_input_tokens_reported": 70458.2,
+      "mean_observed_call_budget_fraction": 0.8417,
+      "mean_output_tokens_reported": 789.9,
+      "mean_wall_budget_fraction": 0.0721,
+      "oracle_verified": 56,
+      "oracle_verified_but_protocol_incomplete": 0,
+      "protocol_complete_oracle_verified": 56,
+      "protocol_complete_trials": 60,
+      "trials": 60,
+      "usage_complete_for_all_trials": true,
+      "usage_complete_trials_reported": 60
+    }
+  },
+  "bootstrap": {
+    "resampling_unit": "task_id; retain both repetitions",
+    "samples": 10000,
+    "seed": 20261118
+  },
+  "cli": "0.169.0",
+  "cost_usd": "unknown",
+  "discordant_pairs": {
+    "both": 44,
+    "neither": 4,
+    "single_only": 12
+  },
+  "distinct_task_clusters": 30,
+  "failures": [
+    {
+      "case": "task-00-rep-0",
+      "encoding_pair": [
+        "base64",
+        "base32"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-00-rep-1",
+      "encoding_pair": [
+        "base64",
+        "base32"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-01-rep-0",
+      "encoding_pair": [
+        "base64",
+        "base32"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-02-rep-0",
+      "encoding_pair": [
+        "base64",
+        "hex"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-04-rep-0",
+      "encoding_pair": [
+        "base64",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-04-rep-1",
+      "encoding_pair": [
+        "base64",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-05-rep-0",
+      "encoding_pair": [
+        "base64",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-05-rep-1",
+      "encoding_pair": [
+        "base64",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-06-rep-0",
+      "encoding_pair": [
+        "base64",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-07-rep-0",
+      "encoding_pair": [
+        "base64",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-07-rep-1",
+      "encoding_pair": [
+        "base64",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-08-rep-0",
+      "encoding_pair": [
+        "base64",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-08-rep-1",
+      "encoding_pair": [
+        "base64",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-09-rep-0",
+      "encoding_pair": [
+        "base64",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-09-rep-1",
+      "encoding_pair": [
+        "base64",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-10-rep-1",
+      "encoding_pair": [
+        "base32",
+        "hex"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-11-rep-0",
+      "encoding_pair": [
+        "base32",
+        "hex"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-11-rep-1",
+      "encoding_pair": [
+        "base32",
+        "hex"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-12-rep-0",
+      "encoding_pair": [
+        "base32",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-12-rep-1",
+      "encoding_pair": [
+        "base32",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-13-rep-1",
+      "encoding_pair": [
+        "base32",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-14-rep-0",
+      "encoding_pair": [
+        "base32",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-14-rep-1",
+      "encoding_pair": [
+        "base32",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-15-rep-0",
+      "encoding_pair": [
+        "base32",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-15-rep-1",
+      "encoding_pair": [
+        "base32",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-16-rep-0",
+      "encoding_pair": [
+        "base32",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": false
+    },
+    {
+      "case": "task-16-rep-1",
+      "encoding_pair": [
+        "base32",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": false
+    },
+    {
+      "case": "task-17-rep-0",
+      "encoding_pair": [
+        "base32",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-17-rep-1",
+      "encoding_pair": [
+        "base32",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "completed"
+      ],
+      "multi_protocol_complete": true,
+      "multi_synthesis_complete": true,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-18-rep-0",
+      "encoding_pair": [
+        "hex",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-19-rep-0",
+      "encoding_pair": [
+        "hex",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-19-rep-1",
+      "encoding_pair": [
+        "hex",
+        "base85"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-20-rep-1",
+      "encoding_pair": [
+        "hex",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-21-rep-1",
+      "encoding_pair": [
+        "hex",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-22-rep-1",
+      "encoding_pair": [
+        "hex",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-23-rep-0",
+      "encoding_pair": [
+        "hex",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "completed"
+      ],
+      "multi_protocol_complete": true,
+      "multi_synthesis_complete": true,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-23-rep-1",
+      "encoding_pair": [
+        "hex",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "completed"
+      ],
+      "multi_protocol_complete": true,
+      "multi_synthesis_complete": true,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-24-rep-0",
+      "encoding_pair": [
+        "base85",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-24-rep-1",
+      "encoding_pair": [
+        "base85",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-25-rep-0",
+      "encoding_pair": [
+        "base85",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-25-rep-1",
+      "encoding_pair": [
+        "base85",
+        "base64url"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "completed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-26-rep-0",
+      "encoding_pair": [
+        "base85",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "completed"
+      ],
+      "multi_protocol_complete": true,
+      "multi_synthesis_complete": true,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-26-rep-1",
+      "encoding_pair": [
+        "base85",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-27-rep-0",
+      "encoding_pair": [
+        "base85",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": false
+    },
+    {
+      "case": "task-27-rep-1",
+      "encoding_pair": [
+        "base85",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 6,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": false
+    },
+    {
+      "case": "task-28-rep-0",
+      "encoding_pair": [
+        "base64url",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": true,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-28-rep-1",
+      "encoding_pair": [
+        "base64url",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-29-rep-0",
+      "encoding_pair": [
+        "base64url",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "failed",
+        "failed"
+      ],
+      "multi_protocol_complete": false,
+      "multi_synthesis_complete": false,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    },
+    {
+      "case": "task-29-rep-1",
+      "encoding_pair": [
+        "base64url",
+        "percent"
+      ],
+      "multi_actions": 4,
+      "multi_calls": 8,
+      "multi_job_states": [
+        "completed",
+        "completed"
+      ],
+      "multi_protocol_complete": true,
+      "multi_synthesis_complete": true,
+      "multi_verified": false,
+      "single_actions": 4,
+      "single_calls": 7,
+      "single_job_states": [
+        "completed"
+      ],
+      "single_protocol_complete": true,
+      "single_synthesis_complete": true,
+      "single_verified": true
+    }
+  ],
+  "limitations": [
+    "Synthetic short-text decoding only; no general CTF or AlpacaHack solve-rate claim.",
+    "Elapsed time is end-to-end controller time, including setup, synthesis, cleanup, and verification.",
+    "Role prompt and decomposition differences are bundled in the two-arm comparison.",
+    "The paired comparison measures the full single- versus multi-specialist workflow, including orchestration reliability.",
+    "Token totals are the runner-reported aggregates; provider cost remains unknown."
+  ],
+  "model": "gpt-6.1-sol",
+  "paired_latency_difference_cluster_bootstrap_95_percentile_interval_seconds": [
+    15.3234,
+    18.9947
+  ],
+  "paired_mean_latency_difference_single_minus_multi_seconds": 17.112,
+  "paired_mean_protocol_complete_solve_difference_multi_minus_single": -0.75,
+  "paired_mean_solve_difference_multi_minus_single": -0.2,
+  "paired_protocol_complete_solve_difference_cluster_bootstrap_95_percentile_interval": [
+    -0.8667,
+    -0.6167
+  ],
+  "paired_solve_difference_cluster_bootstrap_95_percentile_interval": [
+    -0.3167,
+    -0.0833
+  ],
+  "protocol_complete_discordant_pairs": {
+    "both": 11,
+    "neither": 4,
+    "single_only": 45
+  },
+  "reasoning_effort": "low",
+  "repetitions_per_cluster": 2,
+  "study": "issue6-symmetric-replication-2026-11-18"
+}

@@ -149,6 +149,11 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "protocol_complete_trials": sum(row[f"{arm}_protocol_complete"] for row in rows),
             "protocol_complete_oracle_verified": sum(
                 row[f"{arm}_workflow_verified"] for row in rows),
+            "job_state_patterns": {
+                ",".join(record["job_states"]): sum(
+                    item["job_states"] == record["job_states"] for item in arm_records)
+                for record in arm_records
+            },
             "oracle_verified_but_protocol_incomplete": sum(
                 row[f"{arm}_verified"] and not row[f"{arm}_protocol_complete"] for row in rows),
             "mean_end_to_end_seconds": round(statistics.mean(row[f"{arm}_seconds"] for row in rows), 3),
@@ -197,7 +202,7 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "Synthetic short-text decoding only; no general CTF or AlpacaHack solve-rate claim.",
             "Elapsed time is end-to-end controller time, including setup, synthesis, cleanup, and verification.",
             "Role prompt and decomposition differences are bundled in the two-arm comparison.",
-            "Multi arm receives controller-computed final digest; single arm computes it in-model.",
+            "The paired comparison measures the full single- versus multi-specialist workflow, including orchestration reliability.",
             "Token totals are the runner-reported aggregates; provider cost remains unknown.",
         ],
     }

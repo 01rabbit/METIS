@@ -81,3 +81,12 @@ checks; passing current unit tests does not re-establish this historical gain.
 The aggregate analyzer is
 [`issue6_diverse_analysis.py`](../../src/metis/evaluation/issue6_diverse_analysis.py);
 its tests are in [`test_issue6_benchmark_analysis.py`](../../tests/test_issue6_benchmark_analysis.py).
+
+## Subsequent symmetric replication (2026-11-18)
+
+The asymmetric post-processing concern identified above was addressed by a
+newly preregistered replication with identical controller-side composition and
+oracle verification in both arms. Its complete results are in
+[`issue6-symmetric-replication-results-2026-11-18.md`](issue6-symmetric-replication-results-2026-11-18.md).
+That replication did not demonstrate a multi-specialist gain and therefore
+does not satisfy Issue #6's acceptance gate.
