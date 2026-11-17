@@ -343,7 +343,8 @@ fabricated solve, and idempotent third recovery. A native macOS controller also
 passed this recovery test against the active Colima Ubuntu 24.04/aarch64 Linux
 VM (`1 passed in 0.68s`), exercising the Mac-to-VM container path. A separate
 fresh-profile recovery drill also passed across VM stop/start. Host reboot,
-artifact/credential retention, revocation, and secure storage remain uncovered.
+artifact/credential retention and secure storage remain uncovered; provider-side
+token revocation is not tested.
 Local synthetic checks confirm per-origin re-auth replaces the prior value and
 the next request uses the new Bearer token; `metis web forget URL` removes the
 active origin record and the next request sends no Authorization header. The

@@ -228,9 +228,9 @@ DOCKER_HOST=unix:///Users/mao/.colima/metis-p8-fresh/docker.sock METIS_TEST_SAND
 This is VM stop/start recovery, not a macOS host reboot test. The sandbox image
 was built from current Debian and Python package repositories rather than a
 fully version-pinned image recipe; it is not a signed release installer. Host
-reboot, credential revocation/retention, secure secret storage, production
-monitoring, and the P7 benchmark regression gate remain uncovered. Issue #9
-stays open.
+reboot, credential retention, provider-side token revocation, secure secret
+storage, production monitoring, and the P7 benchmark regression gate remain
+uncovered. Issue #9 stays open.
 
 ## 2026-11-17 local credential rotation and revocation
 
