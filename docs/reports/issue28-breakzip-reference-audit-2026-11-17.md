@@ -13,6 +13,13 @@ recovery claim and does not add a tool that could return an unverified key.
 
 ## Reference source
 
+Terminology: the issue's “Stay 2002” refers to the Springer proceedings
+publication year. The work was presented in the FSE 2001 proceedings, and the
+paper itself is catalogued as FSE 2001, pp. 125–134. The later 2020 paper is a
+distinct differential meet-in-the-middle attack. Keep the algorithms and
+their work estimates separate; the 2001 paper's estimate is not evidence for
+the 2020 pipeline or a METIS implementation.
+
 The already-cloned `/tmp/metis-breakzip-reference` repository identifies itself
 as BreakZip by Mike Stay and Nash Foster and includes a BSD-3-Clause license.
 This audit only inspected text/source; no reference scripts, build steps, or
