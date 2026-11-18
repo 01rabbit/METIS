@@ -437,6 +437,11 @@ contract. These interface changes do not make the full attack feasible.
 
 ## Stage 2 interval reuse probe (2026-11-18)
 
+Review follow-up: interval preparation now shares the chunk deadline. An
+expired deadline stops preparation before any Stage 2 guess, and an empty
+chunk returns without preparing intervals. Differential tests also cover
+multiple compatible first-member carry options in a prepared interval set.
+
 The bounded Stage 2 chunk now materializes its Stage 1 carry intervals once
 per chunk and reuses them across guesses. The predicate also checks the first
 member's exact third-byte condition once per distinct Stage 1 carry pair,

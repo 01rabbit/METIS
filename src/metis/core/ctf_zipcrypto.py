@@ -477,7 +477,7 @@ def _stay_first_stage_candidate(index: int, random_firsts: tuple[int, ...],
 
 
 def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
-                                     random_firsts: tuple[int, ...]
+                                     random_firsts: tuple[int, ...], *, deadline: float | None = None
                                      ) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
     """Lift a filtered 40-bit guess through shared key1 carry intervals.
 
@@ -511,6 +511,8 @@ def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
         visited += 1
         if visited > MAX_STAY_CARRY_INTERVAL_VISITS:
             raise ValueError("Stay carry interval search exceeds its bounded visit limit")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Stay carry interval preparation exceeded deadline")
         if lower > upper:
             return
         if member < len(random_firsts):
@@ -717,9 +719,19 @@ def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
             or not 0 < seconds <= 300):
         raise ValueError("invalid Stay Stage 2 scan bounds")
     deadline = time.monotonic() + seconds
+    if start == stop:
+        return StayStage2Chunk(start, (), "complete")
+    if time.monotonic() >= deadline:
+        return StayStage2Chunk(start, (), "time_limit")
     # The Stage 1 carry intervals depend on the hit, not on any Stage 2 guess.
     # Materialize once per bounded chunk instead of rebuilding for every guess.
-    prepared_intervals = tuple(_stay_first_stage_key1_intervals(index, carry_masks, random_firsts))
+    try:
+        prepared_intervals = tuple(_stay_first_stage_key1_intervals(
+            index, carry_masks, random_firsts, deadline=deadline))
+    except TimeoutError:
+        return StayStage2Chunk(start, (), "time_limit")
+    if time.monotonic() >= deadline:
+        return StayStage2Chunk(start, (), "time_limit")
     hits: list[tuple[int, int]] = []
     cursor = start
     visited = 0
