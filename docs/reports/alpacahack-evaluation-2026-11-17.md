@@ -1,0 +1,69 @@
+# AlpacaHack Daily evaluation — 2026-11-17
+
+## Availability recheck (2026-11-18)
+
+The authenticated Daily account was rechecked in the browser before selecting
+another held-out task. September showed 13/13 solved, October 11/11, and
+November 6/6; the November page showed `SOLVED!` for the current challenge and
+future calendar dates as `準備中`. Opening the October `fsbase modification`
+calendar entry showed a disabled answer field labeled `解答済みの問題です`
+and a disabled `Solved` button. The account therefore has no unsolved Daily
+problem currently available for this evaluation pass. No challenge instance
+was started and no submission was attempted during this recheck. The prior
+August entries below remain completed live-evaluation evidence and must not be
+counted as fresh held-out trials for Issue #8.
+
+## Scope and result
+
+The user-authorized evaluation board was AlpacaHack Daily for August 2026. Before
+working each selected challenge, its page showed an enabled submission form and
+the account dashboard showed it as unsolved. Official submissions were made
+only through the authenticated browser form. No challenge write-up was
+consulted, no answer was stored in this report, and each solved challenge has a
+separate write-up without the answer value.
+
+| Challenge | Category | METIS run | Official evidence |
+| --- | --- | --- | --- |
+| Let's analyze system calls | Rev | `1709125dc8f645f4a7c72a86efa1d210` | `metis web attest`: `official_browser_observed` |
+| Springing | Web | `ea91c4d7c2c748bc9277f5e39f1cb80a` | `metis web attest`: `official_browser_observed` |
+| Happy Birthday | Crypto | `1f8c26a2f7bd437e878297d37955fb0b` | Browser displayed `SOLVED!`; `metis web attest`: `official_browser_observed` |
+| Password, Please | Misc | `4e139020ad554e2a9d061df07c621853` | Browser card changed to solved, form disabled, dashboard 4/14 and Misc 1/6; `metis web attest`: `official_browser_observed` |
+
+After the fourth solve, the authenticated dashboard showed 4/14 for August,
+including Rev 1/2, Web 1/4, Crypto 1/2, and Misc 1/6. The METIS evaluation board
+showed 4/4 challenges solved. This exceeds the plan's minimum live-evaluation
+gate of three official solves across three non-Welcome categories, including
+both designated final-evaluation challenges.
+
+## Happy Birthday evidence
+
+The registered challenge archive's Python source compares the first five bytes
+of SHA-256 digests and requires different inputs with `user=` and `admin=`
+prefixes. A bounded, local birthday search found a pair satisfying those
+conditions. METIS connected only to the exact endpoint displayed for the one
+instance spawned from the challenge page (`34.170.146.252:32411`). The service
+accepted the pair and returned its response. The response was submitted once
+through the browser form; the page then displayed `SOLVED!`, the solve counter
+increased, and the form became disabled as solved. The instance was no longer
+listed online afterward.
+
+The assigned Crypto specialist reported the 40-bit collision strategy and
+source evidence; an independent critic checked the hypothesis. Daybreak
+performed the collision search and official submission. Therefore this result
+is live integration and browser-verification evidence, **not** proof that an
+autonomous METIS model completed the challenge. It does not satisfy the P1
+acceptance gate for autonomous model solving or the comparative benchmark
+gates.
+
+## Current limits
+
+- Password, Please was a development candidate, not a designated final-evaluation challenge. Daybreak used the observed Bash glob comparison to direct one bounded connection to the single challenge instance, then submitted once in the browser. This is official integration evidence, not an autonomous specialist solve.
+- P1 model-autonomy acceptance was separately exercised with a generated local direct-answer fixture. Codex CLI `0.169.0` using the authenticated `gpt-daybreak-blue-latest` account returned one candidate; METIS's private external `FixtureOracle` independently verified it and the run ended `solved`. Run `7842500467f245e09216c858ce025b31` recorded 6,902 input tokens and 41 output tokens; Codex did not report dollar cost, which remains unknown. The run reserved 36,864 tokens against a 50,000-token budget. Candidate values were not included in METIS run events. The fixture was synthetic and was not an AlpacaHack challenge.
+- A separate Base64 fixture attempt reached the isolated tool broker, then failed closed because the local Docker daemon's cgroup configuration did not satisfy METIS's cgroup v2 enforcement check. No candidate was verified in that run. This confirms the documented resource-isolation limitation on this host; the direct-answer fixture did not exercise the OCI tool broker.
+- The real-model run is one direct-answer fixture and does not establish improved solve rate or comparative benchmark performance. Always-run deterministic runner tests now cover generated Crypto and Misc fixtures through an isolated test runtime and the independent oracle; both pass. Existing budget tests cover action, token, cost, wall-time, cancellation, and provider-failure behavior. Docker-backed runs for both categories were skipped here because this host cannot confirm cgroup v2 enforcement. The combined real-model fixture, two-category deterministic coverage, and budget/failure tests satisfy Issue #2's stated acceptance criteria; the issue should be closed after the implementation commit and current CI checks are reviewed.
+- No issues were closed based on this evaluation.
+- PR #31 remains Draft. Its three required CI jobs passed on head `8f85ce5`;
+  checks must be inspected again after this report and write-up update is pushed.
+- The issue gates for bounded ZipCrypto/Stay recovery, Linux real-Codex and
+  sub-agent isolation, post-reauthentication KSNCTF #33, and P1–P8 research,
+  benchmark, and operational acceptance remain separate work.

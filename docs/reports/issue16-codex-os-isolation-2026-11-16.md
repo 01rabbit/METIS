@@ -1,5 +1,7 @@
 # Issue #16 Codex 専門家の OS 隔離（2026-11-16）
 
+以下は初回導入時の記録であり、Linux の隔離実装より前の状態を含む。現在の実装・受け入れ状況は末尾の「2026-11-17 時点の更新」を参照。
+
 ## Codex CLI の版に依存する制限（整理）
 
 codex-cli 0.166.0 で確認したこと。
@@ -49,10 +51,17 @@ codex-cli 0.166.0 で確認したこと。
 
 ## 保証しないこと
 
-- spawn ツールそのものをモデルから隠すこと。#16 の受け入れ条件のうち、この 1 項目は未達。
-  spawn された sub-agent は同じプロセス内にいるので、上記のファイル・ネットワーク制限の下にある
-  （推測を含む: sub-agent が別プロセスとして起動する実装でも、子プロセスなので Seatbelt を継承する）。
-- Linux / Windows の隔離。未実装で、起動を拒否する。
+- spawn ツール名をモデルから隠すこと。名前は見える。codex-cli 0.166.0 / 0.169.0 の試験済み構成では
+  `--ephemeral` に頼らずCLIが呼び出しを拒否するが、将来版にはこの結果を外挿しない。
+- （記録時点）Linux / Windows の隔離。未実装で、起動を拒否する。
 - Seatbelt やカーネル自体の脆弱性。`sandbox-exec` は Apple が非推奨としているが、現行の macOS で動作する。
 - 許可した宛先（モデル API）へ送られる内容。プロンプトと観測は、設計上この宛先へ送られる。
 - 読み取りを許可した範囲（Codex パッケージ、システムのディレクトリ）に含まれる情報。
+
+## 2026-11-17 時点の更新
+
+- Linux 実行環境は Colima `rosetta` profile（Ubuntu 24.04、aarch64、4 CPU、約6 GiB、cgroup v2）。一時展開した Codex Linux arm64 CLI と METIS venv を使い、CI・challenge sandbox には認証を渡していない。
+- `metis agent codex-probe --ping` を codex-cli 0.166.0 と 0.169.0 の両方で実行。両方 `ready: true`、ping return code 0、`CODEX_HOME` 認証は `unchanged`。各版で bwrap セルフテストは protected read/list/write 拒否、turn-dir write 許可、直接通信拒否、allowlist 外proxy拒否、NoNewPrivs、fork拒否、thread許可の全項目に合格。
+- 両版とも `--ephemeral` を付けず、METIS の `agents.enabled=false`・MultiAgentV2無効化・thread上限の設定下で spawn カナリアを実行。実際の拒否 `code-mode host is disabled` を stderr router から検出し、`sub_agent_attempt` violation として分類した。ツール名自体はモデルに提示されるため、非提示とは主張しない。
+- 負の対照として 0.169.0 で `--ephemeral` とagent無効化設定を外すと、`collaboration.spawn_agent` は成功し、子タスクが `HELLO` を返した。これにより拒否が `--ephemeral` やseccompの効果ではなく、テスト対象のCodex設定から来ることを確認した。子タスクはこの短い応答後に終了した。
+- 受け入れに必要な2つのCLI版を実際に試した。今後は版ごとのfail-closed gateを維持し、未知版を明示的にprobeするまで許可しない。Windowsでは現状も隔離backendがなく、既定起動は拒否する。

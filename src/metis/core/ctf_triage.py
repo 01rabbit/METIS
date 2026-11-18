@@ -8,7 +8,7 @@ from metis.core.contracts import ChallengeManifest
 PLAYBOOKS = {
     "crypto": {"tools": ["frequency", "xor_single", "xor", "gcd", "mod_inverse", "crt", "integer_root", "rsa_decrypt",
                           "x509", "tls_certificates", "tls_decrypt", "tls_http_body", "zipcrypto_info",
-                          "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt"],
+                          "infozip_seed", "zipcrypto_attack", "zipcrypto_stay_scan", "zipcrypto_decrypt"],
                "steps": ["Identify encoding, cipher and supplied parameters before choosing a method.",
                          "Test one hypothesis and inspect actual decoded bytes.",
                          "Check mathematical assumptions; submit only an independently verified candidate."],

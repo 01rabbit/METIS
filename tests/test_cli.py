@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from metis.core import ctf_workflow
+from metis.core.codex_session import CodexSession
+from metis.core.ctf_workflow import WorkflowCapabilityApprovals
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "challenges/training/fixture-001.json"
 
@@ -34,6 +38,74 @@ def test_inspect_does_not_create_missing_database(tmp_path):
     result = cli("inspect", "absent", "--database", database)
     assert result.returncode == 2
     assert not database.exists()
+
+
+def test_audit_is_read_only_and_omits_free_form_event_details(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    prepared = json.loads(cli("prepare", FIXTURE, "--database", database).stdout)
+    from metis.core.contracts import RunEvent, RunStatus
+    from metis.core.store import RunStore
+    RunStore(database).append(RunEvent(run_id=prepared["run_id"], sequence=2,
+                                       status=RunStatus.CLASSIFIED,
+                                       detail={"private": "never-print-this"}))
+    before = database.read_bytes()
+    result = cli("audit", prepared["run_id"], "--database", database)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "classified"
+    assert summary["event_count"] == 3
+    assert summary["first_sequence"] == 0 and summary["last_sequence"] == 2
+    assert summary["status_counts"]["new"] == 1
+    assert summary["status_counts"]["validated"] == 1
+    assert summary["status_counts"]["classified"] == 1
+    assert summary["chain_valid"] is True
+    assert "never-print-this" not in result.stdout
+    assert database.read_bytes() == before
+    repeated = cli("audit", prepared["run_id"], "--database", database)
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout == result.stdout
+
+
+def test_audit_fails_closed_on_corrupt_chain_and_missing_database(tmp_path):
+    missing = tmp_path / "missing.sqlite"
+    assert cli("audit", "absent", "--database", missing).returncode == 2
+    assert not missing.exists()
+
+    database = tmp_path / "runs.sqlite"
+    prepared = json.loads(cli("prepare", FIXTURE, "--database", database).stdout)
+    import sqlite3
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET payload=? WHERE run_id=? AND sequence=0",
+                   ('{"status":"corrupt"}', prepared["run_id"]))
+    before = database.read_bytes()
+    result = cli("audit", prepared["run_id"], "--database", database)
+    assert result.returncode == 2
+    assert "unavailable or corrupt" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert database.read_bytes() == before
+
+
+def test_cli_purge_derived_defaults_to_preview_and_apply_is_explicit(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="retention", description="local fixture", paths=[source])["run_id"]
+    derived = session.store_artifact(run_id, b"generated")
+    root = session.artifact_root(run_id)
+    assert root is not None
+    derived_file = root / derived
+
+    preview = cli("codex", "--database", database, "purge-derived", run_id)
+    assert preview.returncode == 0, preview.stderr
+    assert json.loads(preview.stdout)["applied"] is False
+    assert derived_file.exists()
+
+    applied = cli("codex", "--database", database, "purge-derived", run_id, "--apply")
+    assert applied.returncode == 0, applied.stderr
+    assert json.loads(applied.stdout)["applied"] is True
+    assert not derived_file.exists()
 
 
 def test_rejected_inputs_are_not_echoed_or_recorded(tmp_path):
@@ -95,3 +167,71 @@ def test_web_submit_removes_one_terminal_line_ending(monkeypatch, tmp_path, caps
     assert main() == 0
     assert captured == [("run-1", "FLAG_example")]
     assert json.loads(capsys.readouterr().out)["verified"] is True
+
+
+def test_agent_slots_can_disable_munin_retrieval(tmp_path):
+    result = cli("agent", "--database", tmp_path / "agent.sqlite", "slots", "--no-memory-retrieval")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["memory_retrieval"] is False
+
+
+def test_workflow_capability_requires_exact_operator_confirmation(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "runs.sqlite"
+    fixture = tmp_path / "source.txt"
+    fixture.write_text("local fixture")
+    run_id = CodexSession(database).intake(title="Local workflow review", description="Fixture only",
+                                          paths=[fixture], categories=["misc"])["run_id"]
+    approvals = WorkflowCapabilityApprovals(database)
+    monkeypatch.setattr(sys, "argv", ["metis", "workflow", "--database", str(database),
+                                      "approve", run_id, "rot13_decode"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+    from metis.cli import main
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("unconfirmed capability approval unexpectedly succeeded")
+    assert "rot13_decode" not in approvals.approved_tools(run_id)
+    monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("EOF during capability review unexpectedly succeeded")
+    assert "rot13_decode" not in approvals.approved_tools(run_id)
+
+    v1 = ctf_workflow.capability_review_details("rot13_decode")
+    old_confirmation = (f"APPROVE rot13_decode v{v1['descriptor']['version']} "
+                        f"sha256:{v1['capability_sha256']} {run_id}")
+    original_descriptor = ctf_workflow._capability_descriptor
+    monkeypatch.setattr(ctf_workflow, "_capability_descriptor",
+                        lambda tool: {**original_descriptor(tool), "version": 2})
+    monkeypatch.setattr("builtins.input", lambda _prompt: old_confirmation)
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("confirmation for an old descriptor unexpectedly approved a new version")
+    assert "rot13_decode" not in approvals.approved_tools(run_id)
+    preview = capsys.readouterr().out
+    v2 = ctf_workflow.capability_review_details("rot13_decode")
+    assert '"version": 2' in preview
+    assert v2["capability_sha256"] in preview
+    new_confirmation = (f"APPROVE rot13_decode v{v2['descriptor']['version']} "
+                        f"sha256:{v2['capability_sha256']} {run_id}")
+    monkeypatch.setattr("builtins.input", lambda _prompt: new_confirmation)
+    monkeypatch.setattr("getpass.getuser", lambda: "test-operator")
+    assert main() == 0
+    assert "rot13_decode" in approvals.approved_tools(run_id)
+    approval_output = capsys.readouterr().out
+    assert v2["capability_sha256"] in approval_output
+    assert json.loads(approval_output.splitlines()[-1])["reviewer"] == "test-operator"
+    monkeypatch.setattr(sys, "argv", ["metis", "workflow", "--database", str(database),
+                                      "status", run_id])
+    assert main() == 0
+    status = json.loads(capsys.readouterr().out)
+    assert "rot13_decode" in status["approved_tools"]
+    assert status["reviews"][0]["capability_sha256"]

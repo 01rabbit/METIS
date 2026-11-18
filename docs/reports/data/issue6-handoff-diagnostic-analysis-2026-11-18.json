@@ -1,0 +1,142 @@
+{
+  "arms": {
+    "multi_combined": {
+      "candidate_ready_call_ceiling_failures": 6,
+      "candidate_ready_jobs_at_termination": 51,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 58,
+        "intent": 159,
+        "report": 4
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 7.367,
+      "mean_calls_reserved": 7.367,
+      "mean_elapsed_seconds": 30.538,
+      "mean_input_tokens": 76669.7,
+      "mean_output_tokens": 1138.2,
+      "model_turn_budget_denials": 9,
+      "oracle_verified": 21,
+      "report_rejection_categories": {
+        "other_validation": 11
+      },
+      "report_rejections": 11,
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 9,
+        "completed": 51
+      },
+      "token_usage_complete": true,
+      "trials": 30,
+      "workflow_complete": 23,
+      "workflow_complete_oracle_verified": 19
+    },
+    "multi_separate": {
+      "candidate_ready_call_ceiling_failures": 20,
+      "candidate_ready_jobs_at_termination": 56,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 56,
+        "intent": 139,
+        "report": 45
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 8,
+      "mean_calls_reserved": 8,
+      "mean_elapsed_seconds": 26.797,
+      "mean_input_tokens": 83325.7,
+      "mean_output_tokens": 911.1,
+      "model_turn_budget_denials": 24,
+      "oracle_verified": 23,
+      "report_rejection_categories": {
+        "other_validation": 9
+      },
+      "report_rejections": 9,
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 24,
+        "completed": 36
+      },
+      "token_usage_complete": true,
+      "trials": 30,
+      "workflow_complete": 10,
+      "workflow_complete_oracle_verified": 8
+    },
+    "single": {
+      "candidate_ready_call_ceiling_failures": 0,
+      "candidate_ready_jobs_at_termination": 27,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 27,
+        "intent": 147,
+        "report": 3
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 5.9,
+      "mean_calls_reserved": 5.9,
+      "mean_elapsed_seconds": 39.944,
+      "mean_input_tokens": 62167.8,
+      "mean_output_tokens": 794,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 27,
+      "report_rejection_categories": {},
+      "report_rejections": 0,
+      "terminal_reason_categories": {
+        "completed": 30
+      },
+      "token_usage_complete": true,
+      "trials": 30,
+      "workflow_complete": 30,
+      "workflow_complete_oracle_verified": 27
+    }
+  },
+  "bootstrap": {
+    "resampling_unit": "task_id",
+    "samples": 10000,
+    "seed": 20261119
+  },
+  "cli": "0.169.0",
+  "discordant_pairs": {
+    "combined_vs_separate": {
+      "both": 6,
+      "left_only": 13,
+      "neither": 9,
+      "right_only": 2
+    },
+    "combined_vs_single": {
+      "both": 19,
+      "left_only": 0,
+      "neither": 3,
+      "right_only": 8
+    }
+  },
+  "distinct_task_clusters": 30,
+  "handoff_completion_cluster_bootstrap_95_interval": [
+    0.2,
+    0.6667
+  ],
+  "handoff_completion_contrast_multi_combined_minus_multi_separate": 0.4333,
+  "handoff_oracle_correctness_cluster_bootstrap_95_interval": [
+    -0.2333,
+    0.1
+  ],
+  "handoff_oracle_correctness_contrast_multi_combined_minus_multi_separate": -0.0667,
+  "limitations": [
+    "One trial per synthetic task cluster; the cluster bootstrap reflects task sampling, not within-task repetition.",
+    "The combined-handoff contrast includes its report-timing and retry behavior, not only the saved call.",
+    "A positive handoff mechanism contrast does not alone prove the historical call-starvation hypothesis.",
+    "Synthetic encoding tasks do not establish general CTF or AlpacaHack performance.",
+    "Provider cost is unknown."
+  ],
+  "mechanism_cluster_bootstrap_95_interval": [
+    0.1333,
+    0.5667
+  ],
+  "mechanism_contrast_multi_combined_minus_multi_separate": 0.3667,
+  "model": "gpt-6.1-sol",
+  "primary_cluster_bootstrap_95_interval": [
+    -0.4333,
+    -0.1333
+  ],
+  "primary_contrast_multi_combined_minus_single": -0.2667,
+  "primary_gain_gate_met": false,
+  "study": "issue6-handoff-diagnostic-2026-11-18"
+}

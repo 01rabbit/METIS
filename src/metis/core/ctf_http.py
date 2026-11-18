@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
@@ -94,6 +95,8 @@ class SafeHTTP:
                 jar.set_cookie(http.cookiejar.Cookie(**fields))
             self.jars[key] = jar
         self.requests = 0
+        self.auth_generation = 0
+        self.auth_generation_check: Callable[[int], bool] | None = None
         self.proxy_used = bool(state.get("proxy_used", False))
         self.cookie_fingerprint = state.get("cookie_fingerprint")
         cookie = os.environ.get(cookie_env, "") if cookie_env else self.credentials.get("cookie", "")
@@ -240,6 +243,9 @@ class SafeHTTP:
         for _ in range(6):
             if origin(url) not in self.allowed or (sensitive and origin(url) != initial_origin):
                 raise ValueError("URL or redirect is outside the authorized origin scope")
+            if (origin(url) == self.auth_origin and self.auth_generation_check is not None
+                    and not self.auth_generation_check(self.auth_generation)):
+                raise ValueError("authentication has been forgotten for this origin")
             if self.requests >= 128 or time.monotonic() >= deadline:
                 raise TimeoutError("bounded HTTP operation exhausted")
             self.requests += 1

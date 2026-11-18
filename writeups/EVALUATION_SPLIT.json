@@ -152,6 +152,41 @@
    "writeup": "alpacahack-daily/yell-yell.md"
   },
   {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "fermats-last-theorem-fermat-s-last-theorem",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/fermats-last-theorem-fermat-s-last-theorem.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "happy-birthday",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/happy-birthday.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "lets-analyze-system-calls-let-s-analyze-system-calls",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/lets-analyze-system-calls-let-s-analyze-system-calls.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "not-so-pyfk-not-so-pyf-k",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/not-so-pyfk-not-so-pyf-k.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "password-please",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/password-please.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "rfc100008",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/rfc100008.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "springing",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/springing.md"
+  },
+  {
    "ctf": "ksnctf",
    "problem": "1",
    "writeup": "ksnctf/1-test-problem.md"

@@ -1,31 +1,71 @@
 import json
 import os
+import signal
+import sqlite3
 import stat
+import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from metis.cli import main
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_sandbox import Sandbox, SandboxRequest, configure, status
 
 IMAGE = "sha256:" + "a" * 64
 
+
+def _metis_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    executable = Path(sys.executable).with_name("metis")
+    return subprocess.run([str(executable), *arguments], capture_output=True, text=True,
+                          check=False, timeout=30)
+
 FAKE_ENGINE = textwrap.dedent('''\
     #!{python}
     """Test double for a container engine: records argv, emulates /work in a temp dir."""
-    import json, os, subprocess, sys, tempfile
+    import json, os, subprocess, sys, tempfile, time
     log = os.environ["FAKE_ENGINE_LOG"]
+    containers = log + ".containers"
     with open(log, "a") as stream:
         stream.write(json.dumps(sys.argv[1:]) + "\\n")
     if sys.argv[1] == "version":
         print('"27.0"')
         raise SystemExit(0)
     if sys.argv[1] == "rm":
+        if os.environ.get("FAKE_ENGINE_RM_FAIL") == "1":
+            raise SystemExit(2)
+        try:
+            os.unlink(containers)
+        except FileNotFoundError:
+            pass
         raise SystemExit(0)
-    script = sys.argv[sys.argv.index("-c") + 1]
+    if sys.argv[1] == "inspect":
+        if os.path.exists(containers):
+            print("fake-container-id")
+            raise SystemExit(0)
+        print("Error: No such object: " + sys.argv[-1], file=sys.stderr)
+        raise SystemExit(1)
+    if sys.argv[1] == "create":
+        with open(containers, "w") as stream:
+            json.dump(sys.argv[1:], stream)
+        print("fake-container-id")
+        raise SystemExit(0)
+    if sys.argv[1] != "start":
+        raise SystemExit("unexpected engine command")
+    with open(containers) as stream:
+        created = json.load(stream)
+    if os.environ.get("FAKE_ENGINE_BLOCK_START") == "1":
+        with open(os.environ["FAKE_ENGINE_STARTED"], "w") as stream:
+            stream.write("started")
+        while True:
+            time.sleep(1)
+    script = created[created.index("-c") + 1]
     work = tempfile.mkdtemp()
     script = script.replace("/work", work)
     raise SystemExit(subprocess.run([sys.executable, "-I", "-c", script]).returncode)
@@ -65,6 +105,23 @@ def test_sandbox_requires_immutable_image(tmp_path):
     assert status(database)["configured"] is False
 
 
+def test_resource_profiles_are_fixed_and_isolated(tmp_path):
+    database = tmp_path / "state" / "metis.sqlite"
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    sandbox = Sandbox(database)
+    standard = sandbox.command("standard")
+    zipcrypto = sandbox.command("zipcrypto", profile="zipcrypto")
+    lowmem = sandbox.command("zipcrypto-lowmem", profile="zipcrypto_test_lowmem")
+    assert "--memory=512m" in standard and "--cpus=1" in standard and "--ipc=none" in standard
+    assert "--memory=2g" in zipcrypto and "--memory-swap=2g" in zipcrypto
+    assert "--cpus=4" in zipcrypto and "--ipc=private" in zipcrypto
+    assert "--memory=128m" in lowmem and "--memory-swap=128m" in lowmem
+    assert "--cpus=4" in lowmem and "--ipc=private" in lowmem
+    assert "--network=none" in zipcrypto and "--read-only" in zipcrypto
+    with pytest.raises(ValueError, match="resource profile"):
+        sandbox.command("invalid", profile="unbounded")
+
+
 def test_sandbox_isolation_flags_and_execution(tmp_path, engine):
     database, run_id = _run(tmp_path)
     configure(database, engine="docker", image=IMAGE, platform="linux/amd64")
@@ -77,13 +134,114 @@ def test_sandbox_isolation_flags_and_execution(tmp_path, engine):
     assert result["stdout"]["text"] == "hello metis\n"
     assert "args:-x" in result["stderr"]["text"]
     assert result["files_in_sandbox"] == ["chall", "libc.so.6"]
-    argv = [json.loads(line) for line in engine.read_text().splitlines()][-1]
+    commands = [json.loads(line) for line in engine.read_text().splitlines()]
+    argv = next(command for command in commands if command[0] == "create")
     for flag in ("--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
                  "--user=65534:65534", "--pull=never", "--rm"):
         assert flag in argv
     assert not any(item.startswith(("-v", "--volume", "--mount")) for item in argv)
     assert IMAGE in argv and "linux/amd64" in argv
     assert session.context(run_id)["status"] == "planning"
+
+
+def test_recovery_revokes_reserved_sandbox_before_launch_and_allows_fresh_operation(tmp_path, engine, monkeypatch):
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    sandbox = Sandbox(database)
+    target = sandbox.session.context(run_id)["challenge"]["artifacts"][0]
+    reserved = threading.Event()
+    release = threading.Event()
+    original_file = ctf_sandbox.tempfile.TemporaryFile
+    paused = False
+
+    def pause_before_launch(*args, **kwargs):
+        nonlocal paused
+        if not paused:
+            paused = True
+            reserved.set()
+            assert release.wait(10), "launch barrier not released"
+        return original_file(*args, **kwargs)
+
+    monkeypatch.setattr(ctf_sandbox.tempfile, "TemporaryFile", pause_before_launch)
+    results = []
+    errors = []
+
+    def execute():
+        try:
+            results.append(sandbox.execute(run_id, SandboxRequest(target=target, stdin=b"x\n")))
+        except BaseException as exc:  # noqa: BLE001 -- report thread failures to the test caller
+            errors.append(exc)
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    try:
+        assert reserved.wait(10), "sandbox did not reserve"
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=?",
+                              (run_id,)).fetchone()
+        recovered = CodexSession(database).recover(run_id)
+        assert recovered["status"] == "planning"
+        assert recovered["actions_remaining"] == 79
+        assert recovered["worker_teardown"]["status"] == "not_running"
+        # A stale launch must not replace even an already registered newer worker.
+        with sqlite3.connect(database) as db:
+            assert not db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone()
+            db.execute("INSERT INTO sandbox_workers VALUES (?, 'docker', 'newer-worker', 0)", (run_id,))
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert not errors, errors
+    assert results[0]["cancelled"] is True
+    assert not engine.exists(), "stale operation contacted the container engine"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() == (
+            "newer-worker",)
+        db.execute("DELETE FROM sandbox_workers WHERE run_id=?", (run_id,))
+    fresh = sandbox.execute(run_id, SandboxRequest(target=target, stdin=b"fresh\n"))
+    assert fresh["ok"] is True
+    assert fresh["stdout"]["text"] == "hello fresh\n"
+    assert sandbox.session.context(run_id)["actions_remaining"] == 78
+
+
+def test_recovery_clears_interrupted_artifact_operation_before_standalone_sandbox(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    session._reserve(run_id, "interrupted_artifact")
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO codex_active_operations "
+                   "(run_id,operation_id,cancel_requested,started) VALUES (?, 'old-operation', 0, 0)", (run_id,))
+    recovered = session.recover(run_id)
+    assert recovered["status"] == "planning" and recovered["actions_remaining"] == 79
+    with sqlite3.connect(database) as db:
+        assert not db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone()
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    assert Sandbox(database).execute(run_id, SandboxRequest(target=target, stdin=b"x\n"))["ok"]
+    assert session.context(run_id)["actions_remaining"] == 78
+
+
+def test_reserved_sandbox_cannot_adopt_another_operation_identity(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    session._reserve(run_id, "new-operation")
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO codex_active_operations "
+                   "(run_id,operation_id,cancel_requested,started) VALUES (?, 'new-operation', 0, 0)", (run_id,))
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    result = Sandbox(database).execute(run_id, SandboxRequest(target=target),
+                                       _reserved=True, _operation_id="old-operation")
+    assert result["cancelled"] is True
+    assert not engine.exists()
+    assert session.context(run_id)["status"] == "executing"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=?",
+                          (run_id,)).fetchone() == ("new-operation",)
+    with pytest.raises(ValueError, match="requires an operation identity"):
+        Sandbox(database).execute(run_id, SandboxRequest(target=target), _reserved=True)
 
 
 def test_sandbox_script_mode_and_scope(tmp_path, engine):
@@ -119,6 +277,191 @@ def test_sandbox_reports_timeout_and_nonzero_exit(tmp_path, engine):
     assert failed["exit_code"] == 3 and failed["ok"] is False
 
 
+@pytest.mark.parametrize("phase", ["container-create", "engine-attach", "oom-inspection"])
+def test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline(tmp_path, monkeypatch, engine, phase):
+    from metis.core import ctf_sandbox
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    original_run = ctf_sandbox.subprocess.run
+    original_popen = ctf_sandbox.subprocess.Popen
+    inspection_timed_out = False
+
+    def timeout_selected(command, *args, **kwargs):
+        nonlocal inspection_timed_out
+        if command[0] == "docker" and (
+            (phase == "container-create" and command[1] == "create")
+            or (phase == "oom-inspection" and command[1] == "inspect" and not inspection_timed_out)
+        ):
+            if phase == "oom-inspection":
+                inspection_timed_out = True
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+        return original_run(command, *args, **kwargs)
+
+    class StalledAttach:
+        def __init__(self, command):
+            self.args = command
+            self.returncode = -9
+            self.expired = False
+
+        def communicate(self, input=None, timeout=None):
+            if not self.expired:
+                self.expired = True
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            return b"", b""
+
+    def attach_selected(command, *args, **kwargs):
+        if phase == "engine-attach" and command[:3] == ["docker", "start", "--attach"]:
+            return StalledAttach(command)
+        return original_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(ctf_sandbox.subprocess, "run", timeout_selected)
+    monkeypatch.setattr(ctf_sandbox.subprocess, "Popen", attach_selected)
+    result = run_zipcrypto_attack(database, run_id, target, {
+        "member": "known.txt", "plaintext_hex": "4142434445464748494a4b4c", "offset": 0, "seconds": 5,
+    })
+    assert result["found"] is False
+    if phase == "container-create":
+        assert result["reason"] == "worker_failed" and result["stage"] == "container-create"
+    elif phase == "engine-attach":
+        assert result["reason"] == "worker_failed" and result["stage"] == "engine-attach", result
+    else:
+        assert result["reason"] == "worker_failed" and result["stage"] == "oom-inspection"
+
+
+def test_cancel_stops_registered_sandbox_worker(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    Sandbox(database)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO sandbox_workers VALUES (?, ?, ?, ?)",
+                   (run_id, "docker", "metis-sandbox-cancel-test", time.time()))
+    result = CodexSession(database).cancel(run_id)
+    assert result["status"] == "cancelled"
+    assert result["worker_teardown"]["status"] == "confirmed"
+    assert any(json.loads(line)[:3] == ["rm", "-f", "metis-sandbox-cancel-test"]
+               for line in engine.read_text().splitlines())
+
+
+def test_sandbox_cleanup_failure_keeps_worker_registered_until_recovery(tmp_path, engine, monkeypatch):
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    original_remove = ctf_sandbox._remove_container
+    monkeypatch.setattr(ctf_sandbox, "_remove_container",
+                        lambda *_: {"status": "unknown", "reason": "engine did not confirm absence"})
+
+    with pytest.raises(RuntimeError, match="cleanup could not be confirmed") as failure:
+        Sandbox(database).execute(run_id, SandboxRequest(target=target))
+    assert "workload_" in str(failure.value)
+    assert session.context(run_id)["status"] == "executing"
+    with sqlite3.connect(database) as db:
+        row = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
+                         (run_id,)).fetchone()
+    assert row and row[0] == "docker"
+
+    monkeypatch.setattr(ctf_sandbox, "_remove_container", original_remove)
+    recovered = session.recover(run_id)
+    assert recovered["worker_teardown"]["status"] == "confirmed"
+    assert recovered["status"] == "planning"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="process-group termination requires POSIX")
+def test_separate_controller_recovers_orphaned_sandbox_idempotently(tmp_path, engine):
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    Sandbox(database)  # create the persistent worker registry before controller A starts
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    initial_actions = session.context(run_id)["actions_remaining"]
+    started = tmp_path / "fake-engine-started"
+    environment = os.environ.copy()
+    environment.update(FAKE_ENGINE_BLOCK_START="1", FAKE_ENGINE_STARTED=str(started))
+    launch_code = textwrap.dedent(f"""
+        from pathlib import Path
+        from metis.core.ctf_sandbox import Sandbox, SandboxRequest
+        Sandbox(Path({str(database)!r})).execute(
+            {run_id!r}, SandboxRequest(target={target!r}, timeout=300))
+    """)
+    controller_a = subprocess.Popen([sys.executable, "-c", launch_code], env=environment,
+                                    start_new_session=True, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+    worker = None
+    deadline = time.monotonic() + 15
+    try:
+        while time.monotonic() < deadline:
+            with sqlite3.connect(database) as db:
+                worker = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
+                                    (run_id,)).fetchone()
+            if worker and started.exists():
+                break
+            if controller_a.poll() is not None:
+                raise AssertionError("controller A exited before starting its sandbox worker")
+            time.sleep(0.05)
+        assert worker and started.exists(), "controller A did not register and start the worker"
+        before_recovery = CodexSession(database).context(run_id)
+        assert before_recovery["status"] == "executing"
+        assert before_recovery["actions_remaining"] < initial_actions
+    finally:
+        try:
+            os.killpg(controller_a.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        controller_a.wait(timeout=10)
+
+    assert worker is not None
+    recovery_code = textwrap.dedent(f"""
+        import json
+        from pathlib import Path
+        from metis.core.codex_session import CodexSession
+        try:
+            result = CodexSession(Path({str(database)!r})).recover({run_id!r})
+            print(json.dumps({{"status": result["status"], "worker": result["worker_teardown"]}}))
+        except RuntimeError as exc:
+            print(json.dumps({{"error": str(exc)}}))
+    """)
+
+    def recover_from_new_process(env_overrides):
+        child_env = os.environ.copy()
+        child_env.update(env_overrides)
+        return subprocess.run([sys.executable, "-c", recovery_code], env=child_env,
+                              capture_output=True, text=True, timeout=20, check=False)
+
+    uncertain = recover_from_new_process({"FAKE_ENGINE_RM_FAIL": "1"})
+    assert uncertain.returncode == 0, uncertain.stderr
+    assert json.loads(uncertain.stdout) == {
+        "error": "recovery blocked: sandbox worker teardown is unknown"}
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is not None
+    after_unknown = CodexSession(database).context(run_id)
+    assert after_unknown["status"] == "executing"
+    assert after_unknown["actions_remaining"] == before_recovery["actions_remaining"]
+
+    recovered_process = recover_from_new_process({})
+    assert recovered_process.returncode == 0, recovered_process.stderr
+    recovered = json.loads(recovered_process.stdout)
+    assert recovered == {"status": "planning", "worker": {"status": "confirmed"}}
+    after_recovery = CodexSession(database).context(run_id)
+    assert after_recovery["actions_remaining"] == before_recovery["actions_remaining"]
+    assert after_recovery["status"] == "planning"
+    assert not any(event.status == "solved" for event in session.store.read(run_id))
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+    repeated = recover_from_new_process({})
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout) == {"status": "planning", "worker": {"status": "not_running"}}
+    assert CodexSession(database).context(run_id)["actions_remaining"] == before_recovery["actions_remaining"]
+
+
 def test_cli_sandbox(tmp_path, engine, monkeypatch, capsys):
     database, run_id = _run(tmp_path)
     monkeypatch.setattr(sys, "argv", ["metis", "sandbox", "--database", str(database), "configure",
@@ -152,6 +495,363 @@ def test_real_engine_isolation_smoke(tmp_path):
         "except OSError: print('rootfs-readonly')\n"
         "print('uid', os.getuid())\n")))
     assert probe["stdout"]["text"].split() == ["net-blocked", "rootfs-readonly", "uid", "65534"]
+
+
+def test_real_engine_enforces_memory_limit(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    result = Sandbox(database).execute(run_id, SandboxRequest(
+        target=target, mode="script", timeout=20,
+        script=("blocks = []\n"
+                "for _ in range(700):\n"
+                "    blocks.append(bytearray(1024 * 1024))\n"
+                "print('allocation completed')\n")))
+    assert result["ok"] is False
+    assert result.get("signal") == 9
+    assert result["memory_limit_exceeded"] is True
+    assert result["stdout"]["text"] == ""
+
+
+def test_real_engine_timeout_removes_process_group(tmp_path, monkeypatch):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    from types import SimpleNamespace
+
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    name = "metis-sandbox-" + "timeout-process-group"[:16]
+    monkeypatch.setattr(ctf_sandbox, "uuid4", lambda: SimpleNamespace(hex="timeout-process-group"))
+    result = Sandbox(database).execute(run_id, SandboxRequest(
+        target=target, mode="script", timeout=1,
+        script=("import subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "time.sleep(60)\n")))
+    assert result["timed_out"] is True
+    assert result.get("elapsed") is not None  # the in-container supervisor returned its timeout record
+    inspected = subprocess.run(["docker", "inspect", name], capture_output=True, check=False)
+    assert inspected.returncode != 0
+
+
+def test_real_engine_cancel_confirms_container_teardown(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    Sandbox(database)
+    outcome = {}
+
+    def execute():
+        outcome.update(Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=60, script="import time; time.sleep(60)\n")))
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    deadline = time.monotonic() + 15
+    worker = None
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                             (run_id,)).fetchone()
+        if row:
+            worker = row[0]
+            inspected = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", worker],
+                                       capture_output=True, check=False)
+            if inspected.returncode == 0 and inspected.stdout.strip() == b"true":
+                break
+        time.sleep(0.05)
+    assert worker is not None
+    result = CodexSession(database).cancel(run_id)
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+    assert result["worker_teardown"]["status"] == "confirmed"
+    assert CodexSession(database).context(run_id)["status"] == "cancelled"
+    assert (outcome.get("cancelled") or outcome.get("error")
+            or outcome.get("engine_exit_code") is not None)
+    assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                          check=False).returncode != 0
+
+
+def test_real_engine_cli_cancel_confirms_container_teardown(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image,
+              platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"))
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    initial_actions = session.context(run_id)["actions_remaining"]
+    Sandbox(database)
+    outcome = {}
+
+    def execute():
+        outcome.update(Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=60,
+            script="import time; time.sleep(60)\n")))
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    worker = None
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with sqlite3.connect(database) as db:
+                row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                                 (run_id,)).fetchone()
+            if row:
+                worker = row[0]
+                inspected = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.State.Running}}", worker],
+                    capture_output=True, check=False, timeout=10)
+                if inspected.returncode == 0 and inspected.stdout.strip() == b"true":
+                    break
+            time.sleep(0.05)
+        assert worker is not None and inspected.returncode == 0
+        assert inspected.stdout.strip() == b"true"
+
+        cancelled = _metis_cli("codex", "--database", str(database), "cancel", run_id)
+        assert cancelled.returncode == 0, cancelled.stderr
+        result = json.loads(cancelled.stdout)
+        assert result["worker_teardown"]["status"] == "confirmed"
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+        assert session.context(run_id)["status"] == "cancelled"
+        assert session.context(run_id)["actions_remaining"] < initial_actions
+        assert (outcome.get("cancelled") or outcome.get("error")
+                or outcome.get("engine_exit_code") is not None)
+        assert not any(event.status.value == "solved" for event in session.store.read(run_id))
+        assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                              check=False, timeout=10).returncode != 0
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?",
+                              (run_id,)).fetchone() is None
+    finally:
+        if thread.is_alive():
+            session.cancel(run_id)
+            thread.join(timeout=15)
+        if worker:
+            subprocess.run(["docker", "rm", "-f", worker], capture_output=True,
+                           check=False, timeout=30)
+
+
+def test_agent_cancel_interrupts_long_artifact_intent(tmp_path, monkeypatch):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    from metis.core import codex_session
+
+    database = tmp_path / "state" / "metis.sqlite"
+    target_path = tmp_path / "challenge.txt"
+    target_path.write_text("bounded sandbox cancellation target")
+    run_id = CodexSession(database).intake(title="Agent cancellation", description="Synthetic local operation",
+                                           paths=[target_path], categories=["crypto", "forensics"])["run_id"]
+    configure(database, engine="docker", image=image, platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"))
+    Sandbox(database)  # initialize the worker registry before the intent thread starts
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    scheduler = AgentScheduler(database, FakeHost(script={
+        role: lambda _assignment, _brief: {"state": "hang"}
+        for role in ("crypto-specialist", "forensics-specialist")
+    }, max_parallel=2))
+    scheduler.configure(global_slots=2, per_run_slots=2)
+    wave = scheduler.ledger.create_wave(run_id, mode="delegated")
+    scheduler.enqueue(run_id, wave["wave_id"])
+    scheduler.dispatch(run_id)
+    job = next(item for item in scheduler.jobs(run_id) if item["state"] == "running")
+
+    def run_long_tool(_root, _name, _tool, _options, **_kwargs):
+        with sqlite3.connect(database) as db:
+            operation_id = db.execute("SELECT operation_id FROM codex_active_operations WHERE run_id=?",
+                                      (run_id,)).fetchone()[0]
+        return Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=300,
+            script="import time; time.sleep(300)\n"), _reserved=True, _operation_id=operation_id)
+
+    monkeypatch.setattr(codex_session, "inspect_file", run_long_tool)
+    errors = []
+    def intent():
+        try:
+            scheduler.intent(run_id, job["assignment_id"], job["attempt_id"],
+                             {"kind": "artifact", "tool": "text", "artifact": target})
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    thread = threading.Thread(target=intent)
+    thread.start()
+    deadline = time.monotonic() + 20
+    worker = None
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone()
+        if row:
+            worker = row[0]
+            inspected = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", worker],
+                                       capture_output=True, check=False)
+            if inspected.returncode == 0 and inspected.stdout.strip() == b"true":
+                break
+        time.sleep(0.05)
+    assert worker is not None and inspected is not None and inspected.returncode == 0
+    assert inspected.stdout.strip() == b"true"
+
+    cancelled = scheduler.cancel(assignment_id=job["assignment_id"])
+    thread.join(timeout=20)
+    assert not thread.is_alive() and errors
+    assert cancelled[0]["state"] == "cancelled"
+    assert subprocess.run(["docker", "inspect", worker], capture_output=True, check=False).returncode != 0
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM codex_active_operations WHERE run_id=?", (run_id,)
+                          ).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM agent_actions WHERE assignment_id=?",
+                          (job["assignment_id"],)).fetchone()[0] == 0
+
+
+def test_real_engine_recovery_stops_orphaned_sandbox_before_resuming(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    target = CodexSession(database).context(run_id)["challenge"]["artifacts"][0]
+    Sandbox(database)
+    outcome = {}
+
+    def execute():
+        outcome.update(Sandbox(database).execute(run_id, SandboxRequest(
+            target=target, mode="script", timeout=60, script="import time; time.sleep(60)\n")))
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+    deadline = time.monotonic() + 15
+    worker = None
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as db:
+            row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                             (run_id,)).fetchone()
+        if row:
+            worker = row[0]
+        inspected = (subprocess.run(["docker", "inspect", worker], capture_output=True, check=False)
+                     if worker else None)
+        if inspected and inspected.returncode == 0:
+            break
+        time.sleep(0.05)
+    assert worker is not None and inspected is not None and inspected.returncode == 0
+    recovered = CodexSession(database).recover(run_id)
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+    assert recovered["worker_teardown"]["status"] == "confirmed"
+    assert recovered["status"] == "planning"
+    assert not any(event.status.value == "solved" for event in CodexSession(database).store.read(run_id))
+    assert outcome.get("cancelled") is True
+    assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                          check=False).returncode != 0
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="process-group termination requires POSIX")
+def test_real_engine_separate_controller_recovers_orphaned_sandbox(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a built metis sandbox image ID")
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=image, platform=None)
+    session = CodexSession(database)
+    target = session.context(run_id)["challenge"]["artifacts"][0]
+    initial_actions = session.context(run_id)["actions_remaining"]
+    Sandbox(database)  # initialize persistent worker registry before controller A starts
+    launch_code = textwrap.dedent(f"""
+        from pathlib import Path
+        from metis.core.ctf_sandbox import Sandbox, SandboxRequest
+        Sandbox(Path({str(database)!r})).execute(
+            {run_id!r}, SandboxRequest(target={target!r}, mode="script", timeout=300,
+                                       script="import time; time.sleep(300)\\n"))
+    """)
+    controller_a = subprocess.Popen([sys.executable, "-c", launch_code],
+                                    start_new_session=True, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+    worker = None
+    before_recovery = None
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            with sqlite3.connect(database) as db:
+                row = db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?",
+                                 (run_id,)).fetchone()
+            if row:
+                worker = row[0]
+                inspected = subprocess.run(["docker", "inspect", "--format={{.State.Running}}", worker],
+                                           capture_output=True, text=True, check=False, timeout=10)
+                if inspected.returncode == 0 and inspected.stdout.strip() == "true":
+                    break
+            if controller_a.poll() is not None:
+                raise AssertionError("controller A exited before its sandbox worker was running")
+            time.sleep(0.05)
+        assert worker is not None and inspected.returncode == 0 and inspected.stdout.strip() == "true", \
+            "controller A did not start a live Docker worker"
+        before_recovery = session.context(run_id)
+        assert before_recovery["status"] == "executing"
+        assert before_recovery["actions_remaining"] < initial_actions
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone()
+
+        # Exercise the operator runbook's inspection commands while the worker is active.
+        inspected = _metis_cli("inspect", "--database", str(database), run_id)
+        assert inspected.returncode == 0, inspected.stderr
+        assert json.loads(inspected.stdout.splitlines()[-1])["status"] == "executing"
+        engine_status = _metis_cli("sandbox", "--database", str(database), "status")
+        assert engine_status.returncode == 0, engine_status.stderr
+        assert json.loads(engine_status.stdout)["engine_available"] is True
+
+        os.killpg(controller_a.pid, signal.SIGKILL)
+        controller_a.wait(timeout=10)
+        orphan = subprocess.run(["docker", "inspect", "--format={{.State.Running}}", worker],
+                                capture_output=True, text=True, check=False, timeout=10)
+        assert orphan.returncode == 0 and orphan.stdout.strip() == "true", \
+            "the sandbox did not survive controller A termination"
+
+        recovered_process = _metis_cli("codex", "--database", str(database), "recover", run_id)
+        assert recovered_process.returncode == 0, recovered_process.stderr
+        recovered_json = json.loads(recovered_process.stdout)
+        assert recovered_json["status"] == "planning"
+        assert recovered_json["worker_teardown"]["status"] == "confirmed"
+        after_recovery = session.context(run_id)
+        assert after_recovery["actions_remaining"] == before_recovery["actions_remaining"]
+        assert after_recovery["status"] == "planning"
+        assert not any(event.status.value == "solved" for event in session.store.read(run_id))
+        assert subprocess.run(["docker", "inspect", worker], capture_output=True,
+                              check=False, timeout=10).returncode != 0
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() is None
+
+        final_inspection = _metis_cli("inspect", "--database", str(database), run_id)
+        assert final_inspection.returncode == 0, final_inspection.stderr
+        assert json.loads(final_inspection.stdout.splitlines()[-1])["status"] == "planning"
+        board = _metis_cli("codex", "--database", str(database), "board")
+        assert board.returncode == 0, board.stderr
+        assert any(item["run_id"] == run_id for item in json.loads(board.stdout)["sessions"])
+
+        repeated = _metis_cli("codex", "--database", str(database), "recover", run_id)
+        assert repeated.returncode == 0, repeated.stderr
+        assert json.loads(repeated.stdout)["worker_teardown"]["status"] == "not_running"
+        assert session.context(run_id)["actions_remaining"] == before_recovery["actions_remaining"]
+    finally:
+        if controller_a.poll() is None:
+            try:
+                os.killpg(controller_a.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            controller_a.wait(timeout=10)
+        if worker:
+            subprocess.run(["docker", "rm", "-f", worker], capture_output=True,
+                           check=False, timeout=30)
 
 
 def _elf(machine: int) -> bytes:

@@ -2,10 +2,12 @@
 
 Challenge binaries never run on the host. The controller streams the declared
 run artifacts into a fresh container over stdin (no bind mounts, no ``docker
-cp``), runs one bounded operation, and returns bounded output. The container has
+cp``), runs one bounded operation, and returns bounded output. The standard container has
 no network, a read-only root filesystem, a size-limited executable tmpfs, no
 capabilities, no privilege escalation, an unprivileged user, and CPU, memory and
-PID limits. On macOS, Docker Desktop/Colima/OrbStack add a Linux VM boundary.
+PID limits. A fixed ZipCrypto worker profile raises its bounded memory and CPU
+quotas while retaining the same isolation. On macOS, Docker Desktop/Colima/OrbStack
+add a Linux VM boundary.
 
 Container isolation is defense in depth, not a proof against kernel exploits;
 use a dedicated VM for hostile competitions when that matters.
@@ -19,8 +21,10 @@ import os
 import platform as platform_module
 import re
 import shutil
+import sqlite3
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
@@ -32,6 +36,7 @@ from pydantic import Field, field_validator
 from metis.core.artifacts import artifact_stream
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import Contract, RunStatus
+from metis.core.run_lock import operation_lock, run_lock
 
 MODES = ("run", "strace", "ltrace", "gdb", "script")
 MAX_INPUT = 64 * 1_048_576
@@ -72,7 +77,7 @@ def default_platform() -> str:
 # fd 0 with os.read (no buffering past the frame), writes files into /work, runs
 # the requested operation with a timeout, and prints one JSON result line.
 BOOTSTRAP = r'''
-import base64, json, os, struct, subprocess, sys, time
+import base64, json, os, signal, struct, subprocess, sys, time
 def take(n):
     out = bytearray()
     while len(out) < n:
@@ -150,14 +155,30 @@ env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "
        "LANG": "C.UTF-8", "TERM": "dumb", "PWNLIB_NOTERM": "1", "METIS_TARGET": target,
        "METIS_STDIN": "/work/.stdin", "METIS_RUNNER": " ".join(prefix),
        "METIS_TARGET_ARCH": header.get("target_arch") or ""}
+def oom_kills():
+    try:
+        with open("/sys/fs/cgroup/memory.events") as stream:
+            fields = dict(line.split() for line in stream)
+        return int(fields.get("oom_kill", "0"))
+    except (OSError, ValueError):
+        return None
+oom_before = oom_kills()
 started = time.monotonic()
 timed_out = False
 with open("/work/.stdin", "rb") as stdin:
     try:
-        completed = subprocess.run(command, stdin=stdin, capture_output=True, timeout=header["timeout"], env=env)
-        code, out, err = completed.returncode, completed.stdout, completed.stderr
-    except subprocess.TimeoutExpired as exc:
-        timed_out, code, out, err = True, None, exc.stdout or b"", exc.stderr or b""
+        process = subprocess.Popen(command, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env=env, start_new_session=True)
+        try:
+            out, err = process.communicate(timeout=header["timeout"])
+            code = process.returncode
+        except subprocess.TimeoutExpired:
+            timed_out, code = True, None
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, err = process.communicate()
     except OSError as exc:
         code, out, err = 127, b"", str(exc).encode()
 program = b""
@@ -170,6 +191,7 @@ if background is not None:
     with open(program_log, "rb") as stream:
         program = stream.read()
 limit = header["max_stream"]
+oom_after = oom_kills()
 traced = b""
 if trace_from_stderr:
     traced, err = err, b""
@@ -180,7 +202,8 @@ def pack(data):
     return {"b64": base64.b64encode(data[:limit]).decode(), "size": len(data), "truncated": len(data) > limit}
 sys.stdout.write("\n" + json.dumps({"exit_code": code, "timed_out": timed_out,
     "elapsed": round(time.monotonic() - started, 3), "stdout": pack(out), "stderr": pack(err),
-    "trace": pack(traced), "program": pack(program)}) + "\n")
+    "trace": pack(traced), "program": pack(program),
+    "memory_limit_exceeded": (oom_before is not None and oom_after is not None and oom_after > oom_before)}) + "\n")
 '''
 
 
@@ -243,6 +266,42 @@ def _engine_environment() -> dict[str, str]:
     if environment.get("DOCKER_HOST", "").startswith(("tcp:", "ssh:", "http")):
         environment.pop("DOCKER_HOST")
     return environment
+
+
+def _remove_container(engine: str, name: str) -> dict[str, Any]:
+    try:
+        removed = subprocess.run([engine, "rm", "-f", name], capture_output=True,
+                                 timeout=30, check=False, env=_engine_environment())
+        inspected = subprocess.run([engine, "inspect", name], capture_output=True,
+                                   timeout=10, check=False, env=_engine_environment())
+        if inspected.returncode == 0:
+            return {"status": "unknown", "reason": "container still exists after removal"}
+        detail = inspected.stderr.lower()
+        if b"no such object" in detail or b"no such container" in detail:
+            return {"status": "confirmed"}
+        if removed.returncode:
+            return {"status": "unknown", "reason": "container removal command failed"}
+        return {"status": "unknown", "reason": "container absence could not be confirmed"}
+    except (OSError, subprocess.TimeoutExpired):
+        return {"status": "unknown", "reason": "container teardown could not be confirmed"}
+
+
+def cancel_registered_worker(database: Path, run_id: str) -> dict[str, Any]:
+    """Stop the registered per-run worker; callers serialize this with run_lock."""
+    with sqlite3.connect(database) as db:
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sandbox_workers'")
+        if not table.fetchone():
+            return {"status": "not_running"}
+        row = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",
+                         (run_id,)).fetchone()
+    if row is None:
+        return {"status": "not_running"}
+    result = _remove_container(*row)
+    if result["status"] == "confirmed":
+        with sqlite3.connect(database) as db:
+            db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                       (run_id, row[1]))
+    return result
 
 
 def engine_check(engine: str) -> tuple[bool, str | None]:
@@ -375,13 +434,23 @@ class Sandbox:
         if not isinstance(self.image, str) or not IMAGE_PATTERN.fullmatch(self.image):
             raise ValueError("sandbox is not configured; run `metis sandbox build` or `metis sandbox configure`")
         self.image_id: str = self.image
+        with sqlite3.connect(database) as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS sandbox_workers (
+                run_id TEXT PRIMARY KEY, engine TEXT NOT NULL, container_name TEXT NOT NULL,
+                started REAL NOT NULL)""")
 
-    def command(self, name: str) -> list[str]:
-        return [self.engine, "run", "--rm", "-i", "--name", name, "--pull=never",
+    def command(self, name: str, *, profile: str = "standard") -> list[str]:
+        if profile not in {"standard", "zipcrypto", "zipcrypto_test_lowmem"}:
+            raise ValueError("unsupported sandbox resource profile")
+        memory, cpus, ipc = ({"zipcrypto": ("2g", "4", "private"),
+                              "zipcrypto_test_lowmem": ("128m", "4", "private")}.get(
+                                  profile, ("512m", "1", "none")))
+        return [self.engine, "create", *( ["--rm"] if profile == "standard" else []), "-i", "--name", name,
+                "--pull=never",
                 *(["--platform", self.platform] if self.platform else []),
                 "--network=none", "--read-only", "--cap-drop=ALL",
-                "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=512m",
-                "--memory-swap=512m", "--cpus=1", "--user=65534:65534", "--ipc=none",
+                "--security-opt=no-new-privileges", "--pids-limit=128", f"--memory={memory}",
+                f"--memory-swap={memory}", f"--cpus={cpus}", "--user=65534:65534", f"--ipc={ipc}",
                 "--tmpfs=/work:rw,exec,nosuid,nodev,size=256m,mode=1777",
                 "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
                 "--workdir=/work", "--log-driver=none", "--env=HOME=/work",
@@ -413,7 +482,28 @@ class Sandbox:
             files.append((visible, content))
         return files
 
-    def execute(self, run_id: str, request: SandboxRequest) -> dict[str, Any]:
+    def execute(self, run_id: str, request: SandboxRequest, *, _reserved: bool = False,
+                _profile: str = "standard", _operation_id: str | None = None) -> dict[str, Any]:
+        # Recovery can interrupt this lock, but another sandbox/artifact call
+        # waits until the old caller observes its revoked operation identity.
+        with operation_lock(self.session.database, run_id):
+            operation_id = _operation_id
+            if not _reserved:
+                operation_id = uuid4().hex
+            elif operation_id is None:
+                raise ValueError("reserved sandbox execution requires an operation identity")
+            try:
+                return self._execute(run_id, request, _reserved=_reserved, _profile=_profile,
+                                     _operation_id=operation_id)
+            finally:
+                if not _reserved:
+                    with run_lock(self.session.database, run_id), sqlite3.connect(self.session.database) as db:
+                        if not db.execute("SELECT 1 FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone():
+                            db.execute("DELETE FROM codex_active_operations WHERE run_id=? AND operation_id=?",
+                                       (run_id, operation_id))
+
+    def _execute(self, run_id: str, request: SandboxRequest, *, _reserved: bool,
+                 _profile: str, _operation_id: str | None) -> dict[str, Any]:
         request = SandboxRequest.model_validate(request.model_dump())
         if request.mode == "script" and not request.script:
             raise ValueError("script mode requires a script")
@@ -434,17 +524,72 @@ class Sandbox:
                   "timeout": request.timeout, "max_stream": MAX_STREAM, "emulate": emulate,
                   "target_arch": target_arch}
         bundle = _bundle(header, files, request.stdin)
-        self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
-                              target=request.target,
-                              input_sha256=hashlib.sha256(bundle).hexdigest())
+        if not _reserved:
+            with run_lock(self.session.database, run_id):
+                with sqlite3.connect(self.session.database) as db:
+                    if db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone():
+                        raise ValueError("run has an unreconciled active operation")
+                self.session._reserve(run_id, "sandboxed_dynamic_execution", mode=request.mode,
+                                      target=request.target,
+                                      input_sha256=hashlib.sha256(bundle).hexdigest())
+                with sqlite3.connect(self.session.database) as db:
+                    db.execute("INSERT INTO codex_active_operations "
+                               "(run_id,operation_id,cancel_requested,started) VALUES (?,?,0,?)",
+                               (run_id, _operation_id, time.time()))
         name = "metis-sandbox-" + uuid4().hex[:16]
         started = time.monotonic()
         result: dict[str, Any]
+        oom_killed = False
+        phase = "container-create"
+        registered = False
         try:
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
-                completed = subprocess.run(self.command(name), input=bundle, stdout=output, stderr=error,
-                                           timeout=request.timeout + 60, check=False,
-                                           env=_engine_environment())
+                # Publish the worker before launch while holding the same per-run
+                # lock used by cancel(). Once cancel returns from this lock it can
+                # always identify the container that may be executing.
+                with run_lock(self.session.database, run_id):
+                    with sqlite3.connect(self.session.database) as db:
+                        active = db.execute("SELECT operation_id,cancel_requested FROM codex_active_operations "
+                                            "WHERE run_id=?", (run_id,)).fetchone()
+                    if (active is None or active != (_operation_id, 0)
+                            or self.session.context(run_id)["status"] != RunStatus.EXECUTING.value):
+                        return {"run_id": run_id, "mode": request.mode, "ok": False,
+                                "error": "cancelled before sandbox launch", "cancelled": True}
+                    with sqlite3.connect(self.session.database) as db:
+                        db.execute("INSERT INTO sandbox_workers VALUES (?, ?, ?, ?)",
+                                   (run_id, self.engine, name, time.time()))
+                    registered = True
+                    created = subprocess.run(self.command(name, profile=_profile), capture_output=True,
+                                             timeout=60, check=False, env=_engine_environment())
+                    if created.returncode:
+                        error.write(created.stderr)
+                        completed: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+                            created.args, created.returncode)
+                        process = None
+                    else:
+                        phase = "engine-attach"
+                        # `create` completes only after the named container exists.
+                        # Starting that existing name avoids a cancel/create race.
+                        process = subprocess.Popen(
+                            [self.engine, "start", "--attach", "--interactive", name],
+                            stdin=subprocess.PIPE, stdout=output, stderr=error,
+                            env=_engine_environment())
+                if process is not None:
+                    try:
+                        process.communicate(input=bundle, timeout=request.timeout + 60)
+                        completed = subprocess.CompletedProcess(process.args, process.returncode or 0)
+                    except subprocess.TimeoutExpired:
+                        self._remove_worker(name)
+                        process.communicate()
+                        raise
+                    phase = "workload-completed"
+                if _profile.startswith("zipcrypto"):
+                    phase = "oom-inspection"
+                    inspected = subprocess.run(
+                        [self.engine, "inspect", "--format={{.State.OOMKilled}}", name],
+                        capture_output=True, timeout=10, check=False, env=_engine_environment())
+                    oom_killed = inspected.returncode == 0 and inspected.stdout.strip().lower() == b"true"
+                    phase = "result-collection"
                 output.seek(0)
                 raw = output.read(8 * MAX_STREAM)
                 error.seek(0)
@@ -454,6 +599,8 @@ class Sandbox:
                 payload = json.loads(line)
                 result = {"ok": payload["exit_code"] == 0 and not payload["timed_out"],
                           "exit_code": payload["exit_code"], "timed_out": payload["timed_out"],
+                          "memory_limit_exceeded": (payload.get("memory_limit_exceeded", False)
+                                                     or oom_killed),
                           "elapsed": payload["elapsed"], "stdout": _unpack(payload["stdout"]),
                           "stderr": _unpack(payload["stderr"])}
                 if request.mode in {"strace", "ltrace"}:
@@ -463,24 +610,64 @@ class Sandbox:
                 if payload["exit_code"] is not None and payload["exit_code"] < 0:
                     result["signal"] = -payload["exit_code"]
             except (ValueError, KeyError, TypeError):
-                result = {"ok": False, "error": "sandbox engine failed", "engine_exit_code": completed.returncode,
-                          "engine_stderr": engine_error[-1024:]}
+                result = ({"ok": False, "memory_limit_exceeded": True, "exit_code": completed.returncode}
+                          if oom_killed else
+                          {"ok": False, "error": "sandbox engine failed", "engine_exit_code": completed.returncode,
+                           "engine_stderr": engine_error[-1024:]})
         except subprocess.TimeoutExpired:
             subprocess.run([self.engine, "rm", "-f", name], capture_output=True, timeout=30, check=False,
                            env=_engine_environment())
-            result = {"ok": False, "error": "sandbox timeout", "timed_out": True}
+            result = {"ok": False, "error": "sandbox engine timeout", "timed_out": False,
+                      "engine_timed_out": True, "failure_stage": phase}
         except OSError as exc:
             result = {"ok": False, "error": "sandbox engine unavailable: " + type(exc).__name__}
-        self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
-                           exit_code=str(result.get("exit_code")),
-                           elapsed=str(round(time.monotonic() - started, 3)))
-        self.session._emit(run_id, RunStatus.REPLANNING)
-        self.session._emit(run_id, RunStatus.PLANNING)
+        finally:
+            # Keep the persistent record until removal and absence are confirmed.
+            # Recovery and cancellation use the same lock, so neither can miss a
+            # worker whose teardown is still uncertain.
+            if registered:
+                with run_lock(self.session.database, run_id):
+                    cleanup = _remove_container(self.engine, name)
+                    if cleanup["status"] != "confirmed":
+                        # Preserve the prior exception when one is propagating;
+                        # never include untrusted workload output in this error.
+                        prior = sys.exception()
+                        status = ("workload_completed" if result.get("ok") else
+                                  "workload_timed_out" if result.get("engine_timed_out") else
+                                  "workload_memory_limit" if result.get("memory_limit_exceeded") else
+                                  "workload_failed") if "result" in locals() else "workload_unknown"
+                        raise RuntimeError(
+                            f"sandbox cleanup could not be confirmed ({status})") from prior
+                    with sqlite3.connect(self.session.database) as db:
+                        db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
+                                   (run_id, name))
+        if not _reserved:
+            with run_lock(self.session.database, run_id):
+                current_status = self.session.context(run_id)["status"]
+                with sqlite3.connect(self.session.database) as db:
+                    active = db.execute("SELECT operation_id,cancel_requested FROM codex_active_operations "
+                                        "WHERE run_id=?", (run_id,)).fetchone()
+                if current_status == RunStatus.CANCELLED.value:
+                    result = {"ok": False, "cancelled": True, "error": "sandbox worker cancelled"}
+                elif (current_status != RunStatus.EXECUTING.value
+                      or active != (_operation_id, 0)):
+                    result = {"ok": False, "cancelled": True,
+                              "error": "sandbox result discarded after controller recovery"}
+                else:
+                    self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(result["ok"]).lower(),
+                                       exit_code=str(result.get("exit_code")),
+                                       elapsed=str(round(time.monotonic() - started, 3)))
+                    self.session._emit(run_id, RunStatus.REPLANNING)
+                    self.session._emit(run_id, RunStatus.PLANNING)
         files_note = [name for name, _ in files if name != ".metis-script"]
         return {"run_id": run_id, "mode": request.mode, "files_in_sandbox": files_note,
                 "isolation": {"engine": self.engine, "network": "none", "host_mounts": False,
-                              "image": self.image, "platform": self.platform},
+                              "image": self.image, "platform": self.platform,
+                              "resource_profile": _profile},
                 "target_arch": target_arch,
                 "emulation": (emulate["qemu"] if emulate else None),
                 "output_is_untrusted": True, **result}
+
+    def _remove_worker(self, name: str) -> dict[str, Any]:
+        return _remove_container(self.engine, name)
 

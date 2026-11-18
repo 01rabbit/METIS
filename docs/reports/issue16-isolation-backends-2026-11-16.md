@@ -1,4 +1,6 @@
-# Issue #16 Codex の隔離: spawn ツールの調査、子プロセスの禁止、Linux 版（2026-11-16）
+# Issue #16 Codex の隔離: spawn ツールの調査、子プロセスの禁止、Linux 版
+
+この記録の最初の節と表は 2026-11-16 時点の調査スナップショットである。現在は Linux の seccomp による fork 等の拒否と、Codex CLI 0.166.0 / 0.169.0 のLinux実機検証を完了している。最新結果は末尾を参照。
 
 ## spawn ツールは設定で無効化できるか
 
@@ -31,7 +33,7 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 - 外部への通信は、新しいネットワーク名前空間の中から、127.0.0.1:18080 → 転送器 → Unix ソケット → ホスト側の許可リスト付き
   プロキシ、という経路だけに限る。直接の通信は経路が無い。
 - bubblewrap は no-new-privileges を設定するので、setuid による権限昇格は効かない。
-- 子プロセスは禁止できない（seccomp フィルタは未導入）。ただし子プロセスも同じ名前空間・capability 0・no-new-privileges の下にいる。
+- （2026-11-16 時点）子プロセスは禁止できなかった。後述の追記で seccomp を導入したが、既存プロセスの `exec` と Codex 内部の in-process spawn は禁止しない。
 - 起動前に `bwrap` が実際に名前空間を作れるかを確かめる。作れない場合は隔離なしとみなし、起動を拒否する（fail closed）。
 
 検証:
@@ -53,13 +55,30 @@ spawn の試みは（`--ephemeral` のため）失敗し、カナリアに検知
 | --- | --- | --- |
 | ホームと共有の一時ディレクトリの読み書き | 拒否（プロファイル） | 見えない（マウントしない） |
 | 外部への通信 | プロキシの許可リストのみ | 名前空間の中からプロキシ経由のみ |
-| 子プロセス | 禁止（fork・exec） | 可能。ただし同じ名前空間・capability 0・NoNewPrivs |
+| OS プロセス生成 | 禁止（fork、Codex 本体以外の exec） | seccomp で fork/vfork、プロセス生成 clone を拒否。thread clone は許可。exec は可能 |
 | 権限昇格 | exec を Codex 本体に限る | NoNewPrivs、capability 0 |
-| 実 Codex での確認 | 実施済み | 未実施（偽 Codex のみ） |
+| 実 Codex での確認 | 実施済み | codex-cli 0.166.0 / 0.169.0 で実施済み |
 | 隔離を用意できない場合 | 起動を拒否する | 起動を拒否する |
 
-## 未解決
+## 2026-11-17 Linux 実Codexの更新
 
-- spawn ツールそのものをモデルから隠すこと（この CLI の版では不可能）。
-- Linux での子プロセスの禁止（seccomp フィルタ）と、実 Codex での確認。
-- Windows は未実装（起動を拒否する）。
+稼働中の Colima `rosetta` profile（Ubuntu 24.04 aarch64、4 CPU、約6 GiB、cgroup v2）で、Codex CLI のLinux arm64配布物を一時展開し、既存 hardware-key 再認証済みアカウントの `auth.json` を権限600の一時 `CODEX_HOME` に限定してprobeを実施した。CIやchallenge sandboxには認証を渡していない。一時homeはprobe後に削除した。
+
+Codex CLI 0.166.0 と 0.169.0 の双方で、隔離下pingがreturn code 0、bwrapセルフテスト全項目が合格し、認証ファイルは `unchanged`。`--ephemeral` を付けずに spawn カナリアを行うと、METISが設定する `agents.enabled=false` とMultiAgentV2無効化の下で、Codex routerが `code-mode host is disabled` と拒否した。router記録を `sub_agent_attempt` として検出する。
+
+負の対照として、0.169.0でagent無効化設定を取り除くとspawn要求が成功し、子タスクが `HELLO` を返した。よって分離根拠はOSのfork拒否ではなく、試験したCLI設定の拒否応答である。ツール名はモデルに見える。未試験のCLI版は既定で拒否する。Windowsは未実装で、隔離backendの不在により起動をfail closedする。
+
+
+## 追加調査（2026-11-16）
+
+Linux の Codex 実行側に seccomp を追加し、fork/vfork とプロセスを作る clone を拒否する。
+clone3 は ENOSYS で拒否し、必要なスレッド用 clone は許可する。これは exec や Codex 内部の
+サブエージェントを禁止しない。x86-64 と aarch64 のみを対象とし、他のアーキテクチャでは起動に失敗する。
+Linux aarch64 コンテナの単独フィルタ試験ではスレッド作成成功と fork 拒否を確認した。
+コンテナの既定制限下では bubblewrap の名前空間作成が失敗したため、統合試験は未確認。
+Linux 上の実 Codex と非特権環境の新フィルタは未確認である。
+
+codex-cli 0.166.0 / 0.169.0 の実測を越える版では拒否を主張しない。Windows の sandbox はこの実装から使用しておらず、Job Object、AppContainer やネットワーク制御の組み合わせについて設計・実証していない。Windows では従来どおり fail closed であり、同等の隔離保証は主張できない。
+
+実行コマンド、両CLIのprobe値、負の対照、現在の受け入れ判定は
+`docs/reports/issue16-linux-real-codex-2026-11-17.md` を参照。

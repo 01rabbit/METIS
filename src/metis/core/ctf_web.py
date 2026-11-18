@@ -119,6 +119,8 @@ def feedback_text(value: str, candidate: str, client: SafeHTTP) -> str:
 
 
 class WebWorkflow:
+    _AUTH_GENERATION_STATE_KEY = "_metis_auth_generation"
+
     def __init__(self, database: Path):
         self.session = CodexSession(database)
         self.database = database
@@ -135,6 +137,7 @@ class WebWorkflow:
             if "attempts" not in columns:
                 db.execute("ALTER TABLE web_attempts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1")
             db.execute("CREATE TABLE IF NOT EXISTS web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS web_auth_generations (origin TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
 
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
         key = origin(url)
@@ -143,6 +146,7 @@ class WebWorkflow:
         if scheme not in {"Token", "Bearer"}:
             raise ValueError("invalid credential scheme")
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT payload FROM web_credentials WHERE origin=?", (key,)).fetchone()
             values = json.loads(row[0]) if row else {}
             values[kind] = value
@@ -152,26 +156,88 @@ class WebWorkflow:
         return {"origin": key, "credential_stored": True, "kind": kind,
                 "storage": "private local state; excluded from Git"}
 
+    def forget_auth(self, url: str) -> dict:
+        """Forget locally stored credentials and cookies for one authentication origin."""
+        key = origin(url)
+        with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                       "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+            generation, = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                     (key,)).fetchone()
+            cursor = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
+            rows = db.execute("SELECT run_id,state FROM web_runs WHERE json_extract(config,'$.auth_origin')=?", (key,)).fetchall()
+            cookie_removed = False
+            for run_id, raw_state in rows:
+                state = json.loads(raw_state)
+                removed_cookies = state.get("cookies", {}).pop(key, None)
+                cookie_removed = bool(removed_cookies) or cookie_removed
+                state.pop("cookie_fingerprint", None)
+                state[self._AUTH_GENERATION_STATE_KEY] = generation
+                db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
+            removed = cursor.rowcount > 0 or cookie_removed
+        return {"origin": key, "credential_removed": removed,
+                "limit": ("Local stored credentials only; environment variables and provider credentials "
+                          "are unchanged, and an in-flight request may already have sent authentication")}
+
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN")
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
                              (run_id,)).fetchone()
-        if row is None:
-            raise ValueError("web workflow not found")
-        return json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3]), row[4], row[5]
+            if row is None:
+                raise ValueError("web workflow not found")
+            config, state = json.loads(row[0]), json.loads(row[1])
+            auth_origin = config["auth_origin"]
+            generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (auth_origin,)).fetchone()
+            generation = generation_row[0] if generation_row else 0
+            state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, generation)
+            if state_generation != generation:
+                state.get("cookies", {}).pop(auth_origin, None)
+                state.pop("cookie_fingerprint", None)
+            state[self._AUTH_GENERATION_STATE_KEY] = generation
+        return config, state, json.loads(row[2]), json.loads(row[3]), row[4], row[5]
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN")
             row = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
                              (config["auth_origin"],)).fetchone()
-        return SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
+            row_generation = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (config["auth_origin"],)).fetchone()
+            current_generation = row_generation[0] if row_generation else 0
+        state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, current_generation)
+        client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else {}, timeout=15)
+        client.auth_generation = state_generation
+        client.auth_generation_check = lambda expected: self._auth_generation_matches(
+            config["auth_origin"], expected)
+        return client
+
+    def _auth_generation_matches(self, auth_origin: str, expected: int) -> bool:
+        with sqlite3.connect(self.database) as db:
+            row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                             (auth_origin,)).fetchone()
+        return (row[0] if row else 0) == expected
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            config_row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+            if config_row is None:
+                return
+            auth_origin = json.loads(config_row[0])["auth_origin"]
+            row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
+            generation = row[0] if row else 0
+            state = client.export_state()
+            if generation != client.auth_generation:
+                state.get("cookies", {}).pop(auth_origin, None)
+                state.pop("cookie_fingerprint", None)
+            state[self._AUTH_GENERATION_STATE_KEY] = generation
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
-                       (json.dumps(client.export_state()), run_id))
+                       (json.dumps(state), run_id))
 
     def rctf_login(self, url: str, team_token: str) -> dict:
         """Exchange an rCTF team token for an auth token and store it privately as Bearer."""
@@ -310,13 +376,20 @@ class WebWorkflow:
         files = []
         rendered: dict[str, Any] | None = None
         if render:
+            auth_generation_check = lambda: self._auth_generation_matches(
+                config["auth_origin"], client.auth_generation)
+            if not auth_generation_check():
+                raise ValueError("authentication has been forgotten for this origin")
             jar_cookies = client.export_state()["cookies"].get(config["auth_origin"], [])
             host = urllib.parse.urlsplit(config["auth_origin"]).hostname or ""
             browser_cookies = [{"name": item["name"], "value": item["value"] or "", "domain": host,
                                 "path": item["path"] or "/", "secure": bool(item["secure"])}
                                for item in jar_cookies]
             final_url, html, blocked = (renderer or ctf_browser.render)(
-                response.url, allowed, cookies=browser_cookies)
+                response.url, allowed, cookies=browser_cookies,
+                auth_origin=config["auth_origin"], auth_generation_check=auth_generation_check)
+            if not auth_generation_check():
+                raise ValueError("authentication has been forgotten for this origin")
             if origin(final_url) not in allowed:
                 raise ValueError("rendered page left the authorized scope")
             body = html
@@ -361,7 +434,12 @@ class WebWorkflow:
             files = [urllib.parse.urljoin(url, item) for item in raw_files]
         else:
             page = Page(body, response.url)
-            title, description, categories = page.title or "CTF web problem", page.text, []
+            title, description = page.title or "CTF web problem", page.text
+            # Only the known AlpacaHack archive layout supplies this hint. A
+            # conflicting set of page links is ambiguous, not authoritative.
+            host = urllib.parse.urlsplit(response.url).hostname
+            declared = set(page.categories)
+            categories = list(declared) if host == "alpacahack.com" and len(declared) == 1 else []
             files = [link["url"] for link in page.links if is_distribution(link, url, adapter, challenge_id)]
         links = list(page.links)
         for file_url in files:
@@ -418,19 +496,31 @@ class WebWorkflow:
                     if total > 512 * 1024 * 1024:
                         raise ValueError("distribution files exceed total limit")
                     paths.append(path)
+            evaluation = split_for(Path("writeups"), config["adapter"], config.get("challenge_id"))
             context = self.session.intake(title=title, description=description[:65_000], paths=paths,
-                                           categories=categories, max_actions=120, wall_seconds=7200)
+                                           categories=categories, max_actions=120, wall_seconds=7200,
+                                           evaluation_split=evaluation["split"])
         run_id = context["run_id"]
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (config["auth_origin"],)).fetchone()
+            generation = generation_row[0] if generation_row else 0
+            initial_state = client.export_state()
+            if generation != client.auth_generation:
+                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
+                initial_state.pop("cookie_fingerprint", None)
+            initial_state[self._AUTH_GENERATION_STATE_KEY] = generation
             db.execute("INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
-                       (run_id, json.dumps(config), json.dumps(client.export_state()),
+                       (run_id, json.dumps(config), json.dumps(initial_state),
                         json.dumps(page.forms), json.dumps(links), secrets.token_hex(32)))
         return {"context": context, "web": self.context(run_id)["web"],
                 "downloaded_files": len(paths) - 1, "skipped_files": skipped,
                 **({"render": rendered} if rendered else {}),
-                "prior_knowledge": self.knowledge.search(description[:256],
-                                                          category=categories[0] if categories else None, limit=3),
-                "evaluation": split_for(Path("writeups"), config["adapter"], config.get("challenge_id")),
+                "prior_knowledge": self.knowledge.search_for_run(
+                    run_id, f"{title} {description[:256]}",
+                    category=categories[0] if categories else None, limit=3),
+                "evaluation": evaluation,
                 "page_text_is_untrusted": True}
 
     def context(self, run_id: str) -> dict:
@@ -555,6 +645,38 @@ class WebWorkflow:
         return {"run_id": run_id, "verification_configured": True}
 
     @locked
+    def prepare_browser(self, run_id: str, candidate: str) -> dict:
+        """Reserve a browser send before UI interaction; unresolved sends never expire."""
+        if not candidate or len(candidate.encode()) > 65_536:
+            raise ValueError("invalid bounded candidate")
+        config, _, _, _, salt, paused = self._load(run_id)
+        if config["adapter"] != "html" or config.get("submission"):
+            raise ValueError("this run has an official API/form verifier; use submit")
+        if paused > time.time():
+            raise ValueError("submission cooldown is active")
+        digest = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
+        with sqlite3.connect(self.database) as db:
+            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND verdict='pending'", (run_id,)).fetchone():
+                raise ValueError("pending browser submission; inspect official UI and attest before another send")
+            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND digest=?", (run_id, digest)).fetchone():
+                raise ValueError("identical candidate already recorded")
+            used = db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?", (run_id,)).fetchone()[0]
+            if used >= config["max_submissions"]:
+                raise ValueError("submission limit reached")
+            latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",
+                                (run_id,)).fetchone()
+            if latest and latest[0] == "incorrect" and not db.execute(
+                "SELECT 1 FROM ctf_hypotheses WHERE run_id=? AND created>? AND status IN ('revised','rejected') LIMIT 1",
+                (run_id, latest[1]),
+            ).fetchone():
+                raise ValueError("record an evidence-based revised hypothesis before a new candidate")
+            self.session._reserve(run_id, "official_flag_submission_browser")
+            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,'pending',?)",
+                       (run_id, digest, time.time()))
+        return {"run_id": run_id, "verdict": "pending", "may_send_once": True,
+                "next": "submit once in the official browser UI, then attest the observed verdict"}
+
+    @locked
     def attest(self, run_id: str, candidate: str, *, verdict: str, evidence: str) -> dict:
         """Record an official verdict that was observed in the platform's own web UI.
 
@@ -579,11 +701,34 @@ class WebWorkflow:
             raise ValueError("this run has an official API/form verifier; use `metis web submit`")
         fingerprint = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
         with sqlite3.connect(self.database) as db:
-            if db.execute("SELECT 1 FROM web_attempts WHERE run_id=? AND digest=?", (run_id, fingerprint)).fetchone():
-                raise ValueError("identical candidate already recorded; reconsider the hypothesis")
-            if db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?",
-                          (run_id,)).fetchone()[0] >= config["max_submissions"]:
-                raise ValueError("submission limit reached")
+            existing = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? AND digest=?",
+                                  (run_id, fingerprint)).fetchone()
+            if existing and existing[0] != "pending":
+                if existing[0] != verdict:
+                    raise ValueError("candidate already has a different recorded verdict")
+                status = self.session.context(run_id)["status"]
+                if status == RunStatus.VERIFYING.value:
+                    if verdict == "correct":
+                        self.session._emit(run_id, RunStatus.SOLVED, verification="official_browser_observed")
+                    else:
+                        self.session._emit(run_id, RunStatus.REPLANNING, reason="official_incorrect")
+                        self.session._emit(run_id, RunStatus.PLANNING)
+                    status = self.session.context(run_id)["status"]
+                expected_status = RunStatus.SOLVED.value if verdict == "correct" else RunStatus.PLANNING.value
+                if status != expected_status:
+                    raise RuntimeError("recorded browser verdict disagrees with recovered run state")
+                return {"run_id": run_id, "verdict": verdict, "verified": verdict == "correct",
+                        "verification": "official_browser_observed", "status": status,
+                        "idempotent_retry": True,
+                        "next": "record the write-up" if verdict == "correct"
+                                else "record a revised hypothesis; do not resubmit the same candidate"}
+            prepared = existing is not None and existing[0] == "pending"
+            if not prepared and db.execute(
+                "SELECT 1 FROM web_attempts WHERE run_id=? AND verdict='pending'", (run_id,)
+            ).fetchone():
+                raise ValueError("pending browser submission belongs to a different candidate")
+            if not prepared:
+                raise ValueError("prepare this exact browser submission before attesting its verdict")
             latest = db.execute("SELECT verdict,created FROM web_attempts WHERE run_id=? ORDER BY created DESC LIMIT 1",
                                 (run_id,)).fetchone()
             if latest and latest[0] == "incorrect" and not db.execute(
@@ -591,12 +736,21 @@ class WebWorkflow:
                 (run_id, latest[1]),
             ).fetchone():
                 raise ValueError("record an evidence-based revised hypothesis before recording a new candidate")
-        self.session._reserve(run_id, "official_flag_submission_browser")
-        self.session._emit(run_id, RunStatus.OBSERVING, evidence=evidence)
-        self.session._emit(run_id, RunStatus.VERIFYING)
+        status = self.session.context(run_id)["status"]
+        if status == RunStatus.EXECUTING.value:
+            self.session._emit(run_id, RunStatus.OBSERVING, evidence=evidence)
+            status = RunStatus.OBSERVING.value
+        if status == RunStatus.OBSERVING.value:
+            self.session._emit(run_id, RunStatus.VERIFYING)
+            status = RunStatus.VERIFYING.value
+        if status != RunStatus.VERIFYING.value:
+            raise ValueError("browser submission is not awaiting a verdict")
         with sqlite3.connect(self.database) as db:
-            db.execute("INSERT INTO web_attempts(run_id,digest,verdict,created) VALUES (?,?,?,?)",
-                       (run_id, fingerprint, verdict, time.time()))
+            cursor = db.execute("UPDATE web_attempts SET verdict=?,created=? "
+                                "WHERE run_id=? AND digest=? AND verdict='pending'",
+                                (verdict, time.time(), run_id, fingerprint))
+            if cursor.rowcount != 1:
+                raise ValueError("browser reservation changed before verdict recording")
         if verdict == "correct":
             self.session._emit(run_id, RunStatus.SOLVED, verification="official_browser_observed")
         else:

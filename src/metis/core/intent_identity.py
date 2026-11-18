@@ -79,6 +79,9 @@ def _pcap_records(stream: Any, limit: int) -> int | None:
 def effective_options(root: Path | None, artifact: str | None, tool: str, options: dict[str, Any]) -> dict[str, Any]:
     effective = {**DEFAULTS.get(tool, {}), **{key: _coerce(value) for key, value in options.items()}}
     if root is None or artifact is None:
+        if tool == "zipcrypto_decrypt" and isinstance(effective.get("expected_random_header_hex"), str):
+            effective["expected_random_header_hex"] = "".join(
+                effective["expected_random_header_hex"].split()).lower()
         return effective
     try:
         with artifact_stream(root, artifact, max_bytes=MAX_FILE) as stream:
@@ -94,6 +97,9 @@ def effective_options(root: Path | None, artifact: str | None, tool: str, option
                     effective["packets"] = records  # asking for more than exist reads the same records
     except (OSError, ValueError):
         pass  # unreadable artifacts fall back to the coerced request; the tool will reject them
+    if tool == "zipcrypto_decrypt" and isinstance(effective.get("expected_random_header_hex"), str):
+        effective["expected_random_header_hex"] = "".join(
+            effective["expected_random_header_hex"].split()).lower()
     return effective
 
 

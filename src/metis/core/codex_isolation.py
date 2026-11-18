@@ -15,7 +15,7 @@ the model or on Codex flags:
 * **Network.** Outbound connections are denied except to a local CONNECT proxy that allows
   port 443 to an explicit host allow-list (the model API). Other hosts get 403 and are logged.
 
-Not covered (documented, not claimed): Linux/Windows sandboxes, kernel or Seatbelt escapes,
+Not covered (documented, not claimed): Windows sandboxes, kernel or Seatbelt escapes,
 and what the model API itself receives (the prompt is sent there by design).
 """
 from __future__ import annotations
@@ -352,20 +352,60 @@ def self_test(sentinel: Path, *, protected: list[Path] | None = None) -> dict[st
             shell = Path("/bin/sh")
             results["child_process_denied"] = (attempt([str(shell), "-c", "/bin/echo hi"], shell) != 0
                                                and attempt([str(shell), "-c", "exec /bin/echo hi"], shell) != 0)
-        else:  # bubblewrap: children stay in the namespaces; no new privileges (setuid is inert)
+        else:  # process creation is denied; thread creation remains available
             check = "import sys; sys.exit(0 if 'NoNewPrivs:\\t1' in open('/proc/self/status').read() else 1)"
             results["no_new_privileges"] = attempt([python, "-I", "-c", check]) == 0
+            process_check = "import os; os.fork()"
+            thread_check = "import threading; t=threading.Thread(target=lambda: None); t.start(); t.join()"
+            results["child_process_denied"] = attempt([python, "-I", "-c", process_check]) != 0
+            results["thread_allowed"] = attempt([python, "-I", "-c", thread_check]) == 0
         results["proxy_refusals_logged"] = list(proxy.log.refused)
         required = ["read_protected_denied", "list_protected_denied", "write_outside_denied",
                     "write_turn_dir_allowed", "direct_network_denied", "proxy_other_host_refused",
-                    "child_process_denied" if backend == "seatbelt" else "no_new_privileges"]
+                    "child_process_denied"]
+        if backend == "bwrap":
+            required += ["no_new_privileges", "thread_allowed"]
         results["passed"] = all(results[key] for key in required)
     return results
 
 
 # -- Linux backend (bubblewrap) ------------------------------------------------------------------
 FORWARDER = r"""
-import os, select, socket, sys
+import ctypes, errno, os, platform, select, socket, sys
+
+def restrict_process_creation():
+    # Classic BPF over struct seccomp_data: clone with CLONE_THREAD is allowed;
+    # clone3 is forced to ENOSYS because its flags live behind a pointer. This
+    # prevents process creation, not exec, and permits all valid thread clones.
+    machine = platform.machine()
+    numbers = {"x86_64": (0xc000003e, 56, 57, 58), "aarch64": (0xc00000b7, 220, None, None)}
+    if machine not in numbers:
+        raise RuntimeError("unsupported seccomp architecture")
+    arch, clone, fork, vfork = numbers[machine]
+    class Filter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
+                    ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint32)]
+    class Program(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(Filter))]
+    ins = [(0x20, 0, 0, 4), (0x15, 1, 0, arch), (0x06, 0, 0, 0x80000000),
+           (0x20, 0, 0, 0)]
+    # Reject x32 ABI, whose syscall numbers otherwise bypass x86_64 comparisons.
+    if machine == "x86_64":
+        ins += [(0x45, 0, 1, 0x40000000), (0x06, 0, 0, 0x80000000)]
+    for number in (fork, vfork):
+        if number is not None:
+            ins += [(0x15, 0, 1, number), (0x06, 0, 0, 0x00050000 | errno.EPERM)]
+    # clone3 cannot be inspected by classic BPF; ENOSYS makes libc fall back to clone.
+    ins += [(0x15, 0, 1, 435), (0x06, 0, 0, 0x00050000 | errno.ENOSYS),
+            (0x15, 0, 3, clone), (0x20, 0, 0, 16),
+            (0x45, 1, 0, 0x10000), (0x06, 0, 0, 0x00050000 | errno.EPERM),
+            (0x06, 0, 0, 0x7fff0000)]
+    filters = (Filter * len(ins))(*(Filter(*item) for item in ins))
+    program = Program(len(ins), filters)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0 or libc.prctl(22, 2, ctypes.byref(program), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "failed to install process seccomp filter")
+
 port, path, argv = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
 listener = socket.socket()
 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -388,6 +428,7 @@ if os.fork() == 0:
                     (upstream if sock is client else client).sendall(data)
         client.close()
 listener.close()
+restrict_process_creation()
 os.execv(argv[0], argv)
 """
 SYSTEM_RO = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ssl", "/etc/ca-certificates", "/etc/pki",
@@ -406,7 +447,7 @@ def bwrap_command(*, turn_dir: Path, readable: list[Path], socket_path: Path, po
     the readable paths (read-only) and the turn dir (read-write) mounted. The home directory and
     shared temp dirs are not mounted at all. Egress: 127.0.0.1:port inside -> Unix socket -> host proxy.
     bwrap sets PR_SET_NO_NEW_PRIVS and drops capabilities, so setuid programs cannot raise privileges.
-    Child processes are possible (no seccomp filter) but stay inside the same namespaces."""
+    A seccomp filter blocks process creation while allowing thread-group clones. It does not block exec."""
     binary = shutil.which("bwrap")
     if not binary:
         raise RuntimeError("bubblewrap is not available")

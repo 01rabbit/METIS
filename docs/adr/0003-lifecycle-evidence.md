@@ -1,6 +1,6 @@
 # ADR 0003 — Fail-closed contracts and controller lifecycle evidence
 
-Status: Accepted for this increment; P0 acceptance remains incomplete.
+Status: Accepted for bounded P0 scope (explicit user intake and local fixtures).
 
 Scope: local fixtures and explicitly authorized CTF infrastructure.
 
@@ -20,9 +20,30 @@ Decisions:
 - Keep secrets, flags and raw tool output out of event details. CLI validation
   errors omit rejected input because Pydantic errors can otherwise disclose it.
   This increment provides no general-purpose automatic secret redactor.
+- `metis audit` projects only validated lifecycle metadata and, for Codex
+  sessions, structured action/wall limits and charged action reservations from
+  one read-only SQLite snapshot. An `EXECUTING` event charges an action even
+  when the tool fails or the controller is interrupted. Session configuration
+  is mutable and outside the event hash chain; chain validity does not
+  authenticate budget configuration. Missing Codex configuration is reported
+  as unavailable. The projection omits manifests, commitments and free-form
+  details, and does not estimate provider cost, live time remaining or retention.
+- Sandbox execution persists an operation identity with its charged reservation
+  under the run lock and validates that identity again before worker registration
+  and result acceptance. Recovery revokes the identity after confirmed worker
+  teardown. Per-run sandbox/artifact serialization lets old callers discard their work
+  without adopting a new caller's reservation or overwriting its worker record.
 - `metis prepare` records NEW and VALIDATED only. It does not execute tools,
   contact a model, inspect artifact contents or claim a solve. Failure between
   these appends can leave an auditable NEW run; automatic resume is not implemented.
+- Authorization provenance is established by the operator-controlled entrypoint,
+  not by untrusted challenge content. URL intake is initiated by the user and
+  constructs the manifest in the controller; challenge statements and downloaded
+  artifacts cannot add origins. Additional web/remote origins require an explicit
+  per-run grant command. A locally supplied manifest passed to `validate`,
+  `prepare` or `run` is treated as trusted operator input; the manifest parser
+  validates consistency but is not an identity or signature system. `run` is
+  restricted to the local fixture verifier and fixed transforms.
 
 Additional implemented prerequisites: descriptor-based artifact reads reject
 symlinks, nonregular files and oversized content. Artifacts are handed off as
@@ -35,6 +56,8 @@ sandbox or a claim of kernel-escape resistance. No existing permissions are
 broadened. A protected verifier protocol and adversarial isolation review remain.
 
 Consequences: deterministic contract, lifecycle and fixture-runtime tests are
-possible without model credentials. A complete solver/verifier protocol, global
-budget/cancellation enforcement and real-provider tests remain required before
-P0/P1 acceptance.
+possible without model credentials. P0's bounded acceptance gate is met for the
+documented operator-intake and local-fixture paths. This decision does not claim
+authenticated manifest provenance, general adversarial sandbox resistance,
+production readiness, or broad real-provider evaluation; those remain separate
+P1/P8 concerns.

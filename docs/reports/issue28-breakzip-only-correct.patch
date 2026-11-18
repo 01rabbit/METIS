@@ -1,0 +1,9 @@
+diff --git a/src/mitm_stage1/mitm_stage1.cpp b/src/mitm_stage1/mitm_stage1.cpp
+--- a/src/mitm_stage1/mitm_stage1.cpp
++++ b/src/mitm_stage1/mitm_stage1.cpp
+@@ -397,7 +397,8 @@ void mitm_stage1b(const archive_info &info,
+-                                } else {
++                                } else if (!FLAGS_only_emit_correct ||
++                                           (c != nullptr && correct_candidate(*c, g))) {
+                                     candidates.push_back(g);
+                                 }

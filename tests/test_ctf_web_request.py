@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import threading
 import urllib.parse
@@ -20,7 +21,7 @@ def _server(handler_class):
 @pytest.fixture
 def sites(monkeypatch):
     monkeypatch.setattr("urllib.request.getproxies", dict)
-    seen = {"platform_auth": []}
+    seen = {"platform_auth": [], "platform_cookie": []}
 
     class Platform(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -28,8 +29,11 @@ def sites(monkeypatch):
 
         def do_GET(self):
             seen["platform_auth"].append(self.headers.get("Authorization"))
+            seen["platform_cookie"].append(self.headers.get("Cookie"))
             body = b"<title>Simple Auth</title><p>Log in at the challenge server.</p>"
             self.send_response(200)
+            if self.path == "/set-cookie":
+                self.send_header("Set-Cookie", "session=stored-auth-cookie; Path=/")
             self.send_header("Content-Type", "text/html")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -125,6 +129,110 @@ def test_platform_credentials_cannot_be_overridden(tmp_path, sites):
     assert "unsupported request header" in result["responses"][0]["error"]
     with pytest.raises(ValueError):
         WebRequest(url=platform_url, data="a", form={"b": "c"}).body()
+
+
+def test_reauth_replaces_stored_platform_credential(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+
+    workflow.auth(platform_url, kind="token", value="replacement-token", scheme="Bearer")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/rotate-check")])
+
+    assert seen["platform_auth"][-1] == "Bearer replacement-token"
+    with sqlite3.connect(workflow.database) as db:
+        payload, = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
+                              (platform_url,)).fetchone()
+    assert "replacement-token" in payload
+    assert "platform-secret-token" not in payload
+
+
+def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatch, capsys):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(workflow.database),
+                                      "forget", platform_url])
+
+    assert main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["origin"] == platform_url and output["credential_removed"] is True
+    assert "in-flight request" in output["limit"]
+    assert "platform-secret-token" not in json.dumps(output)
+
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_auth"][-1] is None
+    assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    assert seen["platform_cookie"][-1] is None
+
+    config, state, *_ = workflow._load(run_id)
+    stale_client = workflow._client(config, state)
+    assert any(cookie.value == "stored-auth-cookie"
+               for cookie in stale_client.jars[platform_url])
+
+    workflow.forget_auth(platform_url)
+    # Model a request that had loaded state before forget_auth and saves afterward.
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        stale_client.request(platform_url + "/after-forget")
+    workflow._save_client(run_id, stale_client)
+    # Also model forget_auth between the persisted-state load and client creation.
+    late_client = workflow._client(config, state)
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        late_client.request(platform_url + "/after-forget")
+    workflow._save_client(run_id, late_client)
+    config, state, *_ = workflow._load(run_id)
+    assert platform_url not in state.get("cookies", {})
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_cookie"][-1] is None
+    assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_open_does_not_persist_cookie_if_auth_is_forgotten_during_intake(tmp_path, sites, monkeypatch):
+    platform_url, _, seen = sites
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    workflow.auth(platform_url, kind="token", value="platform-secret-token")
+    original_intake = workflow.session.intake
+
+    def forget_between_fetch_and_persist(**kwargs):
+        workflow.forget_auth(platform_url)
+        return original_intake(**kwargs)
+
+    monkeypatch.setattr(workflow.session, "intake", forget_between_fetch_and_persist)
+    result = workflow.open(platform_url + "/set-cookie")
+    run_id = result["context"]["run_id"]
+    with sqlite3.connect(workflow.database) as db:
+        persisted_state, = db.execute("SELECT state FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+    assert platform_url not in json.loads(persisted_state).get("cookies", {})
+    config, state, *_ = workflow._load(run_id)
+    assert config["auth_origin"] == platform_url
+    assert platform_url not in state.get("cookies", {})
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_cookie"][-1] is None
+
+
+def test_render_fences_auth_cookies_forgotten_during_render(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    workflow.auth(platform_url, kind="token", value="platform-secret-token")
+
+    def forget_during_render(url, allowed, *, cookies, auth_origin, auth_generation_check):
+        assert cookies == []
+        assert auth_origin == platform_url
+        assert auth_generation_check()
+        workflow.forget_auth(platform_url)
+        assert not auth_generation_check()
+        return url, "<title>Rendered</title>", []
+
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        workflow.open(platform_url + "/problem", render=True, renderer=forget_during_render)
+    assert seen["platform_auth"][-1] == "Token platform-secret-token"
+    with sqlite3.connect(workflow.database) as db:
+        count, = db.execute("SELECT COUNT(*) FROM web_runs").fetchone()
+    assert count == 0
 
 
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):

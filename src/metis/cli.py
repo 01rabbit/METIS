@@ -46,6 +46,7 @@ from metis.core.ctf_swarm import handoff as handoff_report
 from metis.core.ctf_swarm import status as swarm_status_report
 from metis.core.ctf_tools import DATA_TOOLS
 from metis.core.ctf_web import WebRequest, WebWorkflow
+from metis.core.ctf_workflow import WorkflowCapabilityApprovals, capability_review_details
 from metis.core.ctf_writeup import WriteupBook, WriteupInput
 from metis.core.fixtures import generate_fixtures
 from metis.core.models import FixtureProvider, ModelProvider
@@ -86,6 +87,14 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
 
     scheduler = AgentScheduler(args.database, host_by_name(args.host))
     command = args.agent_command
+    if command == "autopilot":
+        from metis.core.agent_autopilot import autopilot
+        from metis.core.codex_specialist import CodexCLI
+        continuations = json.loads(args.continuations.read_text()) if args.continuations else None
+        if continuations is not None and not isinstance(continuations, list):
+            raise ValueError("continuations must be a JSON array")
+        return autopilot(scheduler, args.run_id, CodexCLI(args.codex), max_waves=args.max_waves,
+                         continuations=continuations)
     if command == "dispatch":
         scheduler.enqueue(args.run_id, args.wave_id)
         return scheduler.dispatch(args.run_id)
@@ -127,7 +136,9 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
             raise TypeError("catalog file must be a JSON array")
         catalog = loaded
     return scheduler.configure(global_slots=args.global_slots, per_run_slots=args.per_run_slots,
-                               catalog=catalog, current_model=args.current_model)
+                               catalog=catalog, current_model=args.current_model,
+                               memory_retrieval=args.memory_retrieval,
+                               specialist_turn_budget=args.specialist_turn_budget)
 
 
 def _note(args: argparse.Namespace) -> str | None:
@@ -176,7 +187,8 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
         result["ping"] = {"returncode": turn.returncode, "thread_id": turn.thread_id, "items": turn.item_types,
                           "message": turn.message, "usage": turn.usage, "timed_out": turn.timed_out,
                           "violations": turn.violations()}
-        # Canary: the collaboration tools stay visible, so prove that a spawn attempt is detected.
+        # Canary: collaboration tool names may stay visible, so prove the configured host refusal
+        # is detected even when Codex does not emit a tool-call item.
         canary = cli.run('Call collaboration.spawn_agent with the task "say hi" and then return '
                          '{"action":"fail","intent":null,"report":null,"reason":"<exact tool result>"}.',
                          model=args.model, timeout=180)
@@ -262,6 +274,11 @@ def main() -> int:
     synthesis.add_argument("wave_id")
     agent.add_argument("--host", choices=("bridge", "sequential"), default="bridge",
                        help="bridge: Daybreak runs briefs with its own subagents; sequential: one at a time")
+    agent_auto = agent_commands.add_parser("autopilot", help="drive a bounded wave through Codex specialists")
+    agent_auto.add_argument("run_id")
+    agent_auto.add_argument("--max-waves", type=int, required=True)
+    agent_auto.add_argument("--continuations", type=Path, help="Daybreak-selected wave/report/reason JSON array")
+    agent_auto.add_argument("--codex", help="path to the Codex CLI")
     agent_dispatch = agent_commands.add_parser("dispatch", help="queue a wave's assignments and start what slots allow")
     agent_dispatch.add_argument("run_id")
     agent_dispatch.add_argument("wave_id")
@@ -316,12 +333,16 @@ def main() -> int:
     agent_probe.add_argument("--cyber-access-program", choices=("standard", "daybreak_blue", "daybreak_red"),
                              help="Codex access program the operator is enrolled in (some models require one)")
     agent_probe.add_argument("--allow-untested-codex", action="store_true")
-    agent_slots = agent_commands.add_parser("slots", help="show or set global/per-run slots, model catalog")
+    agent_slots = agent_commands.add_parser("slots", help="show or set slots, per-run model-turn budget, model catalog")
     agent_slots.add_argument("--global", dest="global_slots", type=int)
     agent_slots.add_argument("--per-run", dest="per_run_slots", type=int)
+    agent_slots.add_argument("--specialist-turn-budget", type=int,
+                             help="maximum Codex model invocations per run (fixed when its first wave is queued)")
     agent_slots.add_argument("--catalog-file", type=Path,
                              help='JSON [{"id": "<model id shown by the host>", "tier": "lower|standard|strong"}]')
     agent_slots.add_argument("--current-model", help="model the host is running now (reused when no tier fits)")
+    agent_slots.add_argument("--memory-retrieval", action=argparse.BooleanOptionalAction, default=None,
+                             help="enable or disable MUNIN retrieval for split-eligible runs (use to ablate)")
     web = sub.add_parser("web", help="generic scoped CTF problem intake and official submission")
     web.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
     web_commands = web.add_subparsers(dest="web_command", required=True)
@@ -346,6 +367,8 @@ def main() -> int:
     auth.add_argument("--kind", choices=("cookie", "token", "rctf-team-token"), required=True,
                       help="rctf-team-token logs in once and stores only the derived Bearer auth token")
     auth.add_argument("--scheme", choices=("Token", "Bearer"), default="Token")
+    forget = web_commands.add_parser("forget", help="remove the stored credential for a CTF origin")
+    forget.add_argument("url")
     web_context = web_commands.add_parser("context")
     web_context.add_argument("run_id")
     web_grant = web_commands.add_parser("grant", help="add a user-authorized challenge origin to a run")
@@ -366,6 +389,9 @@ def main() -> int:
     web_request.add_argument("--preview", type=int, default=4096)
     web_request.add_argument("--batch", type=Path,
                              help='JSON list (or {"requests": [...]}) of up to 256 request objects')
+    web_prepare = web_commands.add_parser("prepare-browser", help="reserve one official browser submission before sending")
+    web_prepare.add_argument("run_id")
+    web_prepare.add_argument("--candidate-file", type=Path)
     web_attest = web_commands.add_parser(
         "attest", help="record an official verdict seen in the platform's web UI (candidate on stdin)")
     web_attest.add_argument("run_id")
@@ -377,6 +403,19 @@ def main() -> int:
     web_submit.add_argument("run_id")
     web_submit.add_argument("--candidate-file", type=Path,
                             help="read the exact candidate from this file instead of stdin")
+    workflow_parser = sub.add_parser("workflow", help="review fixed declarative-workflow capabilities")
+    workflow_parser.add_argument("--database", type=Path, default=Path(".metis-state/metis.sqlite"))
+    workflow_commands = workflow_parser.add_subparsers(dest="workflow_command", required=True)
+    for command, decision, description in (
+        ("approve", "approve", "approve one capability for one run"),
+        ("revoke", "revoke", "revoke one capability for one run"),
+    ):
+        review = workflow_commands.add_parser(command, help=description)
+        review.set_defaults(review_decision=decision)
+        review.add_argument("run_id")
+        review.add_argument("capability", choices=("rot13_decode",))
+    workflow_status = workflow_commands.add_parser("status", help="show approvals and append-only review history")
+    workflow_status.add_argument("run_id")
     form = web_commands.add_parser("configure-form", help="configure a trusted generic POST form before any submission")
     form.add_argument("run_id")
     form.add_argument("--form-index", type=int, required=True)
@@ -531,6 +570,9 @@ def main() -> int:
     inspect = sub.add_parser("inspect", help="read validated run history without modifying it")
     inspect.add_argument("run_id")
     inspect.add_argument("--database", type=Path, required=True)
+    audit = sub.add_parser("audit", help="show a safe read-only lifecycle summary for one run")
+    audit.add_argument("run_id")
+    audit.add_argument("--database", type=Path, required=True)
     generate = sub.add_parser("generate-fixtures", help="generate two synthetic local puzzles")
     generate.add_argument("directory", type=Path)
     generate.add_argument("--oracle", type=Path, required=True)
@@ -539,8 +581,9 @@ def main() -> int:
     run.add_argument("--database", type=Path, required=True)
     run.add_argument("--oracle", type=Path, required=True)
     run.add_argument("--image", required=True, help="trusted digest-pinned Python Docker image")
-    run.add_argument("--provider", choices=("fixture", "openai"), default="fixture")
-    run.add_argument("--model", default="gpt-4.1-mini")
+    run.add_argument("--provider", choices=("fixture", "openai", "codex"), default="fixture")
+    run.add_argument("--model")
+    run.add_argument("--cyber-access-program", choices=("standard", "daybreak_blue", "daybreak_red"))
     run.add_argument("--max-call-cost-usd", type=float)
     run.add_argument("--max-actions", type=int, default=40)
     run.add_argument("--wall-time-seconds", type=int, default=1200)
@@ -562,6 +605,8 @@ def main() -> int:
     start.add_argument("--max-actions", type=int, default=40)
     start.add_argument("--wall-seconds", type=int, default=1200)
     start.add_argument("--artifact-root", type=Path)
+    start.add_argument("--evaluation-split", choices=("practice", "competition", "heldout", "unlisted"),
+                       default="unlisted")
     commands.add_parser("tools", help="list inline and read-only artifact tools")
     plan = commands.add_parser("plan", help="create a bounded Daybreak subagent wave")
     plan.add_argument("run_id")
@@ -576,6 +621,8 @@ def main() -> int:
     intake.add_argument("--expected-sha256")
     intake.add_argument("--max-actions", type=int, default=80)
     intake.add_argument("--wall-seconds", type=int, default=3600)
+    intake.add_argument("--evaluation-split", choices=("practice", "competition", "heldout", "unlisted"),
+                        default="unlisted")
     artifact = commands.add_parser("artifact", help="inspect one declared artifact without executing it")
     artifact.add_argument("run_id")
     artifact.add_argument("name")
@@ -590,6 +637,9 @@ def main() -> int:
     add_file = commands.add_parser("add-file", help="add a file you downloaded yourself (e.g. in the browser) to a run")
     add_file.add_argument("run_id")
     add_file.add_argument("path", type=Path)
+    purge_derived = commands.add_parser("purge-derived", help="dry-run removal of generated run artifacts")
+    purge_derived.add_argument("run_id")
+    purge_derived.add_argument("--apply", action="store_true", help="unlink registered .metis-derived files")
     extend = commands.add_parser("extend", help="operator budget extension; resumes a budget-exhausted run")
     extend.add_argument("run_id")
     extend.add_argument("--actions", type=int, default=0)
@@ -799,8 +849,12 @@ def main() -> int:
                     output = workflow.rctf_login(args.url, private_value)
                 else:
                     output = workflow.auth(args.url, kind=args.kind, value=private_value, scheme=args.scheme)
+            elif args.web_command == "forget":
+                output = workflow.forget_auth(args.url)
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
+            elif args.web_command == "prepare-browser":
+                output = workflow.prepare_browser(args.run_id, read_candidate(args.candidate_file))
             elif args.web_command == "attest":
                 output = workflow.attest(args.run_id, read_candidate(args.candidate_file), verdict=args.verdict,
                                          evidence=args.evidence)
@@ -852,6 +906,28 @@ def main() -> int:
                 web_reason = ": " + (str(exc).splitlines() or [type(exc).__name__])[0][:300]
             parser.exit(2, "CTF web command rejected" + web_reason
                         + " (check target scope, credentials, form configuration and limits)\n")
+    if args.command == "workflow":
+        try:
+            approvals = WorkflowCapabilityApprovals(args.database)
+            if args.workflow_command == "status":
+                print(json.dumps(approvals.status(args.run_id)))
+                return 0
+            details = capability_review_details(args.capability)
+            print("Reviewed capability descriptor: " + json.dumps(details, sort_keys=True))
+            version = details["descriptor"]["version"]
+            digest = details["capability_sha256"]
+            expected = (f"{args.review_decision.upper()} {args.capability} v{version} "
+                        f"sha256:{digest} {args.run_id}")
+            if input(f"Type exactly '{expected}' to continue: ") != expected:
+                raise ValueError("workflow capability review was not confirmed")
+            output = approvals.record(
+                args.run_id, args.capability, decision=args.review_decision,
+                reviewer=getpass.getuser(), expected_digest=digest)
+            print(json.dumps(output))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error, EOFError) as exc:
+            workflow_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
+            parser.exit(2, "Workflow capability review rejected: " + workflow_reason + "\n")
     if args.command == "remote":
         try:
             remote_workflow = RemoteWorkflow(args.database)
@@ -968,14 +1044,16 @@ def main() -> int:
                 output = session.intake(title=args.title, description=args.description,
                                         paths=args.artifact, categories=args.category,
                                         commitment=args.expected_sha256,
-                                        max_actions=args.max_actions, wall_seconds=args.wall_seconds)
+                                        max_actions=args.max_actions, wall_seconds=args.wall_seconds,
+                                        evaluation_split=args.evaluation_split)
             elif args.codex_command == "start":
                 manifest = ChallengeManifest.model_validate_json(read_artifact(
                     args.manifest.parent, args.manifest.name,
                 ))
                 output = session.start(manifest, commitment=args.expected_sha256,
                                        max_actions=args.max_actions, wall_seconds=args.wall_seconds,
-                                       artifact_root=args.artifact_root)
+                                       artifact_root=args.artifact_root,
+                                       evaluation_split=args.evaluation_split)
             elif args.codex_command in {"artifact", "derive"}:
                 if len(args.options.encode()) > 65_536:
                     raise ValueError("options exceed limit")
@@ -988,6 +1066,8 @@ def main() -> int:
                 output = session.context(args.run_id)
             elif args.codex_command == "add-file":
                 output = session.add_file(args.run_id, args.path)
+            elif args.codex_command == "purge-derived":
+                output = session.purge_derived(args.run_id, apply=args.apply)
             elif args.codex_command == "extend":
                 output = session.extend(args.run_id, actions=args.actions, seconds=args.seconds)
             elif args.codex_command == "cancel":
@@ -1035,7 +1115,11 @@ def main() -> int:
                 if args.provider == "openai":
                     if args.max_call_cost_usd is None:
                         raise ValueError("explicit model call cost reservation required")
-                    provider = OpenAIProvider(args.model, max_call_cost_usd=args.max_call_cost_usd)
+                    provider = OpenAIProvider(args.model or "gpt-4.1-mini",
+                                              max_call_cost_usd=args.max_call_cost_usd)
+                elif args.provider == "codex":
+                    from metis.core.codex_provider import CodexProvider
+                    provider = CodexProvider(args.model, cyber_program=args.cyber_access_program)
                 oracle = FixtureOracle(args.oracle, solver_roots=(
                     args.manifest.resolve().parent, Path(__file__).resolve().parents[2],
                 ))
@@ -1072,6 +1156,15 @@ def main() -> int:
         if not history:
             parser.exit(2, "run not found\n")
         print(history, end="")
+        return 0
+    if args.command == "audit":
+        try:
+            audit_result = RunStore(args.database, read_only=True).audit_summary(args.run_id)
+        except (OSError, sqlite3.Error, ValueError):
+            parser.exit(2, "run audit unavailable or corrupt\n")
+        if audit_result is None:
+            parser.exit(2, "run not found\n")
+        print(json.dumps(audit_result, sort_keys=True))
         return 0
     return 2
 

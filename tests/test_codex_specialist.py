@@ -1,6 +1,7 @@
 """Claude Code -> Codex CLI specialist driver (Issue #11) with a scripted runner, no network."""
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from metis.core.codex_specialist import (
     REQUIRED_DISABLES,
     CodexCLI,
     CodexTurn,
+    _normalize_report_intent,
     render_prompt,
     run_assignment,
 )
@@ -95,7 +97,94 @@ def test_intent_then_report_completes_the_attempt(setup):
     with sqlite3.connect(database) as db:
         events = [row[0] for row in db.execute("SELECT event FROM agent_job_log WHERE assignment_id=? ORDER BY id",
                                                (job["assignment_id"],))]
-    assert events == ["started", "codex_turn", "codex_turn", "completed"]
+    assert events == ["started", "model_turn_reserved", "codex_turn", "intent_started",
+                      "model_turn_reserved", "codex_turn", "completed"]
+
+
+def test_exhausted_run_turn_budget_stops_before_provider_call(setup):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    budget = scheduler.model_turn_budget(run_id)
+    assert budget is not None
+    for _ in range(budget["limit"]):
+        assert scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"]) is not None
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "failed"
+    assert result["codex_turns"] == [] and runner.prompts == []
+    assert "budget exhausted" in result["failure"]
+
+
+def test_cancel_racing_with_turn_reservation_returns_stopped_without_provider_call(setup, monkeypatch):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    reserve = scheduler.reserve_model_turn
+
+    def cancel_then_reserve(reservation_run, assignment_id, attempt_id):
+        scheduler.cancel(assignment_id=assignment_id)
+        return reserve(reservation_run, assignment_id, attempt_id)
+
+    monkeypatch.setattr(scheduler, "reserve_model_turn", cancel_then_reserve)
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and result["codex_turns"] == []
+    assert runner.prompts == []
+
+
+def test_cancelled_session_stops_before_any_provider_call(setup):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    scheduler.session.cancel(run_id)
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and result["codex_turns"] == []
+    assert runner.prompts == []
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 0
+
+
+def test_session_cancel_after_turn_reservation_keeps_charge_without_provider_call(setup, monkeypatch):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    reserve = scheduler.reserve_model_turn
+
+    def reserve_then_cancel(*args):
+        reservation = reserve(*args)
+        scheduler.session.cancel(run_id)
+        return reservation
+
+    monkeypatch.setattr(scheduler, "reserve_model_turn", reserve_then_cancel)
+    runner = ScriptedRunner([])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and runner.prompts == []
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+
+
+@pytest.mark.parametrize("honors_stop", [True, False])
+def test_session_cancel_during_turn_signals_stop_and_discards_late_output(setup, honors_stop):
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    sequence = scheduler.session.store.read(run_id)[-1].sequence
+
+    class CancellingRunner:
+        calls = 0
+
+        def run(self, _prompt, *, model, timeout, should_stop, images):
+            self.calls += 1
+            assert not should_stop()
+            scheduler.session.cancel(run_id)
+            # The job has not yet been reconciled: the run status must stop it directly.
+            assert next(item for item in scheduler.jobs(run_id)
+                        if item["assignment_id"] == job["assignment_id"])["state"] == "running"
+            assert should_stop()
+            return _say(_report(sequence), stopped=honors_stop)
+
+    runner = CancellingRunner()
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == "cancelled" and runner.calls == 1
+    assert result["outcome"]["state"] == "cancelled"
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM ctf_agent_reports WHERE run_id=?", (run_id,)).fetchone()[0] == 0
 
 
 def test_daybreak_only_intents_are_refused_and_the_attempt_continues(setup):
@@ -117,6 +206,9 @@ def test_daybreak_only_intents_are_refused_and_the_attempt_continues(setup):
     (CodexTurn(returncode=0, message="{}", item_types=["agent_message", "command_execution"]), "command_execution"),
     (CodexTurn(returncode=0, message="{}", item_types=["agent_message"],
                tool_errors=["ERROR codex_core::tools::router: error=collab spawn failed"]), "sub_agent_attempt"),
+    (CodexTurn(returncode=0, message="{}", item_types=["agent_message"],
+               tool_errors=["ERROR codex_core::tools::router: error=code-mode host is disabled"]),
+     "sub_agent_attempt"),
     (CodexTurn(returncode=0, message="{}", item_types=["mcp_tool_call"]), "mcp_tool_call"),
 ])
 def test_tool_use_inside_codex_is_a_policy_violation(setup, turn, reason):
@@ -151,6 +243,7 @@ def test_flag_in_report_is_rejected_then_corrected(setup):
 def test_cancelled_or_stale_attempt_stops_the_driver(setup):
     _database, scheduler, run_id, _wave, started, artifact = setup
     job = started[0]
+    other = started[1]
 
     def cancel_then_answer(_prompts):
         scheduler.cancel(assignment_id=job["assignment_id"])
@@ -159,7 +252,9 @@ def test_cancelled_or_stale_attempt_stops_the_driver(setup):
     runner = ScriptedRunner([cancel_then_answer, _say(_report(0))])
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert result["job_state"] == "cancelled" and "stale" in result["intents"][0]["refused"]
-    assert result["outcome"]["state"] == "stopped" and len(runner.prompts) == 1
+    assert result["outcome"]["state"] == "cancelled" and len(runner.prompts) == 1
+    assert next(item for item in scheduler.jobs(run_id)
+                if item["assignment_id"] == other["assignment_id"])["state"] == "running"
     with pytest.raises(ValueError, match="not the running attempt"):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], ScriptedRunner([]))
 
@@ -191,7 +286,8 @@ def test_prompt_has_no_daybreak_history_and_marks_untrusted_text(setup):
 def test_codex_cli_argv_is_tool_less_and_fails_closed(tmp_path):
     cli = CodexCLI("/bin/echo", features={"shell_tool", "multi_agent", "apps", "plugins", "hooks"})
     argv = cli.argv(tmp_path / "w", tmp_path / "s.json", tmp_path / "o.json", "model-a")
-    for flag in ("--ephemeral", "--ignore-user-config", "--ignore-rules"):
+    assert "--ephemeral" not in argv  # denial is tested without ephemeral mode
+    for flag in ("--ignore-user-config", "--ignore-rules"):
         assert flag in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"
     disabled = {argv[i + 1] for i, item in enumerate(argv) if item == "--disable"}
@@ -203,6 +299,15 @@ def test_codex_cli_argv_is_tool_less_and_fails_closed(tmp_path):
     assert set(REQUIRED_DISABLES) == {"shell_tool"}
 
 
+def test_codex_cli_hard_disables_multi_agent_v2(tmp_path):
+    cli = CodexCLI("/bin/echo", features={"shell_tool", "multi_agent_v2"})
+    argv = cli.argv(tmp_path / "w", tmp_path / "s.json", tmp_path / "o.json", None)
+    assert "agents.enabled=false" in argv
+    assert "features.multi_agent_v2.enabled=false" in argv
+    assert "features.multi_agent_v2.enabled=false" in argv
+    assert "features.multi_agent_v2.max_concurrent_threads_per_session=1" in argv
+
+
 def test_codex_environment_drops_secrets(monkeypatch):
     monkeypatch.setenv("METIS_CTF_TOKEN", "secret-value")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -211,17 +316,34 @@ def test_codex_environment_drops_secrets(monkeypatch):
 
 
 def test_decision_schema_is_strict():
-    def walk(node):
+    def walk(node, path=()):
         if isinstance(node, dict):
             if node.get("type") == "object":
                 assert node["additionalProperties"] is False
                 assert set(node["required"]) == set(node["properties"])
-            for value in node.values():
-                walk(value)
+            for key, value in node.items():
+                walk(value, (*path, key))
         elif isinstance(node, list):
             for value in node:
-                walk(value)
+                walk(value, path)
     walk(DECISION_SCHEMA)
+
+
+def test_report_next_action_options_are_json_text_and_normalized():
+    report = {"next_action_intent": {"kind": "artifact", "tool": "zipcrypto_info",
+                                      "data": None, "artifact": "archive.zip",
+                                      "options_json": '{"member":"readme.txt"}',
+                                      "new_evidence": []}}
+    _normalize_report_intent(report)
+    assert report["next_action_intent"]["options"] == {"member": "readme.txt"}
+    assert "options_json" not in report["next_action_intent"]
+
+
+@pytest.mark.parametrize("options_json", ['[]', '"text"', "not-json"])
+def test_report_next_action_rejects_non_object_options(options_json):
+    report = {"next_action_intent": {"options_json": options_json}}
+    with pytest.raises((TypeError, ValueError, json.JSONDecodeError)):
+        _normalize_report_intent(report)
 
 
 def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):
@@ -247,7 +369,8 @@ def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):
     assert Path(database).exists()
 
 
-def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path):
+@pytest.mark.parametrize("cancel_target", ["assignment", "session"])
+def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path, cancel_target):
     """Real subprocess: a fake `codex` that hangs is killed within seconds of Daybreak's cancel."""
     import threading
     import time
@@ -259,13 +382,16 @@ def test_cancel_during_a_turn_kills_the_codex_process_group(setup, tmp_path):
                     "cat >/dev/null\nsleep 120\n")
     fake.chmod(0o755)
     cli = CodexCLI(str(fake), isolation="none", allow_untested=True)
-    timer = threading.Timer(1.0, lambda: scheduler.cancel(assignment_id=job["assignment_id"]))
+    cancel = (lambda: scheduler.cancel(assignment_id=job["assignment_id"])) if cancel_target == "assignment" \
+        else lambda: scheduler.session.cancel(run_id)
+    timer = threading.Timer(1.0, cancel)
     timer.start()
     began = time.monotonic()
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], cli, turn_timeout=60)
     assert time.monotonic() - began < 15
-    assert result["job_state"] == "cancelled" and result["outcome"]["state"] == "stopped"
+    assert result["job_state"] == "cancelled" and result["outcome"]["state"] == "cancelled"
     assert result["codex_turns"] == [] or result["codex_turns"][-1]["returncode"] != 0
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
 
 
 def test_daybreak_note_is_shown_but_cannot_widen_authority(setup):
@@ -368,6 +494,168 @@ def test_candidate_needs_basis_and_is_limited(setup):
         scheduler.candidate(run_id, job["assignment_id"], job["attempt_id"], "FLAG_try9", [1])
 
 
+def test_candidate_and_report_can_complete_in_one_private_turn(setup):
+    import os
+    import stat
+
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "FLAG_privateCandidate42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    report = lambda prompts: _report(steps(prompts)[0]["result"]["event_sequence"])["report"]
+    candidate_report = lambda prompts: {
+        "action": "candidate_report", "intent": None, "reason": None,
+        "candidate": {"value": secret,
+                      "basis_events": [steps(prompts)[0]["result"]["event_sequence"]]},
+        "report": report(prompts),
+    }
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)),
+                             lambda prompts: _say(candidate_report(prompts))])
+
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+
+    assert result["job_state"] == "completed" and result["outcome"]["candidate_stored"] is True
+    assert len(result["codex_turns"]) == 2
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and listed[0]["state"] == "pending"
+    path = Path(listed[0]["candidate_file"])
+    assert path.read_text() == secret and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in
+                          ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump and secret not in json.dumps(result)
+    assert secret not in json.dumps(runner.prompts)
+    scheduler.candidates(run_id, purge="all")
+
+
+def test_disabled_candidate_report_fails_closed_and_requires_separate_handoff(setup):
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "privateAnswer42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    def combined(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        return _say({"action": "candidate_report", "intent": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]},
+                     "report": _report(sequence)["report"]})
+
+    def candidate(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        return _say({"action": "candidate", "intent": None, "report": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}})
+
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)), combined, candidate,
+                             lambda prompts: _say(_report(steps(prompts)[0]["result"]["event_sequence"]))])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            allow_candidate_report=False)
+
+    assert result["job_state"] == "completed" and len(result["codex_turns"]) == 4
+    assert result["decision_counts"] == {"intent": 1, "candidate_report": 1, "candidate": 1, "report": 1}
+    assert any("combined candidate/report handoff is disabled" in step.get("decision_refused", "")
+               for step in result["intents"])
+    assert secret not in json.dumps(result) and secret not in json.dumps(runner.prompts)
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and Path(listed[0]["candidate_file"]).read_text() == secret
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in
+                          ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump
+    scheduler.candidates(run_id, purge="all")
+
+
+def test_candidate_report_rejects_candidate_leak_before_storing_report(setup):
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "privateAnswer42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    def bad_candidate_report(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        report = _report(sequence)["report"]
+        report["evidence"] += f" Candidate={secret}"
+        return _say({"action": "candidate_report", "intent": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}, "report": report})
+
+    def bad_report_only(prompts):
+        report = _report(steps(prompts)[0]["result"]["event_sequence"])["report"]
+        report["next_action"] += f"; candidate={secret}"
+        return _say({"action": "report", "intent": None, "reason": None,
+                     "candidate": None, "report": report})
+
+    def hand_off_candidate(prompts):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        return _say({"action": "candidate", "intent": None, "reason": None, "report": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}})
+
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)), bad_candidate_report,
+                             bad_report_only, hand_off_candidate, bad_report_only,
+                             lambda prompts: _say(_report(steps(prompts)[0]["result"]["event_sequence"]))])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+
+    assert result["job_state"] == "completed" and len(result["codex_turns"]) == 6
+    rejections = [step for step in result["intents"]
+                  if step.get("report_rejected") == "privacy"]
+    assert len(rejections) == 3
+    assert secret not in json.dumps(result) and secret not in json.dumps(runner.prompts)
+    listed = scheduler.candidates(run_id)
+    assert len(listed) == 1 and Path(listed[0]["candidate_file"]).read_text() == secret
+    with sqlite3.connect(database) as db:
+        dump = "\n".join(str(row) for table in
+                          ("agent_job_log", "agent_candidates", "ctf_agent_reports", "events")
+                          for row in db.execute(f"SELECT * FROM {table}"))
+    assert secret not in dump
+    scheduler.candidates(run_id, purge="all")
+
+
+def test_candidate_disclosure_check_handles_json_escaped_and_embedded_short_values():
+    from metis.core.codex_specialist import _candidate_in_report
+
+    assert _candidate_in_report('x"\\y', {"nested": ["prefix x\"\\y suffix"]})
+    assert _candidate_in_report("abc", {"nested": ["prefixabcpostfix"]})
+
+
+def test_candidate_report_retries_reuse_private_candidate_after_scheduler_rejection(setup):
+    database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    secret = "FLAG_retryCandidate42"
+
+    def steps(prompts):
+        return json.loads(prompts[-1].split("STEPS SO FAR (intent -> controller result):\n")[1])
+
+    def combined(prompts, *, invalid=False):
+        sequence = steps(prompts)[0]["result"]["event_sequence"]
+        report = _report(sequence)["report"]
+        if invalid:
+            report["event_sequences"] = [999999]
+        return _say({"action": "candidate_report", "intent": None, "reason": None,
+                     "candidate": {"value": secret, "basis_events": [sequence]}, "report": report})
+
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)),
+                             *[lambda prompts: combined(prompts, invalid=True) for _ in range(3)],
+                             lambda prompts: combined(prompts)])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+
+    assert result["job_state"] == "completed" and len(result["codex_turns"]) == 5
+    assert sum("report_rejected" in step for step in result["intents"]) == 3
+    candidates = scheduler.candidates(run_id)
+    assert len(candidates) == 1 and Path(candidates[0]["candidate_file"]).read_text() == secret
+    with sqlite3.connect(database) as db:
+        stored = db.execute("SELECT COUNT(*) FROM agent_candidates").fetchone()[0]
+    assert stored == 1
+    assert secret not in json.dumps(result)
+    scheduler.candidates(run_id, purge="all")
+
+
 def test_long_option_values_are_digests_in_driver_output():
     from metis.core.codex_specialist import _public_step
 
@@ -375,6 +663,20 @@ def test_long_option_values_are_digests_in_driver_output():
     step = _public_step({"intent": {"kind": "artifact", "tool": "tls_decrypt", "artifact": "a.pcap", "data": None,
                                     "options_json": json.dumps({"factor": factor, "preview": 0})}})
     assert factor not in json.dumps(step) and '"preview": 0' in step["intent"]["options_json"]
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ("candidate value must not appear in the report", "privacy"),
+    ("report references unknown run evidence", "evidence_provenance"),
+    ("duplicate next action", "duplicate_action"),
+    ("report exceeds the output limit", "output_limit"),
+    ("next_action_intent must be a bounded METIS tool request", "schema_or_options"),
+    ("unclassified validation failure", "other_validation"),
+])
+def test_report_rejection_reasons_are_answer_free(message, expected):
+    from metis.core.codex_specialist import _report_rejection_reason
+
+    assert _report_rejection_reason(message) == expected
 
 
 def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
@@ -388,8 +690,34 @@ def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
     runner = ScriptedRunner([flaky, _say({"action": "fail", "intent": None, "report": None, "reason": "done"})])
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert result["job_state"] == "failed" and result["failure"] == "done" and len(runner.prompts) == 2
+    assert len(result["codex_turns"]) == 2
+    usage = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])["usage"]
+    assert usage["turns"] == 2
     hard = ScriptedRunner([CodexTurn(returncode=1, message=None, stderr_tail="schema error"),
                            CodexTurn(returncode=0, message="{}")])
     second = started[1]
     result = run_assignment(scheduler, run_id, second["assignment_id"], second["attempt_id"], hard)
     assert "codex exited 1" in result["failure"] and len(hard.prompts) == 1
+
+
+def test_transient_retry_does_not_start_after_deadline(setup, monkeypatch):
+    import metis.core.codex_specialist as driver
+
+    monkeypatch.setattr(driver, "TRANSIENT_BACKOFF", 0.0)
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    monkeypatch.setattr(scheduler.host, "cancel", lambda *_args, **_kwargs: False)
+    flaky = CodexTurn(returncode=1, message=None,
+                      stderr_tail="not authenticated with one of your authorized hardware keys")
+
+    def expire_deadline(_prompts):
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=?",
+                       (time.time() - 1, job["assignment_id"]))
+        return flaky
+
+    runner = ScriptedRunner([expire_deadline])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert result["job_state"] == result["outcome"]["state"] == "unknown"
+    assert len(runner.prompts) == 1
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1

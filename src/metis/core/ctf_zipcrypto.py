@@ -14,7 +14,9 @@
 
 Not implemented: Stay's key recovery from the double-encrypted header (about 2^39 cipher steps
 in the paper, hours of native code) - the tools report it as ``work_exceeds_budget``.
-Everything is bounded by explicit time and candidate budgets; nothing runs outside Python.
+The first-stage 2^40 partial-state scan is available only through the bounded isolated
+``zipcrypto_stay_scan`` worker; it does not recover keys. All challenge inputs are handled
+inside Python, and the generated scan kernel runs only inside the isolated container.
 """
 from __future__ import annotations
 
@@ -23,6 +25,8 @@ import os
 import struct
 import time
 import zlib
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +39,778 @@ MAXDIFF24 = 0x00FFFFFF + 0xFF
 MAXDIFF26 = 0x03FFFFFF + 0xFF
 CONTIGUOUS = 8
 ATTACK_SIZE = 12
+MAX_STAY_CARRY_INTERVAL_VISITS = 32_768
+
+
+def _stay_carry_interval(low_addends: tuple[int, ...], carries: tuple[int, ...],
+                         *, bits: int = 24) -> tuple[int, int] | None:
+    """Intersect exact low-word ranges implied by Stay's guessed carry bits.
+
+    For each update, ``carry`` is the high-word carry of ``P_low + addend``.
+    A zero carry gives an inclusive upper bound; a one carry gives an inclusive
+    lower bound. ``None`` means the guesses are mutually inconsistent.
+    """
+    if (len(low_addends) != len(carries) or type(bits) is not int
+            or not 1 <= bits <= 24):
+        raise ValueError("carry constraints or word width are invalid")
+    modulus = 1 << bits
+    if any(type(value) is not int or not 0 <= value < modulus for value in low_addends):
+        raise ValueError("carry addends must fit the low word")
+    if any(type(carry) is not int or carry not in (0, 1) for carry in carries):
+        raise ValueError("carry guesses must be zero or one")
+
+    lower, upper = 0, modulus - 1
+    for addend, carry in zip(low_addends, carries, strict=True):
+        threshold = modulus - addend
+        if carry:
+            lower = max(lower, threshold)
+        else:
+            upper = min(upper, threshold - 1)
+        if lower > upper:
+            return None
+    return lower, upper
+
+
+def _stay_key1_product_interval(addends: tuple[int, ...], top_bytes: tuple[int, ...],
+                                carries: tuple[int, ...], *, bits: int = 24
+                                ) -> tuple[int, int, int] | None:
+    """Recover the shared high byte and low-word interval of ``key1 * MULT``.
+
+    Each observation is the high byte of ``(key1 + addend) * MULT + 1``.
+    A guessed carry from adding the known ``addend * MULT + 1`` to the
+    multiplied key fixes the product high byte and contributes one exact
+    interval constraint on its low ``bits``. This is the candidate-lifting
+    primitive described in Stay's divide-and-conquer stages.
+    """
+    if (len(addends) != len(top_bytes) or len(addends) != len(carries)
+            or not addends or type(bits) is not int or not 1 <= bits <= 24):
+        raise ValueError("Stay product observations or word width are invalid")
+    limit = 1 << bits
+    if any(type(value) is not int or not 0 <= value < limit for value in addends):
+        raise ValueError("Stay addends must fit the low word")
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in top_bytes):
+        raise ValueError("Stay top bytes must be bytes")
+    if any(type(carry) is not int or carry not in (0, 1) for carry in carries):
+        raise ValueError("carry guesses must be zero or one")
+
+    low_mask = limit - 1
+    product_high: int | None = None
+    low_addends: list[int] = []
+    for addend, top_byte, carry in zip(addends, top_bytes, carries, strict=True):
+        offset = addend * MULT + 1
+        inferred_high = (top_byte - (offset >> bits) - carry) & 0xFF
+        if product_high is None:
+            product_high = inferred_high
+        elif product_high != inferred_high:
+            return None
+        low_addends.append(offset & low_mask)
+
+    interval = _stay_carry_interval(tuple(low_addends), carries, bits=bits)
+    if interval is None or product_high is None:
+        return None
+    return product_high, interval[0], interval[1]
+
+
+def _stay_floor_sum(count: int, modulus: int, multiplier: int, offset: int) -> int:
+    """Return ``sum((multiplier*i + offset) // modulus for i in range(count))``."""
+    total = 0
+    while True:
+        if multiplier >= modulus:
+            total += (count - 1) * count * (multiplier // modulus) // 2
+            multiplier %= modulus
+        if offset >= modulus:
+            total += count * (offset // modulus)
+            offset %= modulus
+        maximum = multiplier * count + offset
+        if maximum < modulus:
+            return total
+        count, offset = divmod(maximum, modulus)
+        modulus, multiplier = multiplier, modulus
+
+
+def _stay_q8_carry_masks(product_interval: tuple[int, int, int],
+                         second_update_addends: tuple[int, ...] = (), *, bits: int = 24
+                         ) -> dict[int, tuple[int, ...]]:
+    """Return q8 values and compatible second-update carry bits for an interval.
+
+    For ``P = product_high || low``, Stage 2 requires
+    ``q8 = MSB(P * MULT mod 2**(bits + 8))``. A modular floor-sum counts
+    which high-byte buckets intersect the inclusive low-word interval without
+    enumerating every value in it. For each optional low-word addend, the
+    result's tuple contains a bit mask: bit 0 means carry zero is possible and
+    bit 1 means carry one is possible for that q8 bucket.
+    """
+    if (type(bits) is not int or not 1 <= bits <= 24
+            or len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)
+            or any(type(value) is not int for value in second_update_addends)):
+        raise ValueError("Stay product interval or word width is invalid")
+    product_high, lower, upper = product_interval
+    low_limit = 1 << bits
+    modulus = low_limit << 8
+    if not 0 <= product_high <= 0xFF or not 0 <= lower <= upper < low_limit:
+        raise ValueError("Stay product interval is out of range")
+    if any(not 0 <= value < low_limit for value in second_update_addends):
+        raise ValueError("Stay second-update addends must fit the low word")
+
+    count = upper - lower + 1
+    start = ((product_high << bits) | lower) * MULT % modulus
+
+    def residues_below(boundary: int) -> int:
+        if boundary <= 0:
+            return 0
+        if boundary >= modulus:
+            return count
+        at_or_above = (
+            _stay_floor_sum(count, modulus, MULT, start + modulus - boundary)
+            - _stay_floor_sum(count, modulus, MULT, start)
+        )
+        return count - at_or_above
+
+    result: dict[int, tuple[int, ...]] = {}
+    for q8 in range(256):
+        bucket_start = q8 << bits
+        bucket_end = (q8 + 1) << bits
+        low_count = residues_below(bucket_start)
+        high_count = residues_below(bucket_end)
+        bucket_count = high_count - low_count
+        if not bucket_count:
+            continue
+        carry_masks = []
+        for addend in second_update_addends:
+            carry_one_count = high_count - residues_below(bucket_start + low_limit - addend)
+            carry_mask = (int(carry_one_count < bucket_count)
+                          | (int(carry_one_count > 0) << 1))
+            carry_masks.append(carry_mask)
+        result[q8] = tuple(carry_masks)
+    return result
+
+
+def _stay_q8_residue_interval_nonempty(product_interval: tuple[int, int, int], q8: int,
+                                       lower: int, upper: int, *, bits: int = 24) -> bool:
+    """Check exactly whether an interval maps into one q8/low-residue bucket."""
+    if (type(bits) is not int or not 1 <= bits <= 24
+            or len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)
+            or type(q8) is not int or not 0 <= q8 <= 0xFF):
+        raise ValueError("Stay product interval, q8, or word width is invalid")
+    product_high, product_lower, product_upper = product_interval
+    low_limit = 1 << bits
+    modulus = low_limit << 8
+    if (not 0 <= product_high <= 0xFF or not 0 <= product_lower <= product_upper < low_limit
+            or not 0 <= lower <= upper < low_limit):
+        raise ValueError("Stay product or residue interval is out of range")
+
+    count = product_upper - product_lower + 1
+    start = ((product_high << bits) | product_lower) * MULT % modulus
+
+    def residues_below(boundary: int) -> int:
+        if boundary <= 0:
+            return 0
+        if boundary >= modulus:
+            return count
+        at_or_above = (
+            _stay_floor_sum(count, modulus, MULT, start + modulus - boundary)
+            - _stay_floor_sum(count, modulus, MULT, start)
+        )
+        return count - at_or_above
+
+    bucket_start = q8 << bits
+    return (residues_below(bucket_start + upper + 1)
+            > residues_below(bucket_start + lower))
+
+
+def _stay_q8_residue_interval_witness(product_interval: tuple[int, int, int], q8: int,
+                                      lower: int, upper: int, *, bits: int = 24) -> int | None:
+    """Find the first product low word satisfying a q8 and residue interval."""
+    if (type(bits) is not int or not 1 <= bits <= 24
+            or len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)
+            or type(q8) is not int or not 0 <= q8 <= 0xFF):
+        raise ValueError("Stay product interval, q8, or word width is invalid")
+    product_high, product_lower, product_upper = product_interval
+    low_limit = 1 << bits
+    modulus = low_limit << 8
+    if (not 0 <= product_high <= 0xFF or not 0 <= product_lower <= product_upper < low_limit
+            or not 0 <= lower <= upper < low_limit):
+        raise ValueError("Stay product or residue interval is out of range")
+
+    start = ((product_high << bits) | product_lower) * MULT % modulus
+
+    def residues_below(count: int, boundary: int) -> int:
+        if boundary <= 0:
+            return 0
+        if boundary >= modulus:
+            return count
+        at_or_above = (
+            _stay_floor_sum(count, modulus, MULT, start + modulus - boundary)
+            - _stay_floor_sum(count, modulus, MULT, start)
+        )
+        return count - at_or_above
+
+    bucket_start = q8 << bits
+    def matches(count: int) -> int:
+        return (residues_below(count, bucket_start + upper + 1)
+                - residues_below(count, bucket_start + lower))
+
+    count = product_upper - product_lower + 1
+    if matches(count) == 0:
+        return None
+    left, right = 1, count
+    while left < right:
+        middle = (left + right) // 2
+        if matches(middle):
+            right = middle
+        else:
+            left = middle + 1
+    return product_lower + left - 1
+
+
+def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int = 24) -> int:
+    """Return the q8 values consistent with at least one product in an interval."""
+    return sum(1 << q8 for q8 in _stay_q8_carry_masks(product_interval, bits=bits))
+
+
+def _stay_second_update_addends(random_first: int, random_second: int, first_stream: int,
+                                key0_crc_bits_0_15: int, key1_product_high: int,
+                                key2_crc_bits_0_23: int, first_pass_carry1: int
+                                ) -> tuple[int, int]:
+    """Return the low-24-bit Stage 2 offsets for the two encryption passes."""
+    byte_values = (random_first, random_second, first_stream, key1_product_high)
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in byte_values):
+        raise ValueError("Stay byte guesses must be bytes")
+    if (type(key0_crc_bits_0_15) is not int or not 0 <= key0_crc_bits_0_15 <= 0xFFFF
+            or type(key2_crc_bits_0_23) is not int or not 0 <= key2_crc_bits_0_23 <= 0xFFFFFF
+            or type(first_pass_carry1) is not int or first_pass_carry1 not in (0, 1)):
+        raise ValueError("Stay Stage 2 partial state is invalid")
+
+    def offset_after_two(first_plaintext: int, second_plaintext: int) -> int:
+        key0_after_first = key0_crc_bits_0_15 ^ CRCTAB[first_plaintext]
+        first_addend = key0_after_first & 0xFF
+        key0_after_second = ((key0_after_first >> 8)
+                             ^ CRCTAB[(key0_after_first ^ second_plaintext) & 0xFF]) & 0xFFFF
+        second_addend = key0_after_second & 0xFF
+        return (first_addend * MULT * MULT + MULT
+                + second_addend * MULT + 1) & 0xFFFFFF
+
+    first_key0_after_first = key0_crc_bits_0_15 ^ CRCTAB[random_first]
+    first_addend = first_key0_after_first & 0xFF
+    first_offset1 = first_addend * MULT + 1
+    product_high_after_first = (key1_product_high + (first_offset1 >> 24)
+                                + first_pass_carry1) & 0xFF
+    key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[product_high_after_first]) & 0xFFFFFF
+    key2_stream_state = (key2_after_first & 0xFFFF) | 2
+    first_stream_second = (key2_stream_state * (key2_stream_state ^ 1) >> 8) & 0xFF
+    offset_first = offset_after_two(random_first, random_second)
+    offset_second = offset_after_two(random_first ^ first_stream,
+                                     random_second ^ first_stream_second)
+    return offset_first, offset_second
+
+
+def _stay_lift_key1_candidates(product_interval: tuple[int, int, int], *, bits: int = 24
+                               ) -> Iterator[int]:
+    """Lift a product interval to key1 values using the odd ZipCrypto multiplier."""
+    if type(bits) is not int or not 1 <= bits <= 24:
+        raise ValueError("Stay product word width is invalid")
+    if (len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)):
+        raise ValueError("Stay product interval must contain three integers")
+    product_high, lower, upper = product_interval
+    limit = 1 << bits
+    if not 0 <= product_high <= 0xFF or not 0 <= lower <= upper < limit:
+        raise ValueError("Stay product interval is out of range")
+    word_mask = (1 << (bits + 8)) - 1
+    multiplier_inverse = pow(MULT, -1, word_mask + 1)
+    product_base = product_high << bits
+    for low in range(lower, upper + 1):
+        yield ((product_base | low) * multiplier_inverse) & word_mask
+
+
+def _stay_predict_second_byte_difference(random_first: int, first_stream: int,
+                                         key0_crc_low: int, key1_product_high: int,
+                                         key2_crc_bits_2_15: int, first_carry: int,
+                                         second_carry: int) -> int:
+    """Predict the two-pass second-byte stream XOR from Stay's partial guesses."""
+    byte_values = (random_first, first_stream, key0_crc_low, key1_product_high)
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in byte_values):
+        raise ValueError("Stay byte guesses must be bytes")
+    if (type(key2_crc_bits_2_15) is not int or not 0 <= key2_crc_bits_2_15 <= 0xFFFC
+            or key2_crc_bits_2_15 & 0x3):
+        raise ValueError("Stay key2 CRC guess must contain bits 2 through 15")
+    if any(type(carry) is not int or carry not in (0, 1) for carry in (first_carry, second_carry)):
+        raise ValueError("carry guesses must be zero or one")
+
+    first_low = key0_crc_low ^ (CRCTAB[random_first] & 0xFF)
+    second_first_plaintext = random_first ^ first_stream
+    second_low = key0_crc_low ^ (CRCTAB[second_first_plaintext] & 0xFF)
+    first_offset = first_low * MULT + 1
+    second_offset = second_low * MULT + 1
+    first_key1_high = (key1_product_high + (first_offset >> 24) + first_carry) & 0xFF
+    second_key1_high = (key1_product_high + (second_offset >> 24) + second_carry) & 0xFF
+
+    first_key2_low = (key2_crc_bits_2_15 ^ CRCTAB[first_key1_high]) & 0xFFFC
+    second_key2_low = (key2_crc_bits_2_15 ^ CRCTAB[second_key1_high]) & 0xFFFC
+
+    def stream(key2_low: int) -> int:
+        value = (key2_low & 0xFFFF) | 2
+        return (value * (value ^ 1) >> 8) & 0xFF
+
+    return stream(first_key2_low) ^ stream(second_key2_low)
+
+
+def _stay_predict_third_byte_difference(random_first: int, random_second: int,
+                                         first_stream: int, key0_crc_bits_0_15: int,
+                                         key1_product_high: int, key2_crc_bits_0_23: int,
+                                         first_pass_carry1: int, second_pass_carry1: int,
+                                         q8: int, first_pass_carry2: int,
+                                         second_pass_carry2: int) -> int:
+    """Predict the two-pass third-byte stream XOR from Stay's Stage 2 guesses.
+
+    ``key0_crc_bits_0_15`` is the low 16 bits of ``crc32(key0, 0)``;
+    ``key2_crc_bits_0_23`` is the low 24 bits of ``crc32(key2, 0)``. The two
+    first-update carries are pass-specific Stage 1 choices; the two
+    second-update carries and ``q8 = MSB(key1 * MULT**2)`` are Stage 2 guesses.
+    This is a predictor only: it does not enumerate Stage 2 candidates.
+    """
+    byte_values = (random_first, random_second, first_stream, key1_product_high, q8)
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in byte_values):
+        raise ValueError("Stay Stage 2 byte guesses must be bytes")
+    if (type(key0_crc_bits_0_15) is not int or not 0 <= key0_crc_bits_0_15 <= 0xFFFF
+            or type(key2_crc_bits_0_23) is not int or not 0 <= key2_crc_bits_0_23 <= 0xFFFFFF):
+        raise ValueError("Stay Stage 2 CRC guesses are out of range")
+    carries = (first_pass_carry1, second_pass_carry1,
+               first_pass_carry2, second_pass_carry2)
+    if any(type(carry) is not int or carry not in (0, 1) for carry in carries):
+        raise ValueError("Stay Stage 2 carry guesses must be zero or one")
+
+    multiplier2 = MULT * MULT
+
+    def low_after_two(crc_low16: int, first_plain: int, second_plain: int) -> tuple[int, int]:
+        first = crc_low16 ^ (CRCTAB[first_plain] & 0xFFFF)
+        second = ((first >> 8) ^ CRCTAB[(first ^ second_plain) & 0xFF]) & 0xFF
+        return first & 0xFF, second
+
+    def second_key1_high(a1: int, a2: int, carry1: int, carry2: int) -> tuple[int, int]:
+        offset1 = a1 * MULT + 1
+        high1 = (key1_product_high + (offset1 >> 24) + carry1) & 0xFF
+        total2 = a1 * multiplier2 + MULT + a2 * MULT + 1
+        # q8 is the high byte of key1*M^2; carry2 is the guessed low-word carry.
+        high2 = (q8 + (total2 >> 24) + carry2) & 0xFF
+        return high1, high2
+
+    def stream_after_two(plain0: int, plain1: int, carry1: int, carry2: int) -> tuple[int, int]:
+        a1, a2 = low_after_two(key0_crc_bits_0_15, plain0, plain1)
+        high1, high2 = second_key1_high(a1, a2, carry1, carry2)
+        key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[high1]) & 0xFFFFFF
+        first_stream_state = (key2_after_first & 0xFFFF) | 2
+        first_stream2 = (first_stream_state * (first_stream_state ^ 1) >> 8) & 0xFF
+        key2_after_second = ((key2_after_first >> 8)
+                             ^ CRCTAB[(key2_after_first ^ high2) & 0xFF]) & 0xFFFF
+        second_stream_state = key2_after_second | 2
+        second_stream2 = (second_stream_state * (second_stream_state ^ 1) >> 8) & 0xFF
+        return first_stream2, second_stream2
+
+    first_pass_s1, first_pass_s2 = stream_after_two(
+        random_first, random_second, first_pass_carry1, first_pass_carry2)
+    _, second_pass_s2 = stream_after_two(
+        random_first ^ first_stream, random_second ^ first_pass_s1,
+        second_pass_carry1, second_pass_carry2)
+    return first_pass_s2 ^ second_pass_s2
+
+
+def _stay_first_stage_carry_masks(random_firsts: tuple[int, ...],
+                                  observed_differences: tuple[int, ...],
+                                  first_stream: int, key0_crc_low: int,
+                                  key1_product_high: int, key2_crc_bits_2_15: int,
+                                  first_carry: int, second_carry: int
+                                  ) -> tuple[int, ...] | None:
+    """Filter a first-stage partial-state guess across five shared-key files.
+
+    The first file's carry pair is part of the 40-bit guess. For each later
+    file, return a four-bit mask of carry pairs that satisfy its observed
+    second-byte differential. An empty mask rejects the candidate.
+    """
+    if (len(random_firsts) != len(observed_differences) or len(random_firsts) < 5
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *observed_differences))):
+        raise ValueError("Stay first-stage observations require five or more byte pairs")
+    if any(type(carry) is not int or carry not in (0, 1)
+           for carry in (first_carry, second_carry)):
+        raise ValueError("carry guesses must be zero or one")
+
+    first = _stay_predict_second_byte_difference(
+        random_firsts[0], first_stream, key0_crc_low, key1_product_high,
+        key2_crc_bits_2_15, first_carry, second_carry)
+    if first != observed_differences[0]:
+        return None
+    masks = [1 << (first_carry * 2 + second_carry)]
+    for random_first, observed in zip(random_firsts[1:], observed_differences[1:], strict=True):
+        mask = 0
+        for carry1 in (0, 1):
+            for carry2 in (0, 1):
+                predicted = _stay_predict_second_byte_difference(
+                    random_first, first_stream, key0_crc_low, key1_product_high,
+                    key2_crc_bits_2_15, carry1, carry2)
+                if predicted == observed:
+                    mask |= 1 << (carry1 * 2 + carry2)
+        if not mask:
+            return None
+        masks.append(mask)
+    return tuple(masks)
+
+
+def _stay_first_stage_candidate(index: int, random_firsts: tuple[int, ...],
+                                observed_differences: tuple[int, ...]
+                                ) -> tuple[int, ...] | None:
+    """Decode one packed 40-bit Stay guess and apply its multi-file filter."""
+    if type(index) is not int or not 0 <= index < 1 << 40:
+        raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
+    first_stream = index & 0xFF
+    key0_crc_low = index >> 8 & 0xFF
+    key1_product_high = index >> 16 & 0xFF
+    first_carry = index >> 24 & 1
+    key2_crc_bits_2_15 = ((index >> 25 & 0x3F) << 10) | ((index >> 31 & 0xFF) << 2)
+    second_carry = index >> 39 & 1
+    return _stay_first_stage_carry_masks(
+        random_firsts, observed_differences, first_stream, key0_crc_low,
+        key1_product_high, key2_crc_bits_2_15, first_carry, second_carry)
+
+
+def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
+                                     random_firsts: tuple[int, ...]
+                                     ) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
+    """Lift a filtered 40-bit guess through shared key1 carry intervals.
+
+    Each yielded pair contains a product interval and the carry-pair index
+    selected for each member. Callers can enumerate actual key1 values from the
+    interval only when a later stage needs them. This is a Stage 1 consistency
+    filter, not the later key-recovery stage.
+    """
+    if type(index) is not int or not 0 <= index < 1 << 40:
+        raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
+    if (len(carry_masks) != len(random_firsts) or len(random_firsts) < 5
+            or any(type(mask) is not int or not 1 <= mask <= 0xF for mask in carry_masks)
+            or any(type(value) is not int or not 0 <= value <= 0xFF for value in random_firsts)):
+        raise ValueError("Stay carry masks and random header bytes are invalid")
+    first_stream = index & 0xFF
+    key0_crc_low = index >> 8 & 0xFF
+    product_high = index >> 16 & 0xFF
+    carry_options = [tuple(pair for pair in range(4) if mask & (1 << pair))
+                     for mask in carry_masks]
+    first_carry_pair = index >> 24 & 1, index >> 39 & 1
+    if (first_carry_pair[0] * 2 + first_carry_pair[1]) not in carry_options[0]:
+        return
+    carry_options[0] = (first_carry_pair[0] * 2 + first_carry_pair[1],)
+
+    choices = [0] * len(random_firsts)
+    visited = 0
+
+    def visit(member: int, lower: int, upper: int
+              ) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
+        nonlocal visited
+        visited += 1
+        if visited > MAX_STAY_CARRY_INTERVAL_VISITS:
+            raise ValueError("Stay carry interval search exceeds its bounded visit limit")
+        if lower > upper:
+            return
+        if member < len(random_firsts):
+            for pair in carry_options[member]:
+                choices[member] = pair
+                first_low = key0_crc_low ^ (CRCTAB[random_firsts[member]] & 0xFF)
+                second_low = key0_crc_low ^ (CRCTAB[random_firsts[member] ^ first_stream] & 0xFF)
+                next_lower, next_upper = lower, upper
+                for low, carry in ((first_low, pair >> 1), (second_low, pair & 1)):
+                    offset = low * MULT + 1
+                    threshold = (1 << 24) - (offset & 0xFFFFFF)
+                    if carry:
+                        next_lower = max(next_lower, threshold)
+                    else:
+                        next_upper = min(next_upper, threshold - 1)
+                if next_lower <= next_upper:
+                    yield from visit(member + 1, next_lower, next_upper)
+            return
+        yield (product_high, lower, upper), tuple(choices)
+
+    yield from visit(0, 0, 0xFFFFFF)
+
+
+def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
+                                   random_firsts: tuple[int, ...],
+                                   random_seconds: tuple[int, ...],
+                                   observed_third_differences: tuple[int, ...],
+                                   key0_crc_bits_8_15: int,
+                                   key2_crc_bits_16_23_and_0_1: int, q8: int, *,
+                                   product_witness: list[int] | None = None) -> bool:
+    """Exactly test one Stage 2 partial guess against shared interval constraints.
+
+    This is a bounded one-candidate predicate, not a keyspace enumerator. It
+    checks the predicted third-byte differentials, then intersects every
+    selected carry constraint into one low-residue interval and verifies that
+    a common Stage 1 product value exists there.
+    """
+    if type(index) is not int or not 0 <= index < 1 << 40:
+        raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
+    count = len(random_firsts)
+    if (count < 5 or len(carry_masks) != count or len(random_seconds) != count
+            or len(observed_third_differences) != count
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *random_seconds, *observed_third_differences))
+            or any(type(mask) is not int or not 1 <= mask <= 0xF for mask in carry_masks)):
+        raise ValueError("Stay Stage 2 observations or carry masks are invalid")
+    if (type(key0_crc_bits_8_15) is not int or not 0 <= key0_crc_bits_8_15 <= 0xFF
+            or type(key2_crc_bits_16_23_and_0_1) is not int
+            or not 0 <= key2_crc_bits_16_23_and_0_1 <= 0x3FF
+            or type(q8) is not int or not 0 <= q8 <= 0xFF):
+        raise ValueError("Stay Stage 2 guesses are out of range")
+
+    first_stream = index & 0xFF
+    key0_crc = (index >> 8 & 0xFF) | (key0_crc_bits_8_15 << 8)
+    product_high = index >> 16 & 0xFF
+    key2_crc_low14 = ((index >> 25 & 0x3F) << 10) | ((index >> 31 & 0xFF) << 2)
+    key2_crc = (key2_crc_low14 | (key2_crc_bits_16_23_and_0_1 >> 2) << 16
+                | (key2_crc_bits_16_23_and_0_1 & 0x3))
+
+    for interval, carry_pairs in _stay_first_stage_key1_intervals(
+            index, carry_masks, random_firsts):
+        offsets: list[int] = []
+        for random_first, random_second, pair in zip(
+                random_firsts, random_seconds, carry_pairs, strict=True):
+            offsets.extend(_stay_second_update_addends(
+                random_first, random_second, first_stream, key0_crc,
+                product_high, key2_crc, pair >> 1))
+
+        member_carry_options: list[tuple[int, ...]] = []
+        for member, (random_first, random_second, observed, pair) in enumerate(zip(
+                random_firsts, random_seconds, observed_third_differences,
+                carry_pairs, strict=True)):
+            first_carry1, second_carry1 = pair >> 1, pair & 1
+            options: list[int] = []
+            for first_carry2 in (0, 1):
+                for second_carry2 in (0, 1):
+                    predicted = _stay_predict_third_byte_difference(
+                        random_first, random_second, first_stream, key0_crc,
+                        product_high, key2_crc, first_carry1, second_carry1,
+                        q8, first_carry2, second_carry2)
+                    if predicted == observed:
+                        options.append(first_carry2 * 2 + second_carry2)
+            if not options:
+                break
+            member_carry_options.append(tuple(options))
+        if len(member_carry_options) != count:
+            continue
+
+        low_limit = 1 << 24
+        current_interval = interval
+        current_offsets = tuple(offsets)
+        current_member_options = tuple(member_carry_options)
+
+        def shared_residue_exists(member: int, lower: int, upper: int, *,
+                                  _interval=current_interval,
+                                  _offsets=current_offsets,
+                                  _choices=current_member_options,
+                                  _limit=low_limit) -> bool:
+            if lower > upper:
+                return False
+            if member == count:
+                if product_witness is None:
+                    return _stay_q8_residue_interval_nonempty(_interval, q8, lower, upper)
+                witness = _stay_q8_residue_interval_witness(_interval, q8, lower, upper)
+                if witness is None:
+                    return False
+                product_witness.append((_interval[0] << 24) | witness)
+                return True
+            first_addend = _offsets[member * 2]
+            second_addend = _offsets[member * 2 + 1]
+            for pair in _choices[member]:
+                next_lower, next_upper = lower, upper
+                for addend, carry in ((first_addend, pair >> 1),
+                                      (second_addend, pair & 1)):
+                    threshold = _limit - addend
+                    if carry:
+                        next_lower = max(next_lower, threshold)
+                    else:
+                        next_upper = min(next_upper, threshold - 1)
+                if shared_residue_exists(member + 1, next_lower, next_upper):
+                    return True
+            return False
+
+        if shared_residue_exists(0, 0, low_limit - 1):
+            return True
+    return False
+
+
+def _stay_predict_second_byte_difference_np(indices: np.ndarray, random_first: int,
+                                             first_stream: np.ndarray, key0_crc_low: np.ndarray,
+                                             key1_product_high: np.ndarray,
+                                             key2_crc_bits_2_15: np.ndarray,
+                                             first_carry: int | np.ndarray,
+                                             second_carry: int | np.ndarray) -> np.ndarray:
+    """Vectorized partial-state predictor for one header observation."""
+    first_low = key0_crc_low ^ (CRCTAB_NP[random_first] & np.uint32(0xFF))
+    second_first_plaintext = random_first ^ first_stream
+    second_low = key0_crc_low ^ (CRCTAB_NP[second_first_plaintext] & np.uint32(0xFF))
+    first_offset = first_low.astype(np.uint64) * np.uint64(MULT) + np.uint64(1)
+    second_offset = second_low.astype(np.uint64) * np.uint64(MULT) + np.uint64(1)
+    first_high = (key1_product_high + (first_offset >> np.uint64(24)) + first_carry) & 0xFF
+    second_high = (key1_product_high + (second_offset >> np.uint64(24)) + second_carry) & 0xFF
+    first_key2 = (key2_crc_bits_2_15 ^ CRCTAB_NP[first_high.astype(np.intp)]) & 0xFFFC
+    second_key2 = (key2_crc_bits_2_15 ^ CRCTAB_NP[second_high.astype(np.intp)]) & 0xFFFC
+    first_value = (first_key2.astype(np.uint64) & 0xFFFF) | np.uint64(2)
+    second_value = (second_key2.astype(np.uint64) & 0xFFFF) | np.uint64(2)
+    first_stream2 = (first_value * (first_value ^ np.uint64(1)) >> np.uint64(8)) & 0xFF
+    second_stream2 = (second_value * (second_value ^ np.uint64(1)) >> np.uint64(8)) & 0xFF
+    # Keep the index argument explicit to make accidental array reordering visible
+    # at call sites; all outputs have the same candidate axis.
+    if len(indices) != len(first_stream2):
+        raise ValueError("Stay vector candidate arrays have inconsistent lengths")
+    return (first_stream2 ^ second_stream2).astype(np.uint8)
+
+
+def _stay_first_stage_scan_chunk(random_firsts: tuple[int, ...],
+                                 observed_differences: tuple[int, ...], start: int, stop: int,
+                                 *, max_candidates: int = 100_000,
+                                 seconds: float = 30.0, max_hits: int = 4096
+                                 ) -> dict[str, Any]:
+    """Vector-scan a bounded 40-bit range and return a resumable cursor."""
+    if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 40):
+        raise ValueError("Stay scan range must be within the 40-bit candidate space")
+    if type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 40:
+        raise ValueError("Stay scan candidate bound must be between 1 and 2^40")
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not 0 < seconds <= 300):
+        raise ValueError("Stay scan deadline must be between zero and 300 seconds")
+    if type(max_hits) is not int or not 1 <= max_hits <= 4096:
+        raise ValueError("Stay scan hit bound must be between 1 and 4096")
+    if (len(random_firsts) != len(observed_differences) or len(random_firsts) < 5
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *observed_differences))):
+        raise ValueError("Stay scan requires five or more pairs of observation bytes")
+    bounded_stop = min(stop, start + max_candidates)
+    deadline = time.monotonic() + seconds
+    hits: list[tuple[int, tuple[int, ...]]] = []
+    cursor = start
+    batch_size = 1 << 20
+    while cursor < bounded_stop:
+        if time.monotonic() >= deadline:
+            break
+        batch_stop = min(cursor + batch_size, bounded_stop)
+        indices = np.arange(cursor, batch_stop, dtype=np.uint64)
+        first_stream = (indices & np.uint64(0xFF)).astype(np.uint32)
+        key0_crc_low = (indices >> np.uint64(8) & np.uint64(0xFF)).astype(np.uint32)
+        key1_product_high = (indices >> np.uint64(16) & np.uint64(0xFF)).astype(np.uint64)
+        first_carry = (indices >> np.uint64(24) & np.uint64(1)).astype(np.uint64)
+        key2_crc_bits_2_15 = (
+            ((indices >> np.uint64(25) & np.uint64(0x3F)) << np.uint64(10))
+            | ((indices >> np.uint64(31) & np.uint64(0xFF)) << np.uint64(2))
+        ).astype(np.uint32)
+        second_carry = (indices >> np.uint64(39) & np.uint64(1)).astype(np.uint64)
+        first_prediction = _stay_predict_second_byte_difference_np(
+            indices, random_firsts[0], first_stream, key0_crc_low, key1_product_high,
+            key2_crc_bits_2_15, first_carry, second_carry)
+        keep = first_prediction == observed_differences[0]
+        indices = indices[keep]
+        first_stream = first_stream[keep]
+        key0_crc_low = key0_crc_low[keep]
+        key1_product_high = key1_product_high[keep]
+        key2_crc_bits_2_15 = key2_crc_bits_2_15[keep]
+        carry_masks = np.zeros((len(random_firsts), len(indices)), dtype=np.uint8)
+        if len(indices):
+            carry_masks[0] = (1 << (first_carry[keep] * 2 + second_carry[keep])).astype(np.uint8)
+        for member_index in range(1, len(random_firsts)):
+            member_mask = np.zeros(len(indices), dtype=np.uint8)
+            for carry1 in (0, 1):
+                for carry2 in (0, 1):
+                    prediction = _stay_predict_second_byte_difference_np(
+                        indices, random_firsts[member_index], first_stream, key0_crc_low,
+                        key1_product_high, key2_crc_bits_2_15, carry1, carry2)
+                    member_mask |= (prediction == observed_differences[member_index]).astype(np.uint8) << (
+                        carry1 * 2 + carry2)
+            keep = member_mask != 0
+            indices = indices[keep]
+            first_stream = first_stream[keep]
+            key0_crc_low = key0_crc_low[keep]
+            key1_product_high = key1_product_high[keep]
+            key2_crc_bits_2_15 = key2_crc_bits_2_15[keep]
+            carry_masks = carry_masks[:, keep]
+            member_mask = member_mask[keep]
+            carry_masks[member_index] = member_mask
+            if not len(indices):
+                break
+        if len(indices):
+            room = max_hits - len(hits)
+            take = min(room, len(indices))
+            hit_indices = indices[:take]
+            for position, candidate in enumerate(hit_indices):
+                hits.append((int(candidate), tuple(int(value) for value in carry_masks[:, position])))
+            if take < len(indices) or len(hits) >= max_hits:
+                # Resume just after the last returned hit. The remaining
+                # survivors in this filtered batch must be emitted by the next
+                # call rather than skipped.
+                cursor = int(hit_indices[-1]) + 1
+                break
+        cursor = batch_stop
+    return {"next_index": cursor, "complete": cursor >= stop,
+            "scanned": cursor - start, "hits": tuple(hits)}
+
+
+def _stay_first_stage_scan_parallel(random_firsts: tuple[int, ...],
+                                    observed_differences: tuple[int, ...], start: int, stop: int,
+                                    *, max_candidates: int = 1 << 40, seconds: float = 300.0,
+                                    max_hits: int = 4096, workers: int = 4) -> dict[str, Any]:
+    """Scan consecutive 1M ranges in parallel while retaining a gap-free cursor."""
+    if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 40):
+        raise ValueError("Stay scan range must be within the 40-bit candidate space")
+    if type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 40:
+        raise ValueError("Stay scan candidate bound must be between 1 and 2^40")
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not 0 < seconds <= 300):
+        raise ValueError("Stay scan deadline must be between zero and 300 seconds")
+    if type(max_hits) is not int or not 1 <= max_hits <= 4096:
+        raise ValueError("Stay scan hit bound must be between 1 and 4096")
+    if type(workers) is not int or not 1 <= workers <= 4:
+        raise ValueError("Stay scan workers must be between one and four")
+    if (len(random_firsts) != len(observed_differences) or len(random_firsts) < 5
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *observed_differences))):
+        raise ValueError("Stay scan requires five or more pairs of observation bytes")
+
+    bounded_stop = min(stop, start + max_candidates)
+    deadline = time.monotonic() + seconds
+    cursor = start
+    hits: list[tuple[int, tuple[int, ...]]] = []
+    batch_size = 1 << 20
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while cursor < bounded_stop:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ranges = [(left, min(left + batch_size, bounded_stop))
+                      for left in range(cursor, min(cursor + batch_size * workers, bounded_stop), batch_size)]
+            futures = [pool.submit(_stay_first_stage_scan_chunk,
+                                   random_firsts, observed_differences, left, right,
+                                   max_candidates=right - left, seconds=remaining,
+                                   max_hits=max_hits)
+                       for left, right in ranges]
+            results = [future.result() for future in futures]
+            wave_cursor = cursor
+            for (left, _right), result in zip(ranges, results, strict=True):
+                if left != wave_cursor:
+                    raise RuntimeError("Stay parallel scan lost a contiguous range")
+                for candidate, masks in result["hits"]:
+                    hits.append((candidate, masks))
+                    if len(hits) >= max_hits:
+                        return {"next_index": candidate + 1, "complete": candidate + 1 >= stop,
+                                "scanned": candidate + 1 - start, "hits": tuple(hits),
+                                "seconds": round(time.monotonic() - (deadline - seconds), 3)}
+                wave_cursor = int(result["next_index"])
+                if not result["complete"]:
+                    cursor = wave_cursor
+                    break
+            else:
+                cursor = wave_cursor
+    return {"next_index": cursor, "complete": cursor >= stop,
+            "scanned": cursor - start, "hits": tuple(hits),
+            "seconds": round(time.monotonic() - (deadline - seconds), 3)}
 
 
 def _tables() -> tuple[list[int], list[int]]:
@@ -326,7 +1102,8 @@ class _Attack:
 
 def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, extra: dict[int, int] | None = None,
                            seconds: float = 120.0, max_candidates: int = 1 << 20,
-                           workers: int | None = None) -> dict[str, Any]:
+                           workers: int | None = None,
+                           phase_callback: Callable[[str], None] | None = None) -> dict[str, Any]:
     """Recover the initial keys of an encrypted member (``ciphertext`` includes the 12-byte header).
 
     ``offset`` is the position of ``plaintext`` in ``ciphertext`` (12 = first data byte);
@@ -342,6 +1119,8 @@ def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, 
     deadline = started + seconds
     keystream = [p ^ ciphertext[offset + i] for i, p in enumerate(plaintext)]
     try:
+        if phase_callback is not None:
+            phase_callback("candidate-reduction")
         candidates, index = z_reduction(keystream, deadline)
     except BudgetExceeded:
         return {"found": False, "reason": "work_exceeds_budget", "stage": "z-reduction", "seconds": seconds}
@@ -350,30 +1129,52 @@ def known_plaintext_attack(ciphertext: bytes, plaintext: bytes, offset: int, *, 
         return {**result, "found": False, "reason": "work_exceeds_budget",
                 "detail": "too many key2 candidates; supply more contiguous known plaintext"}
     jobs = max(1, min(workers or (os.cpu_count() or 1), 16))
+    if phase_callback is not None:
+        phase_callback("candidate-key-search")
     order = candidates.tolist()
     shards = [order[i::jobs] for i in range(jobs)]
     arguments = [(ciphertext, plaintext, offset, extra, index, shard, deadline) for shard in shards]
-    tried, found = 0, None
+    tried, found, timed_out = 0, None, False
     if jobs == 1:
-        outcomes = [_attack_shard(arguments[0])]
-    else:
-        context = multiprocessing.get_context("spawn")
-        with context.Pool(jobs) as pool:
-            outcomes = []
-            for outcome in pool.imap_unordered(_attack_shard, arguments):
-                outcomes.append(outcome)
-                if outcome[1] is not None:
-                    pool.terminate()  # one worker found the keys; stop the others now
-                    break
+        tried, found = _attack_shard(arguments[0])
+        elapsed = round(time.monotonic() - started, 1)
+        if found:
+            return {**result, "found": True, "keys": found, "tried": tried, "workers": jobs,
+                    "seconds": elapsed}
+        if time.monotonic() > deadline:
+            return {**result, "found": False, "reason": "work_exceeds_budget", "stage": "key-search",
+                    "tried": tried, "workers": jobs, "seconds": elapsed}
+        return {**result, "found": False, "reason": "no_solution",
+                "detail": "plaintext or offset is probably wrong", "workers": jobs, "seconds": elapsed}
+    context = multiprocessing.get_context("spawn")
+    with context.Pool(jobs) as pool:
+        outcomes = []
+        pending = pool.imap_unordered(_attack_shard, arguments)
+        for _ in range(jobs):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                pool.terminate()
+                break
+            try:
+                outcome = pending.next(timeout=remaining)
+            except multiprocessing.TimeoutError:
+                timed_out = True
+                pool.terminate()
+                break
+            outcomes.append(outcome)
+            if outcome[1] is not None:
+                pool.terminate()  # one worker found the keys; stop the others now
+                break
     for count, keys in outcomes:
         tried += count
         found = found or keys
     elapsed = round(time.monotonic() - started, 1)
     if found:
         return {**result, "found": True, "keys": found, "tried": tried, "workers": jobs, "seconds": elapsed}
-    if time.monotonic() > deadline:
-        return {**result, "found": False, "reason": "work_exceeds_budget", "tried": tried, "workers": jobs,
-                "seconds": elapsed}
+    if timed_out or time.monotonic() > deadline:
+        return {**result, "found": False, "reason": "work_exceeds_budget", "stage": "key-search",
+                "tried": tried, "workers": jobs, "seconds": elapsed}
     return {**result, "found": False, "reason": "no_solution", "detail": "plaintext or offset is probably wrong",
             "workers": jobs, "seconds": elapsed}
 
@@ -443,7 +1244,8 @@ def zipcrypto_info(data: bytes) -> dict[str, Any]:
             "notes": [("Known plaintext attack: zipcrypto_attack needs >= 12 known bytes (8 contiguous) of one "
                       "member; header byte 11 is known (check byte)."),
                       ("Info-ZIP archives: header byte 0 of each member equals a rand() byte (Stay 2001); with "
-                      "5+ members infozip_seed can recover the PRNG seed and all header bytes.")]}
+                       "5+ members infozip_seed can recover the PRNG seed and all header bytes. Stay section 4 "
+                       "uses the double-encryption stream-byte XOR constraints for key recovery.")]}
 
 
 # -- Info-ZIP PRNG (Stay 2001, section 4) ------------------------------------------------------------
@@ -537,9 +1339,10 @@ def infozip_seed(data: bytes, *, generator: str = "glibc", time_from: int | None
                         "random_header_bytes": headers, "tried_seeds": tried,
                         "seconds": round(time.monotonic() - started, 1),
                         "next": ("These are the rand() bytes r[i][0..9] of each member. Info-ZIP encrypted them "
-                                 "twice, so they are not known plaintext of the stored stream; Stay's key recovery "
-                                 "from them costs about 2^39 cipher steps and is not available in METIS "
-                                 "(work_exceeds_budget).")}
+                                 "twice, so they are not Biham-Kocher known plaintext. Stay section 4 specifically "
+                                 "uses the resulting stream-byte XOR constraints for key recovery; its roughly "
+                                 "2^39-cipher-step inverse search is not implemented in METIS and remains "
+                                 "unavailable (work_exceeds_budget).")}
     return {"found": False, "reason": "no_seed_in_range", "tried_seeds": tried,
             "seconds": round(time.monotonic() - started, 1),
             "detail": "try another time window or generator, or the archive was not made by Info-ZIP"}
@@ -553,12 +1356,33 @@ def parse_keys(value: str) -> Keys:
     return Keys(*parts)
 
 
-def decrypt_member(data: bytes, name: str, keys: Keys) -> dict[str, Any]:
+def decrypt_member(data: bytes, name: str, keys: Keys,
+                   *, expected_random_header: bytes | None = None) -> dict[str, Any]:
+    """Decrypt and CRC-check one member, optionally validating a Stay double header.
+
+    When ``expected_random_header`` is supplied, it must be the ten Info-ZIP
+    PRNG bytes for this member. The stored member has one encrypted layer over
+    the whole payload; Info-ZIP applied an additional first layer only to the
+    ten random header bytes. Validate all check bytes available in the ZIP
+    header and recover those ten bytes through the reset cipher state before
+    accepting the member.
+    """
     entry = next((item for item in members(data) if item["name"] == name), None)
     if entry is None or not entry["encrypted"]:
         raise ValueError("no such encrypted member")
     plain = keys.decrypt(member_bytes(data, entry))
     header, body = plain[:12], plain[12:]
+    if expected_random_header is not None:
+        if not isinstance(expected_random_header, bytes) or len(expected_random_header) != 10:
+            raise ValueError("expected_random_header must contain ten bytes")
+        checks = check_bytes(entry)
+        if entry["data_descriptor"]:
+            checks = {11: checks[11]}
+        if any(header[offset] != value for offset, value in checks.items()):
+            raise ValueError("check bytes mismatch: wrong keys or header")
+        recovered_random_header = keys.decrypt(header[:10])
+        if recovered_random_header != expected_random_header:
+            raise ValueError("double-encrypted random header mismatch")
     if header[11] != check_bytes(entry)[11]:
         raise ValueError("check byte mismatch: wrong keys")
     if entry["method"] == 8:
@@ -568,4 +1392,5 @@ def decrypt_member(data: bytes, name: str, keys: Keys) -> dict[str, Any]:
     crc_ok = f"{zlib.crc32(body) & M32:08x}" == entry["crc32"]
     if not crc_ok:
         raise ValueError("CRC mismatch: wrong keys")
-    return {"name": name, "size": len(body), "crc_ok": crc_ok, "plaintext": body}
+    return {"name": name, "size": len(body), "crc_ok": crc_ok,
+            "stay_header_ok": expected_random_header is not None, "plaintext": body}

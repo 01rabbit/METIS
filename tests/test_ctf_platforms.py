@@ -139,8 +139,8 @@ def test_render_uses_scoped_renderer_output(rctf, tmp_path):
     base, _ = rctf
     calls = {}
 
-    def fake_renderer(url, allowed, *, cookies):
-        calls.update(url=url, allowed=allowed)
+    def fake_renderer(url, allowed, *, cookies, auth_origin=None, auth_generation_check=None):
+        calls.update(url=url, allowed=allowed, auth_origin=auth_origin)
         return url, ('<title>Rendered</title><p>Built by JS</p>'
                      '<a href="/uploads/out.txt" download>file</a>'), ["https://cdn.example"]
 
@@ -157,7 +157,8 @@ def test_render_rejects_out_of_scope_navigation(rctf, tmp_path):
     workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
     with pytest.raises(ValueError, match="scope"):
         workflow.open(base + "/spa", render=True,
-                      renderer=lambda url, allowed, cookies: ("https://evil.example/", "<p>x</p>", []))
+                      renderer=lambda url, allowed, *, cookies, auth_origin=None,
+                      auth_generation_check=None: ("https://evil.example/", "<p>x</p>", []))
     with pytest.raises(ValueError):
         workflow.open(base, adapter="ctfd", challenge_id=1, render=True)
 

@@ -199,6 +199,58 @@ def test_unknown_form_never_guesses_acceptance(site, tmp_path):
         workflow.submit(run_id, FLAG)
 
 
+def test_html_intake_uses_only_declared_supported_category(site, tmp_path):
+    from metis.core.ctf_html import Page
+
+    page = Page('<a href="/challenges?q=category%3ARev">Rev</a>'
+                '<title>Uses crypto words</title><p>crypto challenge</p>', "https://example.test/")
+    assert page.categories == ["rev"]
+    unsupported = Page('<a href="/challenges?q=category%3ABlockchain">crypto</a>'
+                       '<p>crypto</p>', "https://example.test/")
+    assert unsupported.categories == []
+
+
+def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_path):
+    base, _ = site
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    # Explicit parser fixture is exercised through the same workflow branch with a mock response.
+    from metis.core.ctf_http import HTTPResult
+    body = (b'<a href="/challenges?q=category%3AWeb">Web</a>'
+            b'<title>Call me crypto</title><p>analyzing syscalls</p>')
+    response = HTTPResult(url="https://alpacahack.com/challenges/example", status=200,
+                          headers={"content-type": "text/html"}, body=body,
+                          size=len(body), sha256="0" * 64)
+    workflow._client = lambda config, state: type("Client", (), {
+        "request": lambda self, *args, **kwargs: response,
+        "export_state": lambda self: {"cookies": {}},
+        "auth_generation": 0,
+    })()
+    result = workflow.open(base + "/problem")
+    assert result["context"]["challenge"]["categories"] == ["web"]
+
+
+@pytest.mark.parametrize("alpacahack", [False, True])
+def test_generic_html_and_ambiguous_alpacahack_links_do_not_claim_category(site, tmp_path,
+                                                                            alpacahack):
+    from metis.core.ctf_http import HTTPResult
+
+    base, _ = site
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    body = (b'<a href="/challenges?q=category%3AWeb">Web</a>'
+            b'<a href="/challenges?q=category%3ACrypto">Crypto</a>')
+    response_url = "https://alpacahack.com/challenges/example" if alpacahack else base + "/problem"
+    response = HTTPResult(url=response_url, status=200,
+                          headers={"content-type": "text/html"}, body=body,
+                          size=len(body), sha256="0" * 64)
+    workflow._client = lambda config, state: type("Client", (), {
+        "request": lambda self, *args, **kwargs: response,
+        "export_state": lambda self: {"cookies": {}},
+        "auth_generation": 0,
+    })()
+    result = workflow.open(base + "/problem")
+    assert result["context"]["challenge"]["categories"] == []
+
+
 def test_network_scope_redirects_and_download_limits(site):
     base, _ = site
     client = SafeHTTP([base], auth_origin=base)
@@ -495,3 +547,74 @@ def test_parallel_submissions_are_serialized_and_pending_sends_are_kept(site, tm
     assert workflow.submit(run_id, FLAG)["verified"]
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT verdict FROM web_attempts WHERE digest=?", ("ab" * 32,)).fetchone()[0] == "unknown"
+
+
+def test_browser_reservation_survives_restart_and_binds_candidate(site, tmp_path):
+    base, state = site
+    database = tmp_path / "browser.sqlite"
+    workflow = WebWorkflow(database)
+    run_id = workflow.open(base + "/problem")["context"]["run_id"]
+    assert workflow.prepare_browser(run_id, "private-candidate")["may_send_once"]
+    reopened = WebWorkflow(database)
+    for candidate in ("private-candidate", "other-candidate"):
+        with pytest.raises(ValueError, match="pending browser"):
+            reopened.prepare_browser(run_id, candidate)
+    with pytest.raises(ValueError, match="different candidate"):
+        reopened.attest(run_id, "other-candidate", verdict="correct", evidence="Official UI showed Correct")
+    result = reopened.attest(run_id, "private-candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert result["verified"]
+    retried = WebWorkflow(database).attest(
+        run_id, "private-candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert retried["verified"] and retried["idempotent_retry"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT attempts,verdict FROM web_attempts").fetchall() == [(1, "correct")]
+    assert state["posts"] == 0
+    assert "private-candidate" not in reopened.session.store.export_jsonl(run_id)
+
+
+def test_browser_verdict_requires_reservation_and_recovers_terminal_event_crash(site, tmp_path, monkeypatch):
+    from metis.core.contracts import RunStatus
+
+    base, _ = site
+    database = tmp_path / "browser.sqlite"
+    workflow = WebWorkflow(database)
+    run_id = workflow.open(base + "/problem")["context"]["run_id"]
+    with pytest.raises(ValueError, match="prepare this exact browser submission"):
+        workflow.attest(run_id, "candidate", verdict="correct", evidence="Official UI showed Correct")
+
+    workflow.prepare_browser(run_id, "candidate")
+    original_emit = workflow.session._emit
+
+    def crash_before_terminal(run, status, **detail):
+        if status == RunStatus.SOLVED:
+            raise RuntimeError("simulated process interruption")
+        original_emit(run, status, **detail)
+
+    monkeypatch.setattr(workflow.session, "_emit", crash_before_terminal)
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        workflow.attest(run_id, "candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert workflow.session.context(run_id)["status"] == RunStatus.VERIFYING.value
+
+    recovered = WebWorkflow(database).attest(
+        run_id, "candidate", verdict="correct", evidence="Official UI showed Correct")
+    assert recovered["verified"] and recovered["idempotent_retry"]
+    assert recovered["status"] == RunStatus.SOLVED.value
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT attempts,verdict FROM web_attempts").fetchall() == [(1, "correct")]
+
+
+def test_browser_reservation_requires_revision_and_honors_cap(site, tmp_path):
+    base, _ = site
+    workflow = WebWorkflow(tmp_path / "browser.sqlite")
+    run_id = workflow.open(base + "/problem")["context"]["run_id"]
+    with sqlite3.connect(workflow.database) as db:
+        row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+        config = json.loads(row[0])
+        config["max_submissions"] = 1
+        db.execute("UPDATE web_runs SET config=? WHERE run_id=?", (json.dumps(config), run_id))
+    workflow.prepare_browser(run_id, "first-candidate")
+    workflow.attest(run_id, "first-candidate", verdict="incorrect", evidence="Official UI showed Incorrect")
+    with pytest.raises(ValueError, match="submission limit"):
+        workflow.prepare_browser(run_id, "second-candidate")
+    with pytest.raises(ValueError, match="identical candidate"):
+        workflow.prepare_browser(run_id, "first-candidate")

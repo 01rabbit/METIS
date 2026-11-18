@@ -1,0 +1,213 @@
+diff --git a/src/mitm_stage1/main.cpp b/src/mitm_stage1/main.cpp
+index af8ed7d..59fc395 100644
+--- a/src/mitm_stage1/main.cpp
++++ b/src/mitm_stage1/main.cpp
+@@ -8,6 +8,7 @@
+ 
+ DECLARE_bool(runtests);
+ DECLARE_bool(only_emit_correct);
++DECLARE_bool(count_only);
+ DECLARE_string(target);
+ DECLARE_int32(srand_seed);
+ DECLARE_int32(test_archive);
+@@ -33,13 +34,13 @@ int main(int argc, char *argv[]) {
+     SetUsageMessage(usage_message);
+     auto non_flag = ParseCommandLineFlags(&my_argc, &argv, false);
+ 
+-    if (FLAGS_only_emit_correct) {
++    if (FLAGS_only_emit_correct || FLAGS_count_only) {
+         FLAGS_runtests = true;
+     }
+ 
+     if (FLAGS_runtests) {
+         correct_guess guess[1] = {correct(mitm::test[FLAGS_test_archive])};
+-        vector<vector<stage1a>> table(0x01000000);
++        CompactBucketTable table;
+         vector<stage1_candidate> candidates(0);
+         size_t correct_idx = 0;
+ 
+@@ -47,6 +48,19 @@ int main(int argc, char *argv[]) {
+         mitm_stage1b(test[FLAGS_test_archive], table, candidates, guess,
+                      &correct_idx);
+ 
++        if (FLAGS_count_only) {
++            const uint64_t shards = (count_only_candidates + 999999) / 1000000;
++            const uint64_t file_bytes = count_only_serialized_bytes + 4 * shards;
++            printf("{\"ok\":%s,\"stage1a_entries\":%zu,\"stage1b_candidates\":%llu,\"correct_matches\":%llu,\"serialized_candidate_bytes\":%llu,\"shards\":%llu,\"serialized_file_bytes\":%llu}\n",
++                   count_only_correct_matches == 1 ? "true" : "false", table.entries_size(),
++                   static_cast<unsigned long long>(count_only_candidates),
++                   static_cast<unsigned long long>(count_only_correct_matches),
++                   static_cast<unsigned long long>(count_only_serialized_bytes),
++                   static_cast<unsigned long long>(shards),
++                   static_cast<unsigned long long>(file_bytes));
++            return count_only_correct_matches == 1 ? 0 : 2;
++        }
++
+         if (correct_candidate(guess[0], candidates[correct_idx])) {
+             printf(
+                 "The correct candidate appears in the candidates list at index "
+@@ -107,7 +121,7 @@ int main(int argc, char *argv[]) {
+             exit(-1);
+         }
+ 
+-        vector<vector<stage1a>> table(0x01000000);
++        CompactBucketTable table;
+         vector<stage1_candidate> candidates(0);
+ 
+         mitm_stage1a(archive, table);
+diff --git a/src/mitm_stage1/mitm_stage1.cpp b/src/mitm_stage1/mitm_stage1.cpp
+index 681e0d4..f228726 100644
+--- a/src/mitm_stage1/mitm_stage1.cpp
++++ b/src/mitm_stage1/mitm_stage1.cpp
+@@ -13,12 +13,16 @@ DEFINE_int32(srand_seed, 0x57700d32,
+ DEFINE_bool(runtests, false, "Run the test cases instead of attack.");
+ DEFINE_bool(only_emit_correct, false,
+             "Only emit the correct answer, if we have one.");
+-
++DEFINE_bool(count_only, false, "Count candidate records without retaining or writing them.");
+ using namespace std;
+ using namespace mitm;
+ 
+ namespace mitm_stage1 {
+ 
++uint64_t count_only_candidates = 0;
++uint64_t count_only_serialized_bytes = 0;
++uint64_t count_only_correct_matches = 0;
++
+ bool correct_candidate(const mitm::correct_guess &g,
+                        const stage1_candidate &c) {
+     bool result = false;
+@@ -161,8 +165,8 @@ void write_stage1_candidate_file(FILE *f,
+ }
+ 
+ // info: the info about the archive to attack
+-// table: vector<vector<stage1a>> table(0x01000000)
+-void mitm_stage1a(archive_info &info, vector<vector<stage1a>> &table,
++// table: compact 2^24-bucket index with contiguous candidate storage
++void mitm_stage1a(archive_info &info, CompactBucketTable &table,
+                   correct_guess *c) {
+     // STAGE 1
+     //
+@@ -265,7 +269,7 @@ void mitm_stage1a(archive_info &info, vector<vector<stage1a>> &table,
+                     }
+                     stage1a candidate = {uint8_t(s0), uint8_t(chunk2),
+                                          uint8_t(chunk3), carries, msbxf0};
+-                    table[mk].push_back(candidate);
++                    table.add(mk, candidate);
+                 }
+             }
+         }
+@@ -276,11 +280,14 @@ void mitm_stage1a(archive_info &info, vector<vector<stage1a>> &table,
+ // table: the output of mitm_stage1a
+ // candidates: an empty vector
+ void mitm_stage1b(const archive_info &info,
+-                  const vector<vector<stage1a>> &table,
++                  const CompactBucketTable &table,
+                   vector<stage1_candidate> &candidates, const correct_guess *c,
+                   size_t *correct_candidate_index) {
+     // Second half of MITM for stage 1
+     bool found_correct = false;
++    count_only_candidates = 0;
++    count_only_serialized_bytes = 0;
++    count_only_correct_matches = 0;
+     for (uint16_t s1xf0 = 0; s1xf0 < 0x100; ++s1xf0) {
+         for (uint8_t prefix = 0; prefix < 0x40; ++prefix) {
+             uint16_t pxf0(preimages[s1xf0][prefix]);
+@@ -312,7 +319,9 @@ void mitm_stage1b(const archive_info &info,
+                     for (auto s : seconds) {
+                         for (auto t : thirds) {
+                             uint32_t mapkey(f | (s << 8) | (t << 16));
+-                            for (stage1a candidate : table[mapkey]) {
++                            for (uint32_t entry = table.head(mapkey); entry != CompactBucketTable::NONE;
++                                 entry = table.next_index(entry)) {
++                                const stage1a &candidate = table.value(entry);
+                                 stage1_candidate g;
+                                 g.chunk2 = candidate.chunk2;
+                                 g.chunk3 = candidate.chunk3;
+@@ -381,7 +390,15 @@ void mitm_stage1b(const archive_info &info,
+                                     continue;
+                                 }
+ 
+-                                candidates.push_back(g);
++                                if (FLAGS_count_only) {
++                                    ++count_only_candidates;
++                                    count_only_serialized_bytes += 8 + 3 * g.k20_count;
++                                    if (nullptr != c && correct_candidate(*c, g)) {
++                                        ++count_only_correct_matches;
++                                    }
++                                } else {
++                                    candidates.push_back(g);
++                                }
+ 
+                                 if (nullptr != c && s1xf0 == c->sx[0][1] &&
+                                     s1xf1 == c->sx[1][1] &&
+@@ -395,7 +412,7 @@ void mitm_stage1b(const archive_info &info,
+                                             candidates.size() - 1);
+                                     if (nullptr != correct_candidate_index) {
+                                         *correct_candidate_index =
+-                                            candidates.size() - 1;
++                                            FLAGS_count_only ? count_only_candidates - 1 : candidates.size() - 1;
+                                     }
+                                 }
+                             }
+@@ -412,6 +429,7 @@ void mitm_stage1b(const archive_info &info,
+                 c->sx[0][1], c->sx[1][1]);
+     }
+     fprintf(stderr, "Stage 1 candidates.size() == %04lx\n", candidates.size());
++    if (FLAGS_count_only) fprintf(stderr, "Count-only correct matches = %llu\n", static_cast<unsigned long long>(count_only_correct_matches));
+ }
+ 
+ };  // namespace mitm_stage1
+diff --git a/src/mitm_stage1/mitm_stage1.h b/src/mitm_stage1/mitm_stage1.h
+index aa7b8fc..fd343c6 100644
+--- a/src/mitm_stage1/mitm_stage1.h
++++ b/src/mitm_stage1/mitm_stage1.h
+@@ -18,6 +18,27 @@ typedef struct stage1a {
+     uint8_t msbk11xf0;
+ } stage1a;
+ 
++
++class CompactBucketTable {
++  public:
++    static constexpr uint32_t NONE = 0xffffffffu;
++    CompactBucketTable() : heads(0x01000000, NONE) {}
++    void add(uint32_t key, const stage1a &value) {
++        const uint32_t index = static_cast<uint32_t>(values.size());
++        values.push_back(value);
++        next.push_back(heads[key]);
++        heads[key] = index;
++    }
++    uint32_t head(uint32_t key) const { return heads[key]; }
++    uint32_t next_index(uint32_t index) const { return next[index]; }
++    const stage1a &value(uint32_t index) const { return values[index]; }
++    size_t entries_size() const { return values.size(); }
++  private:
++    std::vector<uint32_t> heads;
++    std::vector<stage1a> values;
++    std::vector<uint32_t> next;
++};
++
+ typedef struct stage1_candidate {
+     static const size_t MAX_K20S = 16;
+ 
+@@ -78,14 +99,18 @@ void read_stage1_candidates(FILE *f,
+                             vector<stage1_candidate> &out /* output */);
+ 
+ void mitm_stage1a(mitm::archive_info &info,
+-                  std::vector<std::vector<stage1a>> &table,
++                  CompactBucketTable &table,
+                   mitm::correct_guess *c = nullptr);
+ 
+ void mitm_stage1b(const mitm::archive_info &info,
+-                  const std::vector<std::vector<stage1a>> &table,
++                  const CompactBucketTable &table,
+                   std::vector<stage1_candidate> &candidates, /* output */
+                   const mitm::correct_guess *c = nullptr,
+                   size_t *correct_candidate_index = nullptr /* output */);
+ 
++extern uint64_t count_only_candidates;
++extern uint64_t count_only_serialized_bytes;
++extern uint64_t count_only_correct_matches;
++
+ };  // namespace mitm_stage1
+ #endif

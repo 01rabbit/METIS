@@ -21,6 +21,7 @@ def solved(tmp_path, monkeypatch):
     note = tmp_path / "cipher.txt"
     note.write_text("Uryyb")
     run_id = session.intake(title="Easy Cipher", description="decode", paths=[note], categories=["crypto"],
+                            evaluation_split="practice",
                             commitment=hashlib.sha256(ANSWER.encode()).hexdigest())["run_id"]
     assert session.submit(run_id, ANSWER)["verified"] is True
     board = ContestBoard(database)

@@ -23,13 +23,15 @@ def available() -> bool:
 
 
 def render(url: str, allowed_origins: list[str], *, cookies: list[dict[str, Any]] | None = None,
-           timeout_seconds: float = 20.0) -> tuple[str, str, list[str]]:
+           timeout_seconds: float = 20.0, auth_origin: str | None = None,
+           auth_generation_check: Callable[[], bool] | None = None) -> tuple[str, str, list[str]]:
     """Return (final_url, rendered_html, blocked_origins)."""
     if not available():
         raise RuntimeError("JavaScript rendering requires the optional 'browser' extra (Playwright)")
     from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
 
     allowed = {origin(value) for value in allowed_origins}
+    auth_key = origin(auth_origin) if auth_origin is not None else None
     blocked: set[str] = set()
 
     def permitted(target: str) -> bool:
@@ -41,6 +43,15 @@ def render(url: str, allowed_origins: list[str], *, cookies: list[dict[str, Any]
             return False
 
     def route(handler_route: Any, request: Any) -> None:
+        try:
+            target_origin = origin(request.url)
+        except ValueError:
+            target_origin = ""
+        if (target_origin == auth_key and auth_generation_check is not None
+                and not auth_generation_check()):
+            blocked.add("forgotten-auth-origin")
+            handler_route.abort()
+            return
         if permitted(request.url):
             handler_route.continue_()
         else:
@@ -57,6 +68,8 @@ def render(url: str, allowed_origins: list[str], *, cookies: list[dict[str, Any]
         try:
             context = browser.new_context(accept_downloads=False, java_script_enabled=True,
                                           service_workers="block")
+            if auth_generation_check is not None and not auth_generation_check():
+                raise ValueError("authentication has been forgotten for this origin")
             if cookies:
                 context.add_cookies(cookies)  # type: ignore[arg-type]
             context.route("**/*", route)

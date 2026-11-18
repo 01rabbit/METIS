@@ -69,7 +69,8 @@ Gate: at least one cross-challenge transfer exercise on non-identical fixtures, 
 
 ### P4 — Adaptive Reasoning (depends on P1+P3)
 Deliver hypotheses ranked by evidence, contradiction tracking, novelty-aware actions, stuckness detection, alternative-plan generation, bounded lookahead, reproducible cost-aware policy.
-Gate: a known dead-end fixture triggers a distinct strategy; same failing action is not repeated blindly; fixed-budget benchmark comparison with baseline and error bars.
+Minimum gate evidence: a seeded fixture route switches to a distinct predeclared transform only after its named `invalid_input` observation; the 30-case paired synthetic comparison reports a 95% bootstrap interval. Synthesis counts support/rejection per normalized hypothesis and flags a cross-wave stall only when unchanged status accompanies the same controller-recorded single-tool action cited by the report. This is an advisory signal and fixture-policy evidence; it is not model-selected planning. The report count is not a calibrated confidence score.
+Broader P4 work: expand beyond exact-normalized hypotheses and single-tool identities, demonstrate model-selected evidence-backed alternatives, and run a fixed-budget held-out/model comparison with uncertainty, cost and latency.
 
 ### P5 — Multi-Agent Orchestration (depends on P2+P4)
 Deliver bounded parallel specialists, delegated tasks and scoped capabilities, controlled shared observations, conflict adjudication, state reconciliation, cancellation and deterministic serialization of decisions.
@@ -77,11 +78,18 @@ Gate: parallel run never exceeds global budget and authorization, race-condition
 
 ### P6 — Autonomous Research (depends on P3+P5)
 Deliver experiment proposals for local challenge fixtures, hypothesis-testing scripts, synthetic challenge family generation, reproducible evaluation of reusable workflows and human-reviewed publication of tool extensions.
-Gate: generated workflows are tested in sandbox; tool additions require explicit maintainer review; no self-modification of policy/verifier or deployment permissions.
+Gate: generated workflows are tested in sandbox; tool additions require explicit maintainer review; no self-modification of policy/verifier or deployment permissions. The current bounded implementation uses a default-deny, digest-bound per-run operator approval for one fixed built-in; future capability implementations still require a reviewed repository change. This local approval does not authenticate a maintainer or complete P6 while P5 remains open.
 
 ### P7 — Competitive Evaluation (depends on P1–P6)
 Deliver held-out benchmark manifest and hidden oracle, categories/difficulty strata, repeated trials with pinned model configurations, ablations (without MUNIN, without planner, single vs multi-agent), cost/time/solve metrics and confidence intervals, contamination checks.
 Gate: reproducible report using unseen problems, verified flags only counted solved, cost and runtime recorded, no unjustified “best” claim. Publish failure analysis.
+
+The current `metis.evaluation.heldout_analysis` interface validates retained
+answer-free trial metrics and generates task-cluster intervals, paired ablation
+contrasts, contamination/failure breakdowns and comparable aggregate cap reports.
+It consumes controller-exported evidence references without authenticating them.
+Its checked-in dataset is an invented analysis fixture, not held-out performance
+evidence; an independently reviewed exporter and fresh experiment remain open.
 
 ### P8 — Production Harness (depends on P7)
 Deliver secure Web UI/API, immutable run evidence and artifact lifecycle, operator pause/cancel, quotas, role separation, release packaging, reproducible deployment on Apple Silicon macOS controller with Linux execution VM, CI and runbooks.

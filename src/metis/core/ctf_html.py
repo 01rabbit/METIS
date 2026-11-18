@@ -17,6 +17,7 @@ class Page(HTMLParser):
         self.text_parts: list[str] = []
         self.text_size = 0
         self.title = ""
+        self.categories: list[str] = []
         self._form: dict | None = None
         self._link: dict | None = None
         self.feed(body)
@@ -41,7 +42,17 @@ class Page(HTMLParser):
                                             "type": (values.get("type") or tag).lower(),
                                             "value": (values.get("value") or "")[:8192]})
         if tag == "a" and values.get("href") and len(self.links) < 256:
-            self._link = {"url": urllib.parse.urljoin(self.url, values["href"]), "text": "",
+            link_url = urllib.parse.urljoin(self.url, values["href"])
+            source = urllib.parse.urlsplit(self.url)
+            target = urllib.parse.urlsplit(link_url)
+            if (target.scheme, target.netloc, target.path) == (source.scheme, source.netloc, "/challenges"):
+                query = urllib.parse.parse_qs(target.query)
+                for declared in query.get("q", []):
+                    match = re.fullmatch(r"category:(web|crypto|rev|pwn|forensics|misc)", declared,
+                                         re.IGNORECASE)
+                    if match:
+                        self.categories.append(match.group(1).lower())
+            self._link = {"url": link_url, "text": "",
                           "download": "download" in values}
             self.links.append(self._link)
         node = None

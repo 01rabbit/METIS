@@ -18,13 +18,15 @@ from collections.abc import Callable
 from typing import Any, Protocol
 from uuid import uuid4
 
+from pydantic import Field
+
 from metis.core.agent_contracts import Contract, ModelSelection
 
 
 class HostCapabilities(Contract):
     name: str
     can_spawn: bool
-    max_parallel: int
+    max_parallel: int = Field(ge=1, le=16)
     can_send: bool
     cancel_confirmed: bool
     reports_models: bool

@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from metis.core.ctf_triage import PLAYBOOKS
 
@@ -96,6 +96,7 @@ class CompactReport(Contract):
     event_sequences: list[int] = Field(min_length=1, max_length=20)
     status: Literal["supported", "rejected", "inconclusive"] = "inconclusive"
     artifact_refs: list[str] = Field(default_factory=list, max_length=16)
+    next_action_intent: dict[str, Any] | None = None
     action_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("event_sequences")
@@ -104,6 +105,28 @@ class CompactReport(Contract):
         if any(item < 0 for item in value):
             raise ValueError("event sequences are non-negative")
         return value
+
+
+class ProposedAction(Contract):
+    """A future tool request declaration used only for repeat-strategy comparison."""
+
+    kind: Literal["data", "artifact", "derive", "view"]
+    tool: str = Field(min_length=1, max_length=40)
+    data: str | None = Field(default=None, max_length=65_536)
+    artifact: str | None = Field(default=None, max_length=200)
+    options: dict[str, Any] = Field(default_factory=dict)
+    new_evidence: list[int] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _request_shape(self) -> ProposedAction:
+        if self.kind == "data" and (self.data is None or self.artifact is not None or self.options):
+            raise ValueError("data proposals require data and cannot include artifact options")
+        if self.kind in {"artifact", "derive"} and (self.artifact is None or self.data is not None):
+            raise ValueError("artifact proposals require an artifact and cannot include data")
+        if self.kind == "view" and (self.tool != "view" or self.artifact is None or self.data is not None
+                                    or self.options):
+            raise ValueError("view proposals require tool=view and an artifact only")
+        return self
 
 
 class WaveDecision(Contract):

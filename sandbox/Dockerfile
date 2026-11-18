@@ -26,7 +26,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # pwntools for local exploit development inside the sandbox (script mode).
-RUN pip3 install --no-cache-dir --break-system-packages "pwntools>=4.12" \
+RUN pip3 install --no-cache-dir --break-system-packages "pwntools>=4.12" "numpy>=2.0,<3" \
  && python3 -c "import pwn" \
  && mkdir -p /work && chmod 1777 /work
 

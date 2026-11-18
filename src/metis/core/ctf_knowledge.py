@@ -35,7 +35,7 @@ class TechniqueCard(Contract):
     failure_reason: str = Field(default="", max_length=1000)
     outcome: Literal["success", "failure", "inconclusive"]
     source_run_id: str = Field(min_length=1, max_length=80)
-    source_split: Literal["practice", "competition", "heldout"] = "competition"
+    source_split: Literal["practice", "competition", "heldout"] | None = None
     # Why the outcome holds (Issue #15): abstract basis, never the answer. METIS fills it from the
     # run when the author leaves it empty (official verdict for success, failed attempt for failure).
     evidence: str = Field(default="", max_length=1000)
@@ -86,8 +86,15 @@ class KnowledgeBase:
 
     def remember(self, card: TechniqueCard) -> dict:
         card = TechniqueCard.model_validate(card.model_dump())
-        if card.source_split == "heldout":
+        source_context = self.session.context(card.source_run_id)
+        actual_split = source_context.get("evaluation_split")
+        if actual_split == "heldout" or card.source_split == "heldout":
             raise ValueError("held-out evaluation material cannot enter reusable memory")
+        if actual_split not in {"practice", "competition"}:
+            raise ValueError("unlisted source runs cannot enter reusable memory")
+        if card.source_split is not None and card.source_split != actual_split:
+            raise ValueError("knowledge source split must match its run classification")
+        card = card.model_copy(update={"source_split": actual_split})
         for value in (card.title, card.summary, card.conditions, card.failure_reason, card.evidence):
             abstract_text(value)
         events = self.session.store.read(card.source_run_id)
@@ -123,6 +130,24 @@ class KnowledgeBase:
                 db.execute("INSERT INTO munin_fts(rowid,title,summary,conditions,failure_reason) VALUES (?,?,?,?,?)",
                            (identity, card.title, card.summary, card.conditions, card.failure_reason))
         return {"id": identity, "stored": True, "digest": digest}
+
+    def search_for_run(self, run_id: str, query: str, *, category: str | None = None,
+                       limit: int = 5) -> list[dict]:
+        """Retrieve only for runs explicitly classified practice or competition.
+
+        Held-out and unlisted runs receive no prior cards. The challenge text is
+        untrusted search input, so answer-shaped values, credentials and long
+        encoded blobs are removed before keyword search.
+        """
+        context = self.session.context(run_id)
+        if context.get("evaluation_split") not in {"practice", "competition"}:
+            return []
+        safe_query = re.sub(r"[A-Za-z0-9_]{1,32}\{[^{}\r\n]{1,200}\}|(?:FLAG|flag)_[^\s<>\"']{4,200}",
+                            " ", query)
+        safe_query = re.sub(r"\b(?:Bearer\s+\S+|(?:password|token|cookie|api_key)\s*[:=]\s*\S+)",
+                            " ", safe_query, flags=re.IGNORECASE)
+        safe_query = re.sub(r"[A-Za-z0-9_+/=-]{48,}", " ", safe_query)
+        return self.search(safe_query[:1000], category=category, limit=limit)
 
     def search(self, query: str, *, category: str | None = None, limit: int = 5) -> list[dict]:
         if len(query) > 1000 or not 1 <= limit <= 20:

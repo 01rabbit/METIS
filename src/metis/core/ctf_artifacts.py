@@ -20,6 +20,7 @@ import warnings
 import wave
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -36,7 +37,12 @@ ARTIFACT_TOOLS = frozenset({
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
-    "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt",
+    "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack",
+    "zipcrypto_stay_scan", "zipcrypto_decrypt",
+})
+DERIVE_TOOLS = frozenset({
+    "zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz", "base64_decode", "base32_decode",
+    "hex_decode", "tls_http_body", "zipcrypto_decrypt",
 })
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
@@ -47,7 +53,8 @@ ARTIFACT_ERRORS = (OSError, ValueError, KeyError, TypeError, EOFError, struct.er
                    lzma.LZMAError, subprocess.TimeoutExpired)
 
 
-def inspect_file(root: Path, name: str, tool: str, options: dict | None = None) -> dict:
+def inspect_file(root: Path, name: str, tool: str, options: dict | None = None,
+                 *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     """Window large files; whole-structure parsers retain an eight MiB input cap."""
     import hashlib
 
@@ -120,7 +127,8 @@ def inspect_file(root: Path, name: str, tool: str, options: dict | None = None) 
             return result
         if size > MAX_ARTIFACT:
             raise ValueError("structure parser needs a file no larger than eight MiB; inspect windows instead")
-        return inspect_bytes(stream.read(MAX_ARTIFACT + 1), tool, options)
+        return inspect_bytes(stream.read(MAX_ARTIFACT + 1), tool, options,
+                             zipcrypto_runner=zipcrypto_runner)
 
 
 def bounded_integer(options: dict, name: str, default: int, low: int, high: int) -> int:
@@ -477,7 +485,8 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "tls_http_body": {"factor", "packets", "connections", "connection", "side", "message", "max_bytes"},
     "zipcrypto_info": set(), "infozip_seed": {"generator", "time_from", "time_to", "pid_bits", "seconds"},
     "zipcrypto_attack": {"member", "plaintext_hex", "offset", "seconds"},
-    "zipcrypto_decrypt": {"member", "keys", "max_bytes"},
+    "zipcrypto_stay_scan": {"random_header_bytes_hex", "start", "stop", "max_candidates", "seconds", "max_hits"},
+    "zipcrypto_decrypt": {"member", "keys", "max_bytes", "expected_random_header_hex"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
     "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
@@ -487,7 +496,8 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
 }
 
 
-def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
+def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
+                  *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     options = options or {}
     allowed = ALLOWED_OPTIONS
     if tool not in allowed or not isinstance(options, dict) or set(options) - allowed[tool]:
@@ -559,8 +569,9 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None) -> dict:
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
-    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt"}:
-        return _zipcrypto(data, tool, options)
+    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_stay_scan",
+                "zipcrypto_decrypt"}:
+        return _zipcrypto(data, tool, options, zipcrypto_runner=zipcrypto_runner)
     if tool in {"tls_decrypt", "tls_http_body"}:
         from metis.core.ctf_tls import http_body, tls_decrypt
         packets = bounded_integer(options, "packets", 1024, 1, 4096)
@@ -806,16 +817,53 @@ def _sqlite(data: bytes, options: dict) -> dict:
         database.close()
 
 
-def _zipcrypto(data: bytes, tool: str, options: dict) -> dict:
+def _zipcrypto(data: bytes, tool: str, options: dict,
+               *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     """ZipCrypto analysis (Issue #28): structure, Info-ZIP seed, known-plaintext attack, decryption."""
     import base64
+
+    if tool == "zipcrypto_attack":
+        seconds = bounded_integer(options, "seconds", 60, 1, 300)
+        name = options.get("member")
+        hexed = options.get("plaintext_hex")
+        if not isinstance(name, str) or not name or len(name) > 256:
+            raise ValueError("member must name an encrypted entry")
+        if not isinstance(hexed, str) or len(hexed) > 4096:
+            raise ValueError("plaintext_hex: known plaintext bytes as hex (at most 2048 bytes)")
+        bytes.fromhex(hexed)  # Reject malformed hex before it enters the sandbox bundle.
+        offset = bounded_integer(options, "offset", 0, 0, MAX_FILE)
+        if zipcrypto_runner is None:
+            raise ValueError("zipcrypto_attack requires the isolated worker runtime")
+        return zipcrypto_runner(data, {"member": name, "plaintext_hex": hexed,
+                                       "offset": offset, "seconds": seconds})
+
+    if tool == "zipcrypto_stay_scan":
+        if zipcrypto_runner is None:
+            raise ValueError("zipcrypto_stay_scan requires the isolated worker runtime")
+        headers_hex = options.get("random_header_bytes_hex")
+        if not isinstance(headers_hex, str) or not 10 <= len(headers_hex) <= 1280 or len(headers_hex) % 2:
+            raise ValueError("random_header_bytes_hex must contain 5 to 64 ten-byte headers")
+        try:
+            headers = bytes.fromhex(headers_hex)
+        except ValueError as exc:
+            raise ValueError("random_header_bytes_hex must be hexadecimal") from exc
+        if len(headers) % 10 or not 5 <= len(headers) // 10 <= 64:
+            raise ValueError("random_header_bytes_hex must contain 5 to 64 ten-byte headers")
+        start = bounded_integer(options, "start", 0, 0, 1 << 40)
+        stop = bounded_integer(options, "stop", 1 << 40, start, 1 << 40)
+        max_candidates = bounded_integer(options, "max_candidates", 1 << 40, 1, 1 << 40)
+        seconds = bounded_integer(options, "seconds", 300, 10, 300)
+        max_hits = bounded_integer(options, "max_hits", 4096, 1, 4096)
+        return zipcrypto_runner(data, {"random_header_bytes_hex": headers.hex(), "start": start,
+                                       "stop": stop, "max_candidates": max_candidates,
+                                       "seconds": seconds, "max_hits": max_hits})
 
     from metis.core import ctf_zipcrypto as zc
 
     if tool == "zipcrypto_info":
         return zc.zipcrypto_info(data)
-    seconds = bounded_integer(options, "seconds", 60, 1, 300)
     if tool == "infozip_seed":
+        seconds = bounded_integer(options, "seconds", 60, 1, 300)
         generator = options.get("generator", "glibc")
         if generator not in {"glibc", "msvc"}:
             raise ValueError("generator must be glibc or msvc")
@@ -824,6 +872,8 @@ def _zipcrypto(data: bytes, tool: str, options: dict) -> dict:
         return zc.infozip_seed(data, generator=generator, time_from=bounds.get("time_from"),
                                time_to=bounds.get("time_to"), pid_bits=bounded_integer(options, "pid_bits", 22, 1, 22),
                                seconds=seconds)
+    if tool == "zipcrypto_stay_scan":
+        raise ValueError("zipcrypto_stay_scan requires the isolated worker runtime")
     entries = {entry["name"]: entry for entry in zc.members(data) if entry["encrypted"]}
     name = options.get("member")
     if not isinstance(name, str) or name not in entries:
@@ -841,7 +891,17 @@ def _zipcrypto(data: bytes, tool: str, options: dict) -> dict:
     keys = options.get("keys")
     if not isinstance(keys, str):
         raise TypeError("keys: 'x,y,z' hex words from zipcrypto_attack")
-    result = zc.decrypt_member(data, name, zc.parse_keys(keys))
+    expected_header_hex = options.get("expected_random_header_hex")
+    expected_header = None
+    if expected_header_hex is not None:
+        if not isinstance(expected_header_hex, str) or len(expected_header_hex) != 20:
+            raise ValueError("expected_random_header_hex must be exactly ten bytes")
+        try:
+            expected_header = bytes.fromhex(expected_header_hex)
+        except ValueError as exc:
+            raise ValueError("expected_random_header_hex must be hexadecimal") from exc
+    result = zc.decrypt_member(data, name, zc.parse_keys(keys),
+                              expected_random_header=expected_header)
     plain = result.pop("plaintext")
     if len(plain) > bounded_integer(options, "max_bytes", 1_048_576, 1, 1_048_576):
         raise ValueError("decrypted member exceeds max_bytes")

@@ -194,7 +194,10 @@ slotが不足してもslotを偽装せずqueued状態へ置く。
 nativeの既定値は経路で異なる。`codex start`は40 actions/1200秒、local `intake`は80 actions/3600秒。
 これを一律のRunBudgetへ無条件変換せず、現在contextの残量を使う。
 AIホストがtoken/cost使用量を報告しない場合は `unknown` とし、測定済み費用を捏造しない。
-その場合も有限turn、wall time、tool action、並列数で制限する。外部有料providerを自動有効化しない。
+CodexCLI driverでは、provider呼出直前にrun固定のmodel-turn予算（既定24）を原子的に予約する。
+失敗・timeout・retryでも予約は消費する。BridgeHostからDaybreakが直接呼ぶsubagentにはこの予約を
+強制できない。token/costの上限は利用量を事前予約できないため未実装で、usage不明時は`unknown`とする。
+外部有料providerを自動有効化しない。
 
 ## 6. 1問題の制御フロー
 

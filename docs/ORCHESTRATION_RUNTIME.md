@@ -10,8 +10,8 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 | P1 契約・policy | `core/agent_contracts.py` | `SpecialistProfile` `Assignment` `ModelSelection` `ExecutionRecord` `CompactReport` `WaveDecision`（すべて `extra=forbid`、有限値、schema_version 2）。`decide_wave` と `select_model` は純粋関数 |
 | 計画・台帳 | `core/ctf_orchestration.py` | `plan_agent_wave(context, force_mode=)` は決定的。`AgentLedger` は wave と compact report の台帳 |
 | P2 ホスト | `core/agent_host.py` | `capabilities / spawn / poll / send / cancel / collect`。`BridgeHost`（既定）、`SequentialHost`、テスト用 `FakeHost` |
-| P3 scheduler | `core/agent_scheduler.py` | slot予約、attempt、deadline・max turns、cancel/retry/release、tool intent の仲介 |
-| 単一writer | `core/run_lock.py` | run ごとの排他ロック。予算予約・イベント追記・公式提出をこの下で行う |
+| P3 scheduler | `core/agent_scheduler.py` | slot予約、run固定のCodex model-turn予約、attempt、deadline・intent上限、cancel/retry/release、tool intent の仲介 |
+| 単一writer | `core/run_lock.py` | run ごとの短い状態ロックと、キャンセルを妨げないtool-operation lock。intent予約・状態遷移・event追記・公式提出を直列化する |
 | P5 大会 | `core/ctf_contest.py` | run と問題の同一性検査、dispatch の timebox 強制 |
 
 ## 2. 1問題の流れ（Daybreak）
@@ -31,6 +31,26 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - **delegated**: 2カテゴリ以上、または宣言/推定カテゴリ＋配布物2件以上のとき。2〜4件の異なる role。
   カテゴリの出所（declared / triage / default）と理由を `decision` に記録する。triage 推定は「未検証」と明記。
 - `--mode sequential|delegated` で上書きできる（旧動作の再現は `--mode delegated`）。
+- `assignment.inputs.artifacts` を明示すると、その割当の brief には許可された artifact 名だけを渡す。
+  `artifact / derive / view` intent と report の `artifact_refs` も同じ集合に制限し、範囲外は fail closed。
+  フィールド省略時は既存互換で run の artifact scope を使い、明示した空リストは artifact 権限なし。
+  成功した `derive` が生成した artifact だけは、その作成元 assignment の集合に追加する。
+- dispatch時の各assignment deadlineは、そのrunの現在の `seconds_remaining` で上限をかける。
+  同一runの並列workerが個別deadlineによってrun全体のwall-clock期限を越えないようにする。
+  Tool intentのaction数もrun単位で共有する。CodexCLI driverでは、実際のprovider呼出直前に
+  run固定のmodel-turn予算（既定24、`metis agent slots --specialist-turn-budget N`）をSQLiteで予約する。
+  失敗・timeout・retryも予約消費に数え、run間の設定変更や再起動で上限は増えない。
+  `codex cancel RUN_ID` 後は enqueue・retry・dispatch・model-turn予約を拒否する。
+  dispatchのslot予約とhost起動の間にもrun状態を再確認し、host起動はrun lock内で行う。
+  schedulerのtickとspecialist driverはrunのcancel状態をjob状態とは独立に確認し、
+  queued jobを取消し、実行中jobを停止する。停止未確認は`unknown`としてslotを保持する。
+  実行中のCodexも同じrun状態を停止signalとして使い、取消後の出力・reportをcommitしない。
+  取消前に予約したmodel turnは、provider未呼出や実行中取消の場合も消費したままにする。
+  bounded autopilot はこの予約機構を明示するrunnerを必須にし、そうでなければdispatch前に停止する。
+  BridgeHost経由でDaybreakが手動で直接起動するsubagentには強制できず、その経路はbounded autopilotの
+  保証外として扱う。token/costは利用量報告が
+  不確実なため上限予約できず、未知なら`unknown`のまま。実モデルの単独対delegated比較も未実施で、
+  Issue #6の受入れゲートは未達。
 
 ### tool intent（担当 → controller）
 
@@ -52,8 +72,12 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - 1 attempt の中で、同じ artifact に同じツールを option を変えて使えるのは 3 通り（`FAMILY_LIMIT`）まで。
 - 拒否は `agent_job_log` に `intent_duplicate` / `intent_variant_limit` として残り、メッセージは引用すべき
   既存のイベント番号を示す。
-- 実行は run lock の下で `CodexSession` を通るため、予算超過・イベント番号衝突は起きない。
-- 1 intent = 1 turn。`max_turns` を超える要求は拒否し、その attempt を `timed_out` にする。
+- intent identity と specialist turn は実行前に run lock の下で予約し、同じidentityのin-flight再実行も拒否する。
+- bounded artifact処理は別のrun単位operation lockで直列化する。長いsandbox処理中は状態lockを解放するため、cancel/tickは処理結果を待たずにworkerを停止できる。
+- 操作終了時にattempt state/deadlineを再確認し、cancel・timeout・recovery後のlate resultと派生artifact scopeはcommitしない。予約済みturnは実行失敗時も返却しない。
+- 各成功したtool intentはassignment単位の `max_turns` とrun全体の既存action予算を消費する。
+  CodexCLI経路では別に、providerを呼ぶ前にrun-wide model-turn reservationを1つ消費する。
+  model turnは失敗・timeout・再試行でも返金しない。いずれかの上限超過は追加tool/model実行を拒否する。
 
 ### 状態と attempt
 
@@ -67,6 +91,8 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 同時実行数 = `min(ホストの上限, 全体slot, run ごとのslot, wave の担当数)`。
 `metis agent slots --global 4 --per-run 2` で設定（既定 4 / 2）。足りない分は `queued` のまま。
 大会の `max_parallel`（同時に着手する問題数）とは別の上限で、両方が効く。
+model-turn budgetは同コマンドの `--specialist-turn-budget` でrun開始前に指定できる（既定24、範囲1–256）。
+runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設定変更は既存runへ適用しない。
 
 ### モデル
 
@@ -114,6 +140,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 | 公式検証 | 既存 `test_ctf_web.py`（CTFd/ksnctf/HTML の correct/incorrect/unknown/429/auth/redirect） |
 | 修正 | 既存 `test_ctfd_intake_wrong_answer_replan_correct_answer_and_reopen` |
 | 再起動・並行 | `test_deadlines_turns_and_stale_attempts`（別 scheduler で tick）、`test_concurrent_intents_respect_the_run_budget`、`test_parallel_submissions_are_serialized_and_pending_sends_are_kept`、`test_cancel_without_confirmation_keeps_the_slot_until_released` |
+| run wall-clock共有 | `test_assignment_deadline_is_capped_by_shared_run_wall_budget` |
 | 大会 | `test_contest_binding_and_timebox`、既存 `test_ctf_contest.py` |
 | 知識 | 既存 `test_ctf_knowledge.py`（verified 前の成功 card 拒否、失敗根拠、heldout 除外） |
 
@@ -135,7 +162,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 起動は Daybreak が行う）はそのままで、Daybreak がホストのツール（Claude Code の Bash）からこの
 コマンドを起動する。
 
-- 各ターンは `codex exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only` で、空の作業
+- 各ターンは `codex exec --ignore-user-config --ignore-rules --sandbox read-only` で、空の作業
   ディレクトリ、縮小した環境変数（トークン類を渡さない）、`approval_policy="never"`、`web_search="disabled"`、
   shell・multi_agent・apps・plugins・hooks・browser/computer use・code mode などの feature 無効で動く。
   `shell_tool` を無効化できない CLI では起動を拒否する（fail closed）。
@@ -147,7 +174,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   `failed`（`policy_violation`）にする。
 - cancel: ドライバは 2 秒ごとに job 状態を確認し、取り消されたら Codex のプロセスグループを停止して
   `codex_killed` を記録する。
-- OS 隔離（#16、`core/codex_isolation.py`）。各ターンを macOS の `sandbox-exec` 下で実行する。
+- OS 隔離（#16、`core/codex_isolation.py`）。各ターンを macOS の `sandbox-exec` または Linux の bubblewrap 下で実行する。
   - ホーム・`/private/tmp`・`/private/var/tmp`・`/Volumes`・一時ディレクトリの読み書きを拒否する。例外は
     Codex パッケージの読み取りと、そのターン専用ディレクトリの読み書きだけ。
   - `CODEX_HOME` はターンごとに作る。中身は `auth.json` の写しだけで、ユーザーの sessions・memories・
@@ -155,8 +182,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
     書き戻す。
   - 外向き通信は、ローカルの CONNECT プロキシ（443 番、`chatgpt.com`・`auth.openai.com`・`api.openai.com`
     のみ）以外を拒否する。拒否した宛先はターンごとに記録する。
+  - Linux は bubblewrap の名前空間と capability 制限に加え、Codex の実行系に seccomp を適用する。`fork`、`vfork`、プロセスを作る `clone` と `clone3` を拒否する。スレッド生成は許可し、`exec` 自体は制限しない。macOS Seatbelt と同じ保証ではない。
   - 隔離が使えない環境では起動を拒否する。`--isolation none` は明示的な opt-out で、記録が残る。
-  - 試験済みでない Codex CLI の版も拒否する（`--allow-untested-codex` で解除）。
+  - 試験済みでない Codex CLI の版も拒否する（`--allow-untested-codex` で解除）。版は各 turn の直前に再確認する。
 - 専門家は `view` intent で登録済みの画像を次のターンに添付させられる。答えは `candidate` で非公開に渡す（0600 のファイル、
   DB には digest のみ）。Daybreak は `metis agent candidates RUN` でファイルのパスを受け取り、`metis web submit --candidate-file` で提出する。
 - `metis agent codex-probe --ping` は、隔離のセルフテスト、実ターン 1 回、spawn カナリア 1 回を実行し、
@@ -164,19 +192,18 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 - usage（トークン数）は Codex の報告値を `agent_jobs.usage` に記録する。費用は `unknown`。
 - モデルは `metis agent slots` に登録した active catalog の ID だけを使う。
 
-確認済みの制約（Codex CLI 0.166.0、2026-11-16）。サブエージェント起動の制限は、この版の挙動に依存する:
+確認済みの制約（Codex CLI 0.166.0 と 0.169.0、2026-11-16〜17）。サブエージェント起動の制限は、この版の挙動に依存する:
 
 - `--disable multi_agent` でも `collaboration.spawn_agent` などのツールがモデルに見え続ける。`--ephemeral`
-  では spawn が失敗する（「rollout が無い」）が、これは観測された挙動で文書化された保証ではない。
-  `--ephemeral` を外した試験では spawn が成功し、しかも JSONL に item が出なかった。防止は CLI の挙動
-  頼み、検知は stderr 頼みであり、「不可能」ではなく「現版では失敗し、試みは検知される」水準。
-  CLI 更新時は `codex-probe --ping` のカナリアで再確認する。#16 で OS 隔離を加えたため、spawn された
-  sub-agent も同じプロセス内で同じ Seatbelt とプロキシの下にある。ただし、spawn ツールそのものを
-  モデルから隠すことは、まだできていない。
+  0.166.0 と 0.169.0 のLinux実測では、`--ephemeral` を外した状態でも `agents.enabled=false` と
+  MultiAgentV2無効化設定によりspawn要求が `code-mode host is disabled` で拒否された。拒否文はstderr
+  のrouter記録からsub-agent試行として検知し、attemptをpolicy violationで終了する。ツール名自体は
+  モデルに提示される。seccompはOSプロセス生成を別途拒否するが、in-process spawn拒否はCodex CLIの
+  バージョン依存であり、未試験版はfail closed。
 - `apply_patch`・`view_image`・MCP resource 系のツール名もモデルには見える。網羅的なツール一覧を
-  取得する手段はないが、#16 以後、ファイルの読み書きは OS 側で制限している。
+  取得する手段はないが、ファイルの読み書きは OS 側で制限している。
 - OS 隔離は macOS が Seatbelt（fork を禁止し、exec は Codex 本体だけ）、Linux が bubblewrap（名前空間・capability 0・
-  NoNewPrivs、通信は Unix ソケット経由のプロキシのみ）。Windows は未実装で、起動を拒否する。Linux 上の実 Codex は未検証
+  NoNewPrivs、プロセス生成を禁止、通信は Unix ソケット経由のプロキシのみ）。Windows は未実装で、起動を拒否する。Linux 上の実 Codex は未検証
   （`docs/reports/issue16-isolation-backends-2026-11-16.md`）。Seatbelt や
   カーネル自体の脆弱性による脱出、許可した宛先（モデル API）へ送られる内容は、対象外。
 - E2E 時点の重複判定は、生の action identity の一致だけを見ていた。そのため `length` を 1 変える、無関係な
@@ -226,3 +253,65 @@ PR #14 の受け入れ手順を、現行のコマンドに合わせて短くし�
   コンテナ）は、この層の intent からは呼べない（Daybreak 専用）。担当が動的確認を要する場合は報告の
   `next_action` に書き、Daybreak が実行する。
 - 合成 fixture での結果は実大会の solve 率を意味しない。
+
+### Linux process creation restriction
+
+Linux の bubblewrap 内では、転送器を起動した後に seccomp を Codex の実行系へ適用する。
+`fork`、`vfork` と、`CLONE_THREAD` を持たない `clone` を拒否し、検査できない `clone3` は
+`ENOSYS` で拒否して libc の `clone` フォールバックを可能にする。対応 CPU は x86-64 と aarch64。
+フィルタ設定に失敗した場合は Codex を起動しない。スレッドは許可する。`exec` 自体は制限しないため、
+既存プロセスの置き換えは可能であり、macOS の実行ファイル制限と同じ保証ではない。
+Codex の in-process `collaboration.spawn_agent` は OS のプロセス生成ではなく、このフィルタでは止められない。
+Linux 実 Codex 0.166.0 / 0.169.0 の互換性試験と、METISのagent無効化設定によるspawn拒否を実機確認した。
+seccomp単独では拒否しない。拒否経路、陰性対照、auth扱いは
+`docs/reports/issue16-linux-real-codex-2026-11-17.md` を参照。
+
+## 6.3 Bounded autopilot
+
+`metis agent autopilot RUN_ID --max-waves N` runs the latest wave (or creates the initial
+plan) through the existing scheduler and isolated Codex specialist driver. N is 1–10 and
+counts waves inspected in this invocation, including a resumed wave. Sequential work,
+pending candidates, unresolved existing attempts, other active waves, unavailable slots,
+and non-spawn failures stop for Daybreak. Spawn failures alone are retried within the
+scheduler's attempt limit. An autopilot lock prevents simultaneous drivers for one run;
+existing running or unknown attempts are never relaunched after a restart. Reconcile
+those explicitly with the scheduler before retrying. Candidate values stay in the private
+candidate store; this command never submits or expands scope.
+
+A subsequent wave requires both the synthesis gate and Daybreak's explicit selection of
+a materially different unresolved hypothesis. Supply `--continuations FILE` as a JSON
+array of objects with `wave_id`, `report_id`, and `reason`. The reason must exactly match
+an inconclusive report's `next_action` and must not repeat a previous wave reason. This
+checks provenance and literal repetition, not semantic difference: Daybreak remains
+responsible for that judgment. Missing or invalid selections stop the driver. A selection
+for a later wave can be supplied when resuming after its report exists.
+
+Each invocation persists an answer-free row in `agent_autopilot_runs`: elapsed time,
+wave count, stop reason, Daybreak handoff, scheduler operations, specialist turns, and
+token usage when the provider reports it. Unknown token counts and dollar cost remain
+explicitly unknown. These counters measure controller activity; they do not establish
+improved solve rate or reduced human work.
+The synthetic one-wave comparison and persisted-metric check are recorded in
+`docs/reports/phase4-autopilot-equivalence-2026-11-17.md`; zero specialist jobs leave
+token counts `unknown` rather than reporting a measured zero.
+
+### P3: MUNIN retrieval and split controls
+
+`codex_sessions.evaluation_split` classifies local runs as `practice`, `competition`,
+`heldout`, or `unlisted`. Existing databases migrate to `unlisted`, which is deliberately
+ineligible for retrieval. The practice generator labels its exercises; web intake uses
+the existing evaluation classifier; CLI `codex start` and `codex intake` accept an
+explicit split. MUNIN lookup for specialist briefs and web intake is available only for
+practice and competition runs. Held-out and unlisted runs receive no prior cards.
+Specialist briefs present retrieved cards as untrusted experience with applicability
+conditions, never as evidence or answers. `metis agent slots --no-memory-retrieval`
+supports a retrieval-off ablation.
+Cards inherit their source split from the run; mismatching declarations and unlisted
+source runs are rejected when writing reusable memory.
+
+`tests/test_munin_integration.py` uses a synthetic ROT13 source solve and three distinct
+synthetic target strings. A deterministic policy uses one tool action with retrieval and
+two without retrieval in each trial. This validates split gating and transfer plumbing;
+it is a mechanism test with fixed policies, not a model experiment, statistical claim,
+or evidence of improved live challenge performance. Evaluation split labels are supplied
+by intake metadata and are not cryptographically enforced against a mislabeled run.

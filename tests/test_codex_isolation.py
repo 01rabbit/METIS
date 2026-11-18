@@ -6,6 +6,7 @@ where sandbox-exec is unavailable; the proxy, home and gating tests run everywhe
 """
 import json
 import socket
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -134,12 +135,27 @@ def test_untested_codex_version_is_refused(tmp_path):
         cli.run("x", model=None, timeout=5)
 
 
+def test_codex_version_is_rechecked_for_each_turn(tmp_path, monkeypatch):
+    cli = CodexCLI(_fake_codex(tmp_path, "0.166.0"), isolation="none")
+    assert cli.check() == "0.166.0"
+
+    monkeypatch.setattr(codex_specialist, "codex_version", lambda _executable: "9.9.9")
+    with pytest.raises(RuntimeError, match="not a tested version"):
+        cli.run("x", model=None, timeout=5)
+
+
 def test_missing_isolation_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_specialist, "isolation_available", lambda: False)
     cli = CodexCLI(_fake_codex(tmp_path, "0.166.0"))
     with pytest.raises(RuntimeError, match="isolation"):
         cli.run("x", model=None, timeout=5)
     assert CodexCLI(_fake_codex(tmp_path, "0.166.0"), isolation="none").check() == "0.166.0"
+
+
+@pytest.mark.parametrize("platform", ["win32", "cygwin"])
+def test_unsupported_platforms_have_no_isolation_backend(monkeypatch, platform):
+    monkeypatch.setattr(codex_isolation.sys, "platform", platform)
+    assert codex_isolation.isolation_backend() is None
 
 
 # -- the OS actually refuses (macOS) -----------------------------------------------------------------
@@ -203,16 +219,17 @@ def test_codex_turn_under_bwrap_cannot_escape(tmp_path, monkeypatch):
     package.mkdir()
     fake = package / "codex"
     fake.write_text(
-        "#!/bin/sh\n"
-        "if [ \"$1\" = features ]; then echo 'shell_tool stable true'; exit 0; fi\n"
-        f"cat {secret}/private.txt >/dev/null 2>&1 && echo READ_OK >&2 || echo READ_DENIED >&2\n"
-        f"touch {secret}/x 2>/dev/null && echo WRITE_OK >&2 || echo WRITE_DENIED >&2\n"
-        f"{Path(sys.executable).resolve()} -I -c \"import socket; socket.create_connection(('1.1.1.1', 443), timeout=5)\" 2>/dev/null "
-        "&& echo NET_OK >&2 || echo NET_DENIED >&2\n"
-        f"{Path(sys.executable).resolve()} -I -c \"import urllib.request; urllib.request.urlopen('https://example.com', timeout=8)\" "
-        "2>/dev/null && echo PROXY_OK >&2 || echo PROXY_DENIED >&2\n"
-        "ls \"$CODEX_HOME\" >&2\n"
-        "exit 0\n")
+        f"#!{Path(sys.executable).resolve()}\n"
+        "import os, socket, sys, urllib.request\n"
+        "if sys.argv[1:2] == ['features']:\n print('shell_tool stable true'); sys.exit(0)\n"
+        f"secret = {str(secret)!r}\n"
+        "for label, action in [('READ', lambda: open(secret + '/private.txt').read()), "
+        "('WRITE', lambda: open(secret + '/x', 'w')), "
+        "('NET', lambda: socket.create_connection(('1.1.1.1', 443), timeout=5)), "
+        "('PROXY', lambda: urllib.request.urlopen('https://example.com', timeout=8))]:\n"
+        " try: action(); print(label + '_OK', file=sys.stderr)\n"
+        " except Exception: print(label + '_DENIED', file=sys.stderr)\n"
+        "print(os.listdir(os.environ['CODEX_HOME']), file=sys.stderr)\n")
     fake.chmod(0o755)
     monkeypatch.setattr(codex_specialist, "default_codex_home", lambda: secret)
     cli = CodexCLI(str(fake), allow_untested=True)
@@ -222,3 +239,41 @@ def test_codex_turn_under_bwrap_cannot_escape(tmp_path, monkeypatch):
     for word in ("READ_DENIED", "WRITE_DENIED", "NET_DENIED", "PROXY_DENIED", "auth.json"):
         assert word in log, log
     assert turn.isolation["refused"] == ["CONNECT example.com:443"]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux seccomp required")
+def test_seccomp_blocks_processes_but_allows_threads(tmp_path):
+    # Execute in a disposable subprocess: seccomp is irreversible for the calling process.
+    prefix = codex_isolation.FORWARDER.split("port, path, argv =", 1)[0]
+    code = prefix + """
+restrict_process_creation()
+import ctypes, errno, platform, threading
+thread = threading.Thread(target=lambda: None)
+thread.start(); thread.join()
+for call in (os.fork, lambda: os.posix_spawn('/bin/true', ['/bin/true'], {})):
+    try:
+        pid = call()
+    except OSError as exc:
+        assert exc.errno == errno.EPERM, exc
+    else:
+        if pid == 0: os._exit(0)
+        os.waitpid(pid, 0)
+        raise AssertionError('process creation allowed')
+machine = platform.machine()
+sys_clone = {'x86_64': 56, 'aarch64': 220}[machine]
+libc = ctypes.CDLL(None, use_errno=True)
+for flags in (0, 0x00020000 | 0x00000100, 0x00008000):
+    ctypes.set_errno(0)
+    result = libc.syscall(sys_clone, flags, 0, 0, 0, 0)
+    assert result == -1 and ctypes.get_errno() == errno.EPERM, (flags, result, ctypes.get_errno())
+# A thread clone reaches the kernel (which rejects the incomplete flags), while
+# clone3 always returns ENOSYS so callers can fall back to the inspected clone ABI.
+ctypes.set_errno(0)
+result = libc.syscall(sys_clone, 0x00010000, 0, 0, 0, 0)
+assert result == -1 and ctypes.get_errno() != errno.EPERM, (result, ctypes.get_errno())
+ctypes.set_errno(0)
+result = libc.syscall(435, 0, 0)
+assert result == -1 and ctypes.get_errno() == errno.ENOSYS, (result, ctypes.get_errno())
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stderr

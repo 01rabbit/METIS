@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Run the preregistered symmetric Issue #6 synthetic replication."""
+from __future__ import annotations
+
+import atexit
+import base64
+import hashlib
+import json
+import os
+import random
+import shutil
+import sqlite3
+import string
+import tempfile
+import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from itertools import combinations
+from pathlib import Path
+from typing import Any
+
+from metis.core.agent_host import BridgeHost
+from metis.core.agent_scheduler import AgentScheduler
+from metis.core.codex_session import CodexSession
+from metis.core.codex_specialist import CodexCLI, run_assignment
+from metis.core.ctf_orchestration import AgentLedger
+from metis.core.verification import FixtureOracle
+
+MODEL = "gpt-6.1-sol"
+CLI_VERSION = "0.169.0"
+STUDY_ID = "issue6-symmetric-replication-2026-11-18"
+SEED = 20261118
+ORDER_SEED = SEED ^ 0x6A09E667
+BUDGET = {"turns": 8, "actions": 4, "slots": 2, "wall_seconds": 600}
+ENCODINGS = ("base64", "base32", "hex", "base85", "base64url", "percent")
+FAMILIES = list(combinations(ENCODINGS, 2))
+TASK_REPETITIONS = 2
+COMPONENT_ALPHABET = (string.ascii_letters + string.digits + " .,;:-_!?()[]{}").encode()
+OUTPUT = Path("docs/reports/data/issue6-symmetric-replication-2026-11-18.json")
+ORACLE_FILE: Path
+
+
+class PinnedCodexCLI(CodexCLI):
+    def argv(self, workdir: Path, schema: Path, output: Path, model: str | None) -> list[str]:
+        command = super().argv(workdir, schema, output, model)
+        return [*command[:-1], "-c", 'model_reasoning_effort="low"', command[-1]]
+
+
+def encode(kind: str, value: bytes) -> bytes:
+    if kind == "base64":
+        return base64.b64encode(value)
+    if kind == "base32":
+        return base64.b32encode(value)
+    if kind == "hex":
+        return value.hex().encode()
+    if kind == "base85":
+        return base64.b85encode(value)
+    if kind == "base64url":
+        return base64.urlsafe_b64encode(value).rstrip(b"=")
+    if kind == "percent":
+        return urllib.parse.quote_from_bytes(value, safe="").encode()
+    raise ValueError(kind)
+
+
+def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
+    plan = ledger.create_wave(run_id, mode="delegated")
+    by_role = {item["role"]: item for item in plan["assignments"]}
+    artifacts = list(ledger.session.context(run_id)["challenge"]["artifacts"])
+    if arm == "single":
+        assignments = [dict(by_role["crypto-specialist"])]
+        assignments[0]["inputs"] = {"artifacts": artifacts}
+        assignments[0]["objective"] = (
+            "Decode both independent components and return only the two components, as JSON lowercase hex. "
+            "Do not compute the final digest.")
+        notes = {assignments[0]["assignment_id"]:
+                 'Use bounded METIS intents to decode both artifacts. Privately return one JSON object '
+                 'with keys "component0_hex" and "component1_hex", each the exact decoded bytes in '
+                 'lowercase hex. Never return plaintext or compute the final digest.'}
+    elif arm == "multi":
+        assignments = [dict(by_role["crypto-specialist"]), dict(by_role["forensics-specialist"])]
+        notes = {}
+        for index, assignment in enumerate(assignments):
+            assignment["inputs"] = {"artifacts": [artifacts[index]]}
+            assignment["objective"] = f"Decode component {index}; privately return its exact bytes as lowercase hex."
+            assignment["max_turns"] = BUDGET["turns"] // 2
+            notes[assignment["assignment_id"]] = (
+                "Inspect only your assigned artifact. Use a bounded METIS intent to decode it, then privately "
+                "hand the exact decoded bytes to Daybreak as lowercase hex. Do not return plaintext, the other "
+                "component, or a final digest; keep all report text free of decoded data.")
+    else:
+        raise ValueError(arm)
+    plan["assignments"] = assignments
+    plan["decision"]["required_roles"] = [item["role"] for item in assignments]
+    plan["daybreak_covers"] = []
+    with sqlite3.connect(ledger.database) as db:
+        db.execute("UPDATE ctf_agent_waves SET plan=? WHERE wave_id=?",
+                   (json.dumps(plan, sort_keys=True), plan["wave_id"]))
+    return {"plan": plan, "notes": notes, "artifacts": artifacts}
+
+
+def compose_candidate(arm: str, setup: dict[str, Any], candidates: dict[str, str]) -> str | None:
+    assignments = setup["plan"]["assignments"]
+    try:
+        if arm == "single":
+            if len(assignments) != 1:
+                return None
+            value = json.loads(candidates[assignments[0]["assignment_id"]])
+            if not isinstance(value, dict) or set(value) != {"component0_hex", "component1_hex"}:
+                return None
+            component0 = bytes.fromhex(value["component0_hex"])
+            component1 = bytes.fromhex(value["component1_hex"])
+        else:
+            if len(assignments) != 2:
+                return None
+            partials: list[bytes | None] = [None, None]
+            for assignment in assignments:
+                refs = assignment["inputs"]["artifacts"]
+                index = setup["artifacts"].index(refs[0])
+                partials[index] = bytes.fromhex(candidates[assignment["assignment_id"]])
+            if any(part is None for part in partials):
+                return None
+            if partials[0] is None or partials[1] is None:
+                return None
+            component0 = partials[0]
+            component1 = partials[1]
+            assert component0 is not None and component1 is not None
+        return hashlib.sha256(component0 + b"\0" + component1).hexdigest()
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCodexCLI, base: Path,
+            case_id: str, components: tuple[bytes, bytes], family: tuple[str, str], arm: str) -> dict[str, Any]:
+    paths = []
+    for index, (kind, component) in enumerate(zip(family, components, strict=True)):
+        path = base / f"{case_id}-{arm}-component-{index}.txt"
+        path.write_bytes(encode(kind, component))
+        paths.append(path)
+    started = time.monotonic()
+    description = (
+        "Two independent artifacts contain printable text components encoded using one of Base64, Base32, "
+        "hex, Base85, Base64URL, or percent encoding. Identify and decode them using bounded METIS intents. "
+        "Return decoded components only in the private candidate channel as lowercase hex; the controller "
+        "computes SHA-256(component 0 + NUL + component 1) and uses a protected local oracle.")
+    run_id = session.intake(title=f"Synthetic paired benchmark {case_id}", description=description,
+                            paths=paths, categories=["crypto", "forensics"], max_actions=BUDGET["actions"],
+                            wall_seconds=BUDGET["wall_seconds"], evaluation_split="heldout")["run_id"]
+    run_root = session.artifact_root(run_id)
+    if run_root is None:
+        raise RuntimeError("run artifact root is unavailable")
+    oracle = FixtureOracle(ORACLE_FILE, solver_roots=(run_root,))
+    scheduler.configure(global_slots=BUDGET["slots"], per_run_slots=BUDGET["slots"],
+                        specialist_turn_budget=BUDGET["turns"],
+                        catalog=[{"id": MODEL, "tier": "standard"}], current_model=MODEL,
+                        memory_retrieval=False)
+    setup = make_plan(scheduler.ledger, run_id, arm)
+    scheduler.enqueue(run_id, setup["plan"]["wave_id"])
+    started_jobs = scheduler.dispatch(run_id)["started"]
+    results: dict[str, dict[str, Any]] = {}
+
+    def drive(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        assignment_id = job["assignment_id"]
+        result = run_assignment(scheduler, run_id, assignment_id, job["attempt_id"], runner,
+                               model=MODEL, turn_timeout=180,
+                               note=setup["notes"][assignment_id])
+        return assignment_id, result
+
+    if len(started_jobs) == 1:
+        key, result = drive(started_jobs[0])
+        results[key] = result
+    elif len(started_jobs) == 2:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            for key, result in pool.map(drive, started_jobs):
+                results[key] = result
+    else:
+        scheduler.cancel_run(run_id)
+    synthesis = scheduler.ledger.synthesize(run_id, setup["plan"]["wave_id"])
+    listed = scheduler.candidates(run_id)
+    candidate_values: dict[str, str] = {}
+    for row in listed:
+        candidate_file = row.get("candidate_file")
+        if candidate_file and row["state"] == "pending":
+            candidate_values[row["assignment_id"]] = Path(candidate_file).read_text(encoding="utf-8").strip()
+    scheduler.candidates(run_id, purge="all")
+    candidate = compose_candidate(arm, setup, candidate_values)
+    verified = candidate is not None and oracle.verify(case_id, candidate)
+    turns = [turn for result in results.values() for turn in result.get("codex_turns", [])]
+    usage_keys = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
+    usage = {key: sum((turn.get("usage") or {}).get(key, 0)
+                      for turn in turns if isinstance((turn.get("usage") or {}).get(key, 0), int))
+             for key in usage_keys}
+    with sqlite3.connect(scheduler.database) as db:
+        actions = db.execute("SELECT COUNT(*) FROM agent_actions WHERE run_id=?", (run_id,)).fetchone()[0]
+    model_budget = scheduler.model_turn_budget(run_id)
+    states = [item["job_state"] for item in results.values()]
+    return {"case": case_id, "task_id": case_id.rsplit("-rep-", 1)[0], "arm": arm,
+            "run_id": run_id, "oracle_verified": bool(verified),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "calls_observed": len(turns), "calls_reserved": model_budget["reserved"] if model_budget else None,
+            "usage": usage, "usage_complete": bool(turns) and all(turn.get("usage") is not None for turn in turns),
+            "actions": actions, "synthesis_complete": synthesis["complete"], "job_states": states,
+            "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low", "cost_usd": "unknown"}
+
+
+def main() -> None:
+    if OUTPUT.exists():
+        raise SystemExit(f"refusing to rerun or overwrite retained study data: {OUTPUT}")
+    runner = PinnedCodexCLI()
+    version = runner.check()
+    if version != CLI_VERSION:
+        raise SystemExit(f"Codex CLI version mismatch: {version}")
+    root = Path(tempfile.mkdtemp(prefix="metis-issue6-symmetric-runs-"))
+    oracle_root = Path(tempfile.mkdtemp(prefix="metis-issue6-symmetric-oracle-"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    atexit.register(shutil.rmtree, oracle_root, ignore_errors=True)
+    global ORACLE_FILE
+    ORACLE_FILE = oracle_root / "answers.json"
+    rng = random.Random(SEED)
+    cases = []
+    answers: dict[str, str] = {}
+    task_families: dict[str, list[str]] = {}
+    task_index = 0
+    for family in FAMILIES:
+        for _instance in range(2):
+            task_id = f"task-{task_index:02d}"
+            components = (bytes(rng.choice(COMPONENT_ALPHABET) for _ in range(12)),
+                          bytes(rng.choice(COMPONENT_ALPHABET) for _ in range(12)))
+            answer = hashlib.sha256(components[0] + b"\0" + components[1]).hexdigest()
+            task_families[task_id] = list(family)
+            for repetition in range(TASK_REPETITIONS):
+                case_id = f"{task_id}-rep-{repetition}"
+                answers[case_id] = answer
+                cases.append((case_id, components, family))
+            task_index += 1
+    descriptor = os.open(ORACLE_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(answers, stream, sort_keys=True)
+    order_rng = random.Random(ORDER_SEED)
+    trial_order = {}
+    for case_id, *_ in cases:
+        arms = ["single", "multi"]
+        order_rng.shuffle(arms)
+        trial_order[case_id] = arms
+    session = CodexSession(root / "state" / "metis.sqlite")
+    scheduler = AgentScheduler(session.database, BridgeHost(max_parallel=BUDGET["slots"]))
+    records = []
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    # Retain only answer-free metrics. Replace atomically after every completed arm.
+    for case_id, components, family in cases:
+        for arm in trial_order[case_id]:
+            record = run_arm(session, scheduler, runner, root, case_id, components, family, arm)
+            records.append(record)
+            dataset = build_dataset(records, task_families, trial_order)
+            temporary = OUTPUT.with_suffix(".tmp")
+            temporary.write_text(json.dumps(dataset, separators=(",", ":")), encoding="utf-8")
+            temporary.replace(OUTPUT)
+            print(json.dumps({"case": case_id, "arm": arm, "verified": record["oracle_verified"],
+                              "completed_records": len(records), "elapsed_seconds": record["elapsed_seconds"],
+                              "calls": record["calls_observed"]}, separators=(",", ":")), flush=True)
+    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order),
+                                 sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def build_dataset(records: list[dict[str, Any]], task_families: dict[str, list[str]],
+                  trial_order: dict[str, list[str]]) -> dict[str, Any]:
+    by_key = {(row["case"], row["arm"]): row for row in records}
+    pairs = []
+    for case_id in sorted({row["case"] for row in records}):
+        single = by_key.get((case_id, "single"))
+        multi = by_key.get((case_id, "multi"))
+        if single is None or multi is None:
+            continue
+        pairs.append({"case": case_id, "single_verified": single["oracle_verified"],
+                      "multi_verified": multi["oracle_verified"],
+                      "single_seconds": single["elapsed_seconds"], "multi_seconds": multi["elapsed_seconds"],
+                      "single_calls": single["calls_observed"], "multi_calls": multi["calls_observed"],
+                      "single_tokens": single["usage"], "multi_tokens": multi["usage"],
+                      "single_actions": single["actions"], "multi_actions": multi["actions"]})
+    return {"study": STUDY_ID, "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low",
+            "seed": SEED, "order_seed": ORDER_SEED, "distinct_tasks": len(task_families),
+            "repetitions_per_task": TASK_REPETITIONS, "encoding_pairs": task_families,
+            "trial_order": trial_order, "records": records, "pairs": pairs,
+            "retained_content": "answer-free metrics; no candidates, components, digests, or oracle values"}
+
+
+if __name__ == "__main__":
+    main()

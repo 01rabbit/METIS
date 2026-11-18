@@ -20,10 +20,33 @@ from metis.core.agent_contracts import (
     TERMINAL_JOB_STATES,
     CompactReport,
     ExecutionMode,
+    ProposedAction,
     decide_wave,
 )
 from metis.core.codex_session import CodexSession
+from metis.core.ctf_artifacts import ALLOWED_OPTIONS, ARTIFACT_TOOLS, DERIVE_TOOLS
 from metis.core.ctf_knowledge import abstract_text
+from metis.core.ctf_tools import DATA_TOOLS
+from metis.core.intent_identity import intent_identity
+
+
+def assigned_artifact_scope(assignment: dict[str, Any], declared_artifacts: set[str]) -> set[str] | None:
+    """Validate an optional assignment-level artifact capability.
+
+    A missing ``inputs.artifacts`` preserves run-wide artifact access. An
+    explicit empty list grants no artifact access.
+    """
+    inputs = assignment.get("inputs", {})
+    if not isinstance(inputs, dict):
+        raise TypeError("invalid assignment inputs")
+    if "artifacts" not in inputs:
+        return None
+    refs = inputs["artifacts"]
+    if (not isinstance(refs, list) or len(refs) > 32
+            or any(not isinstance(ref, str) for ref in refs)
+            or len(refs) != len(set(refs)) or not set(refs) <= declared_artifacts):
+        raise ValueError("invalid assignment artifact scope")
+    return set(refs)
 
 CATEGORY_OBJECTIVES = {
     "crypto": "Identify the primitive and test the cheapest discriminating decode or attack.",
@@ -105,7 +128,7 @@ class AgentLedger:
                 assignment_id TEXT NOT NULL, payload TEXT NOT NULL, action_key TEXT NOT NULL,
                 created REAL NOT NULL, UNIQUE(wave_id, assignment_id))""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(ctf_agent_reports)")}
-            for name in ("attempt_id", "action_identity"):
+            for name in ("attempt_id", "action_identity", "evidence_action_identity"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE ctf_agent_reports ADD COLUMN {name} TEXT")
 
@@ -124,9 +147,19 @@ class AgentLedger:
                                  "or time them out first")
             if not context["actions_remaining"] or not context["seconds_remaining"]:
                 raise ValueError("no budget left for another wave")
+            turn_budget = self._specialist_turn_budget(run_id)
+            if turn_budget is not None and turn_budget["remaining"] <= 0:
+                raise ValueError("no specialist model turns left for another wave")
             if not reason or len(reason.strip()) < 10:
                 raise ValueError("a new wave needs --reason naming the unresolved, different hypothesis")
             abstract_text(reason)
+            normalized_reason = " ".join(reason.casefold().split())
+            with sqlite3.connect(self.database) as db:
+                prior_plans = [json.loads(row[0]) for row in db.execute(
+                    "SELECT plan FROM ctf_agent_waves WHERE run_id=?", (run_id,)).fetchall()]
+            if any(" ".join(str(plan.get("reason", "")).casefold().split()) == normalized_reason
+                   for plan in prior_plans):
+                raise ValueError("a new wave needs a distinct reason; this rationale was already used")
         plan = plan_agent_wave(context, force_mode=mode)
         wave_id = uuid4().hex
         plan["wave_id"] = wave_id
@@ -138,6 +171,18 @@ class AgentLedger:
             db.execute("INSERT INTO ctf_agent_waves(wave_id,run_id,plan,created) VALUES (?,?,?,?)",
                        (wave_id, run_id, json.dumps(plan, sort_keys=True), time.time()))
         return plan
+
+    def _specialist_turn_budget(self, run_id: str) -> dict[str, int] | None:
+        with sqlite3.connect(self.database) as db:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_run_turn_budgets'"
+            ).fetchone()
+            row = (db.execute(
+                "SELECT turn_limit,turns_reserved FROM agent_run_turn_budgets WHERE run_id=?", (run_id,)
+            ).fetchone() if exists else None)
+        if row is None:
+            return None
+        return {"limit": row[0], "reserved": row[1], "remaining": row[0] - row[1]}
 
     def record_report(self, run_id: str, wave_id: str, assignment_id: str,
                       report: dict[str, Any], *, attempt_id: str | None = None) -> dict[str, Any]:
@@ -171,11 +216,59 @@ class AgentLedger:
         declared = set(self.session.context(run_id)["challenge"].get("artifacts", []))
         if set(parsed.artifact_refs) - declared:
             raise ValueError("report references artifacts that are not registered in this run")
+        assignment = next(item for item in plan["assignments"] if item["assignment_id"] == assignment_id)
+        allowed_artifacts = assigned_artifact_scope(assignment, declared)
+        if allowed_artifacts is not None and set(parsed.artifact_refs) - allowed_artifacts:
+            raise ValueError("report references artifacts outside this assignment's scope")
+        proposed_identity = None
+        if parsed.next_action_intent is not None:
+            try:
+                proposed = ProposedAction.model_validate(parsed.next_action_intent)
+            except ValidationError:
+                raise ValueError("next_action_intent must be a bounded METIS tool request") from None
+            supported = ((proposed.kind == "data" and proposed.tool in DATA_TOOLS)
+                         or (proposed.kind == "artifact" and proposed.tool in ARTIFACT_TOOLS
+                             and set(proposed.options) <= ALLOWED_OPTIONS[proposed.tool])
+                         or (proposed.kind == "derive" and proposed.tool in DERIVE_TOOLS
+                             and set(proposed.options) <= ALLOWED_OPTIONS[proposed.tool])
+                         or (proposed.kind == "view" and proposed.tool == "view"))
+            if not supported:
+                raise ValueError("next_action_intent names an unsupported tool or option")
+            if proposed.kind in {"artifact", "derive", "view"}:
+                if proposed.artifact not in declared:
+                    raise ValueError("next_action_intent references an undeclared artifact")
+                if allowed_artifacts is not None and proposed.artifact not in allowed_artifacts:
+                    raise ValueError("next_action_intent artifact is outside this assignment's scope")
+            proposed_identity, _family = intent_identity(proposed.kind, proposed.tool, proposed.artifact,
+                                                         proposed.options, proposed.data,
+                                                         self.session.artifact_root(run_id))
+            if parsed.action_identity is not None and parsed.action_identity != proposed_identity:
+                raise ValueError("action_identity must match next_action_intent")
+        elif parsed.action_identity is not None:
+            raise ValueError("action_identity requires a controller-checkable next_action_intent")
         action_key = hashlib.sha256(" ".join(values["next_action"].lower().split()).encode()).hexdigest()
         newest = max(sequences)
         with sqlite3.connect(self.database) as db:
-            rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND (action_key=? OR "
-                              "action_identity=?)", (run_id, action_key, parsed.action_identity or "-")).fetchall()
+            # A proposal is not proof that an operation actually ran. Only use its
+            # structured identity for stuckness when the report cites an observation
+            # produced by that exact controller-recorded action.
+            evidence_action_identity = None
+            if proposed_identity and db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_actions'").fetchone():
+                placeholders = ",".join("?" for _ in sequences)
+                matched = db.execute(
+                    f"SELECT 1 FROM agent_actions WHERE run_id=? AND identity=? "
+                    f"AND sequence IN ({placeholders}) LIMIT 1",
+                    (run_id, proposed_identity, *sequences),
+                ).fetchone()
+                if matched:
+                    evidence_action_identity = proposed_identity
+            if proposed_identity:
+                rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND action_identity=?",
+                                  (run_id, proposed_identity)).fetchall()
+            else:
+                rows = db.execute("SELECT payload FROM ctf_agent_reports WHERE run_id=? AND action_identity IS NULL "
+                                  "AND action_key=?", (run_id, action_key)).fetchall()
             # Same action again is allowed only when it rests on newer evidence (a real re-test).
             if any(newest <= max(json.loads(row[0])["event_sequences"]) for row in rows):
                 raise ValueError("duplicate next action")
@@ -183,10 +276,10 @@ class AgentLedger:
             payload = {**values, "status": status, "event_sequences": sequences,
                        "artifact_refs": parsed.artifact_refs, "schema_version": SCHEMA_VERSION}
             db.execute("""INSERT INTO ctf_agent_reports
-                (report_id,wave_id,run_id,assignment_id,payload,action_key,created,attempt_id,action_identity)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (report_id,wave_id,run_id,assignment_id,payload,action_key,created,attempt_id,action_identity,
+                 evidence_action_identity) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (report_id, wave_id, run_id, assignment_id, json.dumps(payload, sort_keys=True), action_key,
-                 time.time(), attempt_id, parsed.action_identity))
+                 time.time(), attempt_id, proposed_identity, evidence_action_identity))
         return {"report_id": report_id, "wave_id": wave_id, "assignment_id": assignment_id,
                 "stored": True, "candidate_stored": False}
 
@@ -217,6 +310,14 @@ class AgentLedger:
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_jobs'").fetchone():
                 jobs = dict(db.execute("SELECT assignment_id, state FROM agent_jobs WHERE wave_id=?",
                                        (wave_id,)).fetchall())
+            all_rows = db.execute(
+                "SELECT wave_id,payload,action_key,evidence_action_identity FROM ctf_agent_reports "
+                "WHERE run_id=? ORDER BY created",
+                (run_id,),
+            ).fetchall()
+            wave_order = [row[0] for row in db.execute(
+                "SELECT wave_id FROM ctf_agent_waves WHERE run_id=? ORDER BY created", (run_id,)
+            ).fetchall()]
         reports = [{"report_id": identity, "assignment_id": assignment,
                     **json.loads(payload)} for identity, assignment, payload in rows]
         expected = {item["assignment_id"] for item in plan["assignments"]}
@@ -229,24 +330,80 @@ class AgentLedger:
         unresolved = [assignment for assignment in missing if assignment not in ended]
         supported = [item for item in reports if item["status"] == "supported"]
         open_hypotheses = [item["hypothesis"] for item in reports if item["status"] == "inconclusive"]
-        contradicted = bool(supported) and any(item["status"] == "rejected" for item in reports)
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in reports:
+            key = " ".join(item["hypothesis"].casefold().split())
+            group = grouped.setdefault(key, {"hypothesis": item["hypothesis"], "supported": 0,
+                                             "rejected": 0, "inconclusive": 0,
+                                             "event_sequences": set()})
+            group[item["status"]] += 1
+            group["event_sequences"].update(item["event_sequences"])
+        hypothesis_scores = [
+            {"hypothesis": group["hypothesis"], "supported": group["supported"],
+             "rejected": group["rejected"], "inconclusive": group["inconclusive"],
+             "score": group["supported"] - group["rejected"],
+             "event_sequences": sorted(group["event_sequences"]),
+             "contradicted": bool(group["supported"] and group["rejected"])}
+            for key, group in sorted(grouped.items())
+        ]
+        strategy_history: dict[tuple[str, str], dict[str, Any]] = {}
+        for prior_wave_id, payload, action_key, action_identity in all_rows:
+            if action_key is None:
+                continue
+            report = json.loads(payload)
+            hypothesis_key = " ".join(report["hypothesis"].casefold().split())
+            # The structured proposal identity is controller-derived from a bounded tool
+            # request; free-text next_action remains the legacy fallback.
+            history = strategy_history.setdefault((action_identity or action_key, hypothesis_key), {
+                "action": report["next_action"], "hypothesis": report["hypothesis"],
+                "wave_statuses": {},
+            })
+            history["wave_statuses"].setdefault(prior_wave_id, set()).add(report["status"])
+        current_index = wave_order.index(wave_id)
+        previous_wave_id = wave_order[current_index - 1] if current_index > 0 else None
+        repeated_actions = [
+            {"action": history["action"], "hypothesis": history["hypothesis"],
+             "wave_count": len(history["wave_statuses"]),
+             "stalled": (wave_id in history["wave_statuses"] and previous_wave_id is not None
+                         and previous_wave_id in history["wave_statuses"]
+                         and len(history["wave_statuses"][wave_id]) == 1
+                         and history["wave_statuses"][wave_id] == history["wave_statuses"][previous_wave_id]),
+             "statuses": sorted(set().union(*history["wave_statuses"].values()))}
+            for _key, history in sorted(strategy_history.items()) if len(history["wave_statuses"]) > 1
+        ]
+        stuck = any(item["stalled"] for item in repeated_actions)
+        stuckness = {"detected": stuck, "repeated_actions": repeated_actions,
+                     "rule": "same normalized action and hypothesis with unchanged status across waves",
+                     "recommendation": "select a distinct evidence-backed strategy" if stuck else None}
+        contradicted_hypotheses = [item for item in hypothesis_scores if item["contradicted"]]
+        contradiction_keys = {" ".join(item["hypothesis"].casefold().split())
+                              for item in contradicted_hypotheses}
+        contradicted = bool(contradicted_hypotheses)
         budget = bool(context["actions_remaining"] and context["seconds_remaining"])
+        specialist_turn_budget = self._specialist_turn_budget(run_id)
         new_wave_reasons = []
         if unresolved:
             new_wave_reasons.append("required assignments unresolved")
         if not budget:
             new_wave_reasons.append("budget exhausted")
+        if specialist_turn_budget is not None and specialist_turn_budget["remaining"] <= 0:
+            new_wave_reasons.append("specialist model-turn budget exhausted")
         if not open_hypotheses and not contradicted:
             new_wave_reasons.append("no open or contradicted hypothesis")
         return {
             "run_id": run_id,
             "wave_id": wave_id,
             "complete": not missing,
+            "specialist_turn_budget": specialist_turn_budget,
             "missing_assignments": missing,
             "reports": reports,
             "supported_hypotheses": [item["hypothesis"] for item in supported],
+            "hypothesis_scores": hypothesis_scores,
+            "contradicted_hypotheses": contradicted_hypotheses,
+            "stuckness": stuckness,
             "contradictions": [item["falsifier"] for item in reports
-                               if item["status"] == "rejected"],
+                               if item["status"] == "rejected"
+                               and " ".join(item["hypothesis"].casefold().split()) in contradiction_keys],
             "next_actions": [item["next_action"] for item in reports],
             "submission": {"owner": "orchestrator", "allowed": status == "solved",
                            "reason": "official_verifier_required" if status != "solved"

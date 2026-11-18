@@ -47,6 +47,12 @@ class Runner:
                     elapsed_seconds=f"{time.monotonic() - tracker.started:.6f}",
                     provider=type(self.provider).__name__,
                 )
+                usage = getattr(self.provider, "usage_totals", None)
+                if isinstance(usage, dict):
+                    detail["model_usage_observed"] = str(bool(getattr(self.provider, "usage_observed", False))).lower()
+                    for key, value in usage.items():
+                        detail[f"model_{key}"] = str(value)
+                    detail["model_cost_usd"] = "unknown"
             self.store.append(RunEvent(run_id=run_id, sequence=sequence,
                                        status=status, detail=detail))
             sequence += 1
@@ -99,7 +105,8 @@ class Runner:
                     emit(RunStatus.EXHAUSTED, reason="repeated_action")
                     break
                 seen.add(identity)
-                emit(RunStatus.EXECUTING, operation="isolated_fixture_tool")
+                emit(RunStatus.EXECUTING, operation="isolated_fixture_tool", tool=decision.tool.tool,
+                     action_identity=identity)
                 check()
                 started = time.monotonic()
                 observation = self.runtime.execute(decision.tool, timeout_seconds=min(
@@ -111,9 +118,12 @@ class Runner:
                 # Observe data in memory only; do not persist outputs/candidates.
                 context = context.model_copy(update={
                     "observations": (*context.observations, observation),
+                    "last_tool": decision.tool,
+                    "attempted_tools": (*context.attempted_tools, decision.tool),
                 })
-                emit(RunStatus.OBSERVING, tool_ok=str(observation.ok).lower())
-                emit(RunStatus.REPLANNING)
+                emit(RunStatus.OBSERVING, tool_ok=str(observation.ok).lower(), tool=decision.tool.tool,
+                     failure_kind=observation.failure_kind or "none")
+                emit(RunStatus.REPLANNING, reason="observation_recorded")
         except (Cancelled, KeyboardInterrupt):
             emit(RunStatus.CANCELLED)
         except BudgetExhausted:
