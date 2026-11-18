@@ -124,3 +124,39 @@ The exact focused run passed 39 tests across `test_heldout_analysis.py` and
 modules. Exact-head CI for the preceding `eb36968` commit passed Python,
 sandbox and linux-arm64-seccomp checks; the reconciliation change is newer and
 requires its own exact-head CI result.
+
+## Read-only run snapshot increment (post-merge)
+
+`python -m metis.evaluation.heldout_export STATE.sqlite RUN_ID` emits a
+fixed-field, answer-free snapshot from one validated event-chain transaction.
+It derives terminal status, last evidence sequence, official or protected
+fixture verification type, first-to-last event span, executing-event count,
+and controller model-turn/action counts when those tables exist. Missing tables
+and provider token/cost usage remain `null`; model rationales, tool output,
+candidate values and raw event details are never exported. The snapshot does
+not infer workflow completion, prior task exposure or solvability, so it is not
+a complete `Trial` and cannot alone score the P7 acceptance gate. The event
+span includes idle time and must not be used as a benchmark trial's active
+runtime.
+
+The local focused exporter and analyzer suite passed, including a
+secret-bearing event detail, missing counters, unknown run, corrupted chain and
+sanitized CLI error.
+Ruff, mypy and `git diff --check` passed for the new module and test. The next
+step is a trial-level exporter that joins independently reviewed task metadata,
+job/synthesis completion and actual provider usage to these ledger facts, then
+reconciles each trial before the repeated held-out study.
+
+Independent read-only review found that the event-count cap was checked only
+after chain materialization and that mixed aware/naive timestamps could yield
+an unhandled error. The exporter now checks the count before reading the chain,
+requires timezone-aware endpoints, and returns a generic CLI rejection for
+malformed input. Focused regressions and Ruff/mypy passed. These protections do
+not make the snapshot a complete trial exporter.
+
+Review follow-up: `official_browser_observed` is exported as the separate
+`browser_observed` provenance with `oracle_verified=false`. It is an observed
+platform state, not an API verifier verdict eligible for the study's score.
+The official-verifier labels are now shared with the analyzer. If first-to-last
+event time exceeds 24 hours, only `event_span_seconds` becomes `null`; the
+validated chain and remaining fields are retained.
