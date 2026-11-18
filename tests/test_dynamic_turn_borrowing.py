@@ -55,6 +55,12 @@ def test_queued_peer_keeps_first_call_when_slot_is_full(tmp_path: Path) -> None:
         assert scheduler.reserve_model_turn(run_id, first["assignment_id"], first["attempt_id"])
     assert scheduler.reserve_model_turn(run_id, first["assignment_id"], first["attempt_id"]) is None
     assert scheduler.model_turn_budget(run_id)["remaining"] == len(scheduler.jobs(run_id)) - 1
+    started = scheduler.dispatch(run_id)["started"]
+    assert len(started) == 1
+    peer = started[0]
+    assert peer["assignment_id"] != first["assignment_id"]
+    assert scheduler.reserve_model_turn(run_id, peer["assignment_id"], peer["attempt_id"])
+    assert scheduler.model_turn_budget(run_id)["remaining"] == len(scheduler.jobs(run_id)) - 2
 
 
 def test_concurrent_borrowing_and_retry_never_exceed_cap(tmp_path: Path) -> None:
