@@ -346,15 +346,16 @@ evidence. A full controller exporter and fresh held-out experiment remain
 necessary; Issue #8 stays open.
 See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
 
-For Issue #8, a separate held-out AlpacaHack Daily Misc task (`Not so Pyf**k`)
-was locally exercised from its official archive in the no-network, no-host-
-mount sandbox. A three-letter ASCII expression passed the archived jail and
-the final probe's local-package comparison; no output value was logged or
-submitted. The web run had no official verifier or verdict, so this is not an
-independently verified solve and cannot be scored under P7. It is one positive
-local datapoint only; repeated runs, confidence intervals, controls,
-comparable budgets, cost reporting, and ablations remain outstanding. An
-independent acceptance review agreed this does not meet Issue #8's gate. See
+For Issue #8, AlpacaHack Daily Misc task `Not so Pyf**k` was first exercised
+from its official archive in the no-network, no-host-mount sandbox. The
+archive-derived candidate matched the bundled value locally but was rejected
+by the official verifier. A candidate read from the single official challenge
+instance differed from the bundled value and was accepted by the logged-in
+official browser; METIS records the official verdict and the per-problem
+write-up answer check matches. This adds one verified solve, but not a repeated
+held-out benchmark: repeated runs, confidence intervals, controls, comparable
+budgets, cost reporting, and ablations remain outstanding, so Issue #8 stays
+open. See
 [`issue8-alpacahack-not-so-pyfk-probe-2026-11-18.md`](reports/issue8-alpacahack-not-so-pyfk-probe-2026-11-18.md).
 
 An earlier 30-case paired synthetic scheduler benchmark verifies the same
