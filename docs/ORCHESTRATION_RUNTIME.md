@@ -79,6 +79,24 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   CodexCLI経路では別に、providerを呼ぶ前にrun-wide model-turn reservationを1つ消費する。
   model turnは失敗・timeout・再試行でも返金しない。いずれかの上限超過は追加tool/model実行を拒否する。
 
+#### モデル呼び出し枠の借用（任意の実験経路）
+
+`AgentScheduler.enqueue(run_id, wave_id, dynamic_borrowing=True)` は、run の
+**最初の wave のみ**で利用できる。assignment が 2 件以上あり、その件数が run の
+確定済み呼び出し上限以下の場合に限る。既定では従来の固定枠を使う。
+有効にした assignment は、run の上限とスキーマ上の 20 intent の小さい方まで
+自分の枠を使える。run 全体のモデル呼び出し上限と action 上限は変わらない。
+
+同じ run lock と SQLite transaction の中で、まだ一度も予約していない
+queued または running の各 peer に最初の 1 回を残す。残りがこの保護枠に
+達した assignment は `model_turn_peer_reserve` で失敗する。この仕組みは
+最初の呼び出し機会を残すもので、呼び出しの成功や job 完了は保証しない。
+running の peer がまだ呼び出しを始めていない場合にも直ちに失敗するため、
+高速な job が先に止まる可能性がある。今後の事前登録した測定で、この
+公平性と完了率を確認する。再試行分は同じ run 上限から消費し、返金しない。
+取消後は新たに予約できない。この変更では通常の実行や benchmark に
+自動で有効化しない。
+
 ### 状態と attempt
 
 `queued → running → completed | failed | cancelled | timed_out`、停止を確認できない場合は `unknown`

@@ -80,7 +80,8 @@ class AgentScheduler:
                 role TEXT NOT NULL, state TEXT NOT NULL, attempt_id TEXT, attempt_no INTEGER NOT NULL DEFAULT 0,
                 host TEXT, host_job_id TEXT, lease_until REAL, deadline REAL, deadline_seconds INTEGER NOT NULL,
                 max_turns INTEGER NOT NULL, turns_used INTEGER NOT NULL DEFAULT 0, started REAL, finished REAL,
-                failure TEXT, model TEXT, usage TEXT, created REAL NOT NULL)""")
+                failure TEXT, model TEXT, usage TEXT, created REAL NOT NULL,
+                dynamic_borrowing INTEGER NOT NULL DEFAULT 0)""")
             db.execute("""CREATE TABLE IF NOT EXISTS agent_job_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, assignment_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
                 event TEXT NOT NULL, detail TEXT, time REAL NOT NULL)""")
@@ -104,6 +105,9 @@ class AgentScheduler:
             columns = {row[1] for row in db.execute("PRAGMA table_info(agent_actions)")}
             if "family" not in columns:  # added after Issue #11 E2E; old rows keep NULL
                 db.execute("ALTER TABLE agent_actions ADD COLUMN family TEXT")
+            job_columns = {row[1] for row in db.execute("PRAGMA table_info(agent_jobs)")}
+            if "dynamic_borrowing" not in job_columns:
+                db.execute("ALTER TABLE agent_jobs ADD COLUMN dynamic_borrowing INTEGER NOT NULL DEFAULT 0")
 
     def _db(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database, timeout=30)
@@ -152,19 +156,27 @@ class AgentScheduler:
 
     # -- jobs ------------------------------------------------------------------------------
     @locked
-    def enqueue(self, run_id: str, wave_id: str) -> list[dict[str, Any]]:
+    def enqueue(self, run_id: str, wave_id: str, *, dynamic_borrowing: bool = False) -> list[dict[str, Any]]:
+        """Queue a wave; opt-in borrowing is limited to the run's first wave."""
         if self.run_cancelled(run_id):
             raise ValueError("run is cancelled; enqueue refused")
         plan = self.ledger._plan(run_id, wave_id)
+        if dynamic_borrowing:
+            budget = self.model_turn_budget(run_id)
+            limit = budget["limit"] if budget else self.config()["specialist_turn_budget"]
+            if len(plan["assignments"]) < 2 or len(plan["assignments"]) > limit or self.jobs(run_id):
+                raise ValueError("dynamic borrowing requires a fresh multi-assignment wave within the run cap")
         now = time.time()
         with self._db() as db:
             db.execute("INSERT OR IGNORE INTO agent_run_turn_budgets(run_id,turn_limit,turns_reserved,created) "
                        "VALUES (?,?,0,?)", (run_id, self.config()["specialist_turn_budget"], now))
             for item in plan["assignments"]:
                 db.execute("INSERT OR IGNORE INTO agent_jobs(assignment_id,run_id,wave_id,role,state,"
-                           "deadline_seconds,max_turns,created) VALUES (?,?,?,?,?,?,?,?)",
+                           "deadline_seconds,max_turns,created,dynamic_borrowing) VALUES (?,?,?,?,?,?,?,?,?)",
                            (item["assignment_id"], run_id, wave_id, item["role"], "queued",
-                            int(item.get("deadline_seconds", 600)), int(item.get("max_turns", 6)), now))
+                            int(item.get("deadline_seconds", 600)),
+                            min(limit, 20) if dynamic_borrowing else int(item.get("max_turns", 6)),
+                            now, int(dynamic_borrowing)))
         return self.jobs(run_id, wave_id)
 
     @locked
@@ -199,6 +211,22 @@ class AgentScheduler:
                 db.execute("ROLLBACK")
                 raise ValueError("run specialist-turn budget is not initialized; enqueue the wave first")
             limit, used = budget
+            borrowing = db.execute("SELECT dynamic_borrowing FROM agent_jobs WHERE assignment_id=?",
+                                   (assignment_id,)).fetchone()[0]
+            if borrowing:
+                unstarted_peers = db.execute(
+                    "SELECT COUNT(*) FROM agent_jobs j WHERE j.run_id=? AND j.assignment_id<>? "
+                    "AND j.dynamic_borrowing=1 AND j.state IN ('queued','running') "
+                    "AND NOT EXISTS (SELECT 1 FROM agent_turn_reservations r "
+                    "WHERE r.assignment_id=j.assignment_id)", (run_id, assignment_id)).fetchone()[0]
+                if limit - used <= unstarted_peers:
+                    now = time.time()
+                    db.execute("UPDATE agent_jobs SET state='failed',failure=?,finished=? WHERE assignment_id=? "
+                               "AND attempt_id=?", ("shared model-turn reserve held for unstarted peers", now,
+                                                   assignment_id, attempt_id))
+                    self._log(db, assignment_id, attempt_id, "model_turn_peer_reserve", str(unstarted_peers))
+                    db.execute("COMMIT")
+                    return None
             if used >= limit:
                 now = time.time()
                 db.execute("UPDATE agent_jobs SET state='failed',failure=?,finished=? WHERE assignment_id=? "
@@ -435,7 +463,9 @@ class AgentScheduler:
             "evidence_refs": observations, "hypotheses": hypotheses, "rejected_actions": rejected,
             "prior_reports": prior_reports,
             "prior_knowledge": prior_knowledge,
-            "tools": profile.recommended_tools, "max_turns": assignment.get("max_turns", profile.max_turns),
+            "tools": profile.recommended_tools, "max_turns": next(
+                (job["max_turns"] for job in self.jobs(run_id) if job["assignment_id"] == assignment["assignment_id"]),
+                assignment.get("max_turns", profile.max_turns)),
             "run_model_turn_budget": turn_budget,
             "seconds": assignment.get("deadline_seconds"), "max_output_chars": 8000,
             "forbidden": ["official submission", "scope or endpoint grants", "credentials", "re-delegation",
