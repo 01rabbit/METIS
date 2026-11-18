@@ -90,20 +90,23 @@ def test_stay_stage2_third_byte_predictor_matches_planted_full_states() -> None:
 
         first_pass = _encrypt(random_header, initial)
         stored_header = _encrypt(first_pass, initial)
-        def carry_after_two(p0: int, p1: int) -> tuple[int, int]:
-            key0_1 = _crc_update(x0, p0)
+        def carry_after_two(p0: int, p1: int, initial_key0: int,
+                            first_product: int, second_product: int) -> tuple[int, int]:
+            key0_1 = _crc_update(initial_key0, p0)
             a1 = key0_1 & 0xFF
             first_offset = a1 * MULT + 1
-            carry1 = ((product1 & 0xFFFFFF) + (first_offset & 0xFFFFFF)) >> 24
+            carry1 = ((first_product & 0xFFFFFF) + (first_offset & 0xFFFFFF)) >> 24
             key0_2 = _crc_update(key0_1, p1)
             a2 = key0_2 & 0xFF
             total2 = a1 * MULT * MULT + MULT + a2 * MULT + 1
-            carry2 = ((product2 & 0xFFFFFF) + (total2 & 0xFFFFFF)) >> 24
+            carry2 = ((second_product & 0xFFFFFF) + (total2 & 0xFFFFFF)) >> 24
             return carry1, carry2
 
-        stage1_carry1, stage2_carry1 = carry_after_two(random_header[0], random_header[1])
+        stage1_carry1, stage2_carry1 = carry_after_two(
+            random_header[0], random_header[1], x0, product1, product2)
         # The second pass consumes the first pass's ciphertext bytes as plaintext.
-        stage1_carry2, stage2_carry2 = carry_after_two(first_pass[0], first_pass[1])
+        stage1_carry2, stage2_carry2 = carry_after_two(
+            first_pass[0], first_pass[1], x0, product1, product2)
         predicted = _stay_predict_third_byte_difference(
             random_header[0], random_header[1], first_stream, crc0 & 0xFFFF,
             product1 >> 24, crc2 & 0xFFFFFF, stage1_carry1, stage1_carry2,
