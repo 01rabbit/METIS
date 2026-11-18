@@ -496,3 +496,16 @@ reported for #39 imply at most 704 such full-range chunks if each record
 belongs to a distinct Stage 1 hit; actual hit grouping and overhead remain
 unverified. The old run is expired, and no official Stage 2 scan was started.
 The tool still lacks full-key reconstruction, so #28 remains open.
+
+## Supplied-product key reconstruction primitive (2026-11-18)
+
+A bounded helper now inverts a *supplied* Stage 1 product to key1, vectorizes
+the remaining 16-bit key0 CRC and 8-bit key2 CRC search, filters by the first
+member's fourth double-encrypted byte, and checks all seven known ten-byte
+headers on scalar survivors. A planted full state was recovered from the
+complete 2^24 extra-bit range in 1.199 seconds on a local synthetic vector;
+changing the fourth stored byte rejects the planted candidate. The helper
+is not exposed as a METIS intent and has not been run against #39. A Stage 2
+hit can admit many product values, while the current hit shard stores only
+the first compatible witness. Enumerating every compatible product and then
+checking all member CRCs is still required before any key recovery claim.

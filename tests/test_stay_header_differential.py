@@ -674,6 +674,7 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         MULT,
         _stay_first_stage_candidate,
         _stay_first_stage_key1_intervals,
+        _stay_recover_keys_for_product,
         _stay_second_update_addends,
         _stay_stage2_candidate_matches,
         _stay_stage2_first_member_preimages,
@@ -687,7 +688,7 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         product = initial[1] * MULT & M32
         key0_crc16 = _crc_update(initial[0], 0) & 0xFFFF
         key2_crc24 = _crc_update(initial[2], 0) & 0xFFFFFF
-        random_headers = tuple(bytes(rng.getrandbits(8) for _ in range(3)) for _ in range(7))
+        random_headers = tuple(bytes(rng.getrandbits(8) for _ in range(10)) for _ in range(7))
         first_passes = tuple(_encrypt(header, initial) for header in random_headers)
         stored_headers = tuple(_encrypt(first_pass, initial) for first_pass in first_passes)
         random_firsts = tuple(header[0] for header in random_headers)
@@ -765,6 +766,19 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
                 start=max(0, guess - 512), stop=guess + 1,
                 max_candidates=513, max_hits=513, seconds=10)
             assert (guess, witnesses[0]) in vector_chunk.hits
+            extra = ((_crc_update(initial[0], 0) >> 16) & 0xFFFF) | (
+                (_crc_update(initial[2], 0) >> 24) << 16)
+            recovered = _stay_recover_keys_for_product(
+                product, index, guess, random_headers, stored_headers,
+                start=0, stop=1 << 24,
+                max_candidates=1 << 24, max_hits=1, seconds=10)
+            assert initial in recovered.keys
+            mutated = list(stored_headers)
+            mutated[0] = mutated[0][:3] + bytes([mutated[0][3] ^ 1]) + mutated[0][4:]
+            rejected = _stay_recover_keys_for_product(
+                product, index, guess, random_headers, tuple(mutated),
+                start=extra, stop=extra + 1, max_candidates=1, max_hits=4, seconds=10)
+            assert not rejected.keys
             negative = _stay_stage2_scan_chunk(
                 index, carry_masks, random_firsts, random_seconds,
                 tuple(value ^ 0x5A for value in observed_third),

@@ -1132,6 +1132,95 @@ class Keys:
         return {"x": f"{self.x:08x}", "y": f"{self.y:08x}", "z": f"{self.z:08x}"}
 
 
+@dataclass(frozen=True)
+class StayKeyRecoveryChunk:
+    next_extra: int
+    keys: tuple[tuple[int, int, int], ...]
+    reason: str
+
+
+def _stay_recover_keys_for_product(product: int, index: int, guess: int,
+                                   random_headers: tuple[bytes, ...],
+                                   stored_headers: tuple[bytes, ...], *,
+                                   start: int, stop: int, max_candidates: int,
+                                   max_hits: int, seconds: float) -> StayKeyRecoveryChunk:
+    """Bound the remaining CRC high-bit search for one *supplied* product.
+
+    A Stage 2 hit may admit many products. This helper neither enumerates them
+    nor treats its first product witness as proof of a key. It keeps recovered
+    keys in caller memory; the sandbox worker must keep them private.
+    """
+    if (type(product) is not int or not 0 <= product <= M32
+            or type(index) is not int or not 0 <= index < 1 << 40
+            or type(guess) is not int or not 0 <= guess < 1 << 26
+            or type(start) is not int or type(stop) is not int
+            or not 0 <= start <= stop <= 1 << 24
+            or type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 24
+            or type(max_hits) is not int or not 1 <= max_hits <= 4096
+            or not 0 < seconds <= 300 or len(random_headers) < 5
+            or len(random_headers) != len(stored_headers)
+            or any(len(header) < 10 for header in (*random_headers, *stored_headers))):
+        raise ValueError("invalid Stay full-key recovery bounds or observations")
+    deadline = time.monotonic() + seconds
+    key0_low16 = ((index >> 8) & 0xFF) | ((guess & 0xFF) << 8)
+    key2_low24 = (((index >> 25) & 0x3F) << 10 | ((index >> 31) & 0xFF) << 2
+                  | (((guess >> 8) & 0x3FF) >> 2) << 16 | ((guess >> 8) & 3))
+    key1 = product * MULTINV & M32
+    hits: list[tuple[int, int, int]] = []
+    cursor = start
+    visited = 0
+    mask32 = np.uint64(M32)
+
+    def keystream(z: np.ndarray) -> np.ndarray:
+        state = (z & np.uint64(0xFFFF)) | np.uint64(2)
+        return (state * (state ^ np.uint64(1)) >> np.uint64(8)) & np.uint64(0xFF)
+
+    def update(x: np.ndarray, y: np.ndarray, z: np.ndarray,
+               plain: int | np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x = ((x >> np.uint64(8))
+             ^ CRCTAB_NP[((x ^ plain) & np.uint64(0xFF)).astype(np.intp)]) & mask32
+        y = ((y + (x & np.uint64(0xFF))) * np.uint64(MULT) + np.uint64(1)) & mask32
+        z = ((z >> np.uint64(8))
+             ^ CRCTAB_NP[((z ^ (y >> np.uint64(24))) & np.uint64(0xFF)).astype(np.intp)]) & mask32
+        return x, y, z
+
+    while cursor < stop:
+        if visited >= max_candidates:
+            return StayKeyRecoveryChunk(cursor, tuple(hits), "candidate_limit")
+        if time.monotonic() >= deadline:
+            return StayKeyRecoveryChunk(cursor, tuple(hits), "time_limit")
+        end = min(stop, cursor + min(65_536, max_candidates - visited))
+        extra = np.arange(cursor, end, dtype=np.uint32).astype(np.uint64)
+        crc0 = np.uint64(key0_low16) | ((extra & np.uint64(0xFFFF)) << np.uint64(16))
+        crc2 = np.uint64(key2_low24) | ((extra >> np.uint64(16)) << np.uint64(24))
+        x0 = ((crc0 << np.uint64(8)) & mask32) ^ CRCINV_NP[(crc0 >> np.uint64(24)).astype(np.intp)]
+        z0 = ((crc2 << np.uint64(8)) & mask32) ^ CRCINV_NP[(crc2 >> np.uint64(24)).astype(np.intp)]
+        y0 = np.full(len(extra), key1, dtype=np.uint64)
+        x, y, z = x0, y0, z0
+        first_cipher: list[np.ndarray] = []
+        for plain in random_headers[0][:4]:
+            first_cipher.append(np.uint64(plain) ^ keystream(z))
+            x, y, z = update(x, y, z, plain)
+        x, y, z = x0, y0, z0
+        stored_fourth: np.ndarray | None = None
+        for cipher_plain in first_cipher:
+            stored_fourth = cipher_plain ^ keystream(z)
+            x, y, z = update(x, y, z, cipher_plain)
+        assert stored_fourth is not None
+        for offset in np.flatnonzero(stored_fourth == stored_headers[0][3]):
+            if time.monotonic() >= deadline:
+                return StayKeyRecoveryChunk(cursor, tuple(hits), "time_limit")
+            keys = Keys(int(x0[offset]), key1, int(z0[offset]))
+            if all(keys.encrypt(keys.encrypt(header[:10])) == stored[:10]
+                   for header, stored in zip(random_headers, stored_headers, strict=True)):
+                hits.append((keys.x, keys.y, keys.z))
+                if len(hits) >= max_hits:
+                    return StayKeyRecoveryChunk(cursor + int(offset) + 1, tuple(hits), "hit_limit")
+        visited += end - cursor
+        cursor = end
+    return StayKeyRecoveryChunk(cursor, tuple(hits), "complete")
+
+
 class BudgetExceeded(RuntimeError):
     pass
 
