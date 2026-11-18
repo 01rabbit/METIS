@@ -857,10 +857,30 @@ def _log(scheduler: AgentScheduler, assignment_id: str, attempt_id: str, event: 
         scheduler._log(db, assignment_id, attempt_id, event, detail)
 
 
+USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
+
+
 def _usage(scheduler: AgentScheduler, assignment_id: str, turns: list[dict[str, Any]], model: str | None) -> None:
+    """Record provider-reported usage without inventing missing values.
+
+    A total is reported only when every turn reported that field as an integer; otherwise it is
+    ``None`` and ``unknown_fields`` names it. ``known_subtotals`` keeps the sum of what was reported
+    so partial coverage stays visible without being presented as a complete total.
+    """
     totals: dict[str, Any] = {"host": "codex-exec", "model": model, "turns": len(turns), "cost": "unknown"}
-    for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"):
-        totals[key] = sum(int((turn.get("usage") or {}).get(key) or 0) for turn in turns)
+    known: dict[str, int] = {}
+    unknown: list[str] = []
+    for key in USAGE_KEYS:
+        values = [(turn.get("usage") or {}).get(key) for turn in turns]
+        measured = [value for value in values if isinstance(value, int) and not isinstance(value, bool)]
+        known[key] = sum(measured)
+        complete = bool(values) and len(measured) == len(values)
+        totals[key] = known[key] if complete else None
+        if not complete:
+            unknown.append(key)
+    totals["known_subtotals"] = known
+    totals["unknown_fields"] = unknown
+    totals["usage_complete"] = not unknown
     with scheduler._db() as db:
         db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id=?", (json.dumps(totals), assignment_id))
 

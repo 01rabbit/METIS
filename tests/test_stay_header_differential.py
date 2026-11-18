@@ -533,11 +533,70 @@ def test_stay_carry_interval_search_has_a_visit_cap(monkeypatch) -> None:
             1, (0xF,) * 5, (1, 2, 3, 4, 5)))
 
 
+def test_stage2_chunk_reuses_first_stage_intervals(monkeypatch) -> None:
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    index = 0
+    masks = (1,) * 5
+    firsts = (1, 2, 3, 4, 5)
+    seconds = (6, 7, 8, 9, 10)
+    observed = (0,) * 5
+    expected = tuple(guess for guess in range(8) if zipcrypto._stay_stage2_candidate_matches(
+        index, masks, firsts, seconds, observed, guess & 0xFF,
+        (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF))
+    original = zipcrypto._stay_first_stage_key1_intervals
+    calls = 0
+
+    def count_intervals(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield from original(*args, **kwargs)
+
+    monkeypatch.setattr(zipcrypto, "_stay_first_stage_key1_intervals", count_intervals)
+    chunk = zipcrypto._stay_stage2_scan_chunk(index, masks, firsts, seconds, observed,
+                                              start=0, stop=8, max_candidates=8,
+                                              max_hits=8, seconds=10)
+    assert tuple(guess for guess, _witness in chunk.hits) == expected
+    assert calls == 1
+
+
+def test_stage2_preparation_obeys_deadline_and_skips_empty_range(monkeypatch) -> None:
+    import time
+
+    import pytest
+
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    index, masks, firsts = 0, (1,) * 5, (1, 2, 3, 4, 5)
+    with pytest.raises(TimeoutError, match="deadline"):
+        tuple(zipcrypto._stay_first_stage_key1_intervals(index, masks, firsts, deadline=0))
+
+    original = zipcrypto._stay_first_stage_key1_intervals
+
+    def slow_intervals(*args, **kwargs):
+        time.sleep(0.01)
+        yield from original(*args, **kwargs)
+
+    monkeypatch.setattr(zipcrypto, "_stay_first_stage_key1_intervals", slow_intervals)
+    timed_out = zipcrypto._stay_stage2_scan_chunk(
+        index, masks, firsts, (6, 7, 8, 9, 10), (0,) * 5,
+        start=3, stop=4, max_candidates=1, max_hits=1, seconds=0.001)
+    assert timed_out == zipcrypto.StayStage2Chunk(3, (), "time_limit")
+
+    monkeypatch.setattr(zipcrypto, "_stay_first_stage_key1_intervals",
+                        lambda *args, **kwargs: pytest.fail("empty range prepared intervals"))
+    empty = zipcrypto._stay_stage2_scan_chunk(
+        index, masks, firsts, (6, 7, 8, 9, 10), (0,) * 5,
+        start=3, stop=3, max_candidates=1, max_hits=1, seconds=0.001)
+    assert empty == zipcrypto.StayStage2Chunk(3, (), "complete")
+
+
 def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
     from metis.core.ctf_zipcrypto import (
         M32,
         MULT,
         _stay_first_stage_candidate,
+        _stay_first_stage_key1_intervals,
         _stay_second_update_addends,
         _stay_stage2_candidate_matches,
         _stay_stage2_first_member_preimages,
@@ -591,6 +650,18 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
 
         if _ == 0:
+            intervals = tuple(_stay_first_stage_key1_intervals(index, carry_masks, random_firsts))
+            matching = next((interval, pairs) for interval, pairs in intervals
+                            if _stay_stage2_candidate_matches(
+                                index, carry_masks, random_firsts, random_seconds,
+                                observed_third, (key0_crc16 >> 8) & 0xFF,
+                                key2_stage2, q8, prepared_intervals=((interval, pairs),)))
+            interval, pairs = matching
+            alternate = ((pairs[0] ^ 1), *pairs[1:])
+            assert _stay_stage2_candidate_matches(
+                index, carry_masks, random_firsts, random_seconds,
+                observed_third, (key0_crc16 >> 8) & 0xFF, key2_stage2, q8,
+                prepared_intervals=((interval, alternate), (interval, pairs)))
             offsets = _stay_second_update_addends(
                 random_firsts[0], random_seconds[0], first_stream, key0_crc16,
                 product >> 24, key2_crc24, first_carry)
