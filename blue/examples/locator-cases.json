@@ -1,0 +1,279 @@
+[
+  {
+    "id": "offline_controlset",
+    "question": "An offline SYSTEM hive has Select/Current DWORD 2. A collected service definition is needed. Return the literal control-set key name to inspect (without hive prefix), and whether a live CurrentControlSet alias may be assumed to exist inside this offline hive.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "control_set": "ControlSet002",
+      "assume_live_alias": false
+    }
+  },
+  {
+    "id": "process_field_identity",
+    "question": "A Security event 4688 has NewProcessId=0x1440 and ProcessId=0x710. The question asks which field identifies the newly started process. Return its exact field name and decimal PID. Do not return the creator PID.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "field": "NewProcessId",
+      "pid": 5184
+    }
+  },
+  {
+    "id": "process_network_join",
+    "question": "Two Sysmon process records on one host reuse ProcessId 3100 at different times; their ProcessGuid values differ. The network event exposes both fields. Return the exact preferred entity field for correlating this connection with process creation, and whether PID alone resolves this example.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "join_field": "ProcessGuid",
+      "pid_alone_sufficient": false
+    }
+  },
+  {
+    "id": "split_script_record",
+    "question": "A PowerShell script block is split across events. Return the field that groups its fragments and the field that orders those fragments. Report field names, not reconstructed script content.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "group_field": "ScriptBlockId",
+      "order_field": "MessageNumber"
+    }
+  },
+  {
+    "id": "journal_time_domain",
+    "question": "A journald JSON export exposes __REALTIME_TIMESTAMP and __MONOTONIC_TIMESTAMP. Which exact field supplies epoch wall time, and how many of its units are one second? Can a monotonic value alone be ordered across two different boots?",
+    "references": [
+      "skills/soc-host-forensics/references/linux-artifacts.md"
+    ],
+    "expected": {
+      "wall_time_field": "__REALTIME_TIMESTAMP",
+      "units_per_second": 1000000,
+      "cross_boot_monotonic_order": false
+    }
+  },
+  {
+    "id": "audit_event_population",
+    "question": "On one host the same msg=audit(1720000000.250:42) appears on a SYSCALL row and two PATH rows, with item values 0 and 1. How many audit events and how many path-item records are represented? Is serial 42 alone a globally unique cross-host event key?",
+    "references": [
+      "skills/soc-host-forensics/references/linux-artifacts.md"
+    ],
+    "expected": {
+      "audit_events": 1,
+      "path_items": 2,
+      "serial_globally_unique": false
+    }
+  },
+  {
+    "id": "proc_namespace",
+    "question": "A collector reads /proc/420/net/tcp. Does that file by itself prove that every listed connection is owned by PID 420? Which procfs subdirectory under that PID can expose socket inode links for ownership correlation? Return just the directory name.",
+    "references": [
+      "skills/soc-remote-triage/references/live-collection-fields.md"
+    ],
+    "expected": {
+      "all_owned_by_pid": false,
+      "ownership_directory": "fd"
+    }
+  },
+  {
+    "id": "service_names",
+    "question": "A Win32_Service row contains Name=\"SyntheticIndexer\", DisplayName=\"Document indexing\", PathName=\"C:\\Program Files\\Example\\indexer.exe --service\". Return the field name for the configured executable/arguments and the field name for stable service identification.",
+    "references": [
+      "skills/soc-remote-triage/references/live-collection-fields.md"
+    ],
+    "expected": {
+      "image_field": "PathName",
+      "identifier_field": "Name"
+    }
+  },
+  {
+    "id": "cloud_issuer_identity",
+    "question": "A CloudTrail assumed-role event has userIdentity.arn for a session and userIdentity.sessionContext.sessionIssuer.arn for the IAM role. Does sessionIssuer.arn by itself identify the human operator? Return the exact top-level deduplication field and whether a GetObject event with no recorded API error proves all response bytes arrived.",
+    "references": [
+      "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md"
+    ],
+    "expected": {
+      "human_identified": false,
+      "dedup_field": "eventID",
+      "full_delivery_proven": false
+    }
+  },
+  {
+    "id": "graph_vs_table",
+    "question": "A supplied Microsoft Graph signIn object uses status.errorCode as a JSON number. A different export comes from the Sentinel SigninLogs table. Return the success/error result column used by that table, and whether raw Graph and table field names can be swapped without mapping.",
+    "references": [
+      "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md"
+    ],
+    "expected": {
+      "table_result_field": "ResultType",
+      "same_unmapped_schema": false
+    }
+  },
+  {
+    "id": "kube_audit_stages",
+    "question": "A Kubernetes audit export has RequestReceived and ResponseComplete records with the same auditID, user and requestURI. Is this necessarily two requests? Return the request-correlation field and whether ResponseComplete with HTTP 200 alone proves a command inside a pod ran successfully.",
+    "references": [
+      "skills/soc-cloud-identity-forensics/references/gcp-kubernetes.md"
+    ],
+    "expected": {
+      "two_requests": false,
+      "join_field": "auditID",
+      "command_success_proven": false
+    }
+  },
+  {
+    "id": "splunk_time_fields",
+    "question": "A Splunk event exposes _time and _indextime. Which field is event time and which is ingestion time? A bounded export is capped at its row limit; may its row count be claimed as the full incident count?",
+    "references": [
+      "skills/soc-siem-hunt/references/splunk-spl.md"
+    ],
+    "expected": {
+      "event_time_field": "_time",
+      "ingestion_time_field": "_indextime",
+      "complete_incident_count": false
+    }
+  },
+  {
+    "id": "wazuh_fim_locator",
+    "question": "A Wazuh FIM JSON record contains location=\"syscheck\", agent.id=\"011\" and syscheck.path=\"/etc/example.conf\". Return the exact dotted field identifying the monitored file path, and whether location is that file path.",
+    "references": [
+      "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+    ],
+    "expected": {
+      "file_field": "syscheck.path",
+      "location_is_file_path": false
+    }
+  },
+  {
+    "id": "zeek_file_connection",
+    "question": "A Zeek files.log record exposes fuid=F1 and conn_uids=[C1,C2]. conn.log uses uid=C1 and uid=C2. Which files.log field links this file to the connection records? How many candidate connections exist, and is fuid interchangeable with uid?",
+    "references": [
+      "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+    ],
+    "expected": {
+      "link_field": "conn_uids",
+      "connections": 2,
+      "same_identifier": false
+    }
+  },
+  {
+    "id": "suricata_transaction",
+    "question": "Two HTTP transactions share one Suricata flow_id but have different tx_id values. Return those two field names in the order needed to identify one transaction within the observed sensor/session, and whether flow_id alone distinguishes the transactions.",
+    "references": [
+      "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+    ],
+    "expected": {
+      "fields": [
+        "flow_id",
+        "tx_id"
+      ],
+      "flow_alone_sufficient": false
+    }
+  },
+  {
+    "id": "chrome_visits",
+    "question": "A Chromium History database has one urls row id=8 and three visits rows whose url value is 8. What is the number of recorded visits? Return the visits-side foreign-key column and the urls-side key column, in that order.",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "visit_count": 3,
+      "join_columns": [
+        "url",
+        "id"
+      ]
+    }
+  },
+  {
+    "id": "firefox_visit_clock",
+    "question": "Firefox moz_historyvisits.visit_date contains 1700000000000000. Return its units per second and UTC epoch year; do not apply the Chromium 1601 epoch.",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "units_per_second": 1000000,
+      "epoch_year": 1970
+    }
+  },
+  {
+    "id": "mail_repeated_headers",
+    "question": "An EML has two Authentication-Results fields: one inserted by a trusted receiver and one lower untrusted sender-supplied field claiming dkim=pass. May the untrusted field authenticate the message? Is a Message-ID string alone proof of unique delivery or a user click?",
+    "references": [
+      "skills/soc-email-forensics/references/message-analysis.md"
+    ],
+    "expected": {
+      "untrusted_result_authenticates": false,
+      "message_id_proves_delivery_or_click": false
+    }
+  },
+  {
+    "id": "zip_duplicate_name",
+    "question": "A ZIP central directory has two entries both named audit.json, at different header_offset values. Does selecting only filename uniquely cite the evidence? Return the exact ZipInfo property naming the local-header byte offset.",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "filename_is_unique": false,
+      "offset_property": "header_offset"
+    }
+  },
+  {
+    "id": "gzip_size_limit",
+    "question": "A GZIP trailer records ISIZE=1. Does this guarantee only one uncompressed byte, and may ISIZE alone be used as a safe decompression bound?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "guarantees_one_byte": false,
+      "safe_bound": false
+    }
+  },
+  {
+    "id": "exact_numeric_selector",
+    "question": "METIS reads a root object with a rows array using --records-key rows --field amount. The two row values are 9007199254740992 and 9007199254740993. Return the zero-based maximum row index and its exact original decimal string. Does --field accept a nested JSON Pointer such as /rows/1/amount?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "maximum_index": 1,
+      "lexeme": "9007199254740993",
+      "pointer_selector_supported": false
+    }
+  },
+  {
+    "id": "typed_rpc_join",
+    "question": "Within one captured session, a request id is the string \"17\" and a response id is the number 17. Are they a matching pair? A separate request has no id: does absent response to that notification prove a failure?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "matching_pair": false,
+      "absence_proves_failure": false
+    }
+  },
+  {
+    "id": "provider_first_seen",
+    "question": "An intelligence file object has first_submission_date and last_analysis_date. The question asks when that service first received the file. Return the precise attribute to use and whether it proves the time the file first executed on the victim.",
+    "references": [
+      "skills/soc-browser-console/references/intelligence-fields.md"
+    ],
+    "expected": {
+      "attribute": "first_submission_date",
+      "proves_first_execution": false
+    }
+  },
+  {
+    "id": "path_vs_evidence",
+    "question": "The collector saves a copy at .state/evidence/copy.bin but provides no original host path. May the local path be reported as the original host path? A JSON key is a/b~c: return the JSON Pointer token for that root key, including its leading slash.",
+    "references": [
+      "skills/soc-triage/references/evidence-locators.md"
+    ],
+    "expected": {
+      "local_path_is_original": false,
+      "pointer": "/a~1b~0c"
+    }
+  }
+]

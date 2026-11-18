@@ -379,10 +379,58 @@ class CaseJournal:
 
 
 DEFAULT_ROOT = Path(".metis-state/journal")
+LOGS_ROOT: Path | None = None  # tests and embedding callers may pin the root
 
 
 def journal_root(value: str | None = None) -> Path:
-    return Path(value or os.environ.get("METIS_JOURNAL_ROOT") or DEFAULT_ROOT)
+    return Path(value or LOGS_ROOT or os.environ.get("METIS_JOURNAL_ROOT") or DEFAULT_ROOT)
+
+
+def case_dir(case_id: str) -> Path:
+    return CaseJournal(journal_root()).locate(case_id)
+
+
+def _dispatch(command: str, args: argparse.Namespace) -> None:
+    values = vars(args).copy()
+    values["command"] = command
+    with CaseJournal(journal_root()).locked() as journal:
+        journal.execute(argparse.Namespace(**values))
+
+
+def cmd_open(args: argparse.Namespace) -> None:
+    _dispatch("open", args)
+
+
+def cmd_note(args: argparse.Namespace) -> None:
+    _dispatch("note", args)
+
+
+def cmd_query(args: argparse.Namespace) -> None:
+    _dispatch("query", args)
+
+
+def cmd_finding(args: argparse.Namespace) -> None:
+    _dispatch("finding", args)
+
+
+def cmd_lesson(args: argparse.Namespace) -> None:
+    _dispatch("lesson", args)
+
+
+def cmd_close(args: argparse.Namespace) -> None:
+    _dispatch("close", args)
+
+
+def cmd_index(args: argparse.Namespace) -> None:
+    _dispatch("index", args)
+
+
+def cmd_show(args: argparse.Namespace) -> None:
+    _dispatch("show", args)
+
+
+def cmd_lessons(args: argparse.Namespace) -> None:
+    _dispatch("lessons", args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -433,3 +481,7 @@ def run(args: argparse.Namespace, root: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     return run(build_parser().parse_args(argv), journal_root())
+
+
+if __name__ == "__main__":
+    sys.exit(main())

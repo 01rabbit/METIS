@@ -1,0 +1,786 @@
+{
+  "schema_version": 1,
+  "scope": "56 defensive decision groups from 19 source skill manifests and 10 references. Source IDs refer to migration.json. This is topic-level mapping, not proof of statement equivalence for all source files.",
+  "decision_groups": [
+    {
+      "decision_id": "K01",
+      "targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md",
+        "skills/evidence-question-answering/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Select the requested forensic entity before rendering an exact answer; preserve source bytes, coordinates and derivation.",
+      "excluded_or_corrected": "Case answers, source-specific answer catalogs and copied expected-output retrieval are excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-001",
+        "knowledge-027",
+        "knowledge-029"
+      ]
+    },
+    {
+      "decision_id": "K02",
+      "targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Reconcile actual dispatch, response and attempt budget. A rejection has several possible causes and an accepted neighbor does not prove another answer.",
+      "excluded_or_corrected": "No grader probing, containment sieves or answer-variant spraying.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-001"
+      ]
+    },
+    {
+      "decision_id": "K03",
+      "targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Check display transformation, OCR uncertainty and information lost by encoding.",
+      "excluded_or_corrected": "Do not recover an exact rendering by inventing absent information.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-001"
+      ]
+    },
+    {
+      "decision_id": "K04",
+      "targets": [
+        "skills/ctf-crypto-solve/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Determine artifact family, scheme, framing, derivation parameters and authorization; verify provided-key recovery with integrity and benign vectors.",
+      "excluded_or_corrected": "Mathematical attack recipes, live oracles, credential extraction and protocol bypass are intentionally outside the defensive migration.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-002"
+      ]
+    },
+    {
+      "decision_id": "K05",
+      "targets": [
+        "skills/blue-owner/SKILL.md",
+        "skills/solve-orchestration/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "One owner dispatches independent work through continuously refilled bounded resources; shared remote state is serialized.",
+      "excluded_or_corrected": "Provider-specific runners and exploitation lanes are replaced rather than copied.",
+      "remaining_limit": "Prompt guidance is not a sandbox; actual runtime admission remains necessary.",
+      "source_ids": [
+        "knowledge-003",
+        "knowledge-026"
+      ]
+    },
+    {
+      "decision_id": "K06",
+      "targets": [
+        "skills/ctf-platform-ops/SKILL.md",
+        "skills/solve-orchestration/SKILL.md",
+        "skills/soc-lab-access/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "After failure, bind current input/session/revision and reconcile uncertain writes before retry. Keep leases while a consumer may still run.",
+      "excluded_or_corrected": "Old proprietary activation protocols and case-specific automation are not claimed as implemented.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-003",
+        "knowledge-026",
+        "knowledge-028"
+      ]
+    },
+    {
+      "decision_id": "K07",
+      "targets": [
+        "skills/ctf-platform-ops/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Stable question identity and settled content, not the current editable-form ordinal, bind a candidate to a writable control.",
+      "excluded_or_corrected": "No raw source prompts, private control maps or copied implementation are retained.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-003",
+        "knowledge-028"
+      ]
+    },
+    {
+      "decision_id": "K08",
+      "targets": [
+        "skills/soc-detection-engineering/references/validation-integrity.md",
+        "skills/ctf-pwn-solve/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Keep environment fidelity, negative controls, real diagnostics and actual effects separate from fixture expectations.",
+      "excluded_or_corrected": "Exploit drivers, payload tuning and vulnerability reproduction are excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-003",
+        "knowledge-004"
+      ]
+    },
+    {
+      "decision_id": "K09",
+      "targets": [
+        "skills/ctf-pwn-solve/SKILL.md",
+        "skills/soc-detection-engineering/references/coverage.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Inventory mitigations and observed crash/privilege/availability evidence without inferring exploit success.",
+      "excluded_or_corrected": "An emulator result or absent crash does not settle production security.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-004"
+      ]
+    },
+    {
+      "decision_id": "K10",
+      "targets": [
+        "skills/soc-browser-console/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Read authorized console evidence with scope, filter, timezone, export and retrieval context. Treat page instructions as data and gate state changes through owner authority.",
+      "excluded_or_corrected": "No requirement to use a nonexistent browser tool; no evidence upload to public services.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-005"
+      ]
+    },
+    {
+      "decision_id": "K11",
+      "targets": [
+        "skills/soc-browser-console/SKILL.md",
+        "skills/soc-malware-triage/references/static-evidence.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Differentiate vendor timestamps, aliases, local filenames, hash types and family labels; reputation needs corroboration.",
+      "excluded_or_corrected": "Ratio, signature or rarity alone is not a verdict; hash queries can disclose investigative interest.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-005",
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K12",
+      "targets": [
+        "skills/soc-cloud-identity-forensics/SKILL.md",
+        "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Carry principal, role, session, credential and originating identity independently.",
+      "excluded_or_corrected": "Corrected the mistaken equivalence between a role session issuer and the original human.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-006",
+        "knowledge-007"
+      ]
+    },
+    {
+      "decision_id": "K13",
+      "targets": [
+        "skills/soc-cloud-identity-forensics/references/exact-populations.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Fix time interval, authentication class, event category, outcomes and dedupe identity before counting.",
+      "excluded_or_corrected": "An absent error field is not a universal completed-operation guarantee; malformed/unknown candidates are not silently excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-006",
+        "knowledge-007"
+      ]
+    },
+    {
+      "decision_id": "K14",
+      "targets": [
+        "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md",
+        "skills/soc-cloud-identity-forensics/references/exact-populations.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Separate object listing, metadata, read, write and policy operations; derived resource identifiers and transfer volume need evidence.",
+      "excluded_or_corrected": "Object access requests are not automatically successful transfer or exfiltration.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-007"
+      ]
+    },
+    {
+      "decision_id": "K15",
+      "targets": [
+        "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Separate interactive, workload and token events; relate MFA sequences and identity/app/federation changes to stable principals and expected administration.",
+      "excluded_or_corrected": "Repeated MFA failures followed by a success are a lead, not definitive compromise; refusal-only sequences are attempted abuse, not irrelevant.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-008"
+      ]
+    },
+    {
+      "decision_id": "K16",
+      "targets": [
+        "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Distinguish delivery, access, delegation, sharing, session issuance and configuration; account for aggregation, licenses and retention.",
+      "excluded_or_corrected": "No hardcoded licensing claim or event-count-to-item-count equivalence.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-008"
+      ]
+    },
+    {
+      "decision_id": "K17",
+      "targets": [
+        "skills/soc-cloud-identity-forensics/references/gcp-kubernetes.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Track log categories, service delegation, audit stages, request identity, policy and runtime context.",
+      "excluded_or_corrected": "Privileged pod specifications are exposure, not proof of host escape; control-plane audit is not all in-container execution.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-009"
+      ]
+    },
+    {
+      "decision_id": "K18",
+      "targets": [
+        "skills/soc-detection-engineering/SKILL.md",
+        "skills/soc-detection-engineering/references/validation-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Choose engine by evidence; prove predicate, backend and sensor independently using inert records and realistic negatives.",
+      "excluded_or_corrected": "Source code signatures, malicious replay scripts and inherited validation scores are not copied; syntax success is not sensor coverage.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-010"
+      ]
+    },
+    {
+      "decision_id": "K19",
+      "targets": [
+        "skills/soc-detection-engineering/references/coverage.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Preserve the defensive sensor requirements of unusual platforms, application semantics and trust boundaries.",
+      "excluded_or_corrected": "Offensive construction and source case details are excluded.",
+      "remaining_limit": "Detection catalog content is independently owned and reviewed by another agent; this row covers only the skill routing/coverage map.",
+      "source_ids": [
+        "knowledge-010"
+      ]
+    },
+    {
+      "decision_id": "K20",
+      "targets": [
+        "skills/soc-host-forensics/references/analyst-handbook.md",
+        "skills/soc-host-forensics/references/parser-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Preserve precise raw clocks and filesystem context; distinguish artifact times, copy effects, tampering hypotheses and causal links.",
+      "excluded_or_corrected": "Corrected categorical copy/timestomp conclusions from sizes or time differences alone.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-011",
+        "knowledge-014"
+      ]
+    },
+    {
+      "decision_id": "K21",
+      "targets": [
+        "skills/soc-host-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Correlate process instances and logon identities with host, lifespan and source context.",
+      "excluded_or_corrected": "Longer session duration does not identify the malicious actor; unmatched logoff remains unknown.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-011",
+        "knowledge-014"
+      ]
+    },
+    {
+      "decision_id": "K22",
+      "targets": [
+        "skills/soc-host-forensics/references/windows-artifacts.md",
+        "skills/soc-host-forensics/references/parser-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Interpret execution and inventory artifacts by OS/schema/version; internal execution metadata differs from cache-file timestamps.",
+      "excluded_or_corrected": "Presence is not execution, an artifact counter is not a guaranteed period-wide total, and a path is not a user attribution.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-011",
+        "knowledge-014"
+      ]
+    },
+    {
+      "decision_id": "K23",
+      "targets": [
+        "skills/soc-host-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Reconcile task records, hive/log consistency, effective service rights and application file/argument effects.",
+      "excluded_or_corrected": "No exploit construction; writable objects and unquoted paths alone do not establish abuse or exploitability.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-011",
+        "knowledge-014"
+      ]
+    },
+    {
+      "decision_id": "K24",
+      "targets": [
+        "skills/soc-host-forensics/references/windows-artifacts.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Resolve shell canonical identity and version before attributing jump lists; examine the field derivation behind displayed interaction times.",
+      "excluded_or_corrected": "Custom source algorithms, fixed recovered mappings and arbitrary GUI timestamps are not copied.",
+      "remaining_limit": "A dedicated, version-validated shell artifact parser is still required.",
+      "source_ids": [
+        "knowledge-014"
+      ]
+    },
+    {
+      "decision_id": "K25",
+      "targets": [
+        "skills/soc-host-forensics/references/parser-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Read direct provider/ID/named fields from one record and preserve exact timestamps, coverage, caps and independent replay.",
+      "excluded_or_corrected": "A regex occurrence is not an event field; successful exit status alone is not complete parsing.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-011",
+        "knowledge-014",
+        "knowledge-028"
+      ]
+    },
+    {
+      "decision_id": "K26",
+      "targets": [
+        "skills/soc-host-forensics/references/linux-artifacts.md",
+        "skills/soc-remote-triage/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Join authentication, PAM and sessions without double counting; label year/zone inference and history gaps.",
+      "excluded_or_corrected": "Empty shell history and missing records are not automatically malicious or a clean outcome.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-012",
+        "knowledge-019"
+      ]
+    },
+    {
+      "decision_id": "K27",
+      "targets": [
+        "skills/soc-host-forensics/references/linux-artifacts.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Use backups, editor residue, unallocated data and metadata with provenance and bounded reads.",
+      "excluded_or_corrected": "Recovered fragments may be older unrelated versions; partial scans and OOM are not negatives.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-012"
+      ]
+    },
+    {
+      "decision_id": "K28",
+      "targets": [
+        "skills/soc-host-forensics/references/linux-artifacts.md",
+        "skills/soc-remote-triage/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Review services, startup hooks, privilege configuration, packages, containers and bootstrap records against context.",
+      "excluded_or_corrected": "Deleted executables, unmanaged units, broad container privileges and metadata requests alone do not prove compromise.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-012",
+        "knowledge-019"
+      ]
+    },
+    {
+      "decision_id": "K29",
+      "targets": [
+        "skills/soc-host-forensics/references/memory-analysis.md",
+        "skills/soc-host-forensics/references/parser-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Validate image, architecture, symbols, plugin scope and diagnostics; compare specific views and preserve runtime resource limits.",
+      "excluded_or_corrected": "Removed universal version patches, footprint-free snapshot claims and heuristic-to-verdict shortcuts.",
+      "remaining_limit": "Memory acquisition and Volatility/symbols are external prerequisites.",
+      "source_ids": [
+        "knowledge-013"
+      ]
+    },
+    {
+      "decision_id": "K30",
+      "targets": [
+        "skills/soc-incident-report/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Separate decision summary, impact, cited timeline, typed indicators, performed actions, uncertainty and assigned remediation with acceptance criteria.",
+      "excluded_or_corrected": "Source example narrative and identifiers are excluded; confirmed access is not confirmed exfiltration.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-015"
+      ]
+    },
+    {
+      "decision_id": "K31",
+      "targets": [
+        "skills/soc-lab-access/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Identify actual transport and runtime capabilities, secret handling, session budget, route/DNS reachability and tunnel-loss behavior.",
+      "excluded_or_corrected": "No claim that container namespace sharing alone supplies isolation or a kill switch.",
+      "remaining_limit": "System-wide kill switch and environment-specific remote clients require actual controls and tests.",
+      "source_ids": [
+        "knowledge-016"
+      ]
+    },
+    {
+      "decision_id": "K32",
+      "targets": [
+        "skills/soc-lab-access/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Keep a transfer session alive through a job-bound completion signal and validate received bytes and format.",
+      "excluded_or_corrected": "Stable size or a fixed sleep is not completion; source transfer recipes and case artifacts are excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-016"
+      ]
+    },
+    {
+      "decision_id": "K33",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Validate nested formats, offsets, lengths and content checks; a raw strings pass does not search compressed contents.",
+      "excluded_or_corrected": "Case images, magic-offset recipes and quoted findings are not retained.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K34",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md",
+        "skills/soc-malware-triage/references/static-evidence.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Inspect static structures with correct addressing and decoder boundaries; track symbol definition, initialization and buffer stores as well as uses.",
+      "excluded_or_corrected": "Imports, unusual entropy, symbol gaps and initializers are not intrinsically malicious.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K35",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Account for endian/encoding, instruction-constructed bytes, companion data and exact lengths; document incomplete transforms.",
+      "excluded_or_corrected": "Do not complete missing plaintext from a plausible prefix or execute recovered code.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K36",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Bound static interpretation of protected or alternate instruction behavior to actual handler and transform evidence.",
+      "excluded_or_corrected": "Source unpacking code, runtime patching and detailed anti-debug bypass recipes are excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K37",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md",
+        "skills/ctf-crypto-solve/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Authorized recovery requires actual cipher parameters, intact framing and integrity; enumerate recovered and missing objects.",
+      "excluded_or_corrected": "Printable fragments and fixed entropy thresholds do not prove complete authentic recovery; source keys and recovery code are excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K38",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Use format/version-aware passive readers; account for macro variants, glyph maps, images, layers and script evaluation order.",
+      "excluded_or_corrected": "Do not run loaders, deserialize untrusted code into the analyst runtime or evaluate recovered scripts.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K39",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md",
+        "skills/soc-malware-triage/references/static-evidence.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Distinguish application assets/runtime, metadata versions, permissions and actual device activity.",
+      "excluded_or_corrected": "Game-specific data, key-search algorithms and protected asset extraction recipes are excluded.",
+      "remaining_limit": "Advanced engine readers remain external and version-dependent.",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K40",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Analyze manifest/config/layers with digest provenance and correct whiteout/opaque-directory semantics.",
+      "excluded_or_corrected": "Not every historical build file survives squashing or a changed image lineage; digest identity is not publisher trust.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K41",
+      "targets": [
+        "skills/soc-malware-triage/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Use passive serialization inspection and trusted provenance; distinguish score validation from the actual downstream decision.",
+      "excluded_or_corrected": "No unsafe model loading, model mutation or decision bypass; rare labels alone are not a backdoor finding.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-017"
+      ]
+    },
+    {
+      "decision_id": "K42",
+      "targets": [
+        "skills/soc-network-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Document sensor point, packet loss, framing, directions, reassembly conflict and semantic population.",
+      "excluded_or_corrected": "Active reconnaissance and repeated probing are excluded; gaps are not filled with invented authentic bytes.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-018"
+      ]
+    },
+    {
+      "decision_id": "K43",
+      "targets": [
+        "skills/soc-network-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Evaluate periodicity with baseline and sample/window; use proper DNS domain grouping and transfer evidence.",
+      "excluded_or_corrected": "Low variance, TXT records, high entropy or outbound bytes alone do not prove malicious communication.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-018"
+      ]
+    },
+    {
+      "decision_id": "K44",
+      "targets": [
+        "skills/soc-network-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Retain session, framing, QoS, acknowledgement and application-effect distinctions in supplied message traffic.",
+      "excluded_or_corrected": "No protocol exploitation or live probing ladder; successful send does not prove application consumption.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-018"
+      ]
+    },
+    {
+      "decision_id": "K45",
+      "targets": [
+        "skills/soc-network-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Interpret passive control traffic with object/range/value/outcome and operational sensitivity.",
+      "excluded_or_corrected": "No actuation, unlock, injection or replay; a reservation or bus identifier is not authenticated identity.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-018"
+      ]
+    },
+    {
+      "decision_id": "K46",
+      "targets": [
+        "skills/soc-network-forensics/references/analyst-handbook.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Validate recorded signal alignment, timing, frame length, checksum scope and measurement limits.",
+      "excluded_or_corrected": "A checksum or stable decode is not origin authentication; physical writes and attack transmission are excluded.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-010",
+        "knowledge-018"
+      ]
+    },
+    {
+      "decision_id": "K47",
+      "targets": [
+        "skills/soc-remote-triage/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Verify connection identity, avoid credential forwarding, prioritize volatility and record collection impact.",
+      "excluded_or_corrected": "Read-only does not mean no footprint; multiple views on a compromised kernel are not independent assurance.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-019"
+      ]
+    },
+    {
+      "decision_id": "K48",
+      "targets": [
+        "skills/soc-siem-hunt/SKILL.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Choose sensor/index/time/count model, reserve finite search capacity and validate coverage, predicates and diagnostics.",
+      "excluded_or_corrected": "No fixed universal broad-query-first rule or assertion that rare values necessarily identify intrusion.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-020"
+      ]
+    },
+    {
+      "decision_id": "K49",
+      "targets": [
+        "skills/soc-siem-hunt/references/elastic.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Preserve product/dialect distinctions, field mappings, clock roles, source/alert populations and result/group completeness.",
+      "excluded_or_corrected": "Corrected conflation of lower-bound total hits with page truncation; ES|QL is not assumed available on OpenSearch.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-021"
+      ]
+    },
+    {
+      "decision_id": "K50",
+      "targets": [
+        "skills/soc-siem-hunt/references/sentinel-kql.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Verify tables, type/case semantics, explicit join kind, cardinality, approximation and result limits.",
+      "excluded_or_corrected": "Old fixed thresholds and source queries are not transplanted as validated production behavior.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-022"
+      ]
+    },
+    {
+      "decision_id": "K51",
+      "targets": [
+        "skills/soc-siem-hunt/references/splunk-spl.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Distinguish raw/indexed/normalized/accelerated populations and inspect job limits, aggregation and event/ingest time.",
+      "excluded_or_corrected": "Corrected claims that every pipe centralizes, tstats is metadata-only, or values always has a small fixed cap.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-023"
+      ]
+    },
+    {
+      "decision_id": "K52",
+      "targets": [
+        "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Correlate decoder, sensor and protocol records with actual keys, direction, capture completeness and actions.",
+      "excluded_or_corrected": "No universal Zeek uid join; no-alert is not no-activity and an alert is not proof of prevention.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-024"
+      ]
+    },
+    {
+      "decision_id": "K53",
+      "targets": [
+        "skills/soc-triage/SKILL.md",
+        "skills/soc-triage/references/artifact-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Frame a decision, test competing explanations, choose collection by volatility and impact, and separate evidence from authority.",
+      "excluded_or_corrected": "Corrected universal collection ordering and claims that revocation never changes forensic state.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-025"
+      ]
+    },
+    {
+      "decision_id": "K54",
+      "targets": [
+        "skills/soc-triage/references/artifact-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Use exact numeric representation, explicit direct selectors, all ties, bounded parsing and replay for consequential numerical answers.",
+      "excluded_or_corrected": "Binary floating point, duplicate JSON keys, unknown records and capped input cannot establish a complete exact answer.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-028"
+      ]
+    },
+    {
+      "decision_id": "K55",
+      "targets": [
+        "skills/soc-triage/references/artifact-integrity.md",
+        "skills/soc-host-forensics/references/parser-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Preserve input identity, safe container handling, parser diagnostics, bounded work and static hostile-repository inspection.",
+      "excluded_or_corrected": "Source implementation, case records, bespoke authority protocols and untested parser claims are not transplanted.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-028"
+      ]
+    },
+    {
+      "decision_id": "K56",
+      "targets": [
+        "skills/soc-email-forensics/references/message-analysis.md",
+        "skills/soc-browser-artifacts/references/history-downloads.md",
+        "skills/soc-host-forensics/references/parser-integrity.md"
+      ],
+      "disposition": "independent-defensive-reconstruction",
+      "retained_method": "Provide distinct artifact routes for mail, browser databases and call/buffer traces, with schema/provenance and completeness requirements.",
+      "excluded_or_corrected": "A live browser skill is not an offline history parser; a call name is not proof of successful runtime effect.",
+      "remaining_limit": "",
+      "source_ids": [
+        "knowledge-028"
+      ]
+    }
+  ],
+  "excluded_scope": [
+    "Source code, original prose/media, case answers, private evidence and source-specific identities.",
+    "Exploitation, credential attacks, live attack-oracle use, vulnerability reproduction and intrusion runners.",
+    "Bespoke source-platform browser/activation protocols, copied fixture results and source operational conventions superseded by METIS."
+  ],
+  "external_capability_limits": [
+    "Binary EVTX/registry/Prefetch and memory tooling requires supported external parsers and symbols.",
+    "Advanced executable, engine, radio and industrial evidence requires format-specific external tools and current specifications.",
+    "Live SIEM collection requires actual supported deployment access and schema verification.",
+    "The generic harness does not by itself enforce every external native tool permission."
+  ]
+}
