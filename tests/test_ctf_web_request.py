@@ -21,7 +21,7 @@ def _server(handler_class):
 @pytest.fixture
 def sites(monkeypatch):
     monkeypatch.setattr("urllib.request.getproxies", dict)
-    seen = {"platform_auth": []}
+    seen = {"platform_auth": [], "platform_cookie": []}
 
     class Platform(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -29,8 +29,11 @@ def sites(monkeypatch):
 
         def do_GET(self):
             seen["platform_auth"].append(self.headers.get("Authorization"))
+            seen["platform_cookie"].append(self.headers.get("Cookie"))
             body = b"<title>Simple Auth</title><p>Log in at the challenge server.</p>"
             self.send_response(200)
+            if self.path == "/set-cookie":
+                self.send_header("Set-Cookie", "session=stored-auth-cookie; Path=/")
             self.send_header("Content-Type", "text/html")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -157,6 +160,26 @@ def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatc
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_auth"][-1] is None
     assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    assert seen["platform_cookie"][-1] is None
+
+    config, state, *_ = workflow._load(run_id)
+    stale_client = workflow._client(config, state)
+    assert any(cookie.value == "stored-auth-cookie"
+               for cookie in stale_client.jars[platform_url])
+
+    workflow.forget_auth(platform_url)
+    # Model a request that had loaded state before forget_auth and saves afterward.
+    workflow._save_client(run_id, stale_client)
+    config, state, *_ = workflow._load(run_id)
+    assert platform_url not in state.get("cookies", {})
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_cookie"][-1] is None
 
 
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):

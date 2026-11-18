@@ -135,6 +135,7 @@ class WebWorkflow:
             if "attempts" not in columns:
                 db.execute("ALTER TABLE web_attempts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1")
             db.execute("CREATE TABLE IF NOT EXISTS web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS web_auth_generations (origin TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
 
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
         key = origin(url)
@@ -153,10 +154,19 @@ class WebWorkflow:
                 "storage": "private local state; excluded from Git"}
 
     def forget_auth(self, url: str) -> dict:
-        """Remove the active local credential record for one origin."""
+        """Forget locally stored credentials and cookies for one authentication origin."""
         key = origin(url)
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                       "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
             cursor = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
+            rows = db.execute("SELECT run_id,state FROM web_runs WHERE json_extract(config,'$.auth_origin')=?", (key,)).fetchall()
+            for run_id, raw_state in rows:
+                state = json.loads(raw_state)
+                state.get("cookies", {}).pop(key, None)
+                state.pop("cookie_fingerprint", None)
+                db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0
         return {"origin": key, "credential_removed": removed}
 
@@ -172,14 +182,29 @@ class WebWorkflow:
         with sqlite3.connect(self.database) as db:
             row = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
                              (config["auth_origin"],)).fetchone()
-        return SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
+            row_generation = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (config["auth_origin"],)).fetchone()
+        client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else {}, timeout=15)
+        client._auth_generation = row_generation[0] if row_generation else 0
+        return client
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            config_row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+            if config_row is None:
+                return
+            auth_origin = json.loads(config_row[0])["auth_origin"]
+            row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
+            generation = row[0] if row else 0
+            state = client.export_state()
+            if generation != getattr(client, "_auth_generation", 0):
+                state.get("cookies", {}).pop(auth_origin, None)
+                state.pop("cookie_fingerprint", None)
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
-                       (json.dumps(client.export_state()), run_id))
+                       (json.dumps(state), run_id))
 
     def rctf_login(self, url: str, team_token: str) -> dict:
         """Exchange an rCTF team token for an auth token and store it privately as Bearer."""
@@ -512,6 +537,15 @@ class WebWorkflow:
             for number, (item, target, pattern, body, headers) in enumerate(prepared):
                 client.requests = 0
                 entry: dict[str, Any] = {"index": number, "method": item.method.upper(), "url": display_url(target)}
+                with sqlite3.connect(self.database) as db:
+                    generation_row = db.execute(
+                        "SELECT generation FROM web_auth_generations WHERE origin=?",
+                        (config["auth_origin"],)).fetchone()
+                generation = generation_row[0] if generation_row else 0
+                if generation != getattr(client, "_auth_generation", 0) and target == config["auth_origin"]:
+                    entry["error"] = "authentication forgotten; reopen workflow to reauthenticate"
+                    results.append(entry)
+                    continue
                 try:
                     response = client.request(target, method=item.method.upper(), body=body, headers=headers,
                                               follow_redirects=item.follow, extended=True,
