@@ -281,3 +281,21 @@ member CRCs, or produce an official verdict. The 360 Stage 1 candidates and
 The primary reference is [Stay, “ZIP Attacks with Reduced Known Plaintext,”
 §§3–4.1](https://math.ucr.edu/~mike/zipattacks.pdf). The #39 key recovery and
 Issue #28 remain open.
+
+## Stage 2 feasibility boundary (2026-11-18)
+
+An independent follow-up inspected only the Stage 1 shard schema and the
+bounded CLI boundary. Private shards contain candidate IDs and carry masks;
+they do not store the 88 interval records or a `q8` projection. The current
+tool exposes Stage 1 scanning only. No persisted interval consumer or Stage 2
+enumerator is available.
+
+Projecting `q8 = MSB(P * MULT mod 2^32)` over the recorded interval widths would
+require about 98,222,960 simple value checks before deduplication (about
+`2^26.55` projections). This count is an operation estimate, not measured
+runtime. Enumerating the full 28-bit Stage 2 tuple for each of the 360 first
+stage hits would be about 96.6 billion base tuples before per-file carry
+filtering. That is outside a bounded same-window completion path without a
+different algorithm and a resumable, resource-accounted interface. No saved
+challenge shard contents were inspected to produce this estimate, and no Stage
+2 computation was run. Issue #28 and ksnctf #39 remain open.
