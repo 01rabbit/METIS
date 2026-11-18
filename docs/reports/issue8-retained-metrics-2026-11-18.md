@@ -119,7 +119,7 @@ external protected oracle, validate the truth of exposure or solvability
 declarations, attest actual environment pins/cost, or prove workflow completion
 from an arbitrary run event. The full exporter and independent evidence review
 remain necessary. Focused tests use invented, hash-valid SQLite event chains.
-The exact focused run passed 38 tests across `test_heldout_analysis.py` and
+The exact focused run passed 39 tests across `test_heldout_analysis.py` and
 `test_issue6_benchmark_analysis.py`; Ruff and mypy passed for both analysis
 modules. Exact-head CI for the preceding `eb36968` commit passed Python,
 sandbox and linux-arm64-seccomp checks; the reconciliation change is newer and

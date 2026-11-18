@@ -226,6 +226,19 @@ def test_ledger_reconciliation_keeps_protected_fixture_provenance_distinct(tmp_p
     }
 
 
+def test_ledger_reconciliation_does_not_create_missing_database(tmp_path, monkeypatch, capsys):
+    study, _database = _ledger_backed_study(tmp_path)
+    metrics = tmp_path / "metrics.json"
+    metrics.write_text(study.model_dump_json())
+    missing = tmp_path / "absent.sqlite"
+    monkeypatch.setattr(sys, "argv", ["analysis", str(metrics), "--database", str(missing)])
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "benchmark metrics rejected" in captured.err
+    assert not missing.exists()
+
+
 @pytest.mark.parametrize("mutation", ["wrong_sequence", "browser_attestation", "local_commitment", "missing_run"])
 def test_ledger_reconciliation_rejects_unsubstantiated_official_trials(tmp_path, monkeypatch, capsys, mutation):
     study, database = _ledger_backed_study(
