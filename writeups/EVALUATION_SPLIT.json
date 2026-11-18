@@ -168,6 +168,11 @@
   },
   {
    "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "not-so-pyfk-not-so-pyf-k",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/not-so-pyfk-not-so-pyf-k.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
    "problem": "password-please",
    "writeup": "alpacahack-daily-2026-08-metis-evaluation/password-please.md"
   },
