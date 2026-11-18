@@ -146,6 +146,7 @@ class WebWorkflow:
         if scheme not in {"Token", "Bearer"}:
             raise ValueError("invalid credential scheme")
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT payload FROM web_credentials WHERE origin=?", (key,)).fetchone()
             values = json.loads(row[0]) if row else {}
             values[kind] = value
@@ -373,13 +374,20 @@ class WebWorkflow:
         files = []
         rendered: dict[str, Any] | None = None
         if render:
+            auth_generation_check = lambda: self._auth_generation_matches(
+                config["auth_origin"], client.auth_generation)
+            if not auth_generation_check():
+                raise ValueError("authentication has been forgotten for this origin")
             jar_cookies = client.export_state()["cookies"].get(config["auth_origin"], [])
             host = urllib.parse.urlsplit(config["auth_origin"]).hostname or ""
             browser_cookies = [{"name": item["name"], "value": item["value"] or "", "domain": host,
                                 "path": item["path"] or "/", "secure": bool(item["secure"])}
                                for item in jar_cookies]
             final_url, html, blocked = (renderer or ctf_browser.render)(
-                response.url, allowed, cookies=browser_cookies)
+                response.url, allowed, cookies=browser_cookies,
+                auth_origin=config["auth_origin"], auth_generation_check=auth_generation_check)
+            if not auth_generation_check():
+                raise ValueError("authentication has been forgotten for this origin")
             if origin(final_url) not in allowed:
                 raise ValueError("rendered page left the authorized scope")
             body = html

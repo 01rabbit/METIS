@@ -203,11 +203,35 @@ def test_open_does_not_persist_cookie_if_auth_is_forgotten_during_intake(tmp_pat
     monkeypatch.setattr(workflow.session, "intake", forget_between_fetch_and_persist)
     result = workflow.open(platform_url + "/set-cookie")
     run_id = result["context"]["run_id"]
+    with sqlite3.connect(workflow.database) as db:
+        persisted_state, = db.execute("SELECT state FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+    assert platform_url not in json.loads(persisted_state).get("cookies", {})
     config, state, *_ = workflow._load(run_id)
     assert config["auth_origin"] == platform_url
     assert platform_url not in state.get("cookies", {})
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_cookie"][-1] is None
+
+
+def test_render_fences_auth_cookies_forgotten_during_render(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    workflow.auth(platform_url, kind="token", value="platform-secret-token")
+
+    def forget_during_render(url, allowed, *, cookies, auth_origin, auth_generation_check):
+        assert cookies == []
+        assert auth_origin == platform_url
+        assert auth_generation_check()
+        workflow.forget_auth(platform_url)
+        assert not auth_generation_check()
+        return url, "<title>Rendered</title>", []
+
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        workflow.open(platform_url + "/problem", render=True, renderer=forget_during_render)
+    assert seen["platform_auth"][-1] == "Token platform-secret-token"
+    with sqlite3.connect(workflow.database) as db:
+        count, = db.execute("SELECT COUNT(*) FROM web_runs").fetchone()
+    assert count == 0
 
 
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):
