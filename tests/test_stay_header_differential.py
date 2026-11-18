@@ -385,6 +385,30 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
                    for interval, pairs in intervals)
 
 
+def test_stay_stage2_two_update_key1_formula_matches_full_recurrence() -> None:
+    """The proposed Stage 2 key1 high-byte decomposition matches the cipher."""
+    from metis.core.ctf_zipcrypto import MULT
+
+    rng = random.Random(0xD4652819)
+    multiplier_squared = MULT * MULT & MASK32
+    for _ in range(10_000):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        first, second = rng.randrange(256), rng.randrange(256)
+        after_first = _update(initial, first)
+        after_second = _update(after_first, second)
+        addend_first = after_first[0] & 0xFF
+        addend_second = after_second[0] & 0xFF
+
+        q = initial[1] * multiplier_squared & MASK32
+        t = (addend_first * multiplier_squared + MULT
+             + addend_second * MULT + 1) & MASK32
+        assert (q + t) & MASK32 == after_second[1]
+
+        carry = int((q & 0xFFFFFF) + (t & 0xFFFFFF) >= 1 << 24)
+        predicted_high = ((q >> 24) + (t >> 24) + carry) & 0xFF
+        assert predicted_high == after_second[1] >> 24
+
+
 def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> None:
     """Adjacent bounded ranges resume at the cursor and retain the planted guess."""
     from metis.core.ctf_zipcrypto import (
