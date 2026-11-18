@@ -46,7 +46,8 @@ def _stay_carry_interval(low_addends: tuple[int, ...], carries: tuple[int, ...],
     A zero carry gives an inclusive upper bound; a one carry gives an inclusive
     lower bound. ``None`` means the guesses are mutually inconsistent.
     """
-    if len(low_addends) != len(carries) or not 1 <= bits <= 24:
+    if (len(low_addends) != len(carries) or type(bits) is not int
+            or not 1 <= bits <= 24):
         raise ValueError("carry constraints or word width are invalid")
     modulus = 1 << bits
     if any(type(value) is not int or not 0 <= value < modulus for value in low_addends):

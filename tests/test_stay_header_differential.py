@@ -148,6 +148,10 @@ def test_stay_carry_interval_handles_exact_boundaries_and_bad_guesses() -> None:
     assert _stay_carry_interval((200, 200), (1, 0), bits=8) is None
     with pytest.raises(ValueError, match="zero or one"):
         _stay_carry_interval((1,), (2,), bits=8)
+    with pytest.raises(ValueError, match="word width"):
+        _stay_carry_interval((1,), (0,), bits=True)
+    with pytest.raises(ValueError, match="word width"):
+        _stay_carry_interval((1,), (0,), bits=1.5)  # type: ignore[arg-type]
 
 
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
