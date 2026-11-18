@@ -213,13 +213,18 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
             decision_counts[action] = decision_counts.get(action, 0) + int(count)
     report_rejections = sum("report_rejected" in step for result in results.values()
                             for step in result.get("intents", []))
-    rejection_categories = {"candidate_disclosure": 0, "other_validation": 0}
+    rejection_categories = {key: 0 for key in (
+        "privacy", "schema_or_options", "evidence_provenance", "duplicate_action",
+        "lifecycle_budget", "output_limit", "other_validation")}
+    rejection_stages = {key: 0 for key in ("normalization", "persistence", "normalization_or_persistence")}
     for result in results.values():
         for step in result.get("intents", []):
-            message = step.get("report_rejected", "")
-            if message:
-                category = "candidate_disclosure" if "candidate value must not appear" in message else "other_validation"
+            category = step.get("report_rejected")
+            if category in rejection_categories:
                 rejection_categories[category] += 1
+                stage = step.get("report_rejection_stage")
+                if stage in rejection_stages:
+                    rejection_stages[stage] += 1
     terminal_categories: dict[str, int] = {}
     for job in scheduler.jobs(run_id):
         state = job["state"]
@@ -241,6 +246,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
             "actions": actions, "synthesis_complete": synthesis["complete"], "job_states": states,
             "candidate_ready_jobs": len(candidate_ready), "decision_counts": decision_counts,
             "report_rejections": report_rejections, "report_rejection_categories": rejection_categories,
+            "report_rejection_stages": rejection_stages,
             "terminal_reason_categories": terminal_categories, "model_turn_budget_denials": budget_denials,
             "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low", "cost_usd": "unknown"}
 
@@ -323,6 +329,7 @@ def build_dataset(records: list[dict[str, Any]], task_families: dict[str, list[s
                                "oracle_verified", "elapsed_seconds", "calls_observed", "calls_reserved",
                                "usage", "actions", "synthesis_complete", "job_states", "candidate_ready_jobs",
                                "decision_counts", "report_rejections", "report_rejection_categories",
+                               "report_rejection_stages",
                                "terminal_reason_categories", "model_turn_budget_denials")}
                                     for arm in arms}})
     return {"study": STUDY_ID, "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low",

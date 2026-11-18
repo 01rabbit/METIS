@@ -603,8 +603,8 @@ def test_candidate_report_rejects_candidate_leak_before_storing_report(setup):
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
 
     assert result["job_state"] == "completed" and len(result["codex_turns"]) == 6
-    rejections = [step for step in result["intents"] if "candidate value must not appear" in
-                  step.get("report_rejected", "")]
+    rejections = [step for step in result["intents"]
+                  if step.get("report_rejected") == "privacy"]
     assert len(rejections) == 3
     assert secret not in json.dumps(result) and secret not in json.dumps(runner.prompts)
     listed = scheduler.candidates(run_id)
@@ -663,6 +663,20 @@ def test_long_option_values_are_digests_in_driver_output():
     step = _public_step({"intent": {"kind": "artifact", "tool": "tls_decrypt", "artifact": "a.pcap", "data": None,
                                     "options_json": json.dumps({"factor": factor, "preview": 0})}})
     assert factor not in json.dumps(step) and '"preview": 0' in step["intent"]["options_json"]
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ("candidate value must not appear in the report", "privacy"),
+    ("report references unknown run evidence", "evidence_provenance"),
+    ("duplicate next action", "duplicate_action"),
+    ("report exceeds the output limit", "output_limit"),
+    ("next_action_intent must be a bounded METIS tool request", "schema_or_options"),
+    ("unclassified validation failure", "other_validation"),
+])
+def test_report_rejection_reasons_are_answer_free(message, expected):
+    from metis.core.codex_specialist import _report_rejection_reason
+
+    assert _report_rejection_reason(message) == expected
 
 
 def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):

@@ -705,7 +705,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                         raise ValueError("candidate value must not appear in the report")
                     _normalize_report_intent(report)
                 except (TypeError, ValueError) as exc:
-                    transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
+                    transcript.append({"report_rejected": _report_rejection_reason(str(exc), "normalization"),
+                                       "report_rejection_stage": "normalization",
+                                       "how_to_fix": _report_hint(str(exc))})
                     continue
             try:
                 if decision["action"] == "candidate_report":
@@ -730,7 +732,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 outcome = {**completed, "candidate_stored": True}
                 break
             except (TypeError, ValueError) as exc:
-                transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
+                transcript.append({"report_rejected": _report_rejection_reason(str(exc)),
+                                   "report_rejection_stage": "persistence",
+                                   "how_to_fix": _report_hint(str(exc))})
             continue
         if decision["action"] == "report":
             report = dict(decision.get("report") or {})
@@ -743,7 +747,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 outcome = scheduler.complete(run_id, assignment_id, attempt_id, report)
                 break
             except (TypeError, ValueError) as exc:
-                transcript.append({"report_rejected": str(exc)[:300], "how_to_fix": _report_hint(str(exc))})
+                transcript.append({"report_rejected": _report_rejection_reason(str(exc)),
+                                   "report_rejection_stage": "normalization_or_persistence",
+                                   "how_to_fix": _report_hint(str(exc))})
                 continue
         raw = decision.get("intent") or {}
         step: dict[str, Any] = {"intent": raw}
@@ -784,6 +790,29 @@ def _report_hint(error: str) -> str:
         if marker in lowered:
             return hint
     return "Fix the named field and resubmit; keep each text field between 5 and 2000 characters."
+
+
+def _report_rejection_reason(error: str, stage: str = "persistence") -> str:
+    """Map validation failures to answer-free diagnostic categories."""
+    lowered = error.casefold()
+    if "candidate value must not appear" in lowered or any(
+            marker in lowered for marker in ("credential", "password", "cookie", "token")):
+        return "privacy"
+    if "duplicate next action" in lowered:
+        return "duplicate_action"
+    if any(marker in lowered for marker in ("event_sequences", "run evidence", "artifact_ref",
+                                             "artifact outside", "undeclared artifact")):
+        return "evidence_provenance"
+    if any(marker in lowered for marker in ("deadline", "in flight", "turn limit", "budget")):
+        return "lifecycle_budget"
+    if "output limit" in lowered:
+        return "output_limit"
+    if any(marker in lowered for marker in ("next_action_intent", "options_json", "unknown or invalid fields",
+                                             "report status", "concise substantive string")):
+        return "schema_or_options"
+    if stage == "normalization":
+        return "schema_or_options"
+    return "other_validation"
 
 
 def _public_step(step: dict[str, Any]) -> dict[str, Any]:

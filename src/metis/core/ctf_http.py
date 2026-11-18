@@ -94,6 +94,7 @@ class SafeHTTP:
                 jar.set_cookie(http.cookiejar.Cookie(**fields))
             self.jars[key] = jar
         self.requests = 0
+        self.auth_generation = 0
         self.proxy_used = bool(state.get("proxy_used", False))
         self.cookie_fingerprint = state.get("cookie_fingerprint")
         cookie = os.environ.get(cookie_env, "") if cookie_env else self.credentials.get("cookie", "")

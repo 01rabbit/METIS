@@ -100,6 +100,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "report_rejections": sum(row["report_rejections"] for row in selected),
             "report_rejection_categories": dict(sum(
                 (Counter(row["report_rejection_categories"]) for row in selected), Counter())),
+            "report_rejection_stages": dict(sum(
+                (Counter(row.get("report_rejection_stages", {})) for row in selected), Counter())),
             "terminal_reason_categories": dict(sum(
                 (Counter(row["terminal_reason_categories"]) for row in selected), Counter())),
             "model_turn_budget_denials": sum(row["model_turn_budget_denials"] for row in selected),

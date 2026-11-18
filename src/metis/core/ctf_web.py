@@ -187,7 +187,7 @@ class WebWorkflow:
         client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else {}, timeout=15)
-        client._auth_generation = row_generation[0] if row_generation else 0
+        client.auth_generation = row_generation[0] if row_generation else 0
         return client
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
@@ -200,7 +200,7 @@ class WebWorkflow:
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
             generation = row[0] if row else 0
             state = client.export_state()
-            if generation != getattr(client, "_auth_generation", 0):
+            if generation != client.auth_generation:
                 state.get("cookies", {}).pop(auth_origin, None)
                 state.pop("cookie_fingerprint", None)
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
@@ -542,7 +542,7 @@ class WebWorkflow:
                         "SELECT generation FROM web_auth_generations WHERE origin=?",
                         (config["auth_origin"],)).fetchone()
                 generation = generation_row[0] if generation_row else 0
-                if generation != getattr(client, "_auth_generation", 0) and target == config["auth_origin"]:
+                if generation != client.auth_generation and target == config["auth_origin"]:
                     entry["error"] = "authentication forgotten; reopen workflow to reauthenticate"
                     results.append(entry)
                     continue

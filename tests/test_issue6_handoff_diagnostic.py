@@ -26,7 +26,12 @@ def _dataset() -> dict:
                 "job_states": ["completed", "completed"] if multi else ["completed"],
                 "candidate_ready_jobs": 0, "decision_counts": {"report": 1},
                 "report_rejections": 0,
-                "report_rejection_categories": {"candidate_disclosure": 0, "other_validation": 0},
+                "report_rejection_categories": {
+                    "privacy": 0, "schema_or_options": 0, "evidence_provenance": 0,
+                    "duplicate_action": 0, "lifecycle_budget": 0, "output_limit": 0,
+                    "other_validation": 0},
+                "report_rejection_stages": {
+                    "normalization": 0, "persistence": 0, "normalization_or_persistence": 0},
                 "terminal_reason_categories": {"completed": 2 if multi else 1},
                 "model_turn_budget_denials": 0,
             }
@@ -34,7 +39,8 @@ def _dataset() -> dict:
             by_arm[arm] = {key: record[key] for key in (
                 "oracle_verified", "elapsed_seconds", "calls_observed", "calls_reserved", "usage", "actions",
                 "synthesis_complete", "job_states", "candidate_ready_jobs", "decision_counts",
-                "report_rejections", "report_rejection_categories", "terminal_reason_categories",
+                "report_rejections", "report_rejection_categories", "report_rejection_stages",
+                "terminal_reason_categories",
                 "model_turn_budget_denials")}
         comparisons.append({"case": case, "task_id": task_id, "arms": by_arm})
     return {"study": "test", "model": "model", "cli": "0.0", "reasoning_effort": "low",
