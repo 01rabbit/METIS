@@ -655,3 +655,10 @@ does not specify how the partial `key0`/`key2` slices produce the byte-three
 check. A production filter is deferred until a planted full-state oracle
 validates that mapping. Details are in
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
+
+Issue #9's local `metis web forget URL` path now clears persisted authentication-
+origin cookies and fences stale clients from sending or restoring them.
+Synthetic regression coverage was added; exact-head CI is pending. This does
+not revoke provider credentials, erase SQLite WAL/backups, clear user-managed
+environment variables, or complete P8. See
+`docs/reports/issue9-auth-forgetting-2026-11-18.md`.
