@@ -11,7 +11,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from metis.blue import evidence, journal
+from metis.blue import connections, evidence, journal, siem
+from metis.blue.ledger import ConnectionLedger
 from metis.core.resources import ResourceBroker, ScopedPermits, init_owner_key, read_owner_key
 
 DEFAULT_DATABASE = Path(".metis-state/metis.sqlite")
@@ -64,6 +65,33 @@ def register(sub: Any) -> None:
     evidence_parser = sub.add_parser("evidence", help="bounded offline evidence reader for a local file "
                                      "(email, browser, json, cloudtrail, evtx-xml)")
     evidence.add_arguments(evidence_parser)
+    siem_parser = sub.add_parser("siem", help="bounded Splunk/Elastic read searches inside a task lease")
+    siem.add_arguments(siem_parser)
+
+    lease = sub.add_parser("lease", help="Daybreak only: lease resources to a task, or finish it")
+    lease.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
+    lease_commands = lease.add_subparsers(dest="lease_command", required=True)
+    grant_lease = lease_commands.add_parser("task", help="lease NAME=UNITS resources to RUN/TASK")
+    grant_lease.add_argument("run")
+    grant_lease.add_argument("task")
+    grant_lease.add_argument("resources", nargs="+", help="NAME=UNITS")
+    grant_lease.add_argument("--ttl", type=int, default=3600)
+    finish = lease_commands.add_parser("finish", help="release a task's leases (refused while connected)")
+    finish.add_argument("run")
+    finish.add_argument("task")
+    report = lease_commands.add_parser("report", help="connections and redacted messages of a run")
+    report.add_argument("run")
+
+    connect = sub.add_parser("connect", help="SSH/RDP/VNC/SOCKS/VPN profile: show the plan, or --execute it")
+    connect.add_argument("profile")
+    connect.add_argument("--profiles", type=Path, default=Path(".metis-state/connections.json"))
+    connect.add_argument("--action", required=True)
+    connect.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
+    connect.add_argument("--run")
+    connect.add_argument("--task")
+    connect.add_argument("--permit", help="scoped permit for state-changing actions (desktop, tunnel, control)")
+    connect.add_argument("--execute", action="store_true")
+    connect.add_argument("--timeout", type=int, default=60)
 
 
 def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | None:
@@ -106,6 +134,42 @@ def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | N
         values = {key: value for key, value in vars(args).items() if key not in {"command", "root"}}
         values["command"] = values.pop("journal_command")
         return journal.run(argparse.Namespace(**values), journal.journal_root(args.root))
+    if args.command == "siem":
+        return int(siem.run(args))
+    if args.command == "lease":
+        try:
+            ledger = ConnectionLedger(args.database)
+            if args.lease_command == "task":
+                wanted: dict[str, int] = {}
+                for item in args.resources:
+                    name, _, units = item.partition("=")
+                    wanted[name] = int(units or "1")
+                output = {"lease_id": ledger.lease_task(args.run, args.task, wanted, ttl=args.ttl)}
+            elif args.lease_command == "finish":
+                output = {"released": ledger.finish_task(args.run, args.task)}
+            else:
+                output = ledger.report(args.run)
+        except (OSError, ValueError, PermissionError, sqlite3.Error) as exc:
+            parser.exit(2, "Lease command rejected: " + str(exc)[:300] + "\n")
+        print(json.dumps(output, default=str))
+        return 0
+    if args.command == "connect":
+        try:
+            config = connections.profile(args.profiles, args.profile)
+            if not args.execute:
+                spec = connections.build(config, args.action)
+                spec.pop("env", None)
+                spec.pop("stdin", None)
+                print(json.dumps(spec))
+                return 0
+            if not args.run or not args.task:
+                raise ValueError("execution requires --run and --task")
+            result = connections.execute(ConnectionLedger(args.database), args.run, args.task, config, args.action,
+                                         args.permit, args.timeout)
+        except (OSError, ValueError, KeyError, PermissionError, sqlite3.Error) as exc:
+            parser.exit(2, "Connection rejected: " + str(exc)[:300] + "\n")
+        print(json.dumps(result))
+        return 2 if result.get("timed_out") or result.get("returncode", 0) else 0
     if args.command == "evidence":
         return int(evidence.run(args))
     return None

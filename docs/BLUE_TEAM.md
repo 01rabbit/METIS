@@ -55,6 +55,45 @@ clone ごとに一度 `git config core.hooksPath .githooks` を実行すると�
   `--out` は `.metis-state/` 配下の新しいファイルだけに書く（上書き・シンボリックリンク経由は拒否）。
 - バイナリの EVTX、メモリイメージ、ディスクイメージは対象外。外部ツールで XML などに変換してから読む。
 
+## SIEM の検索（`metis siem`）
+
+Blue Team CTF で Splunk や Elasticsearch の読み取り権限が配られた場合に使う。自由な検索言語は受け付けず、
+索引・期間・等値フィルター・列・件数だけを指定する。プロファイル（例: `configs/blue/siem.example.json`）で、
+接続先、トークンを読む環境変数、使ってよい索引と列、件数と期間の上限を決める。
+
+```sh
+metis lease task RUN hunt-1 splunk=1                       # Daybreak がタスクに枠を貸す
+metis siem search --run RUN --task hunt-1 --profiles configs/blue/siem.json \
+  --profile splunk-read --request request.json             # 結果は stdout の JSON
+metis lease finish RUN hunt-1                              # 停止を確認できていれば枠を返す
+```
+
+- Splunk はジョブを作ってページ単位で読み、最後に終了を確認する。Elastic は1回の `_search`
+  （`allow_partial_search_results=false`）。リダイレクトとプロキシは使わず、HTTP は loopback の試験用だけ。
+- 応答は 2 MiB まで。重複キー、NaN、極端な数値を含む JSON は拒否する。返った値もトークンや
+  `password=` の形を伏せる。
+- `complete` は、件数上限・短いページ・部分結果・不正確な総数のどれにも当たらない場合に限る。
+  中止の応答だけでは止まったとみなさない（`indeterminate`）。止まったと確認できるまで枠は返らず、
+  `metis siem reconcile --connection-id ...` で状態を確かめてから `lease finish` する。
+- `lease finish` は、接続の確認・タスクの終了印・枠の返却を1つのトランザクションで行う。接続の開始も同じ
+  ロックの下で終了印と枠を確かめるため、終了した後に接続が始まることはない。終了したタスクには枠を貸し直さず、
+  新しいタスク ID を使う。
+
+## 接続プロファイル（`metis connect`）
+
+SSH の読み取り（`identity`、`system`、`processes`、`sockets`、`os-release`、許可したログの `read-log`）、
+RDP・VNC のデスクトップ、SOCKS、OpenVPN を、プロファイル（例: `configs/blue/connections.example.json`）
+から起動する。既定は起動計画の表示だけで、`--execute` を付けたときだけ起動する。
+
+- SSH はホスト鍵を厳格に確認し、エージェント転送やローカルコマンドを無効にする。パスワードは環境変数経由、
+  RDP のパスワードは標準入力で渡し、引数に置かない。RDP は証明書の SHA-256 を固定するか拒否する。
+- OpenVPN の設定は、デーモン化・外部スクリプト・管理ポートなどの指示を含むと拒否する。
+- RDP の操作、VNC の `control`、SOCKS と VPN の `start` は外部の状態を変えうるため、`metis permit` の
+  完全一致の許可が要る。許可の発行には所有者鍵が要る（Daybreak が `metis permit init` を一度実行する）。クライアントは独自のプロセスグループで動かし、終了時はグループごと止める。
+- 出力は最後の 1 MiB だけを残し、環境変数経由の秘密と資格情報の形を伏せる。
+- `scripts/connection_lab.py` は、使い捨ての Docker 環境（`tests/blue_lab/`）で SSH・RDP・VNC・SOCKS・
+  VPN を実際に試す。生成した鍵は、停止を確認できた場合だけ消す。この環境では Docker が無いため未実行。
+
 ## 共有リソースとスコープ付き許可
 
 [ORCHESTRATION_RUNTIME.md](ORCHESTRATION_RUNTIME.md) の「共有リソースとスコープ付き許可」を参照。
