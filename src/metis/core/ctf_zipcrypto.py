@@ -544,7 +544,8 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                                    key2_crc_bits_16_23_and_0_1: int, q8: int, *,
                                    product_witness: list[int] | None = None,
                                    prepared_intervals: tuple[tuple[tuple[int, int, int], tuple[int, ...]],
-                                                             ...] | None = None) -> bool:
+                                                             ...] | None = None,
+                                   deadline: float | None = None) -> bool:
     """Exactly test one Stage 2 partial guess against shared interval constraints.
 
     This is a bounded one-candidate predicate, not a keyspace enumerator. It
@@ -576,22 +577,32 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
 
     intervals = (prepared_intervals if prepared_intervals is not None else
                  tuple(_stay_first_stage_key1_intervals(index, carry_masks, random_firsts)))
-    # The first member's third-byte observation depends on its Stage 1 carry
-    # pair, but not on the product interval. Reject a guess before visiting
-    # every interval when none of those pairs can explain the observation.
-    first_options: dict[int, tuple[int, ...]] = {}
-    for pair in {pairs[0] for _interval, pairs in intervals}:
-        first_options[pair] = tuple(
-            carry2_first * 2 + carry2_second
-            for carry2_first in (0, 1) for carry2_second in (0, 1)
-            if _stay_predict_third_byte_difference(
-                random_firsts[0], random_seconds[0], first_stream, key0_crc,
-                product_high, key2_crc, pair >> 1, pair & 1, q8,
-                carry2_first, carry2_second) == observed_third_differences[0])
-    if not any(first_options.values()):
-        return False
+    # Third-byte predictions depend on the member and first-update carry pair,
+    # not on the product interval. Compute each distinct option once, then
+    # discard interval branches that cannot explain all observed members.
+    member_options: list[dict[int, tuple[int, ...]]] = []
+    for member, (random_first, random_second, observed) in enumerate(zip(
+            random_firsts, random_seconds, observed_third_differences, strict=True)):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Stay Stage 2 member sieve exceeded deadline")
+        options_by_pair: dict[int, tuple[int, ...]] = {}
+        for pair in {pairs[member] for _interval, pairs in intervals}:
+            options_by_pair[pair] = tuple(
+                carry2_first * 2 + carry2_second
+                for carry2_first in (0, 1) for carry2_second in (0, 1)
+                if _stay_predict_third_byte_difference(
+                    random_first, random_second, first_stream, key0_crc,
+                    product_high, key2_crc, pair >> 1, pair & 1, q8,
+                    carry2_first, carry2_second) == observed)
+        if not any(options_by_pair.values()):
+            return False
+        member_options.append(options_by_pair)
     for interval, carry_pairs in intervals:
-        if not first_options[carry_pairs[0]]:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Stay Stage 2 interval filtering exceeded deadline")
+        current_member_options = tuple(member_options[member][pair]
+                                       for member, pair in enumerate(carry_pairs))
+        if not all(current_member_options):
             continue
         offsets: list[int] = []
         for random_first, random_second, pair in zip(
@@ -600,33 +611,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                 random_first, random_second, first_stream, key0_crc,
                 product_high, key2_crc, pair >> 1))
 
-        member_carry_options: list[tuple[int, ...]] = []
-        for member, (random_first, random_second, observed, pair) in enumerate(zip(
-                random_firsts, random_seconds, observed_third_differences,
-                carry_pairs, strict=True)):
-            first_carry1, second_carry1 = pair >> 1, pair & 1
-            if member == 0:
-                member_carry_options.append(first_options[pair])
-                continue
-            options: list[int] = []
-            for first_carry2 in (0, 1):
-                for second_carry2 in (0, 1):
-                    predicted = _stay_predict_third_byte_difference(
-                        random_first, random_second, first_stream, key0_crc,
-                        product_high, key2_crc, first_carry1, second_carry1,
-                        q8, first_carry2, second_carry2)
-                    if predicted == observed:
-                        options.append(first_carry2 * 2 + second_carry2)
-            if not options:
-                break
-            member_carry_options.append(tuple(options))
-        if len(member_carry_options) != count:
-            continue
-
         low_limit = 1 << 24
         current_interval = interval
         current_offsets = tuple(offsets)
-        current_member_options = tuple(member_carry_options)
 
         def shared_residue_exists(member: int, lower: int, upper: int, *,
                                   _interval=current_interval,
@@ -635,6 +622,8 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                                   _limit=low_limit) -> bool:
             if lower > upper:
                 return False
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Stay Stage 2 residue filtering exceeded deadline")
             if member == count:
                 if product_witness is None:
                     return _stay_q8_residue_interval_nonempty(_interval, q8, lower, upper)
@@ -742,12 +731,16 @@ def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
             return StayStage2Chunk(cursor, tuple(hits), "time_limit")
         guess = cursor
         witness: list[int] = []
-        if _stay_stage2_candidate_matches(
-                index, carry_masks, random_firsts, random_seconds,
-                observed_third_differences, guess & 0xFF,
-                (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
-                product_witness=witness, prepared_intervals=prepared_intervals):
-            hits.append((guess, witness[0]))
+        try:
+            if _stay_stage2_candidate_matches(
+                    index, carry_masks, random_firsts, random_seconds,
+                    observed_third_differences, guess & 0xFF,
+                    (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+                    product_witness=witness, prepared_intervals=prepared_intervals,
+                    deadline=deadline):
+                hits.append((guess, witness[0]))
+        except TimeoutError:
+            return StayStage2Chunk(cursor, tuple(hits), "time_limit")
         cursor += 1
         visited += 1
         if len(hits) >= max_hits:

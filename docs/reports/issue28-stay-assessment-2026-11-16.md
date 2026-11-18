@@ -458,3 +458,20 @@ above both ordinary and hard run caps. Run
 Stage 2 scan, key recovery, or submission occurred. Further work needs a
 native multi-member sieve and full-state reconstruction validated on synthetic
 vectors; the first compatible product witness alone may not be the true key.
+
+## Multi-member prediction reuse follow-up (2026-11-18)
+
+The Python Stage 2 predicate now computes each member/carry-pair third-byte
+option once per partial guess and rejects incompatible interval branches
+before calculating their second-update addends. A 100-interval regression
+counts 20 predictor calls for five members with one carry pair each, rather
+than repeating predictions for each interval. Deadline checks cover sieve,
+interval, and residue work without advancing the resumable cursor for an
+interrupted guess. Existing planted-state, differential, and sandbox tests
+retain the known witness.
+
+A separate synthetic zero-hit 10,000-guess local probe took 0.093 seconds,
+versus 0.092 seconds on the preceding implementation. This does not improve
+the raw 5.9-billion-pair bound or establish target throughput. The first-member
+preimage research helper is still not used by the production worker. Full key
+reconstruction and official #39 Stage 2 verification remain open.

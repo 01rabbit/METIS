@@ -560,6 +560,54 @@ def test_stage2_chunk_reuses_first_stage_intervals(monkeypatch) -> None:
     assert calls == 1
 
 
+def test_stage2_member_sieve_reuses_predictions_across_intervals(monkeypatch) -> None:
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    calls = 0
+
+    def predict(*args):
+        nonlocal calls
+        calls += 1
+        return 0 if args[-2:] == (0, 0) else 1
+
+    monkeypatch.setattr(zipcrypto, "_stay_predict_third_byte_difference", predict)
+    monkeypatch.setattr(zipcrypto, "_stay_q8_residue_interval_nonempty",
+                        lambda *args: False)
+    intervals = (((0, 0, 0), (0,) * 5),) * 100
+    assert not zipcrypto._stay_stage2_candidate_matches(
+        0, (1,) * 5, (1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (0,) * 5,
+        0, 0, 0, prepared_intervals=intervals)
+    assert calls == 5 * 4
+
+
+def test_stage2_member_sieve_timeout_does_not_advance_cursor(monkeypatch) -> None:
+    import time
+
+    import pytest
+
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    def slow_predict(*args):
+        time.sleep(0.002)
+        return 0
+
+    monkeypatch.setattr(zipcrypto, "_stay_predict_third_byte_difference", slow_predict)
+    with pytest.raises(TimeoutError, match="deadline"):
+        zipcrypto._stay_stage2_candidate_matches(
+            0, (1,) * 5, (1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (0,) * 5,
+            0, 0, 0, prepared_intervals=(((0, 0, 0), (0,) * 5),),
+            deadline=time.monotonic() + 0.001)
+
+    def timeout(*args, **kwargs):
+        raise TimeoutError("predicate deadline")
+
+    monkeypatch.setattr(zipcrypto, "_stay_stage2_candidate_matches", timeout)
+    chunk = zipcrypto._stay_stage2_scan_chunk(
+        0, (1,) * 5, (1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (0,) * 5,
+        start=3, stop=4, max_candidates=1, max_hits=1, seconds=1)
+    assert chunk == zipcrypto.StayStage2Chunk(3, (), "time_limit")
+
+
 def test_stage2_preparation_obeys_deadline_and_skips_empty_range(monkeypatch) -> None:
     import time
 

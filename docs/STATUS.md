@@ -719,3 +719,9 @@ recorded no solve. This does not establish host reboot recovery.
 This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
+
+The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
+across compatible Stage 1 intervals and checks the deadline inside one guess.
+Synthetic regression and planted sandbox tests pass, but a 10,000-guess zero-hit
+probe showed no speed gain over the preceding implementation. The raw domain,
+full-key reconstruction, and official #39 verification remain open.
