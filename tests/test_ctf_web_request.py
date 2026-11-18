@@ -182,6 +182,7 @@ def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
     assert platform_url not in state.get("cookies", {})
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_cookie"][-1] is None
+    assert workflow.forget_auth(platform_url)["credential_removed"] is False
 
 
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):
