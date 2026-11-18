@@ -112,7 +112,10 @@ TOOL_HINTS = (
      "work_exceeds_budget is inconclusive. It searches Info-ZIP srand(time^pid) from 3+ members and returns every "
      "member's ten random header bytes (not Biham-Kocher known plaintext). Stay section 4 specifically uses "
      "their double-encryption stream-byte XOR constraints for key recovery (~2^39 cipher steps); that inverse "
-     "search is not implemented. zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
+     "key recovery is still not implemented. zipcrypto_stay_scan{random_header_bytes_hex,start,stop,"
+     "max_candidates,seconds<=300,max_hits} scans a bounded first-stage 40-bit interval inside the "
+     "isolated worker and keeps hit IDs in a private shard; it does not recover keys. "
+     "zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
      "Biham-Kocher known-plaintext attack (>=12 known bytes of the member's data, 8 contiguous; offset 0 = first "
      "data byte) and returns keys x,y,z; derive tool zipcrypto_decrypt{member,keys:'x,y,z'} registers the "
      "plaintext."),

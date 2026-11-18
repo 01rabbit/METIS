@@ -63,6 +63,16 @@ def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
             add("stage", result["stage"])
         for key in ("tried", "workers", "seconds"):
             add(key, result.get(key))
+    elif tool == "zipcrypto_stay_scan":
+        for key in ("next_index", "complete", "scanned", "hits_count", "seconds"):
+            add(key, result.get(key))
+        if result.get("reason") in {"work_exceeds_budget", "memory_limit_exceeded", "isolation_unavailable",
+                                     "worker_failed", "header_observation_mismatch",
+                                     "observation_count_mismatch"}:
+            add("reason", result["reason"])
+        if result.get("stage") in {"sandbox-timeout", "sandbox-oom", "cgroup-check",
+                                    "worker-output", "input-validation", "stay-first-stage-scan"}:
+            add("stage", result["stage"])
     elif tool == "zipcrypto_decrypt":
         add("crc_ok", result.get("crc_ok"))
         add("plaintext_bytes", result.get("size"))
@@ -301,6 +311,10 @@ class CodexSession:
                 if tool == "zipcrypto_attack":
                     from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
                     zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
+                        self.database, run_id, name, settings, _operation_id=operation_id)
+                elif tool == "zipcrypto_stay_scan":
+                    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan
+                    zipcrypto_runner = lambda data, settings: run_zipcrypto_stay_scan(
                         self.database, run_id, name, settings, _operation_id=operation_id)
                 result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
                 output = {"run_id": run_id, "ok": True, "result": result, "_tool": tool}

@@ -37,7 +37,8 @@ ARTIFACT_TOOLS = frozenset({
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
-    "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt",
+    "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack",
+    "zipcrypto_stay_scan", "zipcrypto_decrypt",
 })
 DERIVE_TOOLS = frozenset({
     "zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz", "base64_decode", "base32_decode",
@@ -484,6 +485,7 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "tls_http_body": {"factor", "packets", "connections", "connection", "side", "message", "max_bytes"},
     "zipcrypto_info": set(), "infozip_seed": {"generator", "time_from", "time_to", "pid_bits", "seconds"},
     "zipcrypto_attack": {"member", "plaintext_hex", "offset", "seconds"},
+    "zipcrypto_stay_scan": {"random_header_bytes_hex", "start", "stop", "max_candidates", "seconds", "max_hits"},
     "zipcrypto_decrypt": {"member", "keys", "max_bytes"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
@@ -567,7 +569,7 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
-    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt"}:
+    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_stay_scan", "zipcrypto_decrypt"}:
         return _zipcrypto(data, tool, options, zipcrypto_runner=zipcrypto_runner)
     if tool in {"tls_decrypt", "tls_http_body"}:
         from metis.core.ctf_tls import http_body, tls_decrypt
@@ -834,6 +836,27 @@ def _zipcrypto(data: bytes, tool: str, options: dict,
         return zipcrypto_runner(data, {"member": name, "plaintext_hex": hexed,
                                        "offset": offset, "seconds": seconds})
 
+    if tool == "zipcrypto_stay_scan":
+        if zipcrypto_runner is None:
+            raise ValueError("zipcrypto_stay_scan requires the isolated worker runtime")
+        headers_hex = options.get("random_header_bytes_hex")
+        if not isinstance(headers_hex, str) or not 10 <= len(headers_hex) <= 1280 or len(headers_hex) % 2:
+            raise ValueError("random_header_bytes_hex must contain 5 to 64 ten-byte headers")
+        try:
+            headers = bytes.fromhex(headers_hex)
+        except ValueError as exc:
+            raise ValueError("random_header_bytes_hex must be hexadecimal") from exc
+        if len(headers) % 10 or not 5 <= len(headers) // 10 <= 64:
+            raise ValueError("random_header_bytes_hex must contain 5 to 64 ten-byte headers")
+        start = bounded_integer(options, "start", 0, 0, 1 << 40)
+        stop = bounded_integer(options, "stop", 1 << 40, start, 1 << 40)
+        max_candidates = bounded_integer(options, "max_candidates", 1 << 40, 1, 1 << 40)
+        seconds = bounded_integer(options, "seconds", 300, 10, 300)
+        max_hits = bounded_integer(options, "max_hits", 4096, 1, 4096)
+        return zipcrypto_runner(data, {"random_header_bytes_hex": headers.hex(), "start": start,
+                                       "stop": stop, "max_candidates": max_candidates,
+                                       "seconds": seconds, "max_hits": max_hits})
+
     from metis.core import ctf_zipcrypto as zc
 
     if tool == "zipcrypto_info":
@@ -848,6 +871,8 @@ def _zipcrypto(data: bytes, tool: str, options: dict,
         return zc.infozip_seed(data, generator=generator, time_from=bounds.get("time_from"),
                                time_to=bounds.get("time_to"), pid_bits=bounded_integer(options, "pid_bits", 22, 1, 22),
                                seconds=seconds)
+    if tool == "zipcrypto_stay_scan":
+        raise ValueError("zipcrypto_stay_scan requires the isolated worker runtime")
     entries = {entry["name"]: entry for entry in zc.members(data) if entry["encrypted"]}
     name = options.get("member")
     if not isinstance(name, str) or name not in entries:

@@ -346,6 +346,7 @@ def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> Non
         MULT,
         _stay_first_stage_candidate,
         _stay_first_stage_scan_chunk,
+        _stay_first_stage_scan_parallel,
     )
 
     rng = random.Random(0x5CA1)
@@ -390,6 +391,11 @@ def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> Non
     )
     assert vector_chunk["complete"] is True
     assert vector_chunk["hits"] == scalar_hits
+    parallel_chunk = _stay_first_stage_scan_parallel(
+        random_firsts, observed, index, index + 256,
+        max_candidates=256, seconds=30, max_hits=4096, workers=4)
+    assert parallel_chunk["complete"] is True
+    assert parallel_chunk["hits"] == scalar_hits
 
     capped = _stay_first_stage_scan_chunk(
         random_firsts, observed, index, index + 256, max_candidates=256, max_hits=1)

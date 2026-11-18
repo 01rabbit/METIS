@@ -174,7 +174,8 @@ def test_full_known_plaintext_attack():
 
 # -- METIS tool surface ----------------------------------------------------------------------------------
 def test_tools_are_registered_and_bounded(tmp_path):
-    assert {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_decrypt"} <= ARTIFACT_TOOLS
+    assert {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_stay_scan",
+            "zipcrypto_decrypt"} <= ARTIFACT_TOOLS
     assert ALLOWED_OPTIONS["zipcrypto_attack"] == {"member", "plaintext_hex", "offset", "seconds"}
     (tmp_path / "v.zip").write_bytes(FIXTURE.read_bytes())
     info = inspect_file(tmp_path, "v.zip", "zipcrypto_info", {})
@@ -196,6 +197,109 @@ def test_tools_are_registered_and_bounded(tmp_path):
                      zipcrypto_runner=lambda *_args: pytest.fail("invalid input reached worker"))
     with pytest.raises(ValueError, match="isolated worker"):
         inspect_file(tmp_path, "v.zip", "zipcrypto_attack", {"member": "nope", "plaintext_hex": "00"})
+
+
+def test_stay_scan_options_are_bounded_and_pass_only_to_isolated_runner():
+    from metis.core.ctf_artifacts import inspect_bytes
+
+    headers = bytes(range(70)).hex()
+    captured = {}
+
+    def runner(data, settings):
+        captured["data"] = data
+        captured["settings"] = settings
+        return {"next_index": 4, "complete": False, "scanned": 4, "hits_count": 0}
+
+    result = inspect_bytes(b"archive snapshot", "zipcrypto_stay_scan", {
+        "random_header_bytes_hex": headers, "start": 0, "stop": 20,
+        "max_candidates": 4, "seconds": 10, "max_hits": 5,
+    }, zipcrypto_runner=runner)
+    assert result["next_index"] == 4 and result["scanned"] == 4
+    assert captured["data"] == b"archive snapshot"
+    assert captured["settings"] == {
+        "random_header_bytes_hex": headers, "start": 0, "stop": 20,
+        "max_candidates": 4, "seconds": 10, "max_hits": 5,
+    }
+    with pytest.raises(ValueError, match="5 to 64"):
+        inspect_bytes(b"archive", "zipcrypto_stay_scan", {
+            "random_header_bytes_hex": "aa" * 40, "start": 0, "stop": 1,
+        }, zipcrypto_runner=lambda *_: pytest.fail("invalid observations reached worker"))
+
+
+def test_stay_scan_runner_persists_hits_privately(tmp_path, monkeypatch):
+    from metis.core.ctf_sandbox import Sandbox
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan
+
+    database = tmp_path / "state" / "metis.sqlite"
+    database.parent.mkdir()
+    run_id = "a" * 32
+
+    def fake_execute(self, *args, **kwargs):
+        payload = {"result": {"next_index": 12, "complete": False, "scanned": 12,
+                              "seconds": 0.3, "hits": [[9, [1, 2, 3, 4, 5, 6, 7]]]}}
+        return {"ok": True, "stdout": {"text": "METIS_PHASE:stay-first-stage-scan\n"
+                                                + json.dumps(payload)}}
+
+    monkeypatch.setattr(Sandbox, "__init__", lambda self, _database: None)
+    monkeypatch.setattr(Sandbox, "execute", fake_execute)
+    options = {"random_header_bytes_hex": "00" * 70, "start": 0, "stop": 100,
+                   "max_candidates": 100, "seconds": 10, "max_hits": 5}
+    result = run_zipcrypto_stay_scan(database, run_id, "fixture.zip", options)
+    assert result == {"hits_count": 1, "next_index": 12, "complete": False, "scanned": 12,
+                      "seconds": 0.3, "candidate_shard": result.get("candidate_shard")}, result
+    assert result["candidate_shard"]
+    shard = database.parent / result["candidate_shard"]
+    assert shard.stat().st_mode & 0o777 == 0o600
+    assert json.loads(shard.read_text())["hits"] == [[9, [1, 2, 3, 4, 5, 6, 7]]]
+
+
+def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
+    image = os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+    if not image:
+        pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a numpy-enabled sandbox image")
+    from metis.core.codex_session import CodexSession
+    from metis.core.ctf_sandbox import configure
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan
+
+    data = FIXTURE.read_bytes()
+    seed = zc.infozip_seed(data, seconds=120)
+    assert seed["found"] is True
+    headers = [bytes.fromhex(value) for value in seed["random_header_bytes"]]
+    encrypted = [entry for entry in zc.members(data) if entry["encrypted"]]
+    state = zc.Keys.from_password(b"testpass")
+    random_firsts = tuple(header[0] for header in headers)
+    observed = tuple(zc.member_bytes(data, entry)[1] ^ header[1]
+                     for entry, header in zip(encrypted, headers, strict=True))
+    stream = ((state.z & 0xFFFF) | 2)
+    first_stream = (stream * (stream ^ 1) >> 8) & 0xFF
+    key0_crc_low = zc.crc32(state.x, 0) & 0xFF
+    product = state.y * zc.MULT & zc.M32
+    key2_crc = zc.crc32(state.z, 0) & 0xFFFC
+    first_low = zc.crc32(state.x, random_firsts[0]) & 0xFF
+    second_low = zc.crc32(state.x, random_firsts[0] ^ first_stream) & 0xFF
+    carry_first = int((product & 0xFFFFFF) + ((first_low * zc.MULT + 1) & 0xFFFFFF) >= 1 << 24)
+    carry_second = int((product & 0xFFFFFF) + ((second_low * zc.MULT + 1) & 0xFFFFFF) >= 1 << 24)
+    index = (first_stream | key0_crc_low << 8 | (product >> 24) << 16
+             | carry_first << 24 | (key2_crc >> 10) << 25
+             | (key2_crc >> 2 & 0xFF) << 31 | carry_second << 39)
+    expected_masks = zc._stay_first_stage_candidate(index, random_firsts, observed)
+    assert expected_masks is not None
+
+    source = tmp_path / "infozip-vector.zip"
+    source.write_bytes(data)
+    database = tmp_path / "state" / "metis.sqlite"
+    session = CodexSession(database)
+    run_id = session.intake(title="Stay native filter", description="synthetic seven-member vector",
+                            paths=[source])["run_id"]
+    artifact = session.context(run_id)["challenge"]["artifacts"][0]
+    configure(database, engine="docker", image=image, platform=None)
+    result = run_zipcrypto_stay_scan(database, run_id, artifact, {
+        "random_header_bytes_hex": b"".join(headers).hex(), "start": index,
+        "stop": index + 1, "max_candidates": 1, "seconds": 30, "max_hits": 4,
+    })
+    assert result["hits_count"] == 1, result
+    shard = database.parent / result["candidate_shard"]
+    assert json.loads(shard.read_text())["hits"] == [[index, list(expected_masks)]]
 
 
 def test_zipcrypto_worker_maps_container_memory_kill(tmp_path, monkeypatch):

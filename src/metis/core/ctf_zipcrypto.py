@@ -14,7 +14,9 @@
 
 Not implemented: Stay's key recovery from the double-encrypted header (about 2^39 cipher steps
 in the paper, hours of native code) - the tools report it as ``work_exceeds_budget``.
-Everything is bounded by explicit time and candidate budgets; nothing runs outside Python.
+The first-stage 2^40 partial-state scan is available only through the bounded isolated
+``zipcrypto_stay_scan`` worker; it does not recover keys. Everything is bounded by explicit
+time and candidate budgets; nothing runs outside Python.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import struct
 import time
 import zlib
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -328,6 +331,66 @@ def _stay_first_stage_scan_chunk(random_firsts: tuple[int, ...],
         cursor = batch_stop
     return {"next_index": cursor, "complete": cursor >= stop,
             "scanned": cursor - start, "hits": tuple(hits)}
+
+
+def _stay_first_stage_scan_parallel(random_firsts: tuple[int, ...],
+                                    observed_differences: tuple[int, ...], start: int, stop: int,
+                                    *, max_candidates: int = 1 << 40, seconds: float = 300.0,
+                                    max_hits: int = 4096, workers: int = 4) -> dict[str, Any]:
+    """Scan consecutive 1M ranges in parallel while retaining a gap-free cursor."""
+    if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 40):
+        raise ValueError("Stay scan range must be within the 40-bit candidate space")
+    if type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 40:
+        raise ValueError("Stay scan candidate bound must be between 1 and 2^40")
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not 0 < seconds <= 300):
+        raise ValueError("Stay scan deadline must be between zero and 300 seconds")
+    if type(max_hits) is not int or not 1 <= max_hits <= 4096:
+        raise ValueError("Stay scan hit bound must be between 1 and 4096")
+    if type(workers) is not int or not 1 <= workers <= 4:
+        raise ValueError("Stay scan workers must be between one and four")
+    if (len(random_firsts) != len(observed_differences) or len(random_firsts) < 5
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *observed_differences))):
+        raise ValueError("Stay scan requires five or more pairs of observation bytes")
+
+    bounded_stop = min(stop, start + max_candidates)
+    deadline = time.monotonic() + seconds
+    cursor = start
+    hits: list[tuple[int, tuple[int, ...]]] = []
+    batch_size = 1 << 20
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while cursor < bounded_stop:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ranges = [(left, min(left + batch_size, bounded_stop))
+                      for left in range(cursor, min(cursor + batch_size * workers, bounded_stop), batch_size)]
+            futures = [pool.submit(_stay_first_stage_scan_chunk,
+                                   random_firsts, observed_differences, left, right,
+                                   max_candidates=right - left, seconds=remaining,
+                                   max_hits=max_hits)
+                       for left, right in ranges]
+            results = [future.result() for future in futures]
+            wave_cursor = cursor
+            for (left, _right), result in zip(ranges, results, strict=True):
+                if left != wave_cursor:
+                    raise RuntimeError("Stay parallel scan lost a contiguous range")
+                for candidate, masks in result["hits"]:
+                    hits.append((candidate, masks))
+                    if len(hits) >= max_hits:
+                        return {"next_index": candidate + 1, "complete": candidate + 1 >= stop,
+                                "scanned": candidate + 1 - start, "hits": tuple(hits),
+                                "seconds": round(time.monotonic() - (deadline - seconds), 3)}
+                wave_cursor = int(result["next_index"])
+                if not result["complete"]:
+                    cursor = wave_cursor
+                    break
+            else:
+                cursor = wave_cursor
+    return {"next_index": cursor, "complete": cursor >= stop,
+            "scanned": cursor - start, "hits": tuple(hits),
+            "seconds": round(time.monotonic() - (deadline - seconds), 3)}
 
 
 def _tables() -> tuple[list[int], list[int]]:
