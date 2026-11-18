@@ -302,15 +302,16 @@ challenge shard contents were inspected to produce this estimate, and no Stage
 
 ## Exact Stage 1 interval to q8 projection (2026-11-18)
 
-Added `_stay_q8_interval_mask`, which computes exactly which Stage 2 `q8`
-values are consistent with a Stage 1 `key1 * MULT` product interval. It counts
-modular residues per high-byte bucket with Euclidean floor sums, so the 24-bit
-interval is not enumerated. An exhaustive small-word oracle compares 500
-deterministic intervals against direct multiplication, and the planted full
-state interval test verifies that the correct q8 is retained.
+Added `_stay_q8_carry_masks`, which computes exactly which Stage 2 `q8` values
+and second-update carry bits are consistent with a Stage 1 `key1 * MULT` product
+interval. It counts modular residues per high-byte and carry-threshold bucket
+with Euclidean floor sums, so the 24-bit interval is not enumerated. An
+exhaustive small-word oracle compares 500 deterministic intervals against
+direct multiplication, and the planted full-state carry-interval test verifies
+that the correct q8 and all per-header second-update carries are retained.
 
 This supplies the interval-consistency primitive missing from the earlier
-Stage 2 review. It does not yet combine the interval mask with the multi-member
+Stage 2 review. It does not yet combine the q8/carry masks with the multi-member
 third-byte filter, enumerate Stage 2 key guesses, reconstruct full keys, check
 all member CRCs, or submit a candidate. No official archive candidate was
 inspected or submitted for this helper. Issue #28 remains open.

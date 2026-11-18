@@ -127,23 +127,30 @@ def _stay_floor_sum(count: int, modulus: int, multiplier: int, offset: int) -> i
         modulus, multiplier = multiplier, modulus
 
 
-def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int = 24) -> int:
-    """Return the q8 values consistent with at least one product in a Stage 1 interval.
+def _stay_q8_carry_masks(product_interval: tuple[int, int, int],
+                         second_update_addends: tuple[int, ...] = (), *, bits: int = 24
+                         ) -> dict[int, tuple[int, ...]]:
+    """Return q8 values and compatible second-update carry bits for an interval.
 
     For ``P = product_high || low``, Stage 2 requires
     ``q8 = MSB(P * MULT mod 2**(bits + 8))``. A modular floor-sum counts
     which high-byte buckets intersect the inclusive low-word interval without
-    enumerating every value in it.
+    enumerating every value in it. For each optional low-word addend, the
+    result's tuple contains a bit mask: bit 0 means carry zero is possible and
+    bit 1 means carry one is possible for that q8 bucket.
     """
     if (type(bits) is not int or not 1 <= bits <= 24
             or len(product_interval) != 3
-            or any(type(value) is not int for value in product_interval)):
+            or any(type(value) is not int for value in product_interval)
+            or any(type(value) is not int for value in second_update_addends)):
         raise ValueError("Stay product interval or word width is invalid")
     product_high, lower, upper = product_interval
     low_limit = 1 << bits
     modulus = low_limit << 8
     if not 0 <= product_high <= 0xFF or not 0 <= lower <= upper < low_limit:
         raise ValueError("Stay product interval is out of range")
+    if any(not 0 <= value < low_limit for value in second_update_addends):
+        raise ValueError("Stay second-update addends must fit the low word")
 
     count = upper - lower + 1
     start = ((product_high << bits) | lower) * MULT % modulus
@@ -159,13 +166,28 @@ def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int 
         )
         return count - at_or_above
 
-    mask = 0
+    result: dict[int, tuple[int, ...]] = {}
     for q8 in range(256):
-        low_count = residues_below(q8 << bits)
-        high_count = residues_below((q8 + 1) << bits)
-        if high_count > low_count:
-            mask |= 1 << q8
-    return mask
+        bucket_start = q8 << bits
+        bucket_end = (q8 + 1) << bits
+        low_count = residues_below(bucket_start)
+        high_count = residues_below(bucket_end)
+        bucket_count = high_count - low_count
+        if not bucket_count:
+            continue
+        carry_masks = []
+        for addend in second_update_addends:
+            carry_one_count = high_count - residues_below(bucket_start + low_limit - addend)
+            carry_mask = (int(carry_one_count < bucket_count)
+                          | (int(carry_one_count > 0) << 1))
+            carry_masks.append(carry_mask)
+        result[q8] = tuple(carry_masks)
+    return result
+
+
+def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int = 24) -> int:
+    """Return the q8 values consistent with at least one product in an interval."""
+    return sum(1 << q8 for q8 in _stay_q8_carry_masks(product_interval, bits=bits))
 
 
 def _stay_lift_key1_candidates(product_interval: tuple[int, int, int], *, bits: int = 24

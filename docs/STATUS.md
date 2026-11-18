@@ -650,10 +650,11 @@ registered artifact tool. Issue #28 and ksnctf #39 remain open. Full details:
 The Stage 2 partial-state byte-three predictor is implemented and independently
 reviewed. A 10,000-case planted full-state oracle test checks its predicted
 byte difference; exact-head checks and METIS validation passed at `7921f7f`.
-An exact modular floor-sum helper now computes the `q8` values consistent with
-each Stage 1 interval without enumerating its 24-bit range; 500 exhaustive
-small-word cases and planted interval states verify the projection. The caller
-still must combine that mask with the multi-member third-byte filter.
+Exact modular floor-sum helpers now compute the `q8` values and second-update
+carry bits consistent with each Stage 1 interval without enumerating its 24-bit
+range; 500 exhaustive small-word cases and planted interval states verify the
+projection. The caller still must combine those masks with the multi-member
+third-byte filter.
 Stage 2 candidate enumeration, full key recovery, member CRC checks with
 recovered keys, and an official #39 verdict have not occurred. Issue #28
 remains open. Details are in

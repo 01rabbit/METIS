@@ -128,7 +128,7 @@ def test_stay_stage2_third_byte_predictor_matches_planted_full_states() -> None:
 
 
 def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
-    from metis.core.ctf_zipcrypto import MULT, _stay_q8_interval_mask
+    from metis.core.ctf_zipcrypto import MULT, _stay_q8_carry_masks
 
     rng = random.Random(20261120)
     bits = 5
@@ -137,12 +137,19 @@ def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
         product_high = rng.randrange(256)
         lower = rng.randrange(low_limit)
         upper = rng.randrange(lower, low_limit)
-        actual = _stay_q8_interval_mask((product_high, lower, upper), bits=bits)
-        expected = 0
+        addends = tuple(rng.randrange(low_limit) for _ in range(3))
+        actual = _stay_q8_carry_masks((product_high, lower, upper), addends, bits=bits)
+        expected: dict[int, tuple[int, ...]] = {}
         for low in range(lower, upper + 1):
             product = (product_high << bits) | low
-            q8 = ((product * MULT) & ((1 << (bits + 8)) - 1)) >> bits
-            expected |= 1 << q8
+            residue = (product * MULT) & ((1 << (bits + 8)) - 1)
+            q8 = residue >> bits
+            masks = list(expected.get(q8, (0, 0, 0)))
+            low_residue = residue & (low_limit - 1)
+            for index, addend in enumerate(addends):
+                carry = int(low_residue + addend >= low_limit)
+                masks[index] |= 1 << carry
+            expected[q8] = tuple(masks)
         assert actual == expected
 
 
@@ -420,7 +427,7 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
         MULT,
         _stay_first_stage_candidate,
         _stay_first_stage_key1_intervals,
-        _stay_q8_interval_mask,
+        _stay_q8_carry_masks,
     )
 
     rng = random.Random(0x11F7)
@@ -460,9 +467,29 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
                    and interval[1] <= (product & 0xFFFFFF) <= interval[2]
                    for interval, pairs in intervals)
         true_q8 = ((product * MULT) & M32) >> 24
-        assert any(pairs == tuple(true_pairs)
-                   and _stay_q8_interval_mask(interval) & (1 << true_q8)
-                   for interval, pairs in intervals)
+        true_second_carries = []
+        second_addends = []
+        for first, second in zip(random_firsts, random_seconds, strict=True):
+            first_pass = _encrypt(bytes((first, second)), initial)
+            for plaintext_pair in ((first, second), first_pass):
+                after_first = _update(initial, plaintext_pair[0])
+                after_second = _update(after_first, plaintext_pair[1])
+                addend = ((after_first[0] & 0xFF) * MULT * MULT + MULT
+                          + (after_second[0] & 0xFF) * MULT + 1) & 0xFFFFFF
+                second_addends.append(addend)
+                true_second_carries.append(
+                    int(((product * MULT) & 0xFFFFFF) + addend >= 1 << 24))
+        planted_state_retained = False
+        for interval, pairs in intervals:
+            if pairs != tuple(true_pairs):
+                continue
+            carry_masks = _stay_q8_carry_masks(interval, tuple(second_addends)).get(true_q8)
+            if (carry_masks is not None
+                    and all(mask & (1 << carry) for mask, carry in zip(
+                        carry_masks, true_second_carries, strict=True))):
+                planted_state_retained = True
+                break
+        assert planted_state_retained
 
 
 def test_stay_stage2_two_update_key1_formula_matches_full_recurrence() -> None:
