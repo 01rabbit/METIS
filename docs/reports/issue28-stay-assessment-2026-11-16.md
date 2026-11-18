@@ -371,3 +371,20 @@ bytes 2, 10, or 11 for each member is rejected (21 negative cases).
 This validates a supplied complete key state and known PRNG headers; it does
 not recover a key, run the Stage 2 search, or solve official #39. The fixture
 test is recorded in `tests/test_ctf_zipcrypto.py`.
+
+## Stage 2 product witness (2026-11-18)
+
+The exact q8/residue interval check can now return the first compatible
+`key1 * MULT` product. It uses modular floor-sum counts and binary search over
+the product interval, with no interval materialization. The Stage 2 predicate
+accepts an optional private output list and appends one product only after all
+third-byte and shared-carry constraints pass. Calls that only need a Boolean
+retain the constant-number-of-floor-sums path.
+
+The reduced-width test compares the witness to the first direct-enumeration
+match over 500 seeded intervals. A 24-bit planted singleton check and ten
+seven-member planted Stage 2 cases also passed. The focused Stay suite passed
+(`17 passed`); Ruff, mypy, and `git diff --check` passed. This provides a
+product witness for later recovery; it does not establish that missing key0/key2
+bits are consistent, recover a full key, enumerate Stage 2, decrypt #39, or
+obtain an official verdict.

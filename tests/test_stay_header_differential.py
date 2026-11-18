@@ -132,6 +132,7 @@ def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
         MULT,
         _stay_q8_carry_masks,
         _stay_q8_residue_interval_nonempty,
+        _stay_q8_residue_interval_witness,
     )
 
     rng = random.Random(20261120)
@@ -159,15 +160,27 @@ def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
         q8 = rng.randrange(256)
         residue_lower = rng.randrange(low_limit)
         residue_upper = rng.randrange(residue_lower, low_limit)
-        expected_nonempty = any(
-            (((((product_high << bits) | low) * MULT) & ((1 << (bits + 8)) - 1)) >> bits) == q8
+        expected_witness = next((
+            low for low in range(lower, upper + 1)
+            if (((((product_high << bits) | low) * MULT) & ((1 << (bits + 8)) - 1)) >> bits) == q8
             and residue_lower <= ((((product_high << bits) | low) * MULT)
                                   & ((1 << bits) - 1)) <= residue_upper
-            for low in range(lower, upper + 1)
-        )
+        ), None)
         assert _stay_q8_residue_interval_nonempty(
             (product_high, lower, upper), q8, residue_lower, residue_upper, bits=bits
-        ) is expected_nonempty
+        ) is (expected_witness is not None)
+        assert _stay_q8_residue_interval_witness(
+            (product_high, lower, upper), q8, residue_lower, residue_upper, bits=bits
+        ) == expected_witness
+
+    for _ in range(100):
+        product_high = rng.randrange(256)
+        planted_low = rng.randrange(1 << 24)
+        residue = (((product_high << 24) | planted_low) * MULT) & 0xFFFFFFFF
+        assert _stay_q8_residue_interval_witness(
+            (product_high, planted_low, planted_low), residue >> 24,
+            residue & 0xFFFFFF, residue & 0xFFFFFF
+        ) == planted_low
 
 
 def test_stay_reduced_subspace_filter_matches_exhaustive_forward_oracle() -> None:
@@ -561,9 +574,14 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         q8 = ((product * MULT) & M32) >> 24
         key2_stage2 = ((key2_crc24 >> 16) << 2) | (key2_crc24 & 0x3)
 
+        witnesses: list[int] = []
         assert _stay_stage2_candidate_matches(
             index, carry_masks, random_firsts, random_seconds, observed_third,
-            (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
+            (key0_crc16 >> 8) & 0xFF, key2_stage2, q8,
+            product_witness=witnesses)
+        assert len(witnesses) == 1
+        assert witnesses[0] >> 24 == product >> 24
+        assert ((witnesses[0] * MULT) & M32) >> 24 == q8
         assert not _stay_stage2_candidate_matches(
             index, carry_masks, random_firsts, random_seconds,
             tuple(value ^ 0x5A for value in observed_third),

@@ -220,6 +220,52 @@ def _stay_q8_residue_interval_nonempty(product_interval: tuple[int, int, int], q
             > residues_below(bucket_start + lower))
 
 
+def _stay_q8_residue_interval_witness(product_interval: tuple[int, int, int], q8: int,
+                                      lower: int, upper: int, *, bits: int = 24) -> int | None:
+    """Find the first product low word satisfying a q8 and residue interval."""
+    if (type(bits) is not int or not 1 <= bits <= 24
+            or len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)
+            or type(q8) is not int or not 0 <= q8 <= 0xFF):
+        raise ValueError("Stay product interval, q8, or word width is invalid")
+    product_high, product_lower, product_upper = product_interval
+    low_limit = 1 << bits
+    modulus = low_limit << 8
+    if (not 0 <= product_high <= 0xFF or not 0 <= product_lower <= product_upper < low_limit
+            or not 0 <= lower <= upper < low_limit):
+        raise ValueError("Stay product or residue interval is out of range")
+
+    start = ((product_high << bits) | product_lower) * MULT % modulus
+
+    def residues_below(count: int, boundary: int) -> int:
+        if boundary <= 0:
+            return 0
+        if boundary >= modulus:
+            return count
+        at_or_above = (
+            _stay_floor_sum(count, modulus, MULT, start + modulus - boundary)
+            - _stay_floor_sum(count, modulus, MULT, start)
+        )
+        return count - at_or_above
+
+    bucket_start = q8 << bits
+    def matches(count: int) -> int:
+        return (residues_below(count, bucket_start + upper + 1)
+                - residues_below(count, bucket_start + lower))
+
+    count = product_upper - product_lower + 1
+    if matches(count) == 0:
+        return None
+    left, right = 1, count
+    while left < right:
+        middle = (left + right) // 2
+        if matches(middle):
+            right = middle
+        else:
+            left = middle + 1
+    return product_lower + left - 1
+
+
 def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int = 24) -> int:
     """Return the q8 values consistent with at least one product in an interval."""
     return sum(1 << q8 for q8 in _stay_q8_carry_masks(product_interval, bits=bits))
@@ -493,7 +539,8 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                                    random_seconds: tuple[int, ...],
                                    observed_third_differences: tuple[int, ...],
                                    key0_crc_bits_8_15: int,
-                                   key2_crc_bits_16_23_and_0_1: int, q8: int) -> bool:
+                                   key2_crc_bits_16_23_and_0_1: int, q8: int, *,
+                                   product_witness: list[int] | None = None) -> bool:
     """Exactly test one Stage 2 partial guess against shared interval constraints.
 
     This is a bounded one-candidate predicate, not a keyspace enumerator. It
@@ -565,7 +612,13 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
             if lower > upper:
                 return False
             if member == count:
-                return _stay_q8_residue_interval_nonempty(_interval, q8, lower, upper)
+                if product_witness is None:
+                    return _stay_q8_residue_interval_nonempty(_interval, q8, lower, upper)
+                witness = _stay_q8_residue_interval_witness(_interval, q8, lower, upper)
+                if witness is None:
+                    return False
+                product_witness.append((_interval[0] << 24) | witness)
+                return True
             first_addend = _offsets[member * 2]
             second_addend = _offsets[member * 2 + 1]
             for pair in _choices[member]:
