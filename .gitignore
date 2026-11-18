@@ -22,3 +22,6 @@ artifacts/
 # Machine-specific Claude Code settings (absolute paths, local allowlists)
 .claude/settings.local.json
 *.py[cod]
+
+# METIS Blue runtime private state (metis blue)
+blue/.state/

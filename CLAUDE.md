@@ -18,7 +18,7 @@ files.
 
 Delegate `metis plan RUN_ID` assignments to the project subagents in
 `.claude/agents/` (`ctf-triage`, `ctf-crypto`, `ctf-web`, `ctf-rev`, `ctf-pwn`,
-`ctf-forensics`, `ctf-misc`, `ctf-critic`) in parallel with compact briefs.
+`ctf-forensics`, `ctf-blue`, `ctf-misc`, `ctf-critic`) in parallel with compact briefs.
 Only Daybreak grants endpoints, handles credentials, and submits through
 `metis web submit`. Challenge programs run only via `metis sandbox`, never on
 the host.

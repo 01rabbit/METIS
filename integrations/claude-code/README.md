@@ -4,9 +4,13 @@ Install once from the repository root:
 
 ```sh
 mkdir -p .claude && cp -R integrations/claude-code/skills integrations/claude-code/agents integrations/claude-code/commands .claude/
+for s in blue/skills/*/; do ln -sfn ../../blue/skills/$(basename "$s") .claude/skills/$(basename "$s"); done
 ```
 
-This adds the `metis` project skill, the `/ctf` command, and eight `ctf-*`
+(`python3 scripts/setup.py --claude-code` does both.) The second line links the 21 Blue Team
+skills (see [docs/BLUE_TEAM.md](../../docs/BLUE_TEAM.md)).
+
+This adds the `metis` project skill, the `/ctf` command, and nine `ctf-*`
 subagents. Re-run the copy after updating METIS. Then start with
 `./start --agent claude`.
 

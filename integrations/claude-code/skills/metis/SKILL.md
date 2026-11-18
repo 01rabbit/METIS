@@ -58,7 +58,7 @@ Jobs left `queued` start on the next `dispatch` when a slot frees:
 | `web-specialist` | `ctf-web` |
 | `rev-specialist` | `ctf-rev` |
 | `pwn-specialist` | `ctf-pwn` |
-| `forensics-specialist` | `ctf-forensics` |
+| `forensics-specialist` | `ctf-forensics` (`ctf-blue` when the question is answered from logs or incident evidence) |
 | `misc-specialist` | `ctf-misc` |
 | `independent-critic` | `ctf-critic` |
 
