@@ -165,7 +165,8 @@ class WebWorkflow:
             cookie_removed = False
             for run_id, raw_state in rows:
                 state = json.loads(raw_state)
-                cookie_removed = state.get("cookies", {}).pop(key, None) is not None or cookie_removed
+                removed_cookies = state.get("cookies", {}).pop(key, None)
+                cookie_removed = bool(removed_cookies) or cookie_removed
                 state.pop("cookie_fingerprint", None)
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed

@@ -205,11 +205,12 @@ def _stay_predict_third_byte_difference(random_first: int, random_second: int,
         a1, a2 = low_after_two(key0_crc_bits_0_15, plain0, plain1)
         high1, high2 = second_key1_high(a1, a2, carry1, carry2)
         key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[high1]) & 0xFFFFFF
-        first_stream2 = ((((key2_after_first & 0xFFFF) | 2)
-                          * (((key2_after_first & 0xFFFF) | 2) ^ 1)) >> 8) & 0xFF
+        first_stream_state = (key2_after_first & 0xFFFF) | 2
+        first_stream2 = (first_stream_state * (first_stream_state ^ 1) >> 8) & 0xFF
         key2_after_second = ((key2_after_first >> 8)
                              ^ CRCTAB[(key2_after_first ^ high2) & 0xFF]) & 0xFFFF
-        second_stream2 = (((key2_after_second | 2) * (key2_after_second | 3)) >> 8) & 0xFF
+        second_stream_state = key2_after_second | 2
+        second_stream2 = (second_stream_state * (second_stream_state ^ 1) >> 8) & 0xFF
         return first_stream2, second_stream2
 
     first_pass_s1, first_pass_s2 = stream_after_two(
