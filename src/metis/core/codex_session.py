@@ -63,7 +63,7 @@ def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
             add("stage", result["stage"])
         for key in ("tried", "workers", "seconds"):
             add(key, result.get(key))
-    elif tool == "zipcrypto_stay_scan":
+    elif tool in {"zipcrypto_stay_scan", "zipcrypto_stay_stage2"}:
         for key in ("next_index", "complete", "scanned", "hits_count", "seconds"):
             add(key, result.get(key))
         if result.get("reason") in {"work_exceeds_budget", "memory_limit_exceeded", "isolation_unavailable",
@@ -311,12 +311,19 @@ class CodexSession:
                 zipcrypto_runner = None
                 if tool == "zipcrypto_attack":
                     from metis.core.ctf_zipcrypto_worker import run_zipcrypto_attack
-                    zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
-                        self.database, run_id, name, settings, _operation_id=operation_id)
+                    def zipcrypto_runner(data, settings):
+                        return run_zipcrypto_attack(self.database, run_id, name, settings,
+                                                    _operation_id=operation_id)
                 elif tool == "zipcrypto_stay_scan":
                     from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan
-                    zipcrypto_runner = lambda data, settings: run_zipcrypto_stay_scan(
-                        self.database, run_id, name, settings, _operation_id=operation_id)
+                    def zipcrypto_runner(data, settings):
+                        return run_zipcrypto_stay_scan(self.database, run_id, name, settings,
+                                                       _operation_id=operation_id)
+                elif tool == "zipcrypto_stay_stage2":
+                    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_stage2
+                    def zipcrypto_runner(data, settings):
+                        return run_zipcrypto_stay_stage2(self.database, run_id, name, settings,
+                                                         _operation_id=operation_id)
                 result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
                 output = {"run_id": run_id, "ok": True, "result": result, "_tool": tool}
             except ARTIFACT_ERRORS as exc:
