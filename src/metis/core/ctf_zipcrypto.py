@@ -199,6 +199,23 @@ def _stay_first_stage_carry_masks(random_firsts: tuple[int, ...],
     return tuple(masks)
 
 
+def _stay_first_stage_candidate(index: int, random_firsts: tuple[int, ...],
+                                observed_differences: tuple[int, ...]
+                                ) -> tuple[int, ...] | None:
+    """Decode one packed 40-bit Stay guess and apply its multi-file filter."""
+    if type(index) is not int or not 0 <= index < 1 << 40:
+        raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
+    first_stream = index & 0xFF
+    key0_crc_low = index >> 8 & 0xFF
+    key1_product_high = index >> 16 & 0xFF
+    first_carry = index >> 24 & 1
+    key2_crc_bits_2_15 = ((index >> 25 & 0x3F) << 10) | ((index >> 31 & 0xFF) << 2)
+    second_carry = index >> 39 & 1
+    return _stay_first_stage_carry_masks(
+        random_firsts, observed_differences, first_stream, key0_crc_low,
+        key1_product_high, key2_crc_bits_2_15, first_carry, second_carry)
+
+
 def _tables() -> tuple[list[int], list[int]]:
     crc, inv = [0] * 256, [0] * 256
     for byte in range(256):

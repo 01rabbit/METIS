@@ -291,6 +291,54 @@ def test_stay_first_stage_carry_masks_retain_full_state_guesses() -> None:
         _stay_first_stage_carry_masks((0, 1, 2, 3), (0, 1, 2, 3), 0, 0, 0, 0, 0, 0)
 
 
+def test_stay_first_stage_packed_guess_retains_full_state() -> None:
+    """The paper's 40 guessed bits map to a full-state candidate without bit loss."""
+    import pytest
+
+    from metis.core.ctf_zipcrypto import (
+        M32,
+        MULT,
+        _stay_first_stage_candidate,
+    )
+
+    rng = random.Random(0x40_40)
+    for _ in range(100):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        first_stream = _stream_byte(initial[2])
+        key0_crc_low = _crc_update(initial[0], 0) & 0xFF
+        product = initial[1] * MULT & M32
+        key2_crc = _crc_update(initial[2], 0) & 0xFFFC
+        random_firsts = tuple(rng.randrange(256) for _ in range(7))
+        random_seconds = tuple(rng.randrange(256) for _ in range(7))
+        observed = tuple(
+            _encrypt(_encrypt(bytes((first, second)), initial), initial)[1] ^ second
+            for first, second in zip(random_firsts, random_seconds, strict=True)
+        )
+
+        first_low = _crc_update(initial[0], random_firsts[0]) & 0xFF
+        second_low = _crc_update(initial[0], random_firsts[0] ^ first_stream) & 0xFF
+        first_carry = int((product & 0xFFFFFF) + (first_low * MULT + 1 & 0xFFFFFF) >= 1 << 24)
+        second_carry = int((product & 0xFFFFFF) + (second_low * MULT + 1 & 0xFFFFFF) >= 1 << 24)
+        index = (
+            first_stream | key0_crc_low << 8 | (product >> 24) << 16
+            | first_carry << 24 | (key2_crc >> 10) << 25
+            | (key2_crc >> 2 & 0xFF) << 31 | second_carry << 39
+        )
+
+        masks = _stay_first_stage_candidate(index, random_firsts, observed)
+        assert masks is not None
+        assert masks[0] == 1 << (first_carry * 2 + second_carry)
+        for member_index, first in enumerate(random_firsts):
+            pass_first = _crc_update(initial[0], first) & 0xFF
+            pass_second = _crc_update(initial[0], first ^ first_stream) & 0xFF
+            carry_first = int((product & 0xFFFFFF) + (pass_first * MULT + 1 & 0xFFFFFF) >= 1 << 24)
+            carry_second = int((product & 0xFFFFFF) + (pass_second * MULT + 1 & 0xFFFFFF) >= 1 << 24)
+            assert masks[member_index] & (1 << (carry_first * 2 + carry_second))
+
+    with pytest.raises(ValueError, match="40-bit"):
+        _stay_first_stage_candidate(1 << 40, (0, 1, 2, 3, 4), (0, 1, 2, 3, 4))
+
+
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
     """Check the shared second-byte relation and reject altered PRNG observations."""
     from pathlib import Path

@@ -201,3 +201,10 @@ double-encryption observation retains the true carry pair in every member
 mask. It then intersects all 14 first-byte key1 carry constraints and verifies
 that interval lifting retains the planted initial key1. It still does not
 enumerate Stay's 40-bit partial-state tuples or execute the first-stage search.
+
+`_stay_first_stage_candidate` now defines the packed 40-bit guess layout:
+first stream byte, low `CRC(key0_0, 0)` byte, high byte of `key1_0 * MULT`,
+first carry, `CRC(key2_0, 0)` bits 10..15 and 2..9, and the second carry. A
+100-state encode/filter regression confirms the planted full-state fields
+survive the decoded guess. This prepares the search domain; it does not iterate
+the domain. The focused suite now has nine passing tests.
