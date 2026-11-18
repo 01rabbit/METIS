@@ -11,6 +11,9 @@
   resolved wave, budget and a different hypothesis.
 - Submissions to one run are serialized; interrupted sends stay `unknown`.
 - Contest: run/problem identity check, dispatch timebox.
+- Shared resource capacities with atomic whole-set leases (`metis resource`), used by the sandbox
+  and headless rendering; exact, expiring, counted permits (`metis permit`); prerequisite cycle
+  rejection and `blocked_by_prerequisites` reporting for contests.
 
 ## 0.5.0 — 2026-11-16
 

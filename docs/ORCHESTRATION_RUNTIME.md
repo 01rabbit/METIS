@@ -112,6 +112,20 @@ running の peer がまだ呼び出しを始めていない場合にも直ちに
 model-turn budgetは同コマンドの `--specialist-turn-budget` でrun開始前に指定できる（既定24、範囲1–256）。
 runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設定変更は既存runへ適用しない。
 
+
+### 共有リソースとスコープ付き許可
+
+- 名前付きリソース（`sandbox`、`browser` など）の容量を `metis resource configure NAME --capacity N`
+  で設定すると、同じ状態ファイルを使う全プロセス（並列の専門家、スウォーム、別の run）で共有される。
+  要求する枠の組は1トランザクションで全部取るか何も取らない。容量を設定していないリソースは制限しない。
+  - `metis sandbox run` は `sandbox` を1枠、`web open --render` は `browser` を1枠借りる（待機の上限はそれぞれ300秒と120秒）。
+  - lease には期限がある。期限切れの回収（`metis resource reap`）と明示の解放（`metis resource release`）は、
+    保持者の停止を確かめてから行う。容量は、借りている枠数より小さくできない。
+- `metis permit issue RUN TASK RESOURCE ACTION --reason ... [--ttl 300] [--uses 1]` は、外部の状態を変える
+  操作（attack-defense のパッチ投入など）に対する、完全一致・期限付き・回数付きの許可を出す。
+  ワイルドカードは拒否する。消費（`ScopedPermits.consume`）は原子的で、最後の1回を二重に使えない。
+  発行は Daybreak（オーナー）だけが行う。
+
 ### モデル
 
 `metis agent slots --catalog-file models.json --current-model ID` で、ホストがその場で示したモデル一覧
@@ -142,6 +156,8 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
 - `contest dispatch` は `timebox_until`（最大30分）を記録し、次回の dispatch（または
   `ContestBoard.enforce_timebox`）で期限切れの問題を `blocked`＋メモにする。再 queue / abandon は明示的に行う。
 - スウォーム（`metis swarm`）の lease とは別の仕組みで、互いに干渉しない。
+- 前提問題（`prerequisites`）が循環する追加は拒否する。前提が `abandoned` になった（上流を含む）queued の問題は
+  `board` と `dispatch` の `blocked_by_prerequisites` に原因と共に出す。黙って待たせ続けない。
 
 ## 5. 受け入れ条件との対応（仕様10章）
 
