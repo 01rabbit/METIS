@@ -112,3 +112,44 @@ def test_stay_reduced_subspace_filter_matches_exhaustive_forward_oracle() -> Non
             assert planted in filtered
         else:
             assert planted not in filtered
+
+
+def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
+    """Check the shared second-byte relation and reject altered PRNG observations."""
+    from pathlib import Path
+
+    import numpy as np
+
+    from metis.core import ctf_zipcrypto as zc
+
+    archive = (Path(__file__).parent / "fixtures" / "infozip-glibc-vector.zip").read_bytes()
+    recovered = zc.infozip_seed(archive, seconds=120)
+    assert recovered["found"] and recovered["matched_leaked_bytes"] == 7
+    members = [entry for entry in zc.members(archive) if entry["encrypted"]]
+    random_headers = [bytes.fromhex(value) for value in recovered["random_header_bytes"]]
+    seed = recovered["seed"]
+    keys = zc.Keys.from_password(b"testpass")
+    initial = (keys.x, keys.y, keys.z)
+
+    def jointly_consistent(headers: list[bytes]) -> bool:
+        return len(headers) == len(members) and all(
+            zc.member_bytes(archive, entry)[0] == header[0]
+            and
+            (zc.member_bytes(archive, entry)[1] ^ header[1])
+            == _second_byte_differential(header[0], initial)
+            for entry, header in zip(members, headers, strict=True)
+        )
+
+    assert jointly_consistent(random_headers)
+
+    # Preserve each observed first byte while changing a second-byte PRNG observation.
+    # This specifically exercises rejection after the first-byte prefilter.
+    altered_observations = [bytes((header[0], header[1] ^ 1, *header[2:]))
+                            for header in random_headers]
+    assert not jointly_consistent(altered_observations)
+
+    # Also check one arbitrary different seed; this is not a search over all
+    # alternative seeds that happen to pass the first-byte prefilter.
+    wrong_stream = zc.glibc_rand_bytes(np.array([seed ^ 1], dtype=np.uint64), 70)[0]
+    wrong_headers = [bytes(wrong_stream[i * 10:i * 10 + 10]) for i in range(len(members))]
+    assert not jointly_consistent(wrong_headers)

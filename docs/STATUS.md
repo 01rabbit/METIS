@@ -588,3 +588,20 @@ invocation packages the same control choreography as five direct scheduler
 calls, but the test does not measure real human time or solve performance.
 Continuation selection and sensitive decisions remain with Daybreak. See
 `docs/reports/phase4-autopilot-equivalence-2026-11-17.md`.
+
+An unexpected specialist-driver exception now produces a persisted,
+answer-free `specialist_driver_exception` Daybreak handoff. Attempts are left
+in their existing running/unknown/queued states because an exception does not
+prove that an external worker stopped; a resumed autopilot refuses to dispatch
+the queued remainder while a prior attempt needs reconciliation. Synthetic
+fault-injection verifies persisted handoff metrics and no redrive. This does
+not establish worker liveness or automatic recovery. See
+`docs/reports/phase4-driver-exception-handoff-2026-11-18.md`.
+
+The Stay forward-relation tests now include a seven-member Info-ZIP fixture
+positive case, a second-byte mutation preserving all observed first bytes, and
+one deliberately altered PRNG seed. One known shared initial ZipCrypto state
+satisfies all seven second-byte relations; the mutated observations and altered
+seed are rejected. This validates a forward predicate only, not an unknown-state
+search, rejection of all false seeds, inverse search, or #39 key recovery. See
+the updated `docs/reports/issue28-stay-assessment-2026-11-16.md`.

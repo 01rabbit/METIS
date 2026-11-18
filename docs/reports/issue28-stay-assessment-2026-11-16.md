@@ -132,6 +132,16 @@ The official archive remains unbroken. The inverse state search, member CRC
 validation with recovered keys, XOR reconstruction, and official verifier
 response are still absent; no candidate was submitted.
 
+The current test addition uses the repository's seven-member synthetic Info-ZIP
+fixture and its known test password to check the derived second-byte relation
+for all seven observations under one initial state. It explicitly checks the
+first-byte cancellation too. A negative fixture preserves every first byte but
+flips each second PRNG observation, which the relation rejects; one arbitrary
+different PRNG seed is also rejected. This is a forward predicate check with a
+known state, not a full header parser, an unknown-state search, or a test that
+eliminates all alternate seeds passing the first-byte prefilter. It provides no
+evidence of target key recovery.
+
 ## Naive bit-vector solver feasibility probe (2026-11-18)
 
 As a separate algorithm-selection check, a temporary SMT-LIB model encoded the

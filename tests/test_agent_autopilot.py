@@ -59,6 +59,31 @@ def test_existing_running_attempt_is_not_driven_again(tmp_path):
     assert result["stop"] == "existing_attempt_needs_reconciliation"
 
 
+def test_driver_exception_persists_handoff_and_preserves_attempts_for_reconciliation(tmp_path):
+    scheduler, run = setup_run(tmp_path)
+
+    def crash(*_args):
+        raise RuntimeError("private worker output must not be exposed")
+
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=crash)
+    assert result["stop"] == "specialist_driver_exception"
+    assert result["metrics"]["daybreak_handoffs"] == 1
+    assert "private worker output" not in str(result)
+    jobs = scheduler.jobs(run)
+    assert jobs and any(job["state"] in {"running", "unknown"} for job in jobs)
+    assert all(job["state"] in {"running", "unknown", "queued"} for job in jobs)
+    with sqlite3.connect(scheduler.database) as db:
+        row = db.execute("SELECT stop_reason,daybreak_handoffs FROM agent_autopilot_runs WHERE invocation_id=?",
+                         (result["metrics"]["invocation_id"],)).fetchone()
+    assert row == ("specialist_driver_exception", 1)
+
+    resumed = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=crash)
+    assert resumed["stop"] == "existing_attempt_needs_reconciliation"
+    assert [job["assignment_id"] for job in scheduler.jobs(run) if job["state"] in {"running", "unknown"}] \
+        == [job["assignment_id"] for job in jobs if job["state"] in {"running", "unknown"}]
+    assert all(job["attempt_no"] <= 1 for job in scheduler.jobs(run))
+
+
 def test_bounds_and_failed_attempt_stops_without_retry(tmp_path):
     scheduler, run = setup_run(tmp_path)
     with pytest.raises(ValueError, match="max-waves"):

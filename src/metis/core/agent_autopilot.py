@@ -50,7 +50,7 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
                      "existing_attempt_needs_reconciliation", "slots_unavailable_or_spawn_failed",
                      "failed_attempt_for_daybreak", "unresolved_attempts", "synthesis_for_daybreak",
                      "continuation_for_daybreak", "invalid_or_repeated_continuation", "wave_limit",
-                     "host_model_turn_budget_unenforced"}
+                     "host_model_turn_budget_unenforced", "specialist_driver_exception"}
     metrics = {"invocation_id": uuid.uuid4().hex,
                "elapsed_seconds": round(max(0.0, finished - started), 3), "max_waves": max_waves,
                "waves_inspected": len(result["waves"]), "stop_reason": stop,
@@ -146,8 +146,17 @@ def _autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, m
             with ThreadPoolExecutor(max_workers=len(started)) as pool:
                 futures = [pool.submit(drive, scheduler, run_id, j["assignment_id"], j["attempt_id"], runner)
                            for j in started]
+                driver_failed = False
                 for future in futures:
-                    future.result()
+                    try:
+                        future.result()
+                    except Exception:  # noqa: BLE001 -- preserve attempt for operator reconciliation
+                        driver_failed = True
+                if driver_failed:
+                    # A driver exception does not prove that its external worker stopped.
+                    # Leave scheduler attempts untouched and persist an answer-free handoff.
+                    result["stop"] = "specialist_driver_exception"
+                    break
         synthesis = scheduler.ledger.synthesize(run_id, wave_id)
         result["operations"]["synthesize"] += 1
         result["waves"].append(synthesis)
