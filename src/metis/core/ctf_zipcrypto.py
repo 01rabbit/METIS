@@ -15,8 +15,8 @@
 Not implemented: Stay's key recovery from the double-encrypted header (about 2^39 cipher steps
 in the paper, hours of native code) - the tools report it as ``work_exceeds_budget``.
 The first-stage 2^40 partial-state scan is available only through the bounded isolated
-``zipcrypto_stay_scan`` worker; it does not recover keys. Everything is bounded by explicit
-time and candidate budgets; nothing runs outside Python.
+``zipcrypto_stay_scan`` worker; it does not recover keys. All challenge inputs are handled
+inside Python, and the generated scan kernel runs only inside the isolated container.
 """
 from __future__ import annotations
 
@@ -217,6 +217,59 @@ def _stay_first_stage_candidate(index: int, random_firsts: tuple[int, ...],
     return _stay_first_stage_carry_masks(
         random_firsts, observed_differences, first_stream, key0_crc_low,
         key1_product_high, key2_crc_bits_2_15, first_carry, second_carry)
+
+
+def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
+                                     random_firsts: tuple[int, ...]
+                                     ) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
+    """Lift a filtered 40-bit guess through shared key1 carry intervals.
+
+    Each yielded pair contains a product interval and the carry-pair index
+    selected for each member. Callers can enumerate actual key1 values from the
+    interval only when a later stage needs them. This is a Stage 1 consistency
+    filter, not the later key-recovery stage.
+    """
+    if type(index) is not int or not 0 <= index < 1 << 40:
+        raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
+    if (len(carry_masks) != len(random_firsts) or len(random_firsts) < 5
+            or any(type(mask) is not int or not 1 <= mask <= 0xF for mask in carry_masks)
+            or any(type(value) is not int or not 0 <= value <= 0xFF for value in random_firsts)):
+        raise ValueError("Stay carry masks and random header bytes are invalid")
+    first_stream = index & 0xFF
+    key0_crc_low = index >> 8 & 0xFF
+    product_high = index >> 16 & 0xFF
+    carry_options = [tuple(pair for pair in range(4) if mask & (1 << pair))
+                     for mask in carry_masks]
+    first_carry_pair = index >> 24 & 1, index >> 39 & 1
+    if (first_carry_pair[0] * 2 + first_carry_pair[1]) not in carry_options[0]:
+        return
+    carry_options[0] = (first_carry_pair[0] * 2 + first_carry_pair[1],)
+
+    choices = [0] * len(random_firsts)
+
+    def visit(member: int) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
+        if member < len(random_firsts):
+            for pair in carry_options[member]:
+                choices[member] = pair
+                yield from visit(member + 1)
+            return
+        addends: list[int] = []
+        top_bytes: list[int] = []
+        carries: list[int] = []
+        for random_first, pair in zip(random_firsts, choices, strict=True):
+            first_low = key0_crc_low ^ (CRCTAB[random_first] & 0xFF)
+            second_low = key0_crc_low ^ (CRCTAB[random_first ^ first_stream] & 0xFF)
+            first_carry, second_carry = pair >> 1, pair & 1
+            for low, carry in ((first_low, first_carry), (second_low, second_carry)):
+                offset = low * MULT + 1
+                addends.append(low)
+                carries.append(carry)
+                top_bytes.append((product_high + (offset >> 24) + carry) & 0xFF)
+        interval = _stay_key1_product_interval(tuple(addends), tuple(top_bytes), tuple(carries))
+        if interval is not None:
+            yield interval, tuple(choices)
+
+    yield from visit(0)
 
 
 def _stay_predict_second_byte_difference_np(indices: np.ndarray, random_first: int,

@@ -228,3 +228,31 @@ filtered batch would discard later hits from that batch; returning the hit
 cursor allows the next chunk to enumerate them. A regression compares capped
 and resumed results with the complete scalar survivor list. The focused suite
 passed (10 tests).
+
+## Isolated Stage 1 scan (2026-11-18)
+
+Added the `zipcrypto_stay_scan` artifact tool. It recovers the per-member
+random headers inside Python, verifies each first byte against the archive,
+then compiles and runs a fixed C filter only inside the networkless
+`zipcrypto` sandbox profile (2 GiB memory/swap ceiling, four-CPU ceiling,
+read-only root, no host mounts). Each request is bounded to 10–300 seconds and
+a half-open 40-bit range. Candidate IDs and carry masks are written to 0600
+files below `.metis-state/private-stay/`; run events retain only counts,
+cursor, timing, and result status.
+
+The native filter passed a real sandbox integration test against the seeded
+seven-member synthetic Info-ZIP vector. The planted candidate and all carry
+masks matched the independent Python reference; the shard permission check
+confirmed mode 0600. Ruff, mypy, and the focused ZipCrypto, session-evidence,
+and Stay differential tests passed.
+
+On the official ksnctf #39 archive, the complete 2^40 index domain was scanned
+in bounded sandbox chunks. The scan retained 360 first-stage candidates in
+private shards. Rechecking their per-member carry masks against the shared
+key1 product interval left 88 interval records, implying 98,222,960 possible
+initial key1 words in aggregate. These intervals are a substantial reduction,
+but still require later-stage filtering and key recovery. No plaintext was
+decrypted, no CRC was checked with recovered keys, and no official candidate
+was submitted. Do not interpret the completed Stage 1 scan or its private
+shards as a recovered ZipCrypto key or a solve. The key-recovery stage remains
+unimplemented.

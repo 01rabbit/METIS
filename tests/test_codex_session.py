@@ -83,9 +83,9 @@ def test_native_invalid_inputs_cannot_be_executed():
     ("zipcrypto_stay_scan", {
         "next_index": 99, "complete": False, "scanned": 99, "hits_count": 2,
         "candidate_shard": ".metis-state/private-stay/secret-shard.json",
-        "hits": [[42, [1, 2, 3, 4, 5, 6, 7]]],
+        "hits": [[4242424242, [1, 2, 3, 4, 5, 6, 7]]],
     }, {"next_index": "99", "complete": "False", "scanned": "99", "hits_count": "2"},
-     ("secret-shard.json", "42", "private-stay")),
+     ("secret-shard.json", "4242424242", "private-stay")),
     ("text", {"text": "arbitrary-private-output"}, {}, ("arbitrary-private-output",)),
 ])
 def test_artifact_evidence_records_safe_facts_only(tmp_path, monkeypatch, tool, result, expected, forbidden):

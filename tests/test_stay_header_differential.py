@@ -339,6 +339,52 @@ def test_stay_first_stage_packed_guess_retains_full_state() -> None:
         _stay_first_stage_candidate(1 << 40, (0, 1, 2, 3, 4), (0, 1, 2, 3, 4))
 
 
+def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
+    from metis.core.ctf_zipcrypto import (
+        M32,
+        MULT,
+        _stay_first_stage_candidate,
+        _stay_first_stage_key1_intervals,
+    )
+
+    rng = random.Random(0x11F7)
+    for _ in range(30):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        first_stream = _stream_byte(initial[2])
+        key0_crc_low = _crc_update(initial[0], 0) & 0xFF
+        product = initial[1] * MULT & M32
+        key2_crc = _crc_update(initial[2], 0) & 0xFFFC
+        random_firsts = tuple(rng.randrange(256) for _ in range(7))
+        random_seconds = tuple(rng.randrange(256) for _ in range(7))
+        observed = tuple(
+            _encrypt(_encrypt(bytes((first, second)), initial), initial)[1] ^ second
+            for first, second in zip(random_firsts, random_seconds, strict=True)
+        )
+        first_low = _crc_update(initial[0], random_firsts[0]) & 0xFF
+        second_low = _crc_update(initial[0], random_firsts[0] ^ first_stream) & 0xFF
+        carry_first = int((product & 0xFFFFFF) + ((first_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+        carry_second = int((product & 0xFFFFFF) + ((second_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+        index = (
+            first_stream | key0_crc_low << 8 | (product >> 24) << 16
+            | carry_first << 24 | (key2_crc >> 10) << 25
+            | (key2_crc >> 2 & 0xFF) << 31 | carry_second << 39
+        )
+        masks = _stay_first_stage_candidate(index, random_firsts, observed)
+        assert masks is not None
+        true_pairs = []
+        for first in random_firsts:
+            low1 = _crc_update(initial[0], first) & 0xFF
+            low2 = _crc_update(initial[0], first ^ first_stream) & 0xFF
+            carry1 = int((product & 0xFFFFFF) + ((low1 * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+            carry2 = int((product & 0xFFFFFF) + ((low2 * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+            true_pairs.append(carry1 * 2 + carry2)
+        intervals = tuple(_stay_first_stage_key1_intervals(index, masks, random_firsts))
+        assert any(pairs == tuple(true_pairs)
+                   and interval[0] == (product >> 24)
+                   and interval[1] <= (product & 0xFFFFFF) <= interval[2]
+                   for interval, pairs in intervals)
+
+
 def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> None:
     """Adjacent bounded ranges resume at the cursor and retain the planted guess."""
     from metis.core.ctf_zipcrypto import (

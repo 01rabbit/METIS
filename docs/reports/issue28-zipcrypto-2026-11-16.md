@@ -10,16 +10,17 @@
 - Stay の 2020 年の論文（ePrint 2020/983）は本文を取得できなかった（403）。概要では 2 ファイルで鍵を復元できるとしているが、計算量は確認できていない。
 - 既知平文攻撃（Biham–Kocher）は、bkcrack（zlib ライセンス、Joachim Hotonnier）の Attack・Zreduction・各表を参照して移植した。
 
-## 実装（`core/ctf_zipcrypto.py`、artifact tool 4 種）
+## 実装（`core/ctf_zipcrypto.py`、artifact tool 5 種）
 
 | ツール | 内容 | 予算と失敗理由 |
 | --- | --- | --- |
 | `zipcrypto_info` | メンバー、チェックバイト、UT 時刻、Info-ZIP の漏洩バイト | なし |
 | `infozip_seed{time_from,time_to,pid_bits,generator,seconds}` | glibc（TYPE_3）／MSVC の rand の種を `time^pid` または `time^π` から探し、全メンバーのヘッダの乱数 10 バイトを返す | 期間 31 日、`seconds` 300 以下。`no_seed_in_range`、`too_few_members`、`work_exceeds_budget` |
 | `zipcrypto_attack{member,plaintext_hex,offset,seconds}` | Biham–Kocher。縮約は numpy、鍵の探索は numpy でベクトル化し、CPU コア数で並列 | 既知平文 12 バイト以上（8 バイト連続）。`not_enough_plaintext`、`work_exceeds_budget`、`no_solution` |
+| `zipcrypto_stay_scan{random_header_bytes_hex,start,stop,max_candidates,seconds,max_hits}` | Stay Stage 1 の40-bit探索を固定Cフィルタで実行。候補ID/carry maskはprivate shardへ保存 | 5–64メンバー、秒数10–300、候補/ヒット上限あり。隔離実行できない場合はfail closed |
 | `zipcrypto_decrypt{member,keys}`（derive） | 鍵で復号し、チェックバイトと CRC を検証して artifact として登録する | 鍵が誤っていれば理由を返す |
 
-Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果に、その旨と計算量を明記している。
+Stay の Stage 1 partial-state search はMETISの隔離workerで実行できる。鍵復元（約2^39の後続処理）は未実装。`infozip_seed` の結果に、その旨と計算量を明記している。
 
 ## 検証
 
@@ -37,6 +38,11 @@ Stay の鍵復元（2^39）は実装していない。`infozip_seed` の結果�
 - 2026-11-17 に通常2 GiB ZipCrypto profile自体のcgroup OOM分類・後始末テストを追加した。合成ZIPをintakeし、network/host mountなしのprofile内で、まず `memory.max` / `memory.swap.max` が有限かつ上限以下と `memory.events` の存在を確認してからページをtouchする合成メモリ圧力を実行する。あわせて要求・返却resource profileが `zipcrypto` であることを確認し、`memory_limit_exceeded`、route mapperの `sandbox-oom`、worker registry削除を検証した。`.venv/bin/pytest -ra tests/test_ctf_zipcrypto.py::test_zipcrypto_production_profile_oom_classification_and_cleanup` → `1 passed in 1.31s`。exact HEAD `5858577e9b58b21a9c2d4bb29fee736798da7332`のsandbox CIは `6 passed in 86.27s`（run `44025607567`）。これは本番profileの上限・reason mapping・cleanup経路の証拠であり、ZipCrypto候補探索が自然にOOMになることを示すものではない。Stay回復とOOM phase attributionは引き続き未達。
 - 2026-11-17 の追加修正で `Sandbox.execute` は container create / engine attach / workload result / OOM inspection の現在段階を保持し、engine timeoutをworkload timeoutと区別する。ZipCrypto routeはin-container supervisorが返すworkload timeoutだけを `work_exceeds_budget` とし、engine timeoutは段階付き `worker_failed` に分類する。`tests/test_ctf_sandbox.py::test_zipcrypto_engine_timeouts_are_distinct_from_workload_deadline` はcreate・attach・inspectionの各ケースをfake engineで検証。実container上で期限終了、OOM分類、プロセス群停止を含む追加4-test runも成功した。
 - ksnctf #39: 種を 0.8 秒で復元した（7 メンバーすべて一致。`time ^ pid`）。鍵の復元には至らず、#39 は未解決のまま。
+
+## 2026-11-18 update
+
+- `zipcrypto_stay_scan` は最大4 CPU/2 GiBの隔離profileでのみ探索し、候補は`.metis-state/private-stay/`に0600で保持する。合成Info-ZIPベクタの実サンドボックス試験で埋め込み候補と全carry masksの一致を確認した。
+- 公式#39の7メンバーからseed/header列を復元し、隔離native workerで40-bit Stage 1全域（2^40）をbounded chunksに分けて走査した。360件のStage 1候補をprivate shardに保存。共有key1 carry intervalで再評価したところ、88 interval recordsが残り、合計98,222,960個の初期key1候補を含む。これは後続探索の入力に過ぎず、鍵復元ではない。Stage 2、復号、鍵に基づくCRC検証、公式提出は未実施で、#39は未解決。
 
 ## 実 Codex の測定（ksnctf #39、新しい DB、note なし、codex-cli 0.169.0）
 

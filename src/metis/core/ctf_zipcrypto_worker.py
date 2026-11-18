@@ -250,9 +250,10 @@ if __name__ == "__main__":
         raise SystemExit(0)
     random_firsts_hex = bytes(random_firsts).hex()
     observed_hex = bytes(observed_differences).hex()
+    safe_max_hits = min(request["max_hits"], max(1, 180000 // (24 + 3 * len(encrypted))))
     bounded_stop = min(request["stop"], request["start"] + request["max_candidates"])
     result = subprocess.run([str(binary), str(request["start"]), str(bounded_stop),
-                             str(max(1, request["seconds"] - 5)), str(request["max_hits"]),
+                             str(max(1, request["seconds"] - 5)), str(safe_max_hits),
                              random_firsts_hex, observed_hex],
                             capture_output=True, text=True, timeout=max(1, request["seconds"] - 1))
     if result.returncode:

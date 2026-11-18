@@ -569,7 +569,8 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
-    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_stay_scan", "zipcrypto_decrypt"}:
+    if tool in {"zipcrypto_info", "infozip_seed", "zipcrypto_attack", "zipcrypto_stay_scan",
+                "zipcrypto_decrypt"}:
         return _zipcrypto(data, tool, options, zipcrypto_runner=zipcrypto_runner)
     if tool in {"tls_decrypt", "tls_http_body"}:
         from metis.core.ctf_tls import http_body, tls_decrypt
