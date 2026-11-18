@@ -320,11 +320,10 @@ def _stay_first_stage_scan_chunk(random_firsts: tuple[int, ...],
             for position, candidate in enumerate(hit_indices):
                 hits.append((int(candidate), tuple(int(value) for value in carry_masks[:, position])))
             if take < len(indices) or len(hits) >= max_hits:
-                # Candidate IDs between the last hit and batch_stop were filtered
-                # too, so resume after this whole batch. Returning last_hit + 1
-                # would rescan harmlessly, but can repeatedly fill the hit cap
-                # before making progress when dense ranges are supplied.
-                cursor = batch_stop
+                # Resume just after the last returned hit. The remaining
+                # survivors in this filtered batch must be emitted by the next
+                # call rather than skipped.
+                cursor = int(hit_indices[-1]) + 1
                 break
         cursor = batch_stop
     return {"next_index": cursor, "complete": cursor >= stop,

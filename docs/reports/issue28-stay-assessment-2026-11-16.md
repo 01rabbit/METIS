@@ -222,7 +222,9 @@ Neither in-sandbox nor target throughput has been measured. The scan is still
 not exposed as a METIS artifact tool, and no complete 2^40 range has been
 scanned. The focused suite now has ten passing tests.
 
-Review of resumability found that stopping at the hit cap could return a cursor
-inside an already-filtered batch and repeatedly rescan it on dense ranges. The
-cursor now advances to that batch's end; the focused regression checks this
-behavior. The focused suite passed (10 tests).
+Review of resumability confirmed that stopping at the hit cap must return the
+position immediately after the last emitted hit. Advancing to the end of the
+filtered batch would discard later hits from that batch; returning the hit
+cursor allows the next chunk to enumerate them. A regression compares capped
+and resumed results with the complete scalar survivor list. The focused suite
+passed (10 tests).

@@ -394,7 +394,11 @@ def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> Non
     capped = _stay_first_stage_scan_chunk(
         random_firsts, observed, index, index + 256, max_candidates=256, max_hits=1)
     assert capped["hits"] == scalar_hits[:1]
-    assert capped["next_index"] == index + 256
+    assert capped["next_index"] == scalar_hits[0][0] + 1
+    remainder = _stay_first_stage_scan_chunk(
+        random_firsts, observed, capped["next_index"], index + 256,
+        max_candidates=256, max_hits=4096)
+    assert remainder["hits"] == scalar_hits[1:]
 
 
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
