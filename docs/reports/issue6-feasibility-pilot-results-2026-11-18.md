@@ -54,3 +54,9 @@ on normal exit. Provider cost remains unknown.
 
 Dataset: [answer-free trial metrics](data/issue6-feasibility-pilot-2026-11-18.json).
 Analysis: [deterministic summary](data/issue6-feasibility-pilot-analysis-2026-11-18.json).
+
+Review follow-up: the generic `analyze()` now receives optional `StudyShape`
+data for identity, seeds, task IDs and encoding-pair counts. The CLI selects
+the frozen pilot shape outside the analysis function; other studies can supply
+their own shape without adding study-specific branches inside `analyze()`.
+The retained dataset and numerical result have not changed.
