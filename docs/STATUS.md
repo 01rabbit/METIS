@@ -653,13 +653,23 @@ byte difference; exact-head checks and METIS validation passed at `7921f7f`.
 Exact modular floor-sum helpers now compute the `q8` values and second-update
 carry bits consistent with each Stage 1 interval without enumerating its 24-bit
 range; 500 exhaustive small-word cases and planted interval states verify the
-projection. A single-candidate necessary filter combines those masks with the multi-member
-third-byte check; ten planted seven-file states pass and modified observations
-fail. Per-member carry feasibility can admit false positives because joint
-product consistency is not checked. The 28-bit Stage 2 space is not enumerated. Full key recovery, member CRC checks with
+projection. A single-candidate Stage 2 predicate combines all member carry thresholds into
+one shared low-residue interval and checks it with a fixed-q8 floor-sum query.
+Ten planted seven-file states pass, modified observations fail, and a fixture
+with distinct pass carries matches full recurrence. It does not enumerate the
+28-bit Stage 2 space. Full key recovery, member CRC checks with
 recovered keys, and an official #39 verdict have not occurred. Issue #28
 remains open. Details are in
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
+
+A post-implementation aggregate check of the private Stage 1 shards reproduced
+360 candidates, 88 carry intervals, and 98,222,960 summed interval values. All
+88 intervals admit all 256 `q8` values, so q8 does not reduce the search space.
+The check emitted aggregate counts only. Independent review led to a fixed-q8
+joint residue query, incremental carry pruning, and a 32,768-visit fail-closed
+cap. Distinct pass-carry offsets match the full recurrence. The partial
+predicate does not establish the missing high byte of the key2 CRC state;
+complete key recovery and all-member CRC validation remain required.
 
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
 origin cookies and fences stale clients from sending or restoring them. State
@@ -676,10 +686,3 @@ recorded no solve. This does not establish host reboot recovery.
 This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
-
-A post-implementation aggregate check of the private Stage 1 shards reproduced
-360 candidates, 88 carry intervals, and 98,222,960 summed interval values. All
-88 intervals admit all 256 `q8` values, so the q8 constraint does not reduce
-the current search space. The check emitted aggregate counts only and did not
-run Stage 2 enumeration. Details are in
-`docs/reports/issue28-stay-assessment-2026-11-16.md`.

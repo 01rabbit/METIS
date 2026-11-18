@@ -310,15 +310,16 @@ exhaustive small-word oracle compares 500 deterministic intervals against
 direct multiplication, and the planted full-state carry-interval test verifies
 that the correct q8 and all per-header second-update carries are retained.
 
-The single-candidate Stage 2 necessary filter now combines these q8/carry masks
-with the multi-member third-byte differential. Ten deterministic planted
-seven-file states passed; the same candidates rejected modified third-byte
-differentials. Carries are checked independently per member, so survivors may
-be false positives if those carries do not share one product value. This is
-one-candidate validation, not enumeration of the 28-bit Stage 2 space.
-It does not reconstruct full keys, check all member CRCs, or submit a candidate.
-No official archive candidate was tested by this predicate. Issue #28 remains
-open.
+The single-candidate Stage 2 predicate checks the multi-member third-byte
+differential, intersects all selected second-update carry thresholds into one
+shared low-residue interval, then uses a fixed-q8 floor-sum query to verify that
+one Stage 1 product value satisfies the joint constraints. It no longer scans
+all 256 q8 buckets inside candidate evaluation. Ten deterministic planted
+seven-file states passed; modified third-byte differentials were rejected, and
+a distinct-pass-carry fixture matched both offsets to the full recurrence.
+This tests one 28-bit Stage 2 guess; it does not enumerate the keyspace,
+reconstruct full keys, check all member CRCs, or submit a candidate. No official
+archive candidate was tested by this predicate. Issue #28 remains open.
 
 ## Projection check on saved Stage 1 intervals (2026-11-18)
 
@@ -329,3 +330,20 @@ interval values. Each of the 88 intervals admits all 256 q8 values, so q8
 consistency is a required correctness check but does not reduce the present
 Stage 2 search space. Candidate IDs and values were not printed or added to
 tracked files. This aggregate analysis is not a Stage 2 search or solve.
+
+## Stage 2 review corrections and bounds (2026-11-18)
+
+An independent follow-up review identified that candidate evaluation must not
+scan all 256 q8 buckets and that carry branches need a firm visit bound. The
+candidate predicate now tests only its fixed q8 and uses the joint low-residue
+query. Stage 1 carry interval construction intersects constraints as each member
+is visited and fails closed after 32,768 branch visits. A regression forces the
+limit to one visit and confirms the stable bound error. A separate planted
+fixture has different first-update carries in the two passes and compares both
+second-update offsets to the full cipher recurrence.
+
+The predicate still checks only the supplied low 24 bits of `crc32(key2, 0)`;
+it does not establish that a compatible missing high byte of the full key2
+state exists, reconstruct full keys, or validate all archive CRCs. Any later
+recovery stage must test the missing state bits and all member CRCs before
+reporting a candidate.

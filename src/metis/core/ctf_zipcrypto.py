@@ -39,6 +39,7 @@ MAXDIFF24 = 0x00FFFFFF + 0xFF
 MAXDIFF26 = 0x03FFFFFF + 0xFF
 CONTIGUOUS = 8
 ATTACK_SIZE = 12
+MAX_STAY_CARRY_INTERVAL_VISITS = 32_768
 
 
 def _stay_carry_interval(low_addends: tuple[int, ...], carries: tuple[int, ...],
@@ -185,6 +186,40 @@ def _stay_q8_carry_masks(product_interval: tuple[int, int, int],
     return result
 
 
+def _stay_q8_residue_interval_nonempty(product_interval: tuple[int, int, int], q8: int,
+                                       lower: int, upper: int, *, bits: int = 24) -> bool:
+    """Check exactly whether an interval maps into one q8/low-residue bucket."""
+    if (type(bits) is not int or not 1 <= bits <= 24
+            or len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)
+            or type(q8) is not int or not 0 <= q8 <= 0xFF):
+        raise ValueError("Stay product interval, q8, or word width is invalid")
+    product_high, product_lower, product_upper = product_interval
+    low_limit = 1 << bits
+    modulus = low_limit << 8
+    if (not 0 <= product_high <= 0xFF or not 0 <= product_lower <= product_upper < low_limit
+            or not 0 <= lower <= upper < low_limit):
+        raise ValueError("Stay product or residue interval is out of range")
+
+    count = product_upper - product_lower + 1
+    start = ((product_high << bits) | product_lower) * MULT % modulus
+
+    def residues_below(boundary: int) -> int:
+        if boundary <= 0:
+            return 0
+        if boundary >= modulus:
+            return count
+        at_or_above = (
+            _stay_floor_sum(count, modulus, MULT, start + modulus - boundary)
+            - _stay_floor_sum(count, modulus, MULT, start)
+        )
+        return count - at_or_above
+
+    bucket_start = q8 << bits
+    return (residues_below(bucket_start + upper + 1)
+            > residues_below(bucket_start + lower))
+
+
 def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int = 24) -> int:
     """Return the q8 values consistent with at least one product in an interval."""
     return sum(1 << q8 for q8 in _stay_q8_carry_masks(product_interval, bits=bits))
@@ -203,25 +238,26 @@ def _stay_second_update_addends(random_first: int, random_second: int, first_str
             or type(first_pass_carry1) is not int or first_pass_carry1 not in (0, 1)):
         raise ValueError("Stay Stage 2 partial state is invalid")
 
-    def after_two(first_plaintext: int, second_plaintext: int) -> tuple[int, int, int]:
+    def offset_after_two(first_plaintext: int, second_plaintext: int) -> int:
         key0_after_first = key0_crc_bits_0_15 ^ CRCTAB[first_plaintext]
         first_addend = key0_after_first & 0xFF
         key0_after_second = ((key0_after_first >> 8)
                              ^ CRCTAB[(key0_after_first ^ second_plaintext) & 0xFF]) & 0xFFFF
         second_addend = key0_after_second & 0xFF
-        offset1 = first_addend * MULT + 1
-        product_high_after_first = (key1_product_high + (offset1 >> 24)
-                                    + first_pass_carry1) & 0xFF
-        key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[product_high_after_first]) & 0xFFFFFF
-        key2_stream_state = (key2_after_first & 0xFFFF) | 2
-        stream_second = (key2_stream_state * (key2_stream_state ^ 1) >> 8) & 0xFF
-        offset2 = (first_addend * MULT * MULT + MULT
-                   + second_addend * MULT + 1) & 0xFFFFFF
-        return stream_second, offset2, second_addend
+        return (first_addend * MULT * MULT + MULT
+                + second_addend * MULT + 1) & 0xFFFFFF
 
-    first_stream_second, offset_first, _ = after_two(random_first, random_second)
-    _, offset_second, _ = after_two(random_first ^ first_stream,
-                                    random_second ^ first_stream_second)
+    first_key0_after_first = key0_crc_bits_0_15 ^ CRCTAB[random_first]
+    first_addend = first_key0_after_first & 0xFF
+    first_offset1 = first_addend * MULT + 1
+    product_high_after_first = (key1_product_high + (first_offset1 >> 24)
+                                + first_pass_carry1) & 0xFF
+    key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[product_high_after_first]) & 0xFFFFFF
+    key2_stream_state = (key2_after_first & 0xFFFF) | 2
+    first_stream_second = (key2_stream_state * (key2_stream_state ^ 1) >> 8) & 0xFF
+    offset_first = offset_after_two(random_first, random_second)
+    offset_second = offset_after_two(random_first ^ first_stream,
+                                     random_second ^ first_stream_second)
     return offset_first, offset_second
 
 
@@ -421,45 +457,49 @@ def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
     carry_options[0] = (first_carry_pair[0] * 2 + first_carry_pair[1],)
 
     choices = [0] * len(random_firsts)
+    visited = 0
 
-    def visit(member: int) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
+    def visit(member: int, lower: int, upper: int
+              ) -> Iterator[tuple[tuple[int, int, int], tuple[int, ...]]]:
+        nonlocal visited
+        visited += 1
+        if visited > MAX_STAY_CARRY_INTERVAL_VISITS:
+            raise ValueError("Stay carry interval search exceeds its bounded visit limit")
+        if lower > upper:
+            return
         if member < len(random_firsts):
             for pair in carry_options[member]:
                 choices[member] = pair
-                yield from visit(member + 1)
+                first_low = key0_crc_low ^ (CRCTAB[random_firsts[member]] & 0xFF)
+                second_low = key0_crc_low ^ (CRCTAB[random_firsts[member] ^ first_stream] & 0xFF)
+                next_lower, next_upper = lower, upper
+                for low, carry in ((first_low, pair >> 1), (second_low, pair & 1)):
+                    offset = low * MULT + 1
+                    threshold = (1 << 24) - (offset & 0xFFFFFF)
+                    if carry:
+                        next_lower = max(next_lower, threshold)
+                    else:
+                        next_upper = min(next_upper, threshold - 1)
+                if next_lower <= next_upper:
+                    yield from visit(member + 1, next_lower, next_upper)
             return
-        addends: list[int] = []
-        top_bytes: list[int] = []
-        carries: list[int] = []
-        for random_first, pair in zip(random_firsts, choices, strict=True):
-            first_low = key0_crc_low ^ (CRCTAB[random_first] & 0xFF)
-            second_low = key0_crc_low ^ (CRCTAB[random_first ^ first_stream] & 0xFF)
-            first_carry, second_carry = pair >> 1, pair & 1
-            for low, carry in ((first_low, first_carry), (second_low, second_carry)):
-                offset = low * MULT + 1
-                addends.append(low)
-                carries.append(carry)
-                top_bytes.append((product_high + (offset >> 24) + carry) & 0xFF)
-        interval = _stay_key1_product_interval(tuple(addends), tuple(top_bytes), tuple(carries))
-        if interval is not None:
-            yield interval, tuple(choices)
+        yield (product_high, lower, upper), tuple(choices)
 
-    yield from visit(0)
+    yield from visit(0, 0, 0xFFFFFF)
 
 
-def _stay_stage2_candidate_may_match(index: int, carry_masks: tuple[int, ...],
-                                     random_firsts: tuple[int, ...],
-                                     random_seconds: tuple[int, ...],
-                                     observed_third_differences: tuple[int, ...],
-                                     key0_crc_bits_8_15: int,
-                                     key2_crc_bits_16_23_and_0_1: int, q8: int) -> bool:
-    """Apply a necessary Stage 2 partial-guess filter across all members.
+def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
+                                   random_firsts: tuple[int, ...],
+                                   random_seconds: tuple[int, ...],
+                                   observed_third_differences: tuple[int, ...],
+                                   key0_crc_bits_8_15: int,
+                                   key2_crc_bits_16_23_and_0_1: int, q8: int) -> bool:
+    """Exactly test one Stage 2 partial guess against shared interval constraints.
 
-    This is a bounded filter, not a keyspace enumerator or an exact state
-    consistency test. It rejects a guess when no interval-derived q8/carry
-    possibility explains the observed third-byte differentials. Per-member
-    carry possibilities are checked independently, so a survivor may still be
-    a false positive when those carries do not share one product value.
+    This is a bounded one-candidate predicate, not a keyspace enumerator. It
+    checks the predicted third-byte differentials, then intersects every
+    selected carry constraint into one low-residue interval and verifies that
+    a common Stage 1 product value exists there.
     """
     if type(index) is not int or not 0 <= index < 1 << 40:
         raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
@@ -491,38 +531,57 @@ def _stay_stage2_candidate_may_match(index: int, carry_masks: tuple[int, ...],
             offsets.extend(_stay_second_update_addends(
                 random_first, random_second, first_stream, key0_crc,
                 product_high, key2_crc, pair >> 1))
-        projected = _stay_q8_carry_masks(interval, tuple(offsets))
-        second_carries = projected.get(q8)
-        if second_carries is None:
-            continue
 
-        all_members_match = True
+        member_carry_options: list[tuple[int, ...]] = []
         for member, (random_first, random_second, observed, pair) in enumerate(zip(
                 random_firsts, random_seconds, observed_third_differences,
                 carry_pairs, strict=True)):
             first_carry1, second_carry1 = pair >> 1, pair & 1
-            first_carry2_mask = second_carries[member * 2]
-            second_carry2_mask = second_carries[member * 2 + 1]
-            member_matches = False
+            options: list[int] = []
             for first_carry2 in (0, 1):
-                if not first_carry2_mask & (1 << first_carry2):
-                    continue
                 for second_carry2 in (0, 1):
-                    if not second_carry2_mask & (1 << second_carry2):
-                        continue
                     predicted = _stay_predict_third_byte_difference(
                         random_first, random_second, first_stream, key0_crc,
                         product_high, key2_crc, first_carry1, second_carry1,
                         q8, first_carry2, second_carry2)
                     if predicted == observed:
-                        member_matches = True
-                        break
-                if member_matches:
-                    break
-            if not member_matches:
-                all_members_match = False
+                        options.append(first_carry2 * 2 + second_carry2)
+            if not options:
                 break
-        if all_members_match:
+            member_carry_options.append(tuple(options))
+        if len(member_carry_options) != count:
+            continue
+
+        low_limit = 1 << 24
+        current_interval = interval
+        current_offsets = tuple(offsets)
+        current_member_options = tuple(member_carry_options)
+
+        def shared_residue_exists(member: int, lower: int, upper: int, *,
+                                  _interval=current_interval,
+                                  _offsets=current_offsets,
+                                  _choices=current_member_options,
+                                  _limit=low_limit) -> bool:
+            if lower > upper:
+                return False
+            if member == count:
+                return _stay_q8_residue_interval_nonempty(_interval, q8, lower, upper)
+            first_addend = _offsets[member * 2]
+            second_addend = _offsets[member * 2 + 1]
+            for pair in _choices[member]:
+                next_lower, next_upper = lower, upper
+                for addend, carry in ((first_addend, pair >> 1),
+                                      (second_addend, pair & 1)):
+                    threshold = _limit - addend
+                    if carry:
+                        next_lower = max(next_lower, threshold)
+                    else:
+                        next_upper = min(next_upper, threshold - 1)
+                if shared_residue_exists(member + 1, next_lower, next_upper):
+                    return True
+            return False
+
+        if shared_residue_exists(0, 0, low_limit - 1):
             return True
     return False
 

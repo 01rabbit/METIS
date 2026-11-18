@@ -128,7 +128,11 @@ def test_stay_stage2_third_byte_predictor_matches_planted_full_states() -> None:
 
 
 def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
-    from metis.core.ctf_zipcrypto import MULT, _stay_q8_carry_masks
+    from metis.core.ctf_zipcrypto import (
+        MULT,
+        _stay_q8_carry_masks,
+        _stay_q8_residue_interval_nonempty,
+    )
 
     rng = random.Random(20261120)
     bits = 5
@@ -151,6 +155,19 @@ def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
                 masks[index] |= 1 << carry
             expected[q8] = tuple(masks)
         assert actual == expected
+
+        q8 = rng.randrange(256)
+        residue_lower = rng.randrange(low_limit)
+        residue_upper = rng.randrange(residue_lower, low_limit)
+        expected_nonempty = any(
+            (((((product_high << bits) | low) * MULT) & ((1 << (bits + 8)) - 1)) >> bits) == q8
+            and residue_lower <= ((((product_high << bits) | low) * MULT)
+                                  & ((1 << bits) - 1)) <= residue_upper
+            for low in range(lower, upper + 1)
+        )
+        assert _stay_q8_residue_interval_nonempty(
+            (product_high, lower, upper), q8, residue_lower, residue_upper, bits=bits
+        ) is expected_nonempty
 
 
 def test_stay_reduced_subspace_filter_matches_exhaustive_forward_oracle() -> None:
@@ -492,12 +509,23 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
         assert planted_state_retained
 
 
-def test_stay_stage2_necessary_filter_retains_planted_shared_state() -> None:
+def test_stay_carry_interval_search_has_a_visit_cap(monkeypatch) -> None:
+    import pytest
+
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    monkeypatch.setattr(zipcrypto, "MAX_STAY_CARRY_INTERVAL_VISITS", 1)
+    with pytest.raises(ValueError, match="bounded visit limit"):
+        tuple(zipcrypto._stay_first_stage_key1_intervals(
+            1, (0xF,) * 5, (1, 2, 3, 4, 5)))
+
+
+def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
     from metis.core.ctf_zipcrypto import (
         M32,
         MULT,
         _stay_first_stage_candidate,
-        _stay_stage2_candidate_may_match,
+        _stay_stage2_candidate_matches,
     )
 
     rng = random.Random(0x51A7E)
@@ -533,10 +561,10 @@ def test_stay_stage2_necessary_filter_retains_planted_shared_state() -> None:
         q8 = ((product * MULT) & M32) >> 24
         key2_stage2 = ((key2_crc24 >> 16) << 2) | (key2_crc24 & 0x3)
 
-        assert _stay_stage2_candidate_may_match(
+        assert _stay_stage2_candidate_matches(
             index, carry_masks, random_firsts, random_seconds, observed_third,
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
-        assert not _stay_stage2_candidate_may_match(
+        assert not _stay_stage2_candidate_matches(
             index, carry_masks, random_firsts, random_seconds,
             tuple(value ^ 0x5A for value in observed_third),
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
@@ -560,11 +588,49 @@ def test_stay_stage2_two_update_key1_formula_matches_full_recurrence() -> None:
         t = (addend_first * multiplier_squared + MULT
              + addend_second * MULT + 1) & MASK32
         assert (q + t) & MASK32 == after_second[1]
-
         carry = int((q & 0xFFFFFF) + (t & 0xFFFFFF) >= 1 << 24)
         predicted_high = ((q >> 24) + (t >> 24) + carry) & 0xFF
         assert predicted_high == after_second[1] >> 24
 
+
+def test_stay_second_update_addends_match_full_recurrence_with_distinct_pass_carries() -> None:
+    from metis.core.ctf_zipcrypto import M32, MULT, _stay_second_update_addends
+
+    rng = random.Random(0xC4111E)
+    for _ in range(1000):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        random_first, random_second = rng.randrange(256), rng.randrange(256)
+        product = initial[1] * MULT & M32
+        first_stream = _stream_byte(initial[2])
+        first_pass = _encrypt(bytes((random_first, random_second)), initial)
+        plaintexts = (
+            (random_first, random_second),
+            (first_pass[0], first_pass[1]),
+        )
+
+        def offset_and_carry(pair: tuple[int, int], *, state=initial,
+                             key1_product=product) -> tuple[int, int]:
+            after_first = _update(state, pair[0])
+            after_second = _update(after_first, pair[1])
+            addend1 = after_first[0] & 0xFF
+            addend2 = after_second[0] & 0xFF
+            offset = (addend1 * MULT * MULT + MULT + addend2 * MULT + 1) & 0xFFFFFF
+            carry1 = int(((key1_product & 0xFFFFFF) + ((addend1 * MULT + 1) & 0xFFFFFF))
+                         >= 1 << 24)
+            return offset, carry1
+
+        expected = tuple(offset_and_carry(pair) for pair in plaintexts)
+        if expected[0][1] != expected[1][1]:
+            break
+    else:
+        raise AssertionError("fixture did not produce distinct first-update carries")
+
+    key0_crc16 = _crc_update(initial[0], 0) & 0xFFFF
+    key2_crc24 = _crc_update(initial[2], 0) & 0xFFFFFF
+    actual = _stay_second_update_addends(
+        random_first, random_second, first_stream, key0_crc16,
+        product >> 24, key2_crc24, expected[0][1])
+    assert actual == (expected[0][0], expected[1][0])
 
 def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> None:
     """Adjacent bounded ranges resume at the cursor and retain the planted guess."""
