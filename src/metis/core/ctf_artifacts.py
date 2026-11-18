@@ -10,6 +10,7 @@ import json
 import lzma
 import math
 import os
+import re
 import sqlite3
 import stat
 import struct
@@ -848,9 +849,9 @@ def _zipcrypto(data: bytes, tool: str, options: dict,
             raise ValueError("random_header_bytes_hex must contain 5 to 64 ten-byte headers")
         headers = bytes.fromhex(headers_hex)
         shard = options.get("stage1_shard")
-        if not isinstance(shard, str) or len(shard) != 37 or not shard.endswith(".json") or any(
-                letter not in "0123456789abcdef" for letter in shard[:-5]):
-            raise ValueError("stage1_shard must be a private shard ID")
+        if not isinstance(shard, str) or not re.fullmatch(
+                r"private-stay/[0-9a-f]{32}/[0-9a-f]{32}\.json", shard):
+            raise ValueError("stage1_shard must be a private Stage 1 shard reference")
         start = bounded_integer(options, "start", 0, 0, 1 << 26)
         return zipcrypto_runner(data, {
             "random_header_bytes_hex": headers.hex(), "stage1_shard": shard,

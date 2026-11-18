@@ -345,7 +345,7 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     guess = ((key0_crc >> 8) & 0xFF) | (key2_stage2 << 8) | (q8 << 18)
     stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
         "random_header_bytes_hex": b"".join(headers).hex(),
-        "stage1_shard": shard.name, "hit_index": 0,
+        "stage1_shard": result["candidate_shard"], "hit_index": 0,
         "start": guess, "stop": guess + 1, "max_candidates": 1,
         "seconds": 30, "max_hits": 1,
     })
@@ -360,7 +360,7 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
         for count in (1_000, 10_000):
             probe = run_zipcrypto_stay_stage2(database, run_id, artifact, {
                 "random_header_bytes_hex": b"".join(headers).hex(),
-                "stage1_shard": shard.name, "hit_index": 0,
+                "stage1_shard": result["candidate_shard"], "hit_index": 0,
                 "start": 0, "stop": count, "max_candidates": count,
                 "seconds": 300, "max_hits": 1,
             })
@@ -390,14 +390,24 @@ def test_stay_stage2_runner_keeps_witness_private(tmp_path, monkeypatch):
     monkeypatch.setattr(Sandbox, "__init__", lambda self, _database: None)
     monkeypatch.setattr(Sandbox, "execute", fake_execute)
     result = run_zipcrypto_stay_stage2(database, "a" * 32, "fixture.zip", {
-        "random_header_bytes_hex": "00" * 70, "stage1_shard": shard_id,
+        "random_header_bytes_hex": "00" * 70,
+        "stage1_shard": f"private-stay/{'a' * 32}/{shard_id}",
         "hit_index": 0, "start": 0, "stop": 10, "max_candidates": 10,
         "max_hits": 1, "seconds": 10,
     })
     assert result["hits_count"] == 1 and "hits" not in result
     output = database.parent / result["candidate_shard"]
+    assert output.name.startswith("s2-")
     assert output.stat().st_mode & 0o777 == 0o600
     assert json.loads(output.read_text())["hits"] == [[3, 12345]]
+    rejected = run_zipcrypto_stay_stage2(database, "a" * 32, "fixture.zip", {
+        "stage1_shard": result["candidate_shard"],
+    })
+    assert rejected == {"reason": "private_state_unavailable", "stage": "candidate-shard"}
+    cross_run = run_zipcrypto_stay_stage2(database, "c" * 32, "fixture.zip", {
+        "stage1_shard": f"private-stay/{'a' * 32}/{shard_id}",
+    })
+    assert cross_run == {"reason": "private_state_unavailable", "stage": "candidate-shard"}
 
 
 def test_stay_stage2_controller_bounds_options():
@@ -409,10 +419,11 @@ def test_stay_stage2_controller_bounds_options():
         return {"next_index": settings["start"], "hits_count": 0}
 
     options = {"random_header_bytes_hex": "00" * 70,
-               "stage1_shard": "b" * 32 + ".json", "hit_index": 0,
+               "stage1_shard": f"private-stay/{'a' * 32}/{'b' * 32}.json", "hit_index": 0,
                "start": 5, "stop": 8, "max_candidates": 2, "seconds": 10, "max_hits": 1}
     inspect_bytes(b"archive", "zipcrypto_stay_stage2", options, zipcrypto_runner=runner)
     assert seen[0]["start"] == 5 and seen[0]["stop"] == 8
+    assert seen[0]["stage1_shard"] == options["stage1_shard"]
     with pytest.raises(ValueError):
         inspect_bytes(b"archive", "zipcrypto_stay_stage2", {**options, "stop": 4},
                       zipcrypto_runner=runner)

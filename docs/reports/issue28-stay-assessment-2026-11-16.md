@@ -423,3 +423,14 @@ domain: creating every preimage list would still visit the same raw guesses,
 and the current Stage 2 worker does not use this primitive. A native batched
 generator plus measured sandbox throughput and shared-interval filtering
 would be needed to establish a route within the existing action budget.
+
+## Review follow-up: shard contract and cgroup check
+
+Stage 1 returns `candidate_shard` as `private-stay/<run-id>/<uuid>.json`.
+Stage 2 now accepts that exact reference as `stage1_shard`, checks the run ID
+against the active run, and rejects path traversal and another run's shard.
+Stage 2 writes `private-stay/<run-id>/s2-<uuid>.json`, which cannot be passed
+back as a Stage 1 shard. The three isolated workers use one injected cgroup
+limit check, so their memory, swap, CPU and PID policy stays identical.
+The planted seven-member Stage 1 → Stage 2 sandbox test passed with this
+contract. These interface changes do not make the full attack feasible.
