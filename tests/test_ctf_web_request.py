@@ -175,6 +175,8 @@ def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
 
     workflow.forget_auth(platform_url)
     # Model a request that had loaded state before forget_auth and saves afterward.
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        stale_client.request(platform_url + "/after-forget")
     workflow._save_client(run_id, stale_client)
     config, state, *_ = workflow._load(run_id)
     assert platform_url not in state.get("cookies", {})

@@ -188,7 +188,15 @@ class WebWorkflow:
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else {}, timeout=15)
         client.auth_generation = row_generation[0] if row_generation else 0
+        client.auth_generation_check = lambda expected: self._auth_generation_matches(
+            config["auth_origin"], expected)
         return client
+
+    def _auth_generation_matches(self, auth_origin: str, expected: int) -> bool:
+        with sqlite3.connect(self.database) as db:
+            row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                             (auth_origin,)).fetchone()
+        return (row[0] if row else 0) == expected
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
         with sqlite3.connect(self.database) as db:
@@ -537,15 +545,6 @@ class WebWorkflow:
             for number, (item, target, pattern, body, headers) in enumerate(prepared):
                 client.requests = 0
                 entry: dict[str, Any] = {"index": number, "method": item.method.upper(), "url": display_url(target)}
-                with sqlite3.connect(self.database) as db:
-                    generation_row = db.execute(
-                        "SELECT generation FROM web_auth_generations WHERE origin=?",
-                        (config["auth_origin"],)).fetchone()
-                generation = generation_row[0] if generation_row else 0
-                if generation != client.auth_generation and target == config["auth_origin"]:
-                    entry["error"] = "authentication forgotten; reopen workflow to reauthenticate"
-                    results.append(entry)
-                    continue
                 try:
                     response = client.request(target, method=item.method.upper(), body=body, headers=headers,
                                               follow_redirects=item.follow, extended=True,
