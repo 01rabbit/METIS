@@ -13,6 +13,9 @@
 - Contest: run/problem identity check, dispatch timebox.
 - Codex specialist usage keeps unreported token fields as `null` (listed in `unknown_fields`) instead
   of summing them as zero; `known_subtotals` shows the reported part.
+- Shared resource capacities with atomic whole-set leases (`metis resource`), used by the sandbox
+  and headless rendering; exact, expiring, counted permits (`metis permit`); prerequisite cycle
+  rejection and `blocked_by_prerequisites` reporting for contests.
 
 ## 0.5.0 — 2026-11-16
 

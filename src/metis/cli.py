@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from metis import __version__
+from metis import __version__, cli_ext
 from metis.core.artifacts import read_artifact
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
@@ -650,7 +650,11 @@ def main() -> int:
         if command == "act":
             action.add_argument("tool", choices=sorted(DATA_TOOLS))
             action.add_argument("--data", help="omit to read exact UTF-8 input from stdin")
+    cli_ext.register(sub)
     args = parser.parse_args()
+    handled = cli_ext.handle(args, parser)
+    if handled is not None:
+        return handled
 
     if args.command == "swarm":
         try:
