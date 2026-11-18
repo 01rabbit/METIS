@@ -544,3 +544,16 @@ Repeated observations reduce independent filtering and stress the survivor
 path, but do not model the target's distinct member headers or predict #39
 runtime. This Draft PR is scoped to bounded algorithm and controller changes.
 An independent end-to-end #39 verdict remains outside its acceptance evidence.
+
+## Independent full-product inverse vector (2026-11-19)
+
+An opt-in slow regression now creates 16 random ten-byte headers and their
+two-pass ciphertext with a separate bitwise CRC/encryptor. The planted state
+was chosen without using the METIS inverse routines. For its true Stage 1
+index and Stage 2 guess, the inverse search enumerated 33 compatible product
+values. Nine successive bounded calls traversed all 33 products, recovering
+exactly the planted full key state; the final call returned `complete`.
+`METIS_TEST_SLOW=1` ran the test successfully locally. This exercises complete
+product traversal on an independently generated inverse vector. It does not
+scan the full Stage 1 or Stage 2 search spaces, construct a ZIP payload, or
+provide an official #39 verdict. Issue #28 remains open.

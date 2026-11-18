@@ -3,8 +3,11 @@
 These verify one forward relation used by Stay section 4. They do not test
 the paper's inverse key-recovery search.
 """
+import os
 import random
 import time
+
+import pytest
 
 MASK32 = 0xFFFFFFFF
 MULT = 0x08088405
@@ -999,3 +1002,54 @@ def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -
     wrong_stream = zc.glibc_rand_bytes(np.array([seed ^ 1], dtype=np.uint64), 70)[0]
     wrong_headers = [bytes(wrong_stream[i * 10:i * 10 + 10]) for i in range(len(members))]
     assert not jointly_consistent(wrong_headers)
+
+
+def test_stay_full_product_traversal_on_independent_sixteen_header_vector() -> None:
+    """Opt-in inverse search using an independent bitwise two-pass producer."""
+    if os.environ.get("METIS_TEST_SLOW") != "1":
+        pytest.skip("set METIS_TEST_SLOW=1 for full product traversal")
+    from metis.core import ctf_zipcrypto as zc
+
+    rng = random.Random(711)
+    initial = tuple(rng.getrandbits(32) for _ in range(3))
+    random_headers = tuple(rng.randbytes(10) for _ in range(16))
+    stored_headers = tuple(_encrypt(_encrypt(header, initial), initial)
+                           for header in random_headers)
+    key0, key1, key2 = initial
+    first_stream = _stream_byte(key2)
+    product = key1 * MULT & MASK32
+    key0_crc = _crc_update(key0, 0)
+    key2_crc = _crc_update(key2, 0)
+    first_low = _crc_update(key0, random_headers[0][0]) & 255
+    second_low = _crc_update(key0, random_headers[0][0] ^ first_stream) & 255
+    carry_first = int((product & 0xFFFFFF) + ((first_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+    carry_second = int((product & 0xFFFFFF) + ((second_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+    index = (first_stream | (key0_crc & 255) << 8 | (product >> 24) << 16
+             | carry_first << 24 | ((key2_crc & 0xFFFC) >> 10) << 25
+             | (((key2_crc & 0xFFFC) >> 2) & 255) << 31 | carry_second << 39)
+    masks = zc._stay_first_stage_candidate(
+        index, tuple(header[0] for header in random_headers),
+        tuple(stored[1] ^ header[1] for stored, header in zip(
+            stored_headers, random_headers, strict=True)))
+    assert masks is not None
+    q8 = ((product * MULT) & MASK32) >> 24
+    bits = (((key2_crc >> 16) << 2) & 0x3FC) | (key2_crc & 3)
+    guess = ((key0_crc >> 8) & 255) | (bits << 8) | (q8 << 18)
+
+    product_cursor = extra_cursor = 0
+    recovered: list[tuple[int, int, int]] = []
+    calls = 0
+    while True:
+        chunk = zc._stay_recover_keys_for_guess(
+            index, masks, random_headers, stored_headers, guess,
+            start_product=product_cursor, start_extra=extra_cursor,
+            max_products=4, max_candidates=1 << 26, max_hits=2, seconds=60)
+        calls += 1
+        recovered.extend(chunk.keys)
+        assert chunk.product_count == 33
+        assert chunk.reason in {"candidate_limit", "complete"}
+        if chunk.reason == "complete":
+            break
+        assert (chunk.next_product, chunk.next_extra) > (product_cursor, extra_cursor)
+        product_cursor, extra_cursor = chunk.next_product, chunk.next_extra
+    assert calls == 9 and recovered == [initial]
