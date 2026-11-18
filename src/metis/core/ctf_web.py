@@ -119,6 +119,8 @@ def feedback_text(value: str, candidate: str, client: SafeHTTP) -> str:
 
 
 class WebWorkflow:
+    _AUTH_GENERATION_STATE_KEY = "_metis_auth_generation"
+
     def __init__(self, database: Path):
         self.session = CodexSession(database)
         self.database = database
@@ -160,6 +162,8 @@ class WebWorkflow:
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
                        "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+            generation, = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                     (key,)).fetchone()
             cursor = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
             rows = db.execute("SELECT run_id,state FROM web_runs WHERE json_extract(config,'$.auth_origin')=?", (key,)).fetchall()
             cookie_removed = False
@@ -168,28 +172,43 @@ class WebWorkflow:
                 removed_cookies = state.get("cookies", {}).pop(key, None)
                 cookie_removed = bool(removed_cookies) or cookie_removed
                 state.pop("cookie_fingerprint", None)
+                state[self._AUTH_GENERATION_STATE_KEY] = generation
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed
         return {"origin": key, "credential_removed": removed}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN")
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
                              (run_id,)).fetchone()
-        if row is None:
-            raise ValueError("web workflow not found")
-        return json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3]), row[4], row[5]
+            if row is None:
+                raise ValueError("web workflow not found")
+            config, state = json.loads(row[0]), json.loads(row[1])
+            auth_origin = config["auth_origin"]
+            generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (auth_origin,)).fetchone()
+            generation = generation_row[0] if generation_row else 0
+            state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, generation)
+            if state_generation != generation:
+                state.get("cookies", {}).pop(auth_origin, None)
+                state.pop("cookie_fingerprint", None)
+            state[self._AUTH_GENERATION_STATE_KEY] = generation
+        return config, state, json.loads(row[2]), json.loads(row[3]), row[4], row[5]
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN")
             row = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
                              (config["auth_origin"],)).fetchone()
             row_generation = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (config["auth_origin"],)).fetchone()
+            current_generation = row_generation[0] if row_generation else 0
+        state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, current_generation)
         client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else {}, timeout=15)
-        client.auth_generation = row_generation[0] if row_generation else 0
+        client.auth_generation = state_generation
         client.auth_generation_check = lambda expected: self._auth_generation_matches(
             config["auth_origin"], expected)
         return client
@@ -213,6 +232,7 @@ class WebWorkflow:
             if generation != client.auth_generation:
                 state.get("cookies", {}).pop(auth_origin, None)
                 state.pop("cookie_fingerprint", None)
+            state[self._AUTH_GENERATION_STATE_KEY] = generation
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
                        (json.dumps(state), run_id))
 
@@ -470,8 +490,17 @@ class WebWorkflow:
                                            evaluation_split=evaluation["split"])
         run_id = context["run_id"]
         with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (config["auth_origin"],)).fetchone()
+            generation = generation_row[0] if generation_row else 0
+            initial_state = client.export_state()
+            if generation != client.auth_generation:
+                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
+                initial_state.pop("cookie_fingerprint", None)
+            initial_state[self._AUTH_GENERATION_STATE_KEY] = generation
             db.execute("INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
-                       (run_id, json.dumps(config), json.dumps(client.export_state()),
+                       (run_id, json.dumps(config), json.dumps(initial_state),
                         json.dumps(page.forms), json.dumps(links), secrets.token_hex(32)))
         return {"context": context, "web": self.context(run_id)["web"],
                 "downloaded_files": len(paths) - 1, "skipped_files": skipped,

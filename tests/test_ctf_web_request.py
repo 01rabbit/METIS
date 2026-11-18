@@ -178,11 +178,36 @@ def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
     with pytest.raises(ValueError, match="authentication has been forgotten"):
         stale_client.request(platform_url + "/after-forget")
     workflow._save_client(run_id, stale_client)
+    # Also model forget_auth between the persisted-state load and client creation.
+    late_client = workflow._client(config, state)
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        late_client.request(platform_url + "/after-forget")
+    workflow._save_client(run_id, late_client)
     config, state, *_ = workflow._load(run_id)
     assert platform_url not in state.get("cookies", {})
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_cookie"][-1] is None
     assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_open_does_not_persist_cookie_if_auth_is_forgotten_during_intake(tmp_path, sites, monkeypatch):
+    platform_url, _, seen = sites
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    workflow.auth(platform_url, kind="token", value="platform-secret-token")
+    original_intake = workflow.session.intake
+
+    def forget_between_fetch_and_persist(**kwargs):
+        workflow.forget_auth(platform_url)
+        return original_intake(**kwargs)
+
+    monkeypatch.setattr(workflow.session, "intake", forget_between_fetch_and_persist)
+    result = workflow.open(platform_url + "/set-cookie")
+    run_id = result["context"]["run_id"]
+    config, state, *_ = workflow._load(run_id)
+    assert config["auth_origin"] == platform_url
+    assert platform_url not in state.get("cookies", {})
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_cookie"][-1] is None
 
 
 def test_cli_web_request(tmp_path, sites, monkeypatch, capsys):

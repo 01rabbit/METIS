@@ -657,8 +657,11 @@ remains open. Details are in
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
 
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
-origin cookies and fences stale clients from sending or restoring them.
-Synthetic regression coverage was added; exact-head CI is pending. This does
-not revoke provider credentials, erase SQLite WAL/backups, clear user-managed
+origin cookies and fences stale clients from sending or restoring them. State
+and generation load share a SQLite snapshot, and initial intake checks the
+generation before saving fetched cookies. Synthetic tests cover stale client
+construction and the initial-save interleaving; the focused web request suite
+passed locally (7 tests), with Ruff. Exact-head CI is pending. This does not
+revoke provider credentials, erase SQLite WAL/backups, clear user-managed
 environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.

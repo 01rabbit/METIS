@@ -14,17 +14,23 @@ therefore rejected, including when used by a submit/catalog path. Saving stale
 client state is fenced in a write transaction so it cannot restore that
 origin's cookies. Other origins' cookie jars and DNS pins are retained.
 
-The regression fixture installs a synthetic authentication cookie, creates a
-stale client, forgets the origin, verifies the stale client cannot issue an
-authentication-origin request, then simulates stale state persistence and
-checks a fresh request sends no cookie. It also checks that a repeated forget
-reports no further local credential removal. No real credential or external
-provider is used.
+The state load and its authentication-generation read now share one SQLite
+read snapshot. A run state carries the generation under which its cookie jar
+was loaded; a client created from a pre-forget snapshot remains fenced even if
+client construction happens after the forget transaction. Initial intake also
+checks the generation in its write transaction before persisting fetched
+cookies, closing a separate first-save race.
 
-Validation status at this report revision: `git diff --check` and Python
-syntax compilation passed locally. The focused and full test suites were not
-run locally. Exact-head GitHub CI for the branch is running and must pass before
-this change is treated as validated.
+Regression fixtures install a synthetic authentication cookie and cover both
+client-before-forget and state-load-before-forget/client-after-forget
+interleavings. They verify that stale clients cannot issue an
+authentication-origin request, stale saves cannot restore cookies, and a
+forget during intake prevents initial persistence. Fresh requests send no
+cookie, and a repeated forget reports no further local credential removal. No
+real credential or external provider is used.
+
+The focused web request suite passed locally (7 tests), and Ruff and
+`git diff --check` passed. Exact-head GitHub CI is pending for this revision.
 
 This is local METIS state management. It does not revoke a token or cookie at a
 CTF provider, erase SQLite WAL pages or backups, clear user-managed environment
