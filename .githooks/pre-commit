@@ -3,4 +3,5 @@
 root=$(git rev-parse --show-toplevel) || exit 1
 python=$root/.venv/bin/python
 [ -x "$python" ] || python=python3
-exec "$python" "$root/scripts/check_repo.py" --staged
+"$python" "$root/scripts/check_repo.py" --staged || exit 1
+exec "$python" "$root/scripts/check_blue_knowledge.py" --staged

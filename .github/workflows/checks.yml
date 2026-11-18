@@ -18,6 +18,7 @@ jobs:
       - run: .venv/bin/ruff check src tests
       - run: .venv/bin/mypy src/metis
       - run: .venv/bin/python scripts/check_repo.py
+      - run: .venv/bin/python scripts/check_blue_knowledge.py
       - run: .venv/bin/metis validate challenges/training/fixture-001.json
       - run: .venv/bin/python -m build --outdir '${{ runner.temp }}/metis-dist'
   sandbox:

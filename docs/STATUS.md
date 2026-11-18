@@ -41,7 +41,7 @@ Implemented:
   run/strace/ltrace/gdb/script modes; bundled Dockerfile with pwntools.
 - Platforms: rCTF adapter (team-token login, catalog, open, strict `kind`
   verdicts, `timeLeft` cooldown) and optional scoped JavaScript rendering.
-- Claude Code: project skill, `/ctf` command, eight category subagents mapped
+- Claude Code: project skill, `/ctf` command, nine category subagents (including the Blue Team `ctf-blue`) mapped
   to `metis plan` roles, startup prompt via `./start --agent claude`.
 
 ## Observed evidence
