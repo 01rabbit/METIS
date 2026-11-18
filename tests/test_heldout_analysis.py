@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from metis.core.contracts import RunEvent, RunStatus
+from metis.core.store import RunStore
 from metis.evaluation.heldout_analysis import Study, analyze, main
 
 
@@ -40,6 +42,32 @@ def fixture_metrics() -> dict:
                           "seconds": 600.0, "cost_usd": None} for arm in arms},
         "tasks": tasks, "trials": trials,
     }
+
+
+def _ledger_backed_study(tmp_path: Path, *, verification: str = "official_ctfd",
+                         oracle: str = "official") -> tuple[Study, Path]:
+    data = fixture_metrics()
+    data["arms"] = ["full", "single_agent"]
+    data["baseline"] = "single_agent"
+    data["budgets"] = {arm: data["budgets"][arm] for arm in data["arms"]}
+    data["repetitions"] = 2
+    data["tasks"] = data["tasks"][:2]
+    data["trials"] = [trial for trial in data["trials"]
+                      if trial["task_id"] in {task["task_id"] for task in data["tasks"]}
+                      and trial["arm"] in data["arms"]]
+    database = tmp_path / "ledger.sqlite"
+    store = RunStore(database)
+    for index, trial in enumerate(data["trials"]):
+        run_id = f"{index + 1:032x}"
+        trial["run_id"] = run_id
+        trial["oracle"] = oracle
+        trial["evidence_sequence"] = 7
+        for sequence, status in enumerate((RunStatus.NEW, RunStatus.VALIDATED, RunStatus.CLASSIFIED,
+                                           RunStatus.PLANNING, RunStatus.EXECUTING, RunStatus.OBSERVING,
+                                           RunStatus.VERIFYING, RunStatus.SOLVED)):
+            detail = {"verification": verification} if sequence == 7 else {}
+            store.append(RunEvent(run_id=run_id, sequence=sequence, status=status, detail=detail))
+    return Study.model_validate(data), database
 
 
 def test_paired_cluster_analysis_retains_repetitions_and_unknown_cost():
@@ -171,3 +199,50 @@ def test_retained_synthetic_input_reproduces_published_fixture_summary():
     assert payload == fixture_metrics()
     summary = json.loads((fixtures / "issue8-analysis-synthetic-summary.json").read_text())
     assert analyze(Study.model_validate(payload)) == summary
+
+
+def test_ledger_reconciliation_checks_every_reference_and_official_provenance(tmp_path, monkeypatch, capsys):
+    study, database = _ledger_backed_study(tmp_path)
+    before = database.read_bytes()
+    metrics = tmp_path / "metrics.json"
+    metrics.write_text(study.model_dump_json())
+    monkeypatch.setattr(sys, "argv", ["analysis", str(metrics), "--database", str(database)])
+    assert main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["ledger_reconciliation"] == {
+        "trials_reconciled": 8, "official_verified_trials": 6, "protected_fixture_verified_trials": 0,
+    }
+    assert "run_id" not in json.dumps(output)
+    assert database.read_bytes() == before
+
+
+def test_ledger_reconciliation_keeps_protected_fixture_provenance_distinct(tmp_path):
+    study, database = _ledger_backed_study(tmp_path, verification="local_fixture_oracle",
+                                           oracle="protected_fixture")
+    from metis.evaluation.heldout_analysis import reconcile_evidence
+
+    assert reconcile_evidence(study, database) == {
+        "trials_reconciled": 8, "official_verified_trials": 0, "protected_fixture_verified_trials": 6,
+    }
+
+
+@pytest.mark.parametrize("mutation", ["wrong_sequence", "browser_attestation", "local_commitment", "missing_run"])
+def test_ledger_reconciliation_rejects_unsubstantiated_official_trials(tmp_path, monkeypatch, capsys, mutation):
+    study, database = _ledger_backed_study(
+        tmp_path, verification=("official_browser_observed" if mutation == "browser_attestation" else
+                                "local_sha256_commitment" if mutation == "local_commitment" else "official_ctfd"))
+    trial = study.trials[0]
+    if mutation == "wrong_sequence":
+        trial = trial.model_copy(update={"evidence_sequence": 6})
+        study = study.model_copy(update={"trials": [trial, *study.trials[1:]]})
+    elif mutation == "missing_run":
+        trial = trial.model_copy(update={"run_id": "f" * 32})
+        study = study.model_copy(update={"trials": [trial, *study.trials[1:]]})
+    metrics = tmp_path / "metrics.json"
+    metrics.write_text(study.model_dump_json())
+    monkeypatch.setattr(sys, "argv", ["analysis", str(metrics), "--database", str(database)])
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "benchmark metrics rejected" in captured.err
+    assert "official_browser_observed" not in captured.err

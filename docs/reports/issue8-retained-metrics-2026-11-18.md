@@ -65,6 +65,8 @@ are exporter declarations, not an environment attestation.
 ```sh
 .venv/bin/python -m metis.evaluation.heldout_analysis \
   docs/reports/fixtures/issue8-analysis-synthetic-input.json
+.venv/bin/python -m metis.evaluation.heldout_analysis METRICS.json \
+  --database STATE.sqlite
 .venv/bin/pytest -ra tests/test_heldout_analysis.py tests/test_issue6_benchmark_analysis.py
 .venv/bin/ruff check src/metis/evaluation tests/test_heldout_analysis.py tests/test_issue6_benchmark_analysis.py
 .venv/bin/mypy src/metis/evaluation/heldout_analysis.py src/metis/evaluation/issue6_diverse_analysis.py
@@ -94,6 +96,31 @@ Use equivalent final answer composition for all arms; the earlier Issue #6
 comparison gave only multi an external controller-computed digest, so equal
 caps there did not isolate specialist count. Record unknown usage/cost honestly,
 analyze all preregistered failures, and avoid rerunning substantive failures.
-The present interface does not supply that exporter, randomized dispatcher,
-protected oracle generation, real repeated trials or actual ablations. It does
-not demonstrate Issue #8's acceptance gate or broad CTF performance.
+The present interface still does not supply a full per-trial exporter,
+randomized dispatcher, protected oracle generation, real repeated trials or
+actual ablations. It does not demonstrate Issue #8's acceptance gate or broad
+CTF performance.
+
+## Ledger reference reconciliation follow-up (2026-11-18)
+
+The analysis CLI accepts optional `--database STATE.sqlite`. In this mode it
+opens the existing state database read-only and validates each referenced
+run's complete event hash chain. Every `(run_id, evidence_sequence)` must name
+an existing event. A trial declared verified by an official oracle must point
+to a `SOLVED` event with one of the official API/form verifier tags
+(`official_ctfd`, `official_rctf`, `official_ksnctf`, `official_html`). A
+protected-fixture verdict must point to `SOLVED` with
+`local_fixture_oracle`. Browser-only UI attestations and local SHA commitments
+are deliberately not upgraded to these provenance classes. Output contains
+only aggregate reconciliation counts, no run IDs, and no database writes.
+
+The check validates references and provenance tags; it cannot authenticate an
+external protected oracle, validate the truth of exposure or solvability
+declarations, attest actual environment pins/cost, or prove workflow completion
+from an arbitrary run event. The full exporter and independent evidence review
+remain necessary. Focused tests use invented, hash-valid SQLite event chains.
+The exact focused run passed 38 tests across `test_heldout_analysis.py` and
+`test_issue6_benchmark_analysis.py`; Ruff and mypy passed for both analysis
+modules. Exact-head CI for the preceding `eb36968` commit passed Python,
+sandbox and linux-arm64-seccomp checks; the reconciliation change is newer and
+requires its own exact-head CI result.

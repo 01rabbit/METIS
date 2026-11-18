@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import random
+import sqlite3
 import statistics
 import sys
 from collections import Counter
@@ -14,6 +15,9 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from metis.core.contracts import RunStatus
+from metis.core.store import RunStore
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.:@+-]{0,127}$")]
 Count = Annotated[int, Field(ge=0, le=1_000_000_000)]
@@ -234,9 +238,48 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
     }
 
 
+def reconcile_evidence(study: Study, database: Path) -> dict[str, int]:
+    """Reconcile every trial reference against a validated read-only METIS ledger.
+
+    This checks event-chain provenance and successful-verdict event type. It does
+    not authenticate protected-fixture declarations, exposure, model pins, or
+    actual resource measurements.
+    """
+    study = Study.model_validate(study.model_dump())
+    store = RunStore(database, read_only=True)
+    reconciled = 0
+    official_verified = 0
+    fixture_verified = 0
+    for trial in study.trials:
+        events = store.read(trial.run_id)
+        if trial.evidence_sequence >= len(events):
+            raise ValueError("trial evidence reference is outside the run event chain")
+        event = events[trial.evidence_sequence]
+        if event.sequence != trial.evidence_sequence:
+            raise ValueError("trial evidence reference does not match its event")
+        if trial.oracle_verified:
+            verification = event.detail.get("verification", "")
+            if event.status != RunStatus.SOLVED:
+                raise ValueError("verified trial does not reference a SOLVED event")
+            if trial.oracle == "official":
+                if verification not in {"official_ctfd", "official_rctf", "official_ksnctf", "official_html"}:
+                    raise ValueError("official trial lacks an official verifier event")
+                official_verified += 1
+            elif trial.oracle == "protected_fixture":
+                if verification != "local_fixture_oracle":
+                    raise ValueError("fixture trial lacks a protected fixture verdict event")
+                fixture_verified += 1
+            else:
+                raise ValueError("untrusted oracle cannot verify a trial")
+        reconciled += 1
+    return {"trials_reconciled": reconciled, "official_verified_trials": official_verified,
+            "protected_fixture_verified_trials": fixture_verified}
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: python -m metis.evaluation.heldout_analysis METRICS.json", file=sys.stderr)
+    if len(sys.argv) not in {2, 4} or (len(sys.argv) == 4 and sys.argv[2] != "--database"):
+        print("usage: python -m metis.evaluation.heldout_analysis METRICS.json [--database STATE.sqlite]",
+              file=sys.stderr)
         return 2
     try:
         path = Path(sys.argv[1])
@@ -246,7 +289,10 @@ def main() -> int:
             raise ValueError("oversized metrics")
         study = Study.model_validate_json(payload)
         result = analyze(study)
-    except (OSError, ValueError, TypeError):
+        if len(sys.argv) == 4:
+            reconciliation = reconcile_evidence(study, Path(sys.argv[3]))
+            result["ledger_reconciliation"] = reconciliation
+    except (OSError, ValueError, TypeError, sqlite3.Error):
         # Pydantic errors include rejected input; never print them into public logs.
         print("benchmark metrics rejected; review locally against the schema", file=sys.stderr)
         return 2

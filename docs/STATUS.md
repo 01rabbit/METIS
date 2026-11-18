@@ -337,9 +337,13 @@ and [`issue6-handoff-diagnostic-preregistration-2026-11-18.md`](reports/issue6-h
 Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
 with matched cap checks, complete paired repetitions, contamination exclusions,
 independent-verifier provenance filtering, task-cluster intervals and explicit
-failure/resource reporting. Its retained 24-row dataset is invented test data,
-not a model benchmark or verified solve evidence. An evidence-backed controller
-exporter and fresh held-out experiment remain necessary; Issue #8 stays open.
+failure/resource reporting. Its optional read-only ledger reconciliation now
+checks every run/sequence reference against the validated event chain and
+requires exact successful-verdict provenance tags; browser-attested and local
+commitment events do not count as official API verdicts. Its retained 24-row
+dataset is invented test data, not a model benchmark or verified solve
+evidence. A full controller exporter and fresh held-out experiment remain
+necessary; Issue #8 stays open.
 See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
 
 For Issue #8, a separate held-out AlpacaHack Daily Misc task (`Not so Pyf**k`)
