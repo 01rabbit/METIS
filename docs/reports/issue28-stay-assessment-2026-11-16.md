@@ -257,3 +257,23 @@ decrypted, no CRC was checked with recovered keys, and no official candidate
 was submitted. Do not interpret the completed Stage 1 scan or its private
 shards as a recovered ZipCrypto key or a solve. The key-recovery stage remains
 unimplemented.
+
+## Stage 2 review decision (2026-11-18)
+
+An independent derivation mapped the paper's proposed 28-bit Stage 2 guess to
+8 bits of `crc32(key0_0, 0)` at bits 8–15, 8 bits from the high byte of
+`key1_0 * MULT^2`, 10 bits of `crc32(key2_0, 0)` at bits 16–23 and 0–1, plus
+two pass-specific carries. A new 10,000-case synthetic test verifies the
+two-update `key1` recurrence and its carry-aware high byte against the full
+cipher recurrence.
+
+This does not yet provide a Stage 2 predictor from those partial guesses. In
+particular, the current Stage 1 interval constrains `key1_0 * MULT`, while the
+proposed guess constrains `key1_0 * MULT^2`; the paper does not specify the
+packed mapping or show how the partial `key0`/`key2` slices suffice for the
+byte-three check. The synthetic test validates the algebra, not candidate
+enumeration or filtering. Decision: do not add a production Stage 2 filter
+until a planted full-state forward oracle proves the partial-state mapping.
+The primary reference is [Stay, “ZIP Attacks with Reduced Known Plaintext,”
+§§3–4.1](https://math.ucr.edu/~mike/zipattacks.pdf). The #39 key recovery and
+Issue #28 remain open.

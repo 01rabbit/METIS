@@ -646,3 +646,12 @@ official submission occurred. The interval analysis is not yet exposed as a
 registered artifact tool. Issue #28 and ksnctf #39 remain open. Full details:
 `docs/reports/issue28-stay-assessment-2026-11-16.md` and
 `docs/reports/issue28-zipcrypto-2026-11-16.md`.
+
+The Stage 2 review derived a plausible 28-bit guess tuple, and a deterministic
+10,000-case oracle test confirms the two-update `key1` formula. That does not
+validate the partial-state predictor: Stage 1 intervals constrain
+`key1_0 * MULT`, while the new guess uses `key1_0 * MULT^2`, and the paper
+does not specify how the partial `key0`/`key2` slices produce the byte-three
+check. A production filter is deferred until a planted full-state oracle
+validates that mapping. Details are in
+`docs/reports/issue28-stay-assessment-2026-11-16.md`.
