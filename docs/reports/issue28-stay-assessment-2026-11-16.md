@@ -509,3 +509,19 @@ is not exposed as a METIS intent and has not been run against #39. A Stage 2
 hit can admit many product values, while the current hit shard stores only
 the first compatible witness. Enumerating every compatible product and then
 checking all member CRCs is still required before any key recovery claim.
+
+The predicate can now enumerate up to 4,096 distinct compatible products for
+a single Stage 2 guess using repeated exact q8/residue witness searches. One
+planted seven-member guess yielded 668 products; the true product was among
+them. This is a synthetic workload observation, not a target survivor count.
+The production Stage 2 shard still records only the first witness, but the
+new `zipcrypto_stay_recover` route re-enumerates compatible products from a
+private Stage 2 hit. It resumes over product and extra-bit cursors, runs in
+the fixed networkless sandbox, checks all encrypted members' CRCs, and writes
+verified key states to a mode-0600 run-private shard. The public response
+contains counts and cursors, not key material. A planted seven-member state
+was recovered through this route and its private shard in a real sandbox.
+The test starts at the known true product index; exhaustive traversal of all
+668 products and target #39 recovery were not run. The route caps each action
+at 300 seconds, 4,096 products, and 2^28 extra-bit candidates. Target
+feasibility and official verification remain open, so #28 remains open.

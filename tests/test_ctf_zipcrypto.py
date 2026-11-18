@@ -296,7 +296,11 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
         pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a numpy-enabled sandbox image")
     from metis.core.codex_session import CodexSession
     from metis.core.ctf_sandbox import configure
-    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan, run_zipcrypto_stay_stage2
+    from metis.core.ctf_zipcrypto_worker import (
+        run_zipcrypto_stay_recover,
+        run_zipcrypto_stay_scan,
+        run_zipcrypto_stay_stage2,
+    )
 
     data = FIXTURE.read_bytes()
     seed = zc.infozip_seed(data, seconds=120)
@@ -356,6 +360,25 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     stage2_hits = json.loads(stage2_shard.read_text())["hits"]
     assert stage2_hits[0][0] == guess
     assert stage2_hits[0][1] >> 24 == product >> 24
+    products: list[int] = []
+    assert zc._stay_stage2_candidate_matches(
+        index, expected_masks, random_firsts, tuple(header[1] for header in headers),
+        tuple(zc.member_bytes(data, entry)[2] ^ header[2]
+              for entry, header in zip(encrypted, headers, strict=True)),
+        guess & 0xFF, (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+        product_witness=products, max_product_witnesses=4096)
+    recovery = run_zipcrypto_stay_recover(database, run_id, artifact, {
+        "random_header_bytes_hex": b"".join(headers).hex(),
+        "stage2_shard": stage2["candidate_shard"], "hit_index": 0,
+        "start_product": products.index(product), "start_extra": 0,
+        "max_products": 1, "max_candidates": 1 << 24,
+        "seconds": 60, "max_hits": 1,
+    })
+    assert recovery["keys_count"] == 1, recovery
+    assert "keys" not in recovery
+    key_file = database.parent / recovery["key_shard"]
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert json.loads(key_file.read_text())["keys"] == [[state.x, state.y, state.z]]
     vector_stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
         "random_header_bytes_hex": b"".join(headers).hex(),
         "stage1_shard": result["candidate_shard"], "hit_index": 0,
@@ -377,6 +400,26 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
             print("Stage 2 probe:", {key: probe.get(key) for key in (
                 "reason", "scanned", "next_index", "complete", "seconds", "hits_count")})
             assert probe.get("next_index") is not None, probe.get("reason")
+
+
+def test_stay_recover_controller_bounds_options():
+    from metis.core.ctf_artifacts import inspect_bytes
+
+    received = []
+    def runner(_data, settings):
+        received.append(settings)
+        return {"keys_count": 0}
+
+    options = {"random_header_bytes_hex": "00" * 50,
+               "stage2_shard": f"private-stay/{'a' * 32}/s2-{'b' * 32}.json"}
+    assert inspect_bytes(b"archive", "zipcrypto_stay_recover", options,
+                         zipcrypto_runner=runner) == {"keys_count": 0}
+    assert received[0]["max_products"] == 1
+    for update in ({"stage2_shard": "../bad"}, {"max_products": 4097},
+                   {"start_extra": 1 << 24}, {"seconds": 301}):
+        with pytest.raises(ValueError):
+            inspect_bytes(b"archive", "zipcrypto_stay_recover", {**options, **update},
+                          zipcrypto_runner=runner)
 
 
 def test_stay_stage2_runner_keeps_witness_private(tmp_path, monkeypatch):

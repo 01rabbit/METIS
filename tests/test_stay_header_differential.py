@@ -4,6 +4,7 @@ These verify one forward relation used by Stay section 4. They do not test
 the paper's inverse key-recovery search.
 """
 import random
+import time
 
 MASK32 = 0xFFFFFFFF
 MULT = 0x08088405
@@ -674,6 +675,7 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         MULT,
         _stay_first_stage_candidate,
         _stay_first_stage_key1_intervals,
+        _stay_recover_keys_for_guess,
         _stay_recover_keys_for_product,
         _stay_second_update_addends,
         _stay_stage2_candidate_matches,
@@ -766,6 +768,20 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
                 start=max(0, guess - 512), stop=guess + 1,
                 max_candidates=513, max_hits=513, seconds=10)
             assert (guess, witnesses[0]) in vector_chunk.hits
+            products: list[int] = []
+            assert _stay_stage2_candidate_matches(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                (key0_crc16 >> 8) & 0xFF, key2_stage2, q8,
+                product_witness=products, max_product_witnesses=4096,
+                deadline=time.monotonic() + 10)
+            assert product in products
+            assert len(products) < 4096
+            from_guess = _stay_recover_keys_for_guess(
+                index, carry_masks, random_headers, stored_headers, guess,
+                start_product=products.index(product), start_extra=0,
+                max_products=1, max_candidates=1 << 24,
+                max_hits=1, seconds=10)
+            assert initial in from_guess.keys
             extra = ((_crc_update(initial[0], 0) >> 16) & 0xFFFF) | (
                 (_crc_update(initial[2], 0) >> 24) << 16)
             recovered = _stay_recover_keys_for_product(
