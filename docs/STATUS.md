@@ -420,6 +420,15 @@ The paired benchmark protocol is in
 The real-model pilot is in
 [`issue6-real-model-paired-pilot-2026-11-17.md`](reports/issue6-real-model-paired-pilot-2026-11-17.md).
 
+The preregistered six-cluster dynamic-borrowing pilot finished 18 arms once
+under the same eight-call/four-action caps. Workflow-complete verified results
+were 5/6 single, 1/6 multi-fixed, and 3/6 multi-borrow. Borrow minus single
+was −33.33 points (descriptive task-bootstrap interval [−66.67, 0]); the
+registered negative-primary stop prevented a larger study. Borrowing helped
+the fixed multi arm in this small synthetic pilot but did not satisfy Issue
+#6's measured-gain gate. See
+[`issue6-borrow-pilot-results-2026-11-18.md`](reports/issue6-borrow-pilot-results-2026-11-18.md).
+
 Browser verdict attestation now requires a matching pre-reserved candidate;
 attestation cannot create a submission record for an unprepared candidate.
 Repeated identical verdicts are idempotent and recover the run if a process

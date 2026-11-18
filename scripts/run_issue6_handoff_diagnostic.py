@@ -80,7 +80,7 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
                  'with keys "component0_hex" and "component1_hex", each the exact decoded bytes in '
                  'lowercase hex. Use candidate_report when the candidate and report are both ready; otherwise '
                  'use the separate candidate/report sequence. Never return plaintext or compute the final digest.'}
-    elif arm in {"multi_separate", "multi_combined"}:
+    elif arm in {"multi_separate", "multi_combined", "multi_fixed", "multi_borrow"}:
         assignments = [dict(by_role["crypto-specialist"]), dict(by_role["forensics-specialist"])]
         notes = {}
         for index, assignment in enumerate(assignments):
@@ -140,7 +140,8 @@ def compose_candidate(arm: str, setup: dict[str, Any], candidates: dict[str, str
 
 
 def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCodexCLI, base: Path,
-            case_id: str, components: tuple[bytes, bytes], family: tuple[str, str], arm: str) -> dict[str, Any]:
+            case_id: str, components: tuple[bytes, bytes], family: tuple[str, str], arm: str,
+            *, oracle_file: Path | None = None) -> dict[str, Any]:
     paths = []
     for index, (kind, component) in enumerate(zip(family, components, strict=True)):
         path = base / f"{case_id}-{arm}-component-{index}.txt"
@@ -158,13 +159,13 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
     run_root = session.artifact_root(run_id)
     if run_root is None:
         raise RuntimeError("run artifact root is unavailable")
-    oracle = FixtureOracle(ORACLE_FILE, solver_roots=(run_root,))
+    oracle = FixtureOracle(oracle_file or ORACLE_FILE, solver_roots=(run_root,))
     scheduler.configure(global_slots=BUDGET["slots"], per_run_slots=BUDGET["slots"],
                         specialist_turn_budget=BUDGET["turns"],
                         catalog=[{"id": MODEL, "tier": "standard"}], current_model=MODEL,
                         memory_retrieval=False)
     setup = make_plan(scheduler.ledger, run_id, arm)
-    scheduler.enqueue(run_id, setup["plan"]["wave_id"])
+    scheduler.enqueue(run_id, setup["plan"]["wave_id"], dynamic_borrowing=arm == "multi_borrow")
     started_jobs = scheduler.dispatch(run_id)["started"]
     results: dict[str, dict[str, Any]] = {}
 
@@ -207,6 +208,9 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         budget_denials = db.execute(
             "SELECT COUNT(*) FROM agent_job_log l JOIN agent_jobs j USING(assignment_id) "
             "WHERE j.run_id=? AND l.event='model_turn_budget_exhausted'", (run_id,)).fetchone()[0]
+        peer_reserve_denials = db.execute(
+            "SELECT COUNT(*) FROM agent_job_log l JOIN agent_jobs j USING(assignment_id) "
+            "WHERE j.run_id=? AND l.event='model_turn_peer_reserve'", (run_id,)).fetchone()[0]
     model_budget = scheduler.model_turn_budget(run_id)
     states = [item["job_state"] for item in results.values()]
     decision_counts: dict[str, int] = {}
@@ -250,6 +254,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
             "report_rejections": report_rejections, "report_rejection_categories": rejection_categories,
             "report_rejection_stages": rejection_stages,
             "terminal_reason_categories": terminal_categories, "model_turn_budget_denials": budget_denials,
+            "peer_reserve_denials": peer_reserve_denials,
             "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low", "cost_usd": "unknown"}
 
 
@@ -317,10 +322,11 @@ def main() -> None:
 
 
 def build_dataset(records: list[dict[str, Any]], task_families: dict[str, list[str]],
-                  trial_order: dict[str, list[str]]) -> dict[str, Any]:
+                  trial_order: dict[str, list[str]], *,
+                  arms: tuple[str, str, str] = ("single", "multi_separate", "multi_combined"),
+                  study: str = STUDY_ID, seed: int = SEED, order_seed: int = ORDER_SEED) -> dict[str, Any]:
     by_key = {(row["case"], row["arm"]): row for row in records}
     comparisons = []
-    arms = ("single", "multi_separate", "multi_combined")
     for case_id in sorted({row["case"] for row in records}):
         trial = {arm: by_key.get((case_id, arm)) for arm in arms}
         if any(row is None for row in trial.values()):
@@ -332,10 +338,11 @@ def build_dataset(records: list[dict[str, Any]], task_families: dict[str, list[s
                                "usage", "actions", "synthesis_complete", "job_states", "candidate_ready_jobs",
                                "decision_counts", "report_rejections", "report_rejection_categories",
                                "report_rejection_stages",
-                               "terminal_reason_categories", "model_turn_budget_denials")}
+                               "terminal_reason_categories", "model_turn_budget_denials",
+                               "peer_reserve_denials")}
                                     for arm in arms}})
-    return {"study": STUDY_ID, "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low",
-            "seed": SEED, "order_seed": ORDER_SEED, "distinct_tasks": len(task_families),
+    return {"study": study, "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low",
+            "seed": seed, "order_seed": order_seed, "distinct_tasks": len(task_families),
             "repetitions_per_task": TASK_REPETITIONS, "encoding_pairs": task_families,
             "trial_order": trial_order, "records": records, "comparisons": comparisons,
             "arms": list(arms),
