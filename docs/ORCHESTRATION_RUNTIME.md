@@ -79,23 +79,23 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   CodexCLI経路では別に、providerを呼ぶ前にrun-wide model-turn reservationを1つ消費する。
   model turnは失敗・timeout・再試行でも返金しない。いずれかの上限超過は追加tool/model実行を拒否する。
 
-#### Shared model-call borrowing (opt-in engineering path)
+#### モデル呼び出し枠の借用（任意の実験経路）
 
-`AgentScheduler.enqueue(run_id, wave_id, dynamic_borrowing=True)` enables borrowing
-for a fresh wave with at least two assignments and no more assignments than the
-run's snapshotted model-call cap. The default remains the existing fixed
-assignment limit. Opt-in jobs may use up to the smaller of the run cap and the
-assignment schema's 20-intent ceiling as their assignment
-intent limit; the run-wide model-call reservation and action cap still apply.
-Under the run lock and one SQLite transaction, reservation preserves one model
-call for every queued or running peer that has never reserved a call. An active
-job reaching that protected remainder fails with `model_turn_peer_reserve`;
-the peer can then make its first call. This is a minimum opportunity to call,
-not a guarantee that every model call succeeds or every job completes. It can
-end a fast job before a slow peer starts, so a future benchmark must measure
-that fairness tradeoff explicitly. Retries consume the same run cap and never
-refund prior reservations. Cancellation refuses new reservations. No automatic
-benchmark or production workflow enables this policy in this change.
+`AgentScheduler.enqueue(run_id, wave_id, dynamic_borrowing=True)` は、run の
+**最初の wave のみ**で利用できる。assignment が 2 件以上あり、その件数が run の
+確定済み呼び出し上限以下の場合に限る。既定では従来の固定枠を使う。
+有効にした assignment は、run の上限とスキーマ上の 20 intent の小さい方まで
+自分の枠を使える。run 全体のモデル呼び出し上限と action 上限は変わらない。
+
+同じ run lock と SQLite transaction の中で、まだ一度も予約していない
+queued または running の各 peer に最初の 1 回を残す。残りがこの保護枠に
+達した assignment は `model_turn_peer_reserve` で失敗する。この仕組みは
+最初の呼び出し機会を残すもので、呼び出しの成功や job 完了は保証しない。
+running の peer がまだ呼び出しを始めていない場合にも直ちに失敗するため、
+高速な job が先に止まる可能性がある。今後の事前登録した測定で、この
+公平性と完了率を確認する。再試行分は同じ run 上限から消費し、返金しない。
+取消後は新たに予約できない。この変更では通常の実行や benchmark に
+自動で有効化しない。
 
 ### 状態と attempt
 

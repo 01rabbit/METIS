@@ -14,7 +14,8 @@ from metis.core.codex_session import CodexSession
 from metis.core.ctf_orchestration import AgentLedger
 
 
-def _setup(tmp_path: Path, *, limit: int = 8) -> tuple[AgentScheduler, str, list[dict[str, Any]]]:
+def _setup(tmp_path: Path, *, limit: int = 8, per_run_slots: int = 4
+           ) -> tuple[AgentScheduler, str, list[dict[str, Any]]]:
     database = tmp_path / ".metis-state" / "metis.sqlite"
     artifacts = []
     for index in range(2):
@@ -25,11 +26,11 @@ def _setup(tmp_path: Path, *, limit: int = 8) -> tuple[AgentScheduler, str, list
                                            paths=artifacts, categories=["crypto", "forensics"],
                                            max_actions=20)["run_id"]
     scheduler = AgentScheduler(database, FakeHost())
-    scheduler.configure(global_slots=4, per_run_slots=4, specialist_turn_budget=limit)
+    scheduler.configure(global_slots=4, per_run_slots=per_run_slots, specialist_turn_budget=limit)
     wave = AgentLedger(database).create_wave(run_id)
     scheduler.enqueue(run_id, wave["wave_id"], dynamic_borrowing=True)
     jobs = scheduler.dispatch(run_id)["started"]
-    assert len(jobs) >= 2
+    assert len(jobs) >= min(2, per_run_slots)
     return scheduler, run_id, jobs
 
 
@@ -43,6 +44,17 @@ def test_borrowing_keeps_one_call_for_each_unstarted_peer(tmp_path: Path) -> Non
     for job in jobs[1:]:
         assert scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"])
     assert scheduler.model_turn_budget(run_id) == {"limit": 8, "reserved": 8, "remaining": 0}
+
+
+def test_queued_peer_keeps_first_call_when_slot_is_full(tmp_path: Path) -> None:
+    scheduler, run_id, jobs = _setup(tmp_path, per_run_slots=1)
+    assert len(jobs) == 1
+    first = jobs[0]
+    assert len([job for job in scheduler.jobs(run_id) if job["state"] == "queued"]) >= 1
+    for _ in range(8 - (len(scheduler.jobs(run_id)) - 1)):
+        assert scheduler.reserve_model_turn(run_id, first["assignment_id"], first["attempt_id"])
+    assert scheduler.reserve_model_turn(run_id, first["assignment_id"], first["attempt_id"]) is None
+    assert scheduler.model_turn_budget(run_id)["remaining"] == len(scheduler.jobs(run_id)) - 1
 
 
 def test_concurrent_borrowing_and_retry_never_exceed_cap(tmp_path: Path) -> None:

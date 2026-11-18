@@ -157,6 +157,7 @@ class AgentScheduler:
     # -- jobs ------------------------------------------------------------------------------
     @locked
     def enqueue(self, run_id: str, wave_id: str, *, dynamic_borrowing: bool = False) -> list[dict[str, Any]]:
+        """Queue a wave; opt-in borrowing is limited to the run's first wave."""
         if self.run_cancelled(run_id):
             raise ValueError("run is cancelled; enqueue refused")
         plan = self.ledger._plan(run_id, wave_id)
