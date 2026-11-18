@@ -434,3 +434,27 @@ back as a Stage 1 shard. The three isolated workers use one injected cgroup
 limit check, so their memory, swap, CPU and PID policy stays identical.
 The planted seven-member Stage 1 → Stage 2 sandbox test passed with this
 contract. These interface changes do not make the full attack feasible.
+
+## Stage 2 interval reuse probe (2026-11-18)
+
+Review follow-up: interval preparation now shares the chunk deadline. An
+expired deadline stops preparation before any Stage 2 guess, and an empty
+chunk returns without preparing intervals. Differential tests also cover
+multiple compatible first-member carry options in a prepared interval set.
+
+The bounded Stage 2 chunk now materializes its Stage 1 carry intervals once
+per chunk and reuses them across guesses. The predicate also checks the first
+member's exact third-byte condition once per distinct Stage 1 carry pair,
+before traversing intervals; it keeps every compatible carry branch. A
+regression compares chunk hits against the scalar predicate and confirms one
+interval construction. The planted seven-member sandbox test passed. In the
+same fixed networkless container, the synthetic zero-hit `[0, 10000)` probe
+reported 0.089 seconds, versus 0.203 seconds before these changes. These short,
+separate runs are not a target throughput estimate. The current
+1,048,576-guess action cap still
+requires at least 5,632 actions for the 5,905,580,032 upper-domain pairs,
+above both ordinary and hard run caps. Run
+`0045b063168045c289eaef276dab21c2` has no wall time left. No official
+Stage 2 scan, key recovery, or submission occurred. Further work needs a
+native multi-member sieve and full-state reconstruction validated on synthetic
+vectors; the first compatible product witness alone may not be the true key.

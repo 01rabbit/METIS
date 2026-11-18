@@ -420,6 +420,15 @@ The paired benchmark protocol is in
 The real-model pilot is in
 [`issue6-real-model-paired-pilot-2026-11-17.md`](reports/issue6-real-model-paired-pilot-2026-11-17.md).
 
+The preregistered six-cluster dynamic-borrowing pilot finished 18 arms once
+under the same eight-call/four-action caps. Workflow-complete verified results
+were 5/6 single, 1/6 multi-fixed, and 3/6 multi-borrow. Borrow minus single
+was −33.33 points (descriptive task-bootstrap interval [−66.67, 0]); the
+registered negative-primary stop prevented a larger study. Borrowing helped
+the fixed multi arm in this small synthetic pilot but did not satisfy Issue
+#6's measured-gain gate. See
+[`issue6-borrow-pilot-results-2026-11-18.md`](reports/issue6-borrow-pilot-results-2026-11-18.md).
+
 Browser verdict attestation now requires a matching pre-reserved candidate;
 attestation cannot create a submission record for an unprepared candidate.
 Repeated identical verdicts are idempotent and recover the run if a process
@@ -685,6 +694,15 @@ Info-ZIP PRNG bytes after the reset-cipher pass, and the body CRC. Its seven-
 member synthetic fixture agrees with CPython `zipfile`; 21 mutations of header
 bytes 2, 10, or 11 are rejected. This validates supplied keys only; Stage 2
 enumeration, full key recovery, and the official #39 verdict remain incomplete.
+
+Stage 2 now reuses each hit's Stage 1 carry intervals across a bounded chunk
+and filters guesses against the first member before traversing intervals. The
+planted seven-member sandbox test passed; a separate short zero-hit synthetic
+10,000-guess probe reported 0.089 s versus 0.203 s previously. The action cap
+still requires at least 5,632 calls for the raw upper domain, and the official
+#39 run's wall budget is exhausted. Issue #28 remains open; no official Stage 2
+scan or submission occurred. See the Stage 2 interval-reuse section in
+[`issue28-stay-assessment-2026-11-16.md`](reports/issue28-stay-assessment-2026-11-16.md).
 
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
 origin cookies and fences stale clients from sending or restoring them. State
