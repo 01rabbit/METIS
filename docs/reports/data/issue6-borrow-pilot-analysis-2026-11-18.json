@@ -1,0 +1,130 @@
+{
+  "arms": {
+    "multi_borrow": {
+      "candidate_ready_call_ceiling_failures": 3,
+      "candidate_ready_jobs_at_termination": 10,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 13,
+        "intent": 34
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 7.833,
+      "mean_calls_reserved": 7.833,
+      "mean_elapsed_seconds": 33.508,
+      "mean_input_tokens": 82977,
+      "mean_output_tokens": 1110.5,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 4,
+      "report_rejection_categories": {
+        "other_validation": 5
+      },
+      "report_rejection_stages": {
+        "persistence": 5
+      },
+      "report_rejections": 5,
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 4,
+        "completed": 8
+      },
+      "token_usage_complete": true,
+      "trials": 6,
+      "workflow_complete": 3,
+      "workflow_complete_oracle_verified": 3
+    },
+    "multi_fixed": {
+      "candidate_ready_call_ceiling_failures": 4,
+      "candidate_ready_jobs_at_termination": 9,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 9,
+        "intent": 36,
+        "report": 2
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 7.833,
+      "mean_calls_reserved": 7.833,
+      "mean_elapsed_seconds": 33.068,
+      "mean_input_tokens": 82893,
+      "mean_output_tokens": 1154.8,
+      "model_turn_budget_denials": 5,
+      "oracle_verified": 3,
+      "report_rejection_categories": {
+        "other_validation": 4
+      },
+      "report_rejection_stages": {
+        "normalization_or_persistence": 1,
+        "persistence": 3
+      },
+      "report_rejections": 4,
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 5,
+        "completed": 7
+      },
+      "token_usage_complete": true,
+      "trials": 6,
+      "workflow_complete": 2,
+      "workflow_complete_oracle_verified": 1
+    },
+    "single": {
+      "candidate_ready_call_ceiling_failures": 0,
+      "candidate_ready_jobs_at_termination": 5,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 5,
+        "intent": 29,
+        "report": 1
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 5.833,
+      "mean_calls_reserved": 5.833,
+      "mean_elapsed_seconds": 42.221,
+      "mean_input_tokens": 62519.2,
+      "mean_output_tokens": 779.5,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 5,
+      "report_rejection_categories": {},
+      "report_rejection_stages": {},
+      "report_rejections": 0,
+      "terminal_reason_categories": {
+        "completed": 6
+      },
+      "token_usage_complete": true,
+      "trials": 6,
+      "workflow_complete": 6,
+      "workflow_complete_oracle_verified": 5
+    }
+  },
+  "bootstrap": {
+    "resampling_unit": "task_id",
+    "samples": 10000,
+    "seed": 20261119
+  },
+  "borrow_minus_fixed": 0.3333,
+  "borrow_minus_fixed_cluster_bootstrap_95_interval": [
+    0.0,
+    0.6667
+  ],
+  "borrow_minus_single": -0.3333,
+  "borrow_minus_single_cluster_bootstrap_95_interval": [
+    -0.6667,
+    0.0
+  ],
+  "discordant_pairs": {
+    "combined_vs_separate": {
+      "both": 1,
+      "left_only": 2,
+      "neither": 3,
+      "right_only": 0
+    },
+    "combined_vs_single": {
+      "both": 3,
+      "left_only": 0,
+      "neither": 1,
+      "right_only": 2
+    }
+  },
+  "pilot_positive": false,
+  "primary_gain_gate_met": false,
+  "study": "issue6-borrow-pilot-2026-11-18"
+}
