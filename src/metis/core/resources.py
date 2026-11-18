@@ -31,6 +31,7 @@ import os
 import secrets
 import socket
 import sqlite3
+import stat
 import subprocess
 import threading
 import time
@@ -72,13 +73,14 @@ def init_owner_key(database: Path) -> dict[str, Any]:
 
     The whole operation runs inside one ``BEGIN IMMEDIATE`` transaction, so concurrent calls are
     serialized. The key file is written to a temporary name and linked into place, so it is either
-    absent or complete. A key file left by an interrupted earlier call (file present, digest not
-    yet recorded) is adopted instead of blocking recovery.
+    absent or complete. A key file left by an interrupted earlier call is adopted only when it is a
+    regular, single-link file owned by this user with no group/other permissions, read without
+    following symbolic links from a private directory; anything else fails closed. When a digest is
+    already registered, a missing, unsafe or mismatched key file is an error.
     """
     path = owner_key_path(database)
     database.parent.mkdir(parents=True, exist_ok=True)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    _private_directory(path.parent)
     with closing(_connect(database)) as db:
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -86,10 +88,12 @@ def init_owner_key(database: Path) -> dict[str, Any]:
             stored = db.execute("SELECT key_sha256 FROM metis_owner WHERE id=1").fetchone()
             existing = _read_key_file(path)
             if stored is not None:
-                matches = existing is not None and hmac.compare_digest(
-                    hashlib.sha256(existing.encode()).hexdigest(), stored[0])
                 db.execute("COMMIT")
-                return {"owner_key": str(path), "created": False, "key_file_matches": matches}
+                if existing is None:
+                    raise PermissionError("owner key file is missing; the registered key cannot be recovered")
+                if not hmac.compare_digest(hashlib.sha256(existing.encode()).hexdigest(), stored[0]):
+                    raise PermissionError("owner key file does not match the registered owner key")
+                return {"owner_key": str(path), "created": False, "key_file_matches": True}
             adopted = existing is not None
             key = existing if existing is not None else secrets.token_hex(32)
             if not adopted:
@@ -104,11 +108,37 @@ def init_owner_key(database: Path) -> dict[str, Any]:
     return {"owner_key": str(path), "created": not adopted, "adopted_existing_file": adopted}
 
 
+def _private_directory(directory: Path) -> None:
+    """Create or accept the key directory only as a real 0700 directory owned by this user."""
+    if not os.path.lexists(directory):
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.mkdir(directory, 0o700)
+        except FileExistsError:
+            pass  # created concurrently; checked below like any existing directory
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise PermissionError("owner key directory must be a real directory owned by this user")
+    if info.st_mode & 0o077:
+        os.chmod(directory, 0o700)  # verified above to be a real directory, not a link
+
+
 def _read_key_file(path: Path) -> str | None:
+    """Read the key without following links; refuse anything but a private regular file."""
     try:
-        value = path.read_text().strip()
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
+        if os.path.islink(path):
+            raise PermissionError("owner key file is a symbolic link") from None
         return None
+    except OSError:
+        raise PermissionError("owner key file is not a private regular file (symbolic link?)") from None
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
+                or info.st_nlink != 1):
+            raise PermissionError("owner key file must be a single-link 0600 regular file owned by this user")
+        value = stream.read(129).decode("ascii", errors="replace").strip()
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise PermissionError("owner key file is malformed; inspect it before re-running init")
     return value
@@ -119,6 +149,7 @@ def _write_key_file(path: Path, key: str) -> None:
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         with os.fdopen(descriptor, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
             stream.write(key + "\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -128,15 +159,14 @@ def _write_key_file(path: Path, key: str) -> None:
 
 
 def read_owner_key(database: Path, path: Path | None = None) -> str:
-    """The key from ``METIS_OWNER_KEY`` or the key file; never printed."""
+    """The key from ``METIS_OWNER_KEY`` or the private key file; never printed."""
     value = os.environ.get("METIS_OWNER_KEY")
     if value:
         return value.strip()
-    target = path or owner_key_path(database)
-    try:
-        return target.read_text().strip()
-    except OSError:
-        raise PermissionError("owner key unavailable; Daybreak runs `metis permit init` once") from None
+    key = _read_key_file(path or owner_key_path(database))
+    if key is None:
+        raise PermissionError("owner key unavailable; Daybreak runs `metis permit init` once")
+    return key
 
 
 def require_owner(database: Path, key: str | None) -> None:
