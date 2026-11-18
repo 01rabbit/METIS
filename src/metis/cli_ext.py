@@ -11,6 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from metis.blue import journal
 from metis.core.resources import ResourceBroker, ScopedPermits
 
 DEFAULT_DATABASE = Path(".metis-state/metis.sqlite")
@@ -47,6 +48,13 @@ def register(sub: Any) -> None:
     revoke.add_argument("permit_id")
 
 
+    journal_parser = sub.add_parser("journal", help="private case journal: notes, queries, findings, lessons")
+    journal_parser.add_argument("--root", help="journal directory (default .metis-state/journal or "
+                                "$METIS_JOURNAL_ROOT)")
+    journal.add_commands(journal_parser.add_subparsers(dest="journal_command", required=True),
+                         journal.JournalArgumentParser)
+
+
 def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | None:
     output: dict[str, Any]
     if args.command == "resource":
@@ -78,4 +86,8 @@ def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | N
             parser.exit(2, "Permit command rejected: " + str(exc)[:300] + "\n")
         print(json.dumps(output))
         return 0
+    if args.command == "journal":
+        values = {key: value for key, value in vars(args).items() if key not in {"command", "root"}}
+        values["command"] = values.pop("journal_command")
+        return journal.run(argparse.Namespace(**values), journal.journal_root(args.root))
     return None
