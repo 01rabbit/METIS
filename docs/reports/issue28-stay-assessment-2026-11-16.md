@@ -458,3 +458,102 @@ above both ordinary and hard run caps. Run
 Stage 2 scan, key recovery, or submission occurred. Further work needs a
 native multi-member sieve and full-state reconstruction validated on synthetic
 vectors; the first compatible product witness alone may not be the true key.
+
+## Multi-member prediction reuse follow-up (2026-11-18)
+
+The Python Stage 2 predicate now computes each member/carry-pair third-byte
+option once per partial guess and rejects incompatible interval branches
+before calculating their second-update addends. A 100-interval regression
+counts 20 predictor calls for five members with one carry pair each, rather
+than repeating predictions for each interval. Deadline checks cover sieve,
+interval, and residue work without advancing the resumable cursor for an
+interrupted guess. Existing planted-state, differential, and sandbox tests
+retain the known witness.
+
+A separate synthetic zero-hit 10,000-guess local probe took 0.093 seconds,
+versus 0.092 seconds on the preceding implementation. This does not improve
+the raw 5.9-billion-pair bound or establish target throughput. The first-member
+preimage research helper is still not used by the production worker. Full key
+reconstruction and official #39 Stage 2 verification remain open.
+
+## Vectorized first-member sieve (2026-11-18)
+
+The Stage 2 worker now evaluates the first member's exact third-byte
+condition in bounded 65,536-guess NumPy blocks, then runs the existing shared
+interval predicate only on survivors. A fixed-seed comparison checks the
+vector mask against scalar predictions for all four Stage 1 carry pairs;
+the planted Stage 2 guess survives a 513-guess block in both direct and real
+networkless sandbox tests. The scalar predicate still decides every hit.
+
+On one planted synthetic seven-member state, a local zero-hit 100,000-guess
+probe completed in 0.040 seconds versus 1.040 seconds on the previous head.
+The fixed 2 GiB/four-CPU sandbox completed a separate zero-hit 8,388,608-guess
+chunk in 2.645 worker seconds, with no hit. These rates do not estimate target
+branching or survivor density. The controller now permits at most 2^23 raw
+guesses per Stage 2 action, while preserving the 300-second worker timeout,
+65,536-guess vector blocks, and private hit shard. The 88 interval records
+reported for #39 imply at most 704 such full-range chunks if each record
+belongs to a distinct Stage 1 hit; actual hit grouping and overhead remain
+unverified. The old run is expired, and no official Stage 2 scan was started.
+The tool still lacks full-key reconstruction, so #28 remains open.
+
+## Supplied-product key reconstruction primitive (2026-11-18)
+
+A bounded helper now inverts a *supplied* Stage 1 product to key1, vectorizes
+the remaining 16-bit key0 CRC and 8-bit key2 CRC search, filters by the first
+member's fourth double-encrypted byte, and checks all seven known ten-byte
+headers on scalar survivors. A planted full state was recovered from the
+complete 2^24 extra-bit range in 1.199 seconds on a local synthetic vector;
+changing the fourth stored byte rejects the planted candidate. The helper
+is not exposed as a METIS intent and has not been run against #39. A Stage 2
+hit can admit many product values, while the current hit shard stores only
+the first compatible witness. Enumerating every compatible product and then
+checking all member CRCs is still required before any key recovery claim.
+
+The predicate can now enumerate up to 4,096 distinct compatible products for
+a single Stage 2 guess using repeated exact q8/residue witness searches. One
+planted seven-member guess yielded 668 products; the true product was among
+them. This is a synthetic workload observation, not a target survivor count.
+The production Stage 2 shard still records only the first witness, but the
+new `zipcrypto_stay_recover` route re-enumerates compatible products from a
+private Stage 2 hit. It resumes over product and extra-bit cursors, runs in
+the fixed networkless sandbox, checks all encrypted members' CRCs, and writes
+verified key states to a mode-0600 run-private shard. The public response
+contains counts and cursors, not key material. A planted seven-member state
+was recovered through this route and its private shard in a real sandbox.
+The test starts at the known true product index; exhaustive traversal of all
+668 products and target #39 recovery were not run. The route caps each action
+at 300 seconds, 4,096 products, and 2^28 extra-bit candidates. Target
+feasibility and official verification remain open, so #28 remains open.
+
+## Review follow-up: bounded continuation and dense-hit probe (2026-11-19)
+
+The planted seven-member integration test now makes successive sandbox calls:
+the first stops after 1,024 extra-bit candidates, and the second resumes from
+the returned extra cursor and recovers the same state. A separate direct
+helper test processes the preceding compatible product under a one-product
+cap, then resumes from its returned product cursor and recovers the planted
+state. Both paths assert the cursor values. This checks continuation on the
+synthetic vector, not exhaustive traversal of every compatible product.
+
+For a deliberately dense synthetic interval, the first encrypted member's
+observations were repeated seven times over a 65,536-guess window containing
+the planted guess. The exact Stage 2 scan returned 692 hits and completed in
+0.136 seconds locally; the hit count is retained as a regression assertion.
+Repeated observations reduce independent filtering and stress the survivor
+path, but do not model the target's distinct member headers or predict #39
+runtime. This Draft PR is scoped to bounded algorithm and controller changes.
+An independent end-to-end #39 verdict remains outside its acceptance evidence.
+
+## Independent full-product inverse vector (2026-11-19)
+
+An opt-in slow regression now creates 16 random ten-byte headers and their
+two-pass ciphertext with a separate bitwise CRC/encryptor. The planted state
+was chosen without using the METIS inverse routines. For its true Stage 1
+index and Stage 2 guess, the inverse search enumerated 33 compatible product
+values. Nine successive bounded calls traversed all 33 products, recovering
+exactly the planted full key state; the final call returned `complete`.
+`METIS_TEST_SLOW=1` ran the test successfully locally. This exercises complete
+product traversal on an independently generated inverse vector. It does not
+scan the full Stage 1 or Stage 2 search spaces, construct a ZIP payload, or
+provide an official #39 verdict. Issue #28 remains open.

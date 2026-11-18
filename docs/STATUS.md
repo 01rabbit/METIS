@@ -719,3 +719,12 @@ recorded no solve. This does not establish host reboot recovery.
 This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
+
+The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
+across compatible Stage 1 intervals and checks the deadline inside one guess.
+It now also uses a 65,536-guess NumPy first-member sieve before scalar shared-
+interval filtering. Synthetic 100,000-guess zero-hit time changed from 1.040
+to 0.040 seconds; an 8,388,608-guess sandbox chunk took 2.645 worker seconds.
+The controller cap is now 2^23 guesses/action, with the same 300-second worker
+timeout. These are synthetic measurements. Full-key reconstruction and official
+#39 verification remain open.
