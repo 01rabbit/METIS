@@ -162,12 +162,13 @@ class WebWorkflow:
                        "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
             cursor = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
             rows = db.execute("SELECT run_id,state FROM web_runs WHERE json_extract(config,'$.auth_origin')=?", (key,)).fetchall()
+            cookie_removed = False
             for run_id, raw_state in rows:
                 state = json.loads(raw_state)
-                state.get("cookies", {}).pop(key, None)
+                cookie_removed = state.get("cookies", {}).pop(key, None) is not None or cookie_removed
                 state.pop("cookie_fingerprint", None)
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
-            removed = cursor.rowcount > 0
+            removed = cursor.rowcount > 0 or cookie_removed
         return {"origin": key, "credential_removed": removed}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
