@@ -686,6 +686,15 @@ member synthetic fixture agrees with CPython `zipfile`; 21 mutations of header
 bytes 2, 10, or 11 are rejected. This validates supplied keys only; Stage 2
 enumeration, full key recovery, and the official #39 verdict remain incomplete.
 
+Stage 2 now reuses each hit's Stage 1 carry intervals across a bounded chunk
+and filters guesses against the first member before traversing intervals. The
+planted seven-member sandbox test passed; a separate short zero-hit synthetic
+10,000-guess probe reported 0.089 s versus 0.203 s previously. The action cap
+still requires at least 5,632 calls for the raw upper domain, and the official
+#39 run's wall budget is exhausted. Issue #28 remains open; no official Stage 2
+scan or submission occurred. See the Stage 2 interval-reuse section in
+[`issue28-stay-assessment-2026-11-16.md`](reports/issue28-stay-assessment-2026-11-16.md).
+
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
 origin cookies and fences stale clients from sending or restoring them. State
 and generation load share a SQLite snapshot, and initial intake checks the
