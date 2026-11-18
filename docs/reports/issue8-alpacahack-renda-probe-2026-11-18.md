@@ -26,3 +26,14 @@ JavaScript was run on the host, no official submission was made, and no
 official verdict or verified flag exists. This exploratory probe does not meet
 Issue #8's repeated held-out benchmark, protected-oracle, solvability-control,
 cost/latency, or ablation requirements. Keep Issue #8 open.
+
+## Isolated static follow-up
+
+The METIS sandbox used the immutable Linux ARM64 image with no network or host
+mounts. A sandbox-only check confirmed that the image has no Node.js, QuickJS,
+Deno, Bun, or browser runtime. A restricted arithmetic-only parser evaluated
+the numeric expressions in the obfuscated output arrays and emitted metadata
+only: 53 printable characters were derived, but the result did not match the
+page's `Alpaca{...}` format. The candidate text was neither emitted nor saved.
+This is not a solve; the surrounding obfuscated control flow still needs
+analysis to establish whether those arrays are the active output path.
