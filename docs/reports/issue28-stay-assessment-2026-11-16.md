@@ -475,3 +475,24 @@ versus 0.092 seconds on the preceding implementation. This does not improve
 the raw 5.9-billion-pair bound or establish target throughput. The first-member
 preimage research helper is still not used by the production worker. Full key
 reconstruction and official #39 Stage 2 verification remain open.
+
+## Vectorized first-member sieve (2026-11-18)
+
+The Stage 2 worker now evaluates the first member's exact third-byte
+condition in bounded 65,536-guess NumPy blocks, then runs the existing shared
+interval predicate only on survivors. A fixed-seed comparison checks the
+vector mask against scalar predictions for all four Stage 1 carry pairs;
+the planted Stage 2 guess survives a 513-guess block in both direct and real
+networkless sandbox tests. The scalar predicate still decides every hit.
+
+On one planted synthetic seven-member state, a local zero-hit 100,000-guess
+probe completed in 0.040 seconds versus 1.040 seconds on the previous head.
+The fixed 2 GiB/four-CPU sandbox completed a separate zero-hit 8,388,608-guess
+chunk in 2.645 worker seconds, with no hit. These rates do not estimate target
+branching or survivor density. The controller now permits at most 2^23 raw
+guesses per Stage 2 action, while preserving the 300-second worker timeout,
+65,536-guess vector blocks, and private hit shard. The 88 interval records
+reported for #39 imply at most 704 such full-range chunks if each record
+belongs to a distinct Stage 1 hit; actual hit grouping and overhead remain
+unverified. The old run is expired, and no official Stage 2 scan was started.
+The tool still lacks full-key reconstruction, so #28 remains open.

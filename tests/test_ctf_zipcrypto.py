@@ -356,8 +356,18 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     stage2_hits = json.loads(stage2_shard.read_text())["hits"]
     assert stage2_hits[0][0] == guess
     assert stage2_hits[0][1] >> 24 == product >> 24
-    if os.environ.get("METIS_TEST_STAY_STAGE2_PROBE") == "1":
-        for count in (1_000, 10_000):
+    vector_stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
+        "random_header_bytes_hex": b"".join(headers).hex(),
+        "stage1_shard": result["candidate_shard"], "hit_index": 0,
+        "start": guess - 512, "stop": guess + 1, "max_candidates": 513,
+        "seconds": 30, "max_hits": 4,
+    })
+    assert vector_stage2["hits_count"] >= 1, vector_stage2
+    assert any(hit[0] == guess for hit in json.loads(
+        (database.parent / vector_stage2["candidate_shard"]).read_text())["hits"])
+    probe_mode = os.environ.get("METIS_TEST_STAY_STAGE2_PROBE")
+    if probe_mode in {"1", "large"}:
+        for count in ((1_000, 10_000, 1 << 23) if probe_mode == "large" else (1_000, 10_000)):
             probe = run_zipcrypto_stay_stage2(database, run_id, artifact, {
                 "random_header_bytes_hex": b"".join(headers).hex(),
                 "stage1_shard": result["candidate_shard"], "hit_index": 0,
@@ -424,6 +434,11 @@ def test_stay_stage2_controller_bounds_options():
     inspect_bytes(b"archive", "zipcrypto_stay_stage2", options, zipcrypto_runner=runner)
     assert seen[0]["start"] == 5 and seen[0]["stop"] == 8
     assert seen[0]["stage1_shard"] == options["stage1_shard"]
+    inspect_bytes(b"archive", "zipcrypto_stay_stage2",
+                  {**options, "max_candidates": 1 << 23}, zipcrypto_runner=runner)
+    with pytest.raises(ValueError):
+        inspect_bytes(b"archive", "zipcrypto_stay_stage2",
+                      {**options, "max_candidates": (1 << 23) + 1}, zipcrypto_runner=runner)
     with pytest.raises(ValueError):
         inspect_bytes(b"archive", "zipcrypto_stay_stage2", {**options, "stop": 4},
                       zipcrypto_runner=runner)

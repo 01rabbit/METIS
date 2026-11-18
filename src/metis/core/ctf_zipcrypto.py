@@ -692,6 +692,64 @@ class StayStage2Chunk:
     reason: str
 
 
+def _stay_stage2_first_member_mask_np(index: int, random_first: int, random_second: int,
+                                      observed_third: int, guesses: np.ndarray,
+                                      first_pairs: tuple[int, ...], *,
+                                      deadline: float | None = None) -> np.ndarray:
+    """Vectorized necessary first-member sieve over packed Stage 2 guesses.
+
+    Every surviving guess still passes through the scalar shared-interval
+    predicate. This routine may retain false positives but must not drop any
+    guess whose first-member third-byte relation is satisfiable.
+    """
+    if guesses.ndim != 1 or guesses.dtype != np.uint32:
+        raise ValueError("Stay Stage 2 sieve expects a uint32 guess vector")
+    packed = guesses.astype(np.uint64)
+    key0_crc = np.uint64((index >> 8) & 0xFF) | ((packed & np.uint64(0xFF)) << np.uint64(8))
+    bits = (packed >> np.uint64(8)) & np.uint64(0x3FF)
+    key2_crc = (np.uint64(((index >> 25) & 0x3F) << 10 | ((index >> 31) & 0xFF) << 2)
+                | ((bits >> np.uint64(2)) << np.uint64(16)) | (bits & np.uint64(3)))
+    q8 = (packed >> np.uint64(18)) & np.uint64(0xFF)
+    first_stream = index & 0xFF
+    product_high = (index >> 16) & 0xFF
+    mask = np.zeros(len(guesses), dtype=np.bool_)
+
+    def streams(plain0: int, plain1: int | np.ndarray, carry1: int,
+                carry2: int) -> tuple[np.ndarray, np.ndarray]:
+        first = (key0_crc ^ np.uint64(CRCTAB[plain0] & 0xFFFF)) & np.uint64(0xFFFF)
+        a1 = first & np.uint64(0xFF)
+        second_index = ((first ^ plain1) & np.uint64(0xFF)).astype(np.intp)
+        a2 = ((first >> np.uint64(8)) ^ CRCTAB_NP[second_index]) & np.uint64(0xFF)
+        first_offset = a1 * np.uint64(MULT) + np.uint64(1)
+        high1 = (np.uint64(product_high) + (first_offset >> np.uint64(24))
+                 + np.uint64(carry1)) & np.uint64(0xFF)
+        total2 = (a1 * np.uint64(MULT * MULT) + np.uint64(MULT)
+                  + a2 * np.uint64(MULT) + np.uint64(1))
+        high2 = (q8 + (total2 >> np.uint64(24)) + np.uint64(carry2)) & np.uint64(0xFF)
+        key2_first = (key2_crc ^ CRCTAB_NP[high1.astype(np.intp)]) & np.uint64(0xFFFFFF)
+        state1 = (key2_first & np.uint64(0xFFFF)) | np.uint64(2)
+        stream1 = (state1 * (state1 ^ np.uint64(1)) >> np.uint64(8)) & np.uint64(0xFF)
+        key2_second = ((key2_first >> np.uint64(8))
+                       ^ CRCTAB_NP[((key2_first ^ high2) & np.uint64(0xFF)).astype(np.intp)])
+        key2_second &= np.uint64(0xFFFF)
+        state2 = key2_second | np.uint64(2)
+        stream2 = (state2 * (state2 ^ np.uint64(1)) >> np.uint64(8)) & np.uint64(0xFF)
+        return stream1, stream2
+
+    for pair in first_pairs:
+        for carry2_first in (0, 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Stay Stage 2 vector sieve exceeded deadline")
+            stream_first, stream_third = streams(random_first, random_second, pair >> 1,
+                                                 carry2_first)
+            for carry2_second in (0, 1):
+                _stream_second, second_third = streams(
+                    random_first ^ first_stream,
+                    random_second ^ stream_first, pair & 1, carry2_second)
+                mask |= (stream_third ^ second_third) == np.uint64(observed_third)
+    return mask
+
+
 def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
                             random_firsts: tuple[int, ...], random_seconds: tuple[int, ...],
                             observed_third_differences: tuple[int, ...], *,
@@ -724,27 +782,52 @@ def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
     hits: list[tuple[int, int]] = []
     cursor = start
     visited = 0
+    first_pairs = tuple(sorted({pairs[0] for _interval, pairs in prepared_intervals}))
     while cursor < stop:
         if visited >= max_candidates:
             return StayStage2Chunk(cursor, tuple(hits), "candidate_limit")
         if time.monotonic() >= deadline:
             return StayStage2Chunk(cursor, tuple(hits), "time_limit")
-        guess = cursor
-        witness: list[int] = []
+        block_start = cursor
+        block_stop = min(stop, cursor + min(65_536, max_candidates - visited))
         try:
-            if _stay_stage2_candidate_matches(
-                    index, carry_masks, random_firsts, random_seconds,
-                    observed_third_differences, guess & 0xFF,
-                    (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
-                    product_witness=witness, prepared_intervals=prepared_intervals,
-                    deadline=deadline):
-                hits.append((guess, witness[0]))
+            if not first_pairs:
+                survivor_offsets = np.empty(0, dtype=np.intp)
+            elif block_stop - block_start >= 256:
+                guesses = np.arange(block_start, block_stop, dtype=np.uint32)
+                first_mask = _stay_stage2_first_member_mask_np(
+                    index, random_firsts[0], random_seconds[0], observed_third_differences[0],
+                    guesses, first_pairs, deadline=deadline)
+                survivor_offsets = np.flatnonzero(first_mask)
+            else:
+                survivor_offsets = np.arange(block_stop - block_start)
         except TimeoutError:
             return StayStage2Chunk(cursor, tuple(hits), "time_limit")
-        cursor += 1
-        visited += 1
-        if len(hits) >= max_hits:
-            return StayStage2Chunk(cursor, tuple(hits), "hit_limit")
+        if time.monotonic() >= deadline:
+            return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+        for offset in survivor_offsets:
+            guess = block_start + int(offset)
+            visited += guess - cursor
+            cursor = guess
+            if time.monotonic() >= deadline:
+                return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+            witness: list[int] = []
+            try:
+                if _stay_stage2_candidate_matches(
+                        index, carry_masks, random_firsts, random_seconds,
+                        observed_third_differences, guess & 0xFF,
+                        (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+                        product_witness=witness, prepared_intervals=prepared_intervals,
+                        deadline=deadline):
+                    hits.append((guess, witness[0]))
+            except TimeoutError:
+                return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+            cursor += 1
+            visited += 1
+            if len(hits) >= max_hits:
+                return StayStage2Chunk(cursor, tuple(hits), "hit_limit")
+        visited += block_stop - cursor
+        cursor = block_stop
     return StayStage2Chunk(cursor, tuple(hits), "complete")
 
 

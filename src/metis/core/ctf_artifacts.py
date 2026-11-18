@@ -858,7 +858,7 @@ def _zipcrypto(data: bytes, tool: str, options: dict,
             "hit_index": bounded_integer(options, "hit_index", 0, 0, 4095),
             "start": start,
             "stop": bounded_integer(options, "stop", 1 << 26, start, 1 << 26),
-            "max_candidates": bounded_integer(options, "max_candidates", 1 << 16, 1, 1 << 20),
+            "max_candidates": bounded_integer(options, "max_candidates", 1 << 16, 1, 1 << 23),
             "seconds": bounded_integer(options, "seconds", 300, 10, 300),
             "max_hits": bounded_integer(options, "max_hits", 4096, 1, 4096),
         })

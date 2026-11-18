@@ -580,6 +580,35 @@ def test_stage2_member_sieve_reuses_predictions_across_intervals(monkeypatch) ->
     assert calls == 5 * 4
 
 
+def test_stage2_vector_first_member_matches_scalar_predictions() -> None:
+    import numpy as np
+
+    from metis.core.ctf_zipcrypto import (
+        _stay_predict_third_byte_difference,
+        _stay_stage2_first_member_mask_np,
+    )
+
+    rng = random.Random(2026111828)
+    index = rng.getrandbits(40)
+    guesses = np.array([rng.randrange(1 << 26) for _ in range(257)], dtype=np.uint32)
+    first, second, observed = 31, 147, 83
+    pairs = (0, 1, 2, 3)
+    vector = _stay_stage2_first_member_mask_np(index, first, second, observed, guesses, pairs)
+    expected = []
+    for packed in guesses:
+        guess = int(packed)
+        key0 = ((index >> 8) & 0xFF) | ((guess & 0xFF) << 8)
+        key2 = (((index >> 25) & 0x3F) << 10 | ((index >> 31) & 0xFF) << 2
+                | (((guess >> 8) & 0x3FF) >> 2) << 16 | ((guess >> 8) & 3))
+        expected.append(any(
+            _stay_predict_third_byte_difference(
+                first, second, index & 0xFF, key0, (index >> 16) & 0xFF,
+                key2, pair >> 1, pair & 1, (guess >> 18) & 0xFF,
+                carry_first, carry_second) == observed
+            for pair in pairs for carry_first in (0, 1) for carry_second in (0, 1)))
+    assert vector.tolist() == expected
+
+
 def test_stage2_member_sieve_timeout_does_not_advance_cursor(monkeypatch) -> None:
     import time
 
@@ -731,6 +760,11 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
             assert positive.reason == "hit_limit"
             assert positive.next_index == guess + 1
             assert positive.hits == ((guess, witnesses[0]),)
+            vector_chunk = _stay_stage2_scan_chunk(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                start=max(0, guess - 512), stop=guess + 1,
+                max_candidates=513, max_hits=513, seconds=10)
+            assert (guess, witnesses[0]) in vector_chunk.hits
             negative = _stay_stage2_scan_chunk(
                 index, carry_masks, random_firsts, random_seconds,
                 tuple(value ^ 0x5A for value in observed_third),
