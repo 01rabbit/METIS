@@ -29,8 +29,11 @@ forget during intake prevents initial persistence. Fresh requests send no
 cookie, and a repeated forget reports no further local credential removal. No
 real credential or external provider is used.
 
-The focused web request suite passed locally (7 tests), and Ruff and
-`git diff --check` passed. Exact-head GitHub CI is pending for this revision.
+The focused web workflow and request suites, Ruff, and mypy passed locally.
+Exact-head CI for the preceding code revision found one older intake fixture
+whose fake client did not implement the new generation attribute; the fixture
+now matches the `SafeHTTP` client interface. CI for that fixture adjustment is
+pending.
 
 This is local METIS state management. It does not revoke a token or cookie at a
 CTF provider, erase SQLite WAL pages or backups, clear user-managed environment

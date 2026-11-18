@@ -223,6 +223,7 @@ def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_p
     workflow._client = lambda config, state: type("Client", (), {
         "request": lambda self, *args, **kwargs: response,
         "export_state": lambda self: {"cookies": {}},
+        "auth_generation": 0,
     })()
     result = workflow.open(base + "/problem")
     assert result["context"]["challenge"]["categories"] == ["web"]
