@@ -36,6 +36,10 @@ metis journal close   --case "$CASE" --outcome solved --summary "周期通信を
 
 clone ごとに一度 `git config core.hooksPath .githooks` を実行すると、コミット時に自動で走る。CI でも全体を検査する。
 
+`scripts/check_blue_knowledge.py` は `blue/` の構造を検査する（技能の名前と説明、知識の索引とハッシュ、
+`.agents/skills` からの読み込み経路、文書内リンクの切れ。`--staged` ではステージした索引と作業ツリーの一致も見る）。
+pre-commit と CI の両方で実行する。
+
 ## 証拠の読み取り（オフライン）
 
 ログやインシデントの証拠を、上限付きで構造化して読む。結果は観測であり、判定ではない。
