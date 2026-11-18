@@ -639,6 +639,38 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
     return False
 
 
+def _stay_stage2_first_member_preimages(index: int, random_first: int, random_second: int,
+                                         observed_third: int, key0_crc_bits_8_15: int,
+                                         q8: int) -> tuple[tuple[int, int, int], ...]:
+    """Lift first-member third-byte matches to key2 bits and second-update carries.
+
+    Each row is (key2 Stage 2 bits, first-pass carry, second-pass carry).
+    This is an exact local preimage list; shared product intervals and other
+    members still need to be checked. Its 4,096 predictor calls are bounded.
+    """
+    if (type(index) is not int or not 0 <= index < 1 << 40
+            or any(type(value) is not int or not 0 <= value <= 255
+                   for value in (random_first, random_second, observed_third,
+                                 key0_crc_bits_8_15, q8))):
+        raise ValueError("invalid Stay Stage 2 first-member input")
+    first_stream = index & 0xFF
+    key0_crc = (index >> 8 & 0xFF) | key0_crc_bits_8_15 << 8
+    product_high = index >> 16 & 0xFF
+    key2_crc_low14 = ((index >> 25 & 0x3F) << 10) | ((index >> 31 & 0xFF) << 2)
+    first_carry1, second_carry1 = index >> 24 & 1, index >> 39 & 1
+    matches: list[tuple[int, int, int]] = []
+    for key2_bits in range(1 << 10):
+        key2_crc = (key2_crc_low14 | (key2_bits >> 2) << 16 | (key2_bits & 3))
+        for first_carry2 in (0, 1):
+            for second_carry2 in (0, 1):
+                if _stay_predict_third_byte_difference(
+                        random_first, random_second, first_stream, key0_crc,
+                        product_high, key2_crc, first_carry1, second_carry1,
+                        q8, first_carry2, second_carry2) == observed_third:
+                    matches.append((key2_bits, first_carry2, second_carry2))
+    return tuple(matches)
+
+
 @dataclass(frozen=True)
 class StayStage2Chunk:
     next_index: int

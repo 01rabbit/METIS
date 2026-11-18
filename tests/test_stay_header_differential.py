@@ -538,8 +538,10 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         M32,
         MULT,
         _stay_first_stage_candidate,
-        _stay_stage2_scan_chunk,
+        _stay_second_update_addends,
         _stay_stage2_candidate_matches,
+        _stay_stage2_first_member_preimages,
+        _stay_stage2_scan_chunk,
     )
 
     rng = random.Random(0x51A7E)
@@ -589,6 +591,20 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
 
         if _ == 0:
+            offsets = _stay_second_update_addends(
+                random_firsts[0], random_seconds[0], first_stream, key0_crc16,
+                product >> 24, key2_crc24, first_carry)
+            second_product_low = (product * MULT) & 0xFFFFFF
+            carry2 = tuple(int(second_product_low + (offset & 0xFFFFFF) >= 1 << 24)
+                           for offset in offsets)
+            planted = (key2_stage2, carry2[0], carry2[1])
+            preimages = _stay_stage2_first_member_preimages(
+                index, random_firsts[0], random_seconds[0], observed_third[0],
+                (key0_crc16 >> 8) & 0xFF, q8)
+            assert planted in preimages
+            assert planted not in _stay_stage2_first_member_preimages(
+                index, random_firsts[0], random_seconds[0], observed_third[0] ^ 1,
+                (key0_crc16 >> 8) & 0xFF, q8)
             guess = ((key0_crc16 >> 8) & 0xFF) | key2_stage2 << 8 | q8 << 18
             positive = _stay_stage2_scan_chunk(
                 index, carry_masks, random_firsts, random_seconds, observed_third,

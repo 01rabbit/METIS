@@ -407,3 +407,19 @@ are unmeasured. The current worker scans one Stage 1 hit per call and recomputes
 its interval branches, so this estimate is optimistic for that interface. A
 stronger reduction or batching strategy is needed before a complete Stage 2
 attempt. No official archive Stage 2 scan or submission occurred.
+
+## First-member Stage 2 preimage lifting (2026-11-18)
+
+Rechecking [Stay's section 4.1](https://math.ucr.edu/~mike/zipattacks.pdf)
+suggested generating the Stage 2 key2/carry guesses that match the first
+member's third-byte differential before invoking the shared product-interval
+predicate. `_stay_stage2_first_member_preimages` now enumerates the bounded
+1,024 key2 partial guesses and four second-update carry pairs for fixed
+key0-high and q8 guesses, returning only exact local matches. A separately
+generated full-state seven-member vector retained its planted key2/carry tuple;
+altering the observed third-byte differential excluded that tuple. This is
+local candidate lifting, not a complete reduction of the 5.9-billion-pair
+domain: creating every preimage list would still visit the same raw guesses,
+and the current Stage 2 worker does not use this primitive. A native batched
+generator plus measured sandbox throughput and shared-interval filtering
+would be needed to establish a route within the existing action budget.
