@@ -263,17 +263,21 @@ unimplemented.
 An independent derivation mapped the paper's proposed 28-bit Stage 2 guess to
 8 bits of `crc32(key0_0, 0)` at bits 8–15, 8 bits from the high byte of
 `key1_0 * MULT^2`, 10 bits of `crc32(key2_0, 0)` at bits 16–23 and 0–1, plus
-two pass-specific carries. A new 10,000-case synthetic test verifies the
-two-update `key1` recurrence and its carry-aware high byte against the full
-cipher recurrence.
+two pass-specific carries. `_stay_predict_third_byte_difference` now implements
+the partial-state byte-three predictor. An independent bitwise CRC/cipher
+oracle test compares its output to 10,000 planted full states and checks that
+changing `q8` or a carry can change the prediction. A separate independent
+review found no mismatch in byte indexing, CRC low-state derivation, update
+carries, or second-stream parity. Exact-head CI at `7921f7f` passed both the
+checks and METIS validation workflows.
 
-This does not yet provide a Stage 2 predictor from those partial guesses. In
-particular, the current Stage 1 interval constrains `key1_0 * MULT`, while the
-proposed guess constrains `key1_0 * MULT^2`; the paper does not specify the
-packed mapping or show how the partial `key0`/`key2` slices suffice for the
-byte-three check. The synthetic test validates the algebra, not candidate
-enumeration or filtering. Decision: do not add a production Stage 2 filter
-until a planted full-state forward oracle proves the partial-state mapping.
+This validates the predictor only. The caller still must enforce consistency
+between `q8` and each Stage 1 interval using
+`q8 = ((P * MULT) mod 2^32) >> 24`; the helper does not enumerate Stage 2
+guesses, run the candidate search, reconstruct full keys, check all archive
+member CRCs, or produce an official verdict. The 360 Stage 1 candidates and
+88 carry-interval records remain unrecovered candidates, not a solve. Issue
+#28 and ksnctf #39 remain open.
 The primary reference is [Stay, “ZIP Attacks with Reduced Known Plaintext,”
 §§3–4.1](https://math.ucr.edu/~mike/zipattacks.pdf). The #39 key recovery and
 Issue #28 remain open.

@@ -647,13 +647,13 @@ registered artifact tool. Issue #28 and ksnctf #39 remain open. Full details:
 `docs/reports/issue28-stay-assessment-2026-11-16.md` and
 `docs/reports/issue28-zipcrypto-2026-11-16.md`.
 
-The Stage 2 review derived a plausible 28-bit guess tuple, and a deterministic
-10,000-case oracle test confirms the two-update `key1` formula. That does not
-validate the partial-state predictor: Stage 1 intervals constrain
-`key1_0 * MULT`, while the new guess uses `key1_0 * MULT^2`, and the paper
-does not specify how the partial `key0`/`key2` slices produce the byte-three
-check. A production filter is deferred until a planted full-state oracle
-validates that mapping. Details are in
+The Stage 2 partial-state byte-three predictor is implemented and independently
+reviewed. A 10,000-case planted full-state oracle test checks its predicted
+byte difference; exact-head checks and METIS validation passed at `7921f7f`.
+The caller still must enforce `q8` consistency with each Stage 1 interval.
+Stage 2 candidate enumeration, full key recovery, member CRC checks with
+recovered keys, and an official #39 verdict have not occurred. Issue #28
+remains open. Details are in
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.
 
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
