@@ -32,8 +32,9 @@ real credential or external provider is used.
 The focused web workflow and request suites, Ruff, and mypy passed locally.
 Exact-head CI for the preceding code revision found one older intake fixture
 whose fake client did not implement the new generation attribute; the fixture
-now matches the `SafeHTTP` client interface. CI for that fixture adjustment is
-pending.
+now matches the `SafeHTTP` client interface. Exact-head CI at `0212645` passed:
+full tests, Ruff, mypy, fixture validation, distribution build, sandbox checks,
+and the ARM64 seccomp job.
 
 This is local METIS state management. It does not revoke a token or cookie at a
 CTF provider, erase SQLite WAL pages or backups, clear user-managed environment
