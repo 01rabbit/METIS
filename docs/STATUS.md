@@ -615,11 +615,13 @@ seed are rejected. This validates a forward predicate only, not an unknown-state
 search, rejection of all false seeds, inverse search, or #39 key recovery. See
 the updated `docs/reports/issue28-stay-assessment-2026-11-16.md`.
 
-An independent review of Stay section 5 derived the byte-three forward
-recurrence but found the inverse candidate lifting underspecified: the paper's
-"same 26 bits" reference does not reconcile with the 27 additional bits listed
-in section 3, and the carry-based reduction to roughly 2^8 `key1_0` choices is
-not given as a reproducible procedure. The replacement #39 run's 7/7 PRNG
-header-byte match still does not recover keys or solve the challenge. No
-inverse search is claimed; Issue #28 remains open. See
+Two independent reviews derived the byte-three recurrence and found a
+plausible reconciliation: section 5's 26 guesses may exclude the carry, then
+add two pass-specific carries. The low-word carry constraints give exact
+intervals; a bounded helper and reduced-width exhaustive oracle test their
+intersection. The paper's claimed roughly 2^8 surviving `key1_0` values is
+still an expected size, not a validated workload, and full candidate lifting
+is absent. The replacement #39 run's 7/7 PRNG header-byte match still does
+not recover keys or solve the challenge. No inverse search is claimed; Issue
+#28 remains open. See
 `docs/reports/issue28-zipcrypto-2026-11-16.md`.

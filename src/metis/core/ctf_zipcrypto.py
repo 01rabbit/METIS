@@ -38,6 +38,34 @@ CONTIGUOUS = 8
 ATTACK_SIZE = 12
 
 
+def _stay_carry_interval(low_addends: tuple[int, ...], carries: tuple[int, ...],
+                         *, bits: int = 24) -> tuple[int, int] | None:
+    """Intersect exact low-word ranges implied by Stay's guessed carry bits.
+
+    For each update, ``carry`` is the high-word carry of ``P_low + addend``.
+    A zero carry gives an inclusive upper bound; a one carry gives an inclusive
+    lower bound. ``None`` means the guesses are mutually inconsistent.
+    """
+    if len(low_addends) != len(carries) or not 1 <= bits <= 24:
+        raise ValueError("carry constraints or word width are invalid")
+    modulus = 1 << bits
+    if any(type(value) is not int or not 0 <= value < modulus for value in low_addends):
+        raise ValueError("carry addends must fit the low word")
+    if any(type(carry) is not int or carry not in (0, 1) for carry in carries):
+        raise ValueError("carry guesses must be zero or one")
+
+    lower, upper = 0, modulus - 1
+    for addend, carry in zip(low_addends, carries, strict=True):
+        threshold = modulus - addend
+        if carry:
+            lower = max(lower, threshold)
+        else:
+            upper = min(upper, threshold - 1)
+        if lower > upper:
+            return None
+    return lower, upper
+
+
 def _tables() -> tuple[list[int], list[int]]:
     crc, inv = [0] * 256, [0] * 256
     for byte in range(256):

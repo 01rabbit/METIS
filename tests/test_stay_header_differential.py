@@ -114,6 +114,42 @@ def test_stay_reduced_subspace_filter_matches_exhaustive_forward_oracle() -> Non
             assert planted not in filtered
 
 
+def test_stay_carry_interval_matches_exhaustive_low_word_oracle() -> None:
+    """Carry guesses must select exactly one contiguous low-word interval."""
+    from metis.core.ctf_zipcrypto import _stay_carry_interval
+
+    rng = random.Random(20_261_118)
+    bits = 8
+    modulus = 1 << bits
+    for _ in range(250):
+        planted = rng.randrange(modulus)
+        addends = tuple(rng.randrange(modulus) for _ in range(10))
+        carries = tuple(int(planted + addend >= modulus) for addend in addends)
+        expected = {
+            candidate for candidate in range(modulus)
+            if tuple(int(candidate + addend >= modulus) for addend in addends) == carries
+        }
+        interval = _stay_carry_interval(addends, carries, bits=bits)
+        assert expected
+        assert interval is not None
+        assert set(range(interval[0], interval[1] + 1)) == expected
+        assert interval[0] <= planted <= interval[1]
+
+
+def test_stay_carry_interval_handles_exact_boundaries_and_bad_guesses() -> None:
+    import pytest
+
+    from metis.core.ctf_zipcrypto import _stay_carry_interval
+
+    assert _stay_carry_interval((0,), (0,), bits=8) == (0, 255)
+    assert _stay_carry_interval((0,), (1,), bits=8) is None
+    assert _stay_carry_interval((255,), (0,), bits=8) == (0, 0)
+    assert _stay_carry_interval((255,), (1,), bits=8) == (1, 255)
+    assert _stay_carry_interval((200, 200), (1, 0), bits=8) is None
+    with pytest.raises(ValueError, match="zero or one"):
+        _stay_carry_interval((1,), (2,), bits=8)
+
+
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
     """Check the shared second-byte relation and reject altered PRNG observations."""
     from pathlib import Path
