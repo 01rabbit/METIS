@@ -208,6 +208,7 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
 - `metis agent codex-probe --ping` は、隔離のセルフテスト、実ターン 1 回、spawn カナリア 1 回を実行し、
   `ready` を返す。
 - usage（トークン数）は Codex の報告値を `agent_jobs.usage` に記録する。費用は `unknown`。
+  1 ターンでも報告の無い項目は 0 で補わず `null` とし、`unknown_fields` に名前を残す。報告された分だけの和は `known_subtotals` に置く。
 - モデルは `metis agent slots` に登録した active catalog の ID だけを使う。
 
 確認済みの制約（Codex CLI 0.166.0 と 0.169.0、2026-11-16〜17）。サブエージェント起動の制限は、この版の挙動に依存する:

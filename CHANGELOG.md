@@ -11,6 +11,8 @@
   resolved wave, budget and a different hypothesis.
 - Submissions to one run are serialized; interrupted sends stay `unknown`.
 - Contest: run/problem identity check, dispatch timebox.
+- Codex specialist usage keeps unreported token fields as `null` (listed in `unknown_fields`) instead
+  of summing them as zero; `known_subtotals` shows the reported part.
 
 ## 0.5.0 — 2026-11-16
 
