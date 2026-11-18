@@ -158,6 +158,47 @@ def _stay_predict_second_byte_difference(random_first: int, first_stream: int,
     return stream(first_key2_low) ^ stream(second_key2_low)
 
 
+def _stay_first_stage_carry_masks(random_firsts: tuple[int, ...],
+                                  observed_differences: tuple[int, ...],
+                                  first_stream: int, key0_crc_low: int,
+                                  key1_product_high: int, key2_crc_bits_2_15: int,
+                                  first_carry: int, second_carry: int
+                                  ) -> tuple[int, ...] | None:
+    """Filter a first-stage partial-state guess across five shared-key files.
+
+    The first file's carry pair is part of the 40-bit guess. For each later
+    file, return a four-bit mask of carry pairs that satisfy its observed
+    second-byte differential. An empty mask rejects the candidate.
+    """
+    if (len(random_firsts) != len(observed_differences) or len(random_firsts) < 5
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *observed_differences))):
+        raise ValueError("Stay first-stage observations require five or more byte pairs")
+    if any(type(carry) is not int or carry not in (0, 1)
+           for carry in (first_carry, second_carry)):
+        raise ValueError("carry guesses must be zero or one")
+
+    first = _stay_predict_second_byte_difference(
+        random_firsts[0], first_stream, key0_crc_low, key1_product_high,
+        key2_crc_bits_2_15, first_carry, second_carry)
+    if first != observed_differences[0]:
+        return None
+    masks = [1 << (first_carry * 2 + second_carry)]
+    for random_first, observed in zip(random_firsts[1:], observed_differences[1:], strict=True):
+        mask = 0
+        for carry1 in (0, 1):
+            for carry2 in (0, 1):
+                predicted = _stay_predict_second_byte_difference(
+                    random_first, first_stream, key0_crc_low, key1_product_high,
+                    key2_crc_bits_2_15, carry1, carry2)
+                if predicted == observed:
+                    mask |= 1 << (carry1 * 2 + carry2)
+        if not mask:
+            return None
+        masks.append(mask)
+    return tuple(masks)
+
+
 def _tables() -> tuple[list[int], list[int]]:
     crc, inv = [0] * 256, [0] * 256
     for byte in range(256):

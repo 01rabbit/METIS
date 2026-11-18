@@ -232,6 +232,51 @@ def test_stay_partial_guess_filter_matches_full_state_forward_oracle() -> None:
     assert all(CRCTAB[value] == _crc_update(0, value) for value in range(256))
 
 
+def test_stay_first_stage_carry_masks_retain_full_state_guesses() -> None:
+    """The first-file fixed carries and later per-file branches retain planted states."""
+    import pytest
+
+    from metis.core.ctf_zipcrypto import (
+        M32,
+        MULT,
+        _stay_first_stage_carry_masks,
+    )
+
+    rng = random.Random(0xF17E)
+    for _ in range(500):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        product = initial[1] * MULT & M32
+        first_stream = _stream_byte(initial[2])
+        random_firsts = tuple(rng.randrange(256) for _ in range(7))
+        random_seconds = tuple(rng.randrange(256) for _ in range(7))
+        observed = tuple(
+            _encrypt(_encrypt(bytes((first, second)), initial), initial)[1] ^ second
+            for first, second in zip(random_firsts, random_seconds, strict=True)
+        )
+        carries = []
+        for first in random_firsts:
+            second_pass_first = first ^ first_stream
+            first_low = _crc_update(initial[0], first) & 0xFF
+            second_low = _crc_update(initial[0], second_pass_first) & 0xFF
+            first_offset = first_low * MULT + 1
+            second_offset = second_low * MULT + 1
+            carries.append((
+                int((product & 0xFFFFFF) + (first_offset & 0xFFFFFF) >= 1 << 24),
+                int((product & 0xFFFFFF) + (second_offset & 0xFFFFFF) >= 1 << 24),
+            ))
+
+        masks = _stay_first_stage_carry_masks(
+            random_firsts, observed, first_stream, _crc_update(initial[0], 0) & 0xFF,
+            product >> 24, _crc_update(initial[2], 0) & 0xFFFC, *carries[0])
+        assert masks is not None and len(masks) == len(random_firsts)
+        assert masks[0] == 1 << (carries[0][0] * 2 + carries[0][1])
+        for mask, (carry1, carry2) in zip(masks[1:], carries[1:], strict=True):
+            assert mask & (1 << (carry1 * 2 + carry2))
+
+    with pytest.raises(ValueError, match="five or more"):
+        _stay_first_stage_carry_masks((0, 1, 2, 3), (0, 1, 2, 3), 0, 0, 0, 0, 0, 0)
+
+
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
     """Check the shared second-byte relation and reject altered PRNG observations."""
     from pathlib import Path

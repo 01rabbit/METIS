@@ -192,4 +192,10 @@ the two second-byte stream outputs. A 10,000-state seeded test compares this
 partial-state calculation against the independent full-state forward
 recurrence. This checks the filter equation for planted guesses, but does not
 search those guesses or enumerate the 40-bit stage. The targeted suite now has
-seven passing tests, with Ruff and mypy clean.
+eight passing tests, with Ruff and mypy clean.
+
+`_stay_first_stage_carry_masks` applies the first file's fixed carry pair and
+branches over the four possible carry pairs for every additional file. A
+500-state synthetic test confirms that the direct double-encryption
+observation retains the true carry pair in every member mask. It still does
+not enumerate candidate tuples or execute Stay's 40-bit first-stage search.
