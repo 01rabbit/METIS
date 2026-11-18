@@ -573,8 +573,24 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                 | (key2_crc_bits_16_23_and_0_1 & 0x3))
 
     intervals = (prepared_intervals if prepared_intervals is not None else
-                 _stay_first_stage_key1_intervals(index, carry_masks, random_firsts))
+                 tuple(_stay_first_stage_key1_intervals(index, carry_masks, random_firsts)))
+    # The first member's third-byte observation depends on its Stage 1 carry
+    # pair, but not on the product interval. Reject a guess before visiting
+    # every interval when none of those pairs can explain the observation.
+    first_options: dict[int, tuple[int, ...]] = {}
+    for pair in {pairs[0] for _interval, pairs in intervals}:
+        first_options[pair] = tuple(
+            carry2_first * 2 + carry2_second
+            for carry2_first in (0, 1) for carry2_second in (0, 1)
+            if _stay_predict_third_byte_difference(
+                random_firsts[0], random_seconds[0], first_stream, key0_crc,
+                product_high, key2_crc, pair >> 1, pair & 1, q8,
+                carry2_first, carry2_second) == observed_third_differences[0])
+    if not any(first_options.values()):
+        return False
     for interval, carry_pairs in intervals:
+        if not first_options[carry_pairs[0]]:
+            continue
         offsets: list[int] = []
         for random_first, random_second, pair in zip(
                 random_firsts, random_seconds, carry_pairs, strict=True):
@@ -587,6 +603,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                 random_firsts, random_seconds, observed_third_differences,
                 carry_pairs, strict=True)):
             first_carry1, second_carry1 = pair >> 1, pair & 1
+            if member == 0:
+                member_carry_options.append(first_options[pair])
+                continue
             options: list[int] = []
             for first_carry2 in (0, 1):
                 for second_carry2 in (0, 1):
