@@ -1,0 +1,59 @@
+{
+  "cluster_bootstrap_95_interval": [
+    -0.25,
+    0
+  ],
+  "conditional_minus_single": -0.0833,
+  "discordant_pairs": {
+    "both_or_neither": 11,
+    "conditional_only": 0,
+    "single_only": 1
+  },
+  "fallback_dispatched": 2,
+  "input_tokens": {
+    "conditional": 442154,
+    "single": 726185
+  },
+  "mean_actions": {
+    "conditional": 2.333,
+    "single": 4
+  },
+  "mean_calls_reserved": {
+    "conditional": 3.5,
+    "single": 5.667
+  },
+  "mean_elapsed_seconds": {
+    "conditional": 41.787,
+    "single": 40.732
+  },
+  "model_turn_budget_denials": {
+    "conditional": 0,
+    "single": 0
+  },
+  "output_tokens": {
+    "conditional": 12417,
+    "single": 8660
+  },
+  "p5_gate_met": false,
+  "primary_positive": false,
+  "provider_cost_usd": "unknown",
+  "raw_model_transcripts_attested": false,
+  "raw_oracle_verified": {
+    "conditional": 11,
+    "single": 12
+  },
+  "report_rejections": {
+    "conditional": 0,
+    "single": 0
+  },
+  "study": "issue6-conditional-reserve-pilot-2026-11-18",
+  "token_usage_complete": {
+    "conditional": true,
+    "single": true
+  },
+  "trials": 12,
+  "workflow_verified": {
+    "conditional": 11,
+    "single": 12
+  }
+}

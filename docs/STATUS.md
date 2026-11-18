@@ -720,11 +720,23 @@ This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
 
+Issue #6's first conditional-delegation pilot stopped after nine records when
+the lead could spend all four mediated actions before fallback; the partial
+records are retained only as aborted evidence. A separately committed and
+pushed 12-cluster pilot reserved two actions for fallback and ran 24 arms once.
+Workflow-complete verified results were 11/12 conditional versus 12/12 single,
+paired difference −8.33 points (descriptive cluster interval [−25.00, 0.00]).
+The nonpositive stop applies; no larger or held-out trial followed. P5's
+measured-gain gate and dependent P6 remain open. See
+`docs/reports/issue6-conditional-reserve-pilot-results-2026-11-18.md`.
+
 The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
 across compatible Stage 1 intervals and checks the deadline inside one guess.
 It now also uses a 65,536-guess NumPy first-member sieve before scalar shared-
 interval filtering. Synthetic 100,000-guess zero-hit time changed from 1.040
 to 0.040 seconds; an 8,388,608-guess sandbox chunk took 2.645 worker seconds.
 The controller cap is now 2^23 guesses/action, with the same 300-second worker
-timeout. These are synthetic measurements. Full-key reconstruction and official
-#39 verification remain open.
+timeout. These are synthetic measurements. A bounded private recovery route reconstructs
+the planted key state in synthetic tests, including independent traversal of
+all 33 products for a 16-header vector. Complete target-space recovery and an
+official #39 verdict remain open.

@@ -68,10 +68,12 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
     plan = ledger.create_wave(run_id, mode="delegated")
     by_role = {item["role"]: item for item in plan["assignments"]}
     artifacts = list(ledger.session.context(run_id)["challenge"]["artifacts"])
-    if arm == "single":
+    if arm in {"single", "conditional"}:
         assignments = [dict(by_role["crypto-specialist"])]
         assignments[0]["inputs"] = {"artifacts": artifacts}
-        assignments[0]["max_turns"] = BUDGET["turns"]
+        # max_turns is the mediated-action cap, not the model-call cap. Reserve
+        # two of four actions for a possible second wave.
+        assignments[0]["max_turns"] = BUDGET["turns"] if arm == "single" else 2
         assignments[0]["objective"] = (
             "Decode both independent components and return only the two components, as JSON lowercase hex. "
             "Do not compute the final digest.")
@@ -108,10 +110,33 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
     return {"plan": plan, "notes": notes, "artifacts": artifacts}
 
 
+def make_conditional_fallback(ledger: AgentLedger, run_id: str,
+                              artifacts: list[str]) -> dict[str, Any]:
+    """Start a different specialist only after the lead wave is terminal."""
+    plan = ledger.create_wave(run_id, mode="delegated", reason=(
+        "The crypto lead did not finish with a private candidate and report; "
+        "test a forensics-led decode under the remaining run budget."))
+    assignment = dict(next(item for item in plan["assignments"]
+                           if item["role"] == "forensics-specialist"))
+    assignment["inputs"] = {"artifacts": artifacts}
+    assignment["max_turns"] = 2
+    assignment["objective"] = "Independently decode both components; return their bytes as a private JSON hex pair."
+    plan["assignments"] = [assignment]
+    plan["decision"]["required_roles"] = [assignment["role"]]
+    plan["daybreak_covers"] = []
+    with sqlite3.connect(ledger.database) as db:
+        db.execute("UPDATE ctf_agent_waves SET plan=? WHERE wave_id=?",
+                   (json.dumps(plan, sort_keys=True), plan["wave_id"]))
+    note = ('Use bounded METIS intents to inspect both artifacts. Privately return one JSON object '
+            'with component0_hex and component1_hex as lowercase hex. Use candidate_report when ready; '
+            'keep decoded bytes out of reports. This is an independent fallback, not a continuation.')
+    return {"plan": plan, "notes": {assignment["assignment_id"]: note}, "artifacts": artifacts}
+
+
 def compose_candidate(arm: str, setup: dict[str, Any], candidates: dict[str, str]) -> str | None:
     assignments = setup["plan"]["assignments"]
     try:
-        if arm == "single":
+        if arm in {"single", "conditional"}:
             if len(assignments) != 1:
                 return None
             value = json.loads(candidates[assignments[0]["assignment_id"]])
@@ -141,7 +166,8 @@ def compose_candidate(arm: str, setup: dict[str, Any], candidates: dict[str, str
 
 def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCodexCLI, base: Path,
             case_id: str, components: tuple[bytes, bytes], family: tuple[str, str], arm: str,
-            *, oracle_file: Path | None = None) -> dict[str, Any]:
+            *, oracle_file: Path | None = None,
+            evaluation_split: str = EVALUATION_SPLIT) -> dict[str, Any]:
     paths = []
     for index, (kind, component) in enumerate(zip(family, components, strict=True)):
         path = base / f"{case_id}-{arm}-component-{index}.txt"
@@ -155,7 +181,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         "computes SHA-256(component 0 + NUL + component 1) and uses a protected local oracle.")
     run_id = session.intake(title=f"Synthetic paired benchmark {case_id}", description=description,
                             paths=paths, categories=["crypto", "forensics"], max_actions=BUDGET["actions"],
-                            wall_seconds=BUDGET["wall_seconds"], evaluation_split=EVALUATION_SPLIT)["run_id"]
+                            wall_seconds=BUDGET["wall_seconds"], evaluation_split=evaluation_split)["run_id"]
     run_root = session.artifact_root(run_id)
     if run_root is None:
         raise RuntimeError("run artifact root is unavailable")
@@ -187,6 +213,30 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
     else:
         scheduler.cancel_run(run_id)
     synthesis = scheduler.ledger.synthesize(run_id, setup["plan"]["wave_id"])
+    fallback_dispatched = False
+    fallback_setup: dict[str, Any] | None = None
+    if arm == "conditional":
+        lead_id = setup["plan"]["assignments"][0]["assignment_id"]
+        lead_ready = any(row["assignment_id"] == lead_id and row["state"] == "pending"
+                         and row.get("candidate_file") for row in scheduler.candidates(run_id))
+        lead_completed = results[lead_id]["job_state"] == "completed" and synthesis["complete"]
+        if not (lead_ready and lead_completed):
+            try:
+                fallback_setup = make_conditional_fallback(scheduler.ledger, run_id, setup["artifacts"])
+            except ValueError:
+                fallback_setup = None  # Shared action, wall, or call budget forbids another wave.
+            if fallback_setup is not None:
+                scheduler.enqueue(run_id, fallback_setup["plan"]["wave_id"])
+                fallback_jobs = scheduler.dispatch(run_id)["started"]
+                if len(fallback_jobs) == 1:
+                    fallback_dispatched = True
+                    fallback_job = fallback_jobs[0]
+                    assignment_id = fallback_job["assignment_id"]
+                    results[assignment_id] = run_assignment(
+                        scheduler, run_id, assignment_id, fallback_job["attempt_id"], runner,
+                        model=MODEL, turn_timeout=180,
+                        note=fallback_setup["notes"][assignment_id], allow_candidate_report=True)
+                synthesis = scheduler.ledger.synthesize(run_id, fallback_setup["plan"]["wave_id"])
     listed = scheduler.candidates(run_id)
     candidate_ready = {row["assignment_id"] for row in listed
                        if row["state"] == "pending" and row.get("candidate_file")}
@@ -196,8 +246,25 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         if candidate_file and row["state"] == "pending":
             candidate_values[row["assignment_id"]] = Path(candidate_file).read_text(encoding="utf-8").strip()
     scheduler.candidates(run_id, purge="all")
-    candidate = compose_candidate(arm, setup, candidate_values)
-    verified = candidate is not None and oracle.verify(case_id, candidate)
+    if arm == "conditional":
+        candidate_sources = [(setup, setup["plan"]["assignments"][0]["assignment_id"])]
+        if fallback_setup is not None:
+            candidate_sources.append((fallback_setup, fallback_setup["plan"]["assignments"][0]["assignment_id"]))
+        verified_sources = [assignment_id for source, assignment_id in candidate_sources
+                            if (candidate := compose_candidate("conditional", source, candidate_values)) is not None
+                            and oracle.verify(case_id, candidate)]
+        verified = bool(verified_sources)
+        verified_assignment_state = next(
+            (results.get(assignment_id, {}).get("job_state") for assignment_id in verified_sources
+             if results.get(assignment_id, {}).get("job_state") == "completed"),
+            results.get(verified_sources[0], {}).get("job_state") if verified_sources else None)
+        winning_assignment_completed = verified_assignment_state == "completed"
+    else:
+        candidate = compose_candidate(arm, setup, candidate_values)
+        verified = candidate is not None and oracle.verify(case_id, candidate)
+        winning_assignment_completed = bool(verified and all(
+            result["job_state"] == "completed" for result in results.values()))
+        verified_assignment_state = ("completed" if winning_assignment_completed else None)
     turns = [turn for result in results.values() for turn in result.get("codex_turns", [])]
     usage_keys = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
     usage = {key: sum((turn.get("usage") or {}).get(key, 0)
@@ -246,6 +313,9 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         terminal_categories[category] = terminal_categories.get(category, 0) + 1
     return {"case": case_id, "task_id": case_id.rsplit("-rep-", 1)[0], "arm": arm,
             "run_id": run_id, "oracle_verified": bool(verified),
+            "workflow_verified": bool(verified and winning_assignment_completed),
+            "verified_assignment_state": verified_assignment_state,
+            "fallback_dispatched": fallback_dispatched,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "calls_observed": len(turns), "calls_reserved": model_budget["reserved"] if model_budget else None,
             "usage": usage, "usage_complete": bool(turns) and all(turn.get("usage") is not None for turn in turns),
@@ -323,7 +393,7 @@ def main() -> None:
 
 def build_dataset(records: list[dict[str, Any]], task_families: dict[str, list[str]],
                   trial_order: dict[str, list[str]], *,
-                  arms: tuple[str, str, str] = ("single", "multi_separate", "multi_combined"),
+                  arms: tuple[str, ...] = ("single", "multi_separate", "multi_combined"),
                   study: str = STUDY_ID, seed: int = SEED, order_seed: int = ORDER_SEED) -> dict[str, Any]:
     by_key = {(row["case"], row["arm"]): row for row in records}
     comparisons = []
