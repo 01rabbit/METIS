@@ -367,18 +367,47 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
               for entry, header in zip(encrypted, headers, strict=True)),
         guess & 0xFF, (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
         product_witness=products, max_product_witnesses=4096)
-    recovery = run_zipcrypto_stay_recover(database, run_id, artifact, {
+    recovery_options = {
         "random_header_bytes_hex": b"".join(headers).hex(),
         "stage2_shard": stage2["candidate_shard"], "hit_index": 0,
         "start_product": products.index(product), "start_extra": 0,
         "max_products": 1, "max_candidates": 1 << 24,
         "seconds": 60, "max_hits": 1,
-    })
+    }
+    partial = run_zipcrypto_stay_recover(database, run_id, artifact, {
+        **recovery_options, "max_candidates": 1024})
+    assert partial["reason"] == "candidate_limit", partial
+    assert partial["next_product"] == products.index(product)
+    assert partial["next_extra"] == 1024 and partial["keys_count"] == 0
+    recovery = run_zipcrypto_stay_recover(database, run_id, artifact, {
+        **recovery_options, "start_extra": partial["next_extra"],
+        "max_candidates": (1 << 24) - partial["next_extra"]})
     assert recovery["keys_count"] == 1, recovery
     assert "keys" not in recovery
     key_file = database.parent / recovery["key_shard"]
     assert key_file.stat().st_mode & 0o777 == 0o600
     assert json.loads(key_file.read_text())["keys"] == [[state.x, state.y, state.z]]
+    assert products.index(product) > 0
+    previous = zc._stay_recover_keys_for_guess(
+        index, expected_masks, tuple(headers),
+        tuple(zc.member_bytes(data, entry)[:12] for entry in encrypted), guess,
+        start_product=products.index(product) - 1, start_extra=0,
+        max_products=1, max_candidates=1 << 24, max_hits=1, seconds=30)
+    assert previous.reason == "candidate_limit", previous
+    assert previous.next_product == products.index(product) and previous.next_extra == 0
+    resumed = zc._stay_recover_keys_for_guess(
+        index, expected_masks, tuple(headers),
+        tuple(zc.member_bytes(data, entry)[:12] for entry in encrypted), guess,
+        start_product=previous.next_product, start_extra=previous.next_extra,
+        max_products=1, max_candidates=1 << 24, max_hits=1, seconds=30)
+    assert (state.x, state.y, state.z) in resumed.keys
+    repeated = zc._stay_stage2_scan_chunk(
+        index, (expected_masks[0],) * 7,
+        (headers[0][0],) * 7, (headers[0][1],) * 7,
+        (zc.member_bytes(data, encrypted[0])[2] ^ headers[0][2],) * 7,
+        start=guess - 32768, stop=guess + 32768,
+        max_candidates=65536, max_hits=4096, seconds=30)
+    assert repeated.reason == "complete" and len(repeated.hits) == 692
     vector_stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
         "random_header_bytes_hex": b"".join(headers).hex(),
         "stage1_shard": result["candidate_shard"], "hit_index": 0,

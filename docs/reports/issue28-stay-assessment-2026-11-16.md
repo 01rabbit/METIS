@@ -525,3 +525,22 @@ The test starts at the known true product index; exhaustive traversal of all
 668 products and target #39 recovery were not run. The route caps each action
 at 300 seconds, 4,096 products, and 2^28 extra-bit candidates. Target
 feasibility and official verification remain open, so #28 remains open.
+
+## Review follow-up: bounded continuation and dense-hit probe (2026-11-19)
+
+The planted seven-member integration test now makes successive sandbox calls:
+the first stops after 1,024 extra-bit candidates, and the second resumes from
+the returned extra cursor and recovers the same state. A separate direct
+helper test processes the preceding compatible product under a one-product
+cap, then resumes from its returned product cursor and recovers the planted
+state. Both paths assert the cursor values. This checks continuation on the
+synthetic vector, not exhaustive traversal of every compatible product.
+
+For a deliberately dense synthetic interval, the first encrypted member's
+observations were repeated seven times over a 65,536-guess window containing
+the planted guess. The exact Stage 2 scan returned 692 hits and completed in
+0.136 seconds locally; the hit count is retained as a regression assertion.
+Repeated observations reduce independent filtering and stress the survivor
+path, but do not model the target's distinct member headers or predict #39
+runtime. This Draft PR is scoped to bounded algorithm and controller changes.
+An independent end-to-end #39 verdict remains outside its acceptance evidence.
