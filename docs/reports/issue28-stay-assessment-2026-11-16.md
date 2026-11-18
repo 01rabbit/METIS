@@ -249,9 +249,10 @@ and Stay differential tests passed.
 On the official ksnctf #39 archive, the complete 2^40 index domain was scanned
 in bounded sandbox chunks. The scan retained 360 first-stage candidates in
 private shards. Rechecking their per-member carry masks against the shared
-key1 product interval left 88 interval records, implying 98,222,960 possible
-initial key1 words in aggregate. These intervals are a substantial reduction,
-but still require later-stage filtering and key recovery. No plaintext was
+key1 product interval left 88 interval records, whose widths sum to 98,222,960
+values before deduplication across carry choices. These intervals are a
+substantial reduction, but still require later-stage filtering and key
+recovery. No plaintext was
 decrypted, no CRC was checked with recovered keys, and no official candidate
 was submitted. Do not interpret the completed Stage 1 scan or its private
 shards as a recovered ZipCrypto key or a solve. The key-recovery stage remains

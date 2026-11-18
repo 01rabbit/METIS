@@ -42,7 +42,7 @@ Stay の Stage 1 partial-state search はMETISの隔離workerで実行できる�
 ## 2026-11-18 update
 
 - `zipcrypto_stay_scan` は最大4 CPU/2 GiBの隔離profileでのみ探索し、候補は`.metis-state/private-stay/`に0600で保持する。合成Info-ZIPベクタの実サンドボックス試験で埋め込み候補と全carry masksの一致を確認した。
-- 公式#39の7メンバーからseed/header列を復元し、隔離native workerで40-bit Stage 1全域（2^40）をbounded chunksに分けて走査した。360件のStage 1候補をprivate shardに保存。共有key1 carry intervalで再評価したところ、88 interval recordsが残り、合計98,222,960個の初期key1候補を含む。これは後続探索の入力に過ぎず、鍵復元ではない。Stage 2、復号、鍵に基づくCRC検証、公式提出は未実施で、#39は未解決。
+- 公式#39の7メンバーからseed/header列を復元し、隔離native workerで40-bit Stage 1全域（2^40）をbounded chunksに分けて走査した。360件のStage 1候補をprivate shardに保存。共有key1 carry intervalで再評価したところ、88 interval recordsが残り、そのinterval幅の合計はcarry choices間の重複排除前で98,222,960。これは後続探索の入力に過ぎず、鍵復元ではない。Stage 2、復号、鍵に基づくCRC検証、公式提出は未実施で、#39は未解決。
 
 ## 実 Codex の測定（ksnctf #39、新しい DB、note なし、codex-cli 0.169.0）
 
