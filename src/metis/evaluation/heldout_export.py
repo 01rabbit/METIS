@@ -19,6 +19,7 @@ from metis.core.store import RunStore
 
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 OFFICIAL = {"official_ctfd", "official_rctf", "official_ksnctf", "official_html"}
+MAX_EVENTS = 100_000
 
 
 def snapshot_run(database: Path, run_id: str) -> dict[str, object]:
@@ -34,15 +35,18 @@ def snapshot_run(database: Path, run_id: str) -> dict[str, object]:
     uri = database.resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as db:
         db.execute("BEGIN")
+        count = db.execute("SELECT count(*) FROM events WHERE run_id=?", (run_id,)).fetchone()[0]
+        if count > MAX_EVENTS:
+            raise ValueError("benchmark run has too many events")
         events = RunStore(database, read_only=True)._read(db, run_id)
         if not events:
             raise ValueError("benchmark run has no events")
-        if len(events) > 100_000:
-            raise ValueError("benchmark run has too many events")
         timestamps = [row[0] for row in db.execute(
             "SELECT timestamp FROM events WHERE run_id=? ORDER BY sequence", (run_id,))]
         start = datetime.fromisoformat(timestamps[0])
         end = datetime.fromisoformat(timestamps[-1])
+        if start.utcoffset() is None or end.utcoffset() is None:
+            raise ValueError("benchmark timestamps must include a timezone")
         elapsed = (end - start).total_seconds()
         if elapsed < 0 or elapsed > 86_400:
             raise ValueError("benchmark elapsed time is out of range")
@@ -78,7 +82,7 @@ def main() -> int:
         return 2
     try:
         result = snapshot_run(Path(sys.argv[1]), sys.argv[2])
-    except (OSError, ValueError, sqlite3.Error):
+    except (OSError, TypeError, ValueError, sqlite3.Error):
         print("benchmark evidence export rejected", file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))

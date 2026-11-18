@@ -146,3 +146,10 @@ Ruff, mypy and `git diff --check` passed for the new module and test. The next
 step is a trial-level exporter that joins independently reviewed task metadata,
 job/synthesis completion and actual provider usage to these ledger facts, then
 reconciles each trial before the repeated held-out study.
+
+Independent read-only review found that the event-count cap was checked only
+after chain materialization and that mixed aware/naive timestamps could yield
+an unhandled error. The exporter now checks the count before reading the chain,
+requires timezone-aware endpoints, and returns a generic CLI rejection for
+malformed input. Focused regressions and Ruff/mypy passed. These protections do
+not make the snapshot a complete trial exporter.

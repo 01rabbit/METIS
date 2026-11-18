@@ -78,3 +78,34 @@ def test_cli_rejects_private_or_invalid_input_without_echo(tmp_path, monkeypatch
     assert captured.out == ""
     assert "private-candidate" not in captured.err
     assert not database.exists()
+
+
+def test_snapshot_bounds_event_count_before_materializing_chain(tmp_path, monkeypatch):
+    import metis.evaluation.heldout_export as exporter
+
+    database = tmp_path / "state.sqlite"
+    run_id = "e" * 32
+    _run(database, run_id)
+    monkeypatch.setattr(exporter, "MAX_EVENTS", 2)
+    monkeypatch.setattr(RunStore, "_read", lambda *args: pytest.fail("oversized chain was read"))
+    with pytest.raises(ValueError, match="too many events"):
+        exporter.snapshot_run(database, run_id)
+
+
+def test_cli_sanitizes_mixed_timezone_timestamps(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "state.sqlite"
+    run_id = "f" * 32
+    _run(database, run_id)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        row = db.execute("SELECT payload,previous_hash FROM events WHERE run_id=? AND sequence=7",
+                         (run_id,)).fetchone()
+        timestamp = "2026-11-18T00:00:00"
+        digest = RunStore._digest(row[0], timestamp, row[1])
+        db.execute("UPDATE events SET timestamp=?,digest=? WHERE run_id=? AND sequence=7",
+                   (timestamp, digest, run_id))
+    monkeypatch.setattr(sys, "argv", ["heldout_export", str(database), run_id])
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == "benchmark evidence export rejected"
