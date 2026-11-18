@@ -36,6 +36,7 @@ ENCODINGS = ("base64", "base32", "hex", "base85", "base64url", "percent")
 FAMILIES = list(combinations(ENCODINGS, 2))
 TASK_REPETITIONS = 1
 TASK_PREFIX = "task"
+EVALUATION_SPLIT = "heldout"
 COMPONENT_ALPHABET = (string.ascii_letters + string.digits + " .,;:-_!?()[]{}").encode()
 OUTPUT = Path("docs/reports/data/issue6-handoff-diagnostic-2026-11-18.json")
 ORACLE_FILE: Path
@@ -153,7 +154,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         "computes SHA-256(component 0 + NUL + component 1) and uses a protected local oracle.")
     run_id = session.intake(title=f"Synthetic paired benchmark {case_id}", description=description,
                             paths=paths, categories=["crypto", "forensics"], max_actions=BUDGET["actions"],
-                            wall_seconds=BUDGET["wall_seconds"], evaluation_split="heldout")["run_id"]
+                            wall_seconds=BUDGET["wall_seconds"], evaluation_split=EVALUATION_SPLIT)["run_id"]
     run_root = session.artifact_root(run_id)
     if run_root is None:
         raise RuntimeError("run artifact root is unavailable")

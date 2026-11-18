@@ -16,6 +16,7 @@ def main() -> None:
     diagnostic.ORDER_SEED = SEED ^ 0x6A09E667
     diagnostic.FAMILIES = diagnostic.FAMILIES[:3]
     diagnostic.TASK_PREFIX = "pilot6"
+    diagnostic.EVALUATION_SPLIT = "unlisted"
     diagnostic.OUTPUT = Path("docs/reports/data/issue6-feasibility-pilot-2026-11-18.json")
     if diagnostic.OUTPUT.exists():
         raise SystemExit("pilot output exists; refusing to rerun")

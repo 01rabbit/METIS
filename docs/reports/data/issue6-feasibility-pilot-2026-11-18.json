@@ -1,0 +1,1800 @@
+{
+  "arms": [
+    "single",
+    "multi_separate",
+    "multi_combined"
+  ],
+  "cli": "0.169.0",
+  "comparisons": [
+    {
+      "arms": {
+        "multi_combined": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate_report": 2,
+            "intent": 6
+          },
+          "elapsed_seconds": 28.766,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 6912,
+            "input_tokens": 84005,
+            "output_tokens": 1112,
+            "reasoning_output_tokens": 238
+          }
+        },
+        "multi_separate": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate": 2,
+            "intent": 5,
+            "report": 1
+          },
+          "elapsed_seconds": 29.44,
+          "job_states": [
+            "completed",
+            "failed"
+          ],
+          "model_turn_budget_denials": 1,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": false,
+          "terminal_reason_categories": {
+            "call_budget_or_turn_limit": 1,
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 0,
+            "input_tokens": 84344,
+            "output_tokens": 1009,
+            "reasoning_output_tokens": 346
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 44.968,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 0,
+            "input_tokens": 63980,
+            "output_tokens": 747,
+            "reasoning_output_tokens": 114
+          }
+        }
+      },
+      "case": "pilot6-00-rep-0",
+      "task_id": "pilot6-00"
+    },
+    {
+      "arms": {
+        "multi_combined": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate_report": 2,
+            "intent": 6
+          },
+          "elapsed_seconds": 30.06,
+          "job_states": [
+            "completed",
+            "failed"
+          ],
+          "model_turn_budget_denials": 1,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 1,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 1
+          },
+          "report_rejections": 1,
+          "synthesis_complete": false,
+          "terminal_reason_categories": {
+            "call_budget_or_turn_limit": 1,
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 84212,
+            "output_tokens": 1181,
+            "reasoning_output_tokens": 227
+          }
+        },
+        "multi_separate": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate": 2,
+            "intent": 4,
+            "report": 2
+          },
+          "elapsed_seconds": 24.747,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 27648,
+            "input_tokens": 84346,
+            "output_tokens": 882,
+            "reasoning_output_tokens": 99
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 60.762,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": false,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 63911,
+            "output_tokens": 1371,
+            "reasoning_output_tokens": 746
+          }
+        }
+      },
+      "case": "pilot6-01-rep-0",
+      "task_id": "pilot6-01"
+    },
+    {
+      "arms": {
+        "multi_combined": {
+          "actions": 4,
+          "calls_observed": 7,
+          "calls_reserved": 7,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5,
+            "report": 1
+          },
+          "elapsed_seconds": 28.924,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": false,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 73408,
+            "output_tokens": 1060,
+            "reasoning_output_tokens": 320
+          }
+        },
+        "multi_separate": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate": 2,
+            "intent": 4,
+            "report": 2
+          },
+          "elapsed_seconds": 25.002,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 84194,
+            "output_tokens": 877,
+            "reasoning_output_tokens": 127
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 39.834,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 64751,
+            "output_tokens": 747,
+            "reasoning_output_tokens": 102
+          }
+        }
+      },
+      "case": "pilot6-02-rep-0",
+      "task_id": "pilot6-02"
+    },
+    {
+      "arms": {
+        "multi_combined": {
+          "actions": 4,
+          "calls_observed": 7,
+          "calls_reserved": 7,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate_report": 2,
+            "intent": 5
+          },
+          "elapsed_seconds": 27.039,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 73722,
+            "output_tokens": 1059,
+            "reasoning_output_tokens": 222
+          }
+        },
+        "multi_separate": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate": 2,
+            "intent": 5,
+            "report": 1
+          },
+          "elapsed_seconds": 29.735,
+          "job_states": [
+            "failed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 1,
+          "oracle_verified": false,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": false,
+          "terminal_reason_categories": {
+            "call_budget_or_turn_limit": 1,
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 84124,
+            "output_tokens": 892,
+            "reasoning_output_tokens": 217
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 0,
+          "decision_counts": {
+            "intent": 5,
+            "report": 1
+          },
+          "elapsed_seconds": 39.661,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": false,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 64617,
+            "output_tokens": 757,
+            "reasoning_output_tokens": 129
+          }
+        }
+      },
+      "case": "pilot6-03-rep-0",
+      "task_id": "pilot6-03"
+    },
+    {
+      "arms": {
+        "multi_combined": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 2,
+            "intent": 5,
+            "report": 1
+          },
+          "elapsed_seconds": 27.267,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": false,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 1,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 1
+          },
+          "report_rejections": 1,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 85064,
+            "output_tokens": 1063,
+            "reasoning_output_tokens": 67
+          }
+        },
+        "multi_separate": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate": 2,
+            "intent": 5,
+            "report": 1
+          },
+          "elapsed_seconds": 27.909,
+          "job_states": [
+            "completed",
+            "failed"
+          ],
+          "model_turn_budget_denials": 1,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": false,
+          "terminal_reason_categories": {
+            "call_budget_or_turn_limit": 1,
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 84267,
+            "output_tokens": 825,
+            "reasoning_output_tokens": 195
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 43.526,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 63951,
+            "output_tokens": 788,
+            "reasoning_output_tokens": 158
+          }
+        }
+      },
+      "case": "pilot6-04-rep-0",
+      "task_id": "pilot6-04"
+    },
+    {
+      "arms": {
+        "multi_combined": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate_report": 2,
+            "intent": 6
+          },
+          "elapsed_seconds": 29.448,
+          "job_states": [
+            "completed",
+            "failed"
+          ],
+          "model_turn_budget_denials": 1,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 1,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 1
+          },
+          "report_rejections": 1,
+          "synthesis_complete": false,
+          "terminal_reason_categories": {
+            "call_budget_or_turn_limit": 1,
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 84420,
+            "output_tokens": 1204,
+            "reasoning_output_tokens": 269
+          }
+        },
+        "multi_separate": {
+          "actions": 4,
+          "calls_observed": 8,
+          "calls_reserved": 8,
+          "candidate_ready_jobs": 2,
+          "decision_counts": {
+            "candidate": 2,
+            "intent": 6
+          },
+          "elapsed_seconds": 25.845,
+          "job_states": [
+            "failed",
+            "failed"
+          ],
+          "model_turn_budget_denials": 2,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": false,
+          "terminal_reason_categories": {
+            "call_budget_or_turn_limit": 2
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 84173,
+            "output_tokens": 800,
+            "reasoning_output_tokens": 244
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 42.405,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 27648,
+            "input_tokens": 63952,
+            "output_tokens": 818,
+            "reasoning_output_tokens": 204
+          }
+        }
+      },
+      "case": "pilot6-05-rep-0",
+      "task_id": "pilot6-05"
+    }
+  ],
+  "distinct_tasks": 6,
+  "encoding_pairs": {
+    "pilot6-00": [
+      "base64",
+      "base32"
+    ],
+    "pilot6-01": [
+      "base32",
+      "base64"
+    ],
+    "pilot6-02": [
+      "base64",
+      "hex"
+    ],
+    "pilot6-03": [
+      "base64",
+      "hex"
+    ],
+    "pilot6-04": [
+      "base85",
+      "base64"
+    ],
+    "pilot6-05": [
+      "base85",
+      "base64"
+    ]
+  },
+  "model": "gpt-6.1-sol",
+  "order_seed": 315483481,
+  "reasoning_effort": "low",
+  "records": [
+    {
+      "actions": 4,
+      "arm": "multi_combined",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-00-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 2,
+        "intent": 6
+      },
+      "elapsed_seconds": 28.766,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "171e985ee56448629f208fa7c76ca42f",
+      "synthesis_complete": true,
+      "task_id": "pilot6-00",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 6912,
+        "input_tokens": 84005,
+        "output_tokens": 1112,
+        "reasoning_output_tokens": 238
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_separate",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-00-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 2,
+        "intent": 5,
+        "report": 1
+      },
+      "elapsed_seconds": 29.44,
+      "job_states": [
+        "completed",
+        "failed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 1,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "63fad740a12f408ea113c35ecc65829a",
+      "synthesis_complete": false,
+      "task_id": "pilot6-00",
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 1,
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 84344,
+        "output_tokens": 1009,
+        "reasoning_output_tokens": 346
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-00-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 44.968,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "ab1d9c9c82984ae9b18099eb1d7fe12e",
+      "synthesis_complete": true,
+      "task_id": "pilot6-00",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 63980,
+        "output_tokens": 747,
+        "reasoning_output_tokens": 114
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_combined",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-01-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 2,
+        "intent": 6
+      },
+      "elapsed_seconds": 30.06,
+      "job_states": [
+        "completed",
+        "failed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 1,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 1,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 1
+      },
+      "report_rejections": 1,
+      "run_id": "d43a15c1894a47caaf7e10f5cf9528cb",
+      "synthesis_complete": false,
+      "task_id": "pilot6-01",
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 1,
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 84212,
+        "output_tokens": 1181,
+        "reasoning_output_tokens": 227
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_separate",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-01-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 2,
+        "intent": 4,
+        "report": 2
+      },
+      "elapsed_seconds": 24.747,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "b1dfb8bbb9554ab3a7152e70923f5ca8",
+      "synthesis_complete": true,
+      "task_id": "pilot6-01",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 27648,
+        "input_tokens": 84346,
+        "output_tokens": 882,
+        "reasoning_output_tokens": 99
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-01-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 60.762,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": false,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "a0bdc71f51bc40879b151add16776bbf",
+      "synthesis_complete": true,
+      "task_id": "pilot6-01",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 63911,
+        "output_tokens": 1371,
+        "reasoning_output_tokens": 746
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-02-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 39.834,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "a951d0dfcd9b4df2b5d27a2dddeaa010",
+      "synthesis_complete": true,
+      "task_id": "pilot6-02",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 64751,
+        "output_tokens": 747,
+        "reasoning_output_tokens": 102
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_separate",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-02-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 2,
+        "intent": 4,
+        "report": 2
+      },
+      "elapsed_seconds": 25.002,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "e4979787383244d2b794b305d37d6be0",
+      "synthesis_complete": true,
+      "task_id": "pilot6-02",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 84194,
+        "output_tokens": 877,
+        "reasoning_output_tokens": 127
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_combined",
+      "calls_observed": 7,
+      "calls_reserved": 7,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-02-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5,
+        "report": 1
+      },
+      "elapsed_seconds": 28.924,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": false,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "c8a1cadc83a24e25ad4525065c3c0d89",
+      "synthesis_complete": true,
+      "task_id": "pilot6-02",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 73408,
+        "output_tokens": 1060,
+        "reasoning_output_tokens": 320
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 0,
+      "case": "pilot6-03-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "intent": 5,
+        "report": 1
+      },
+      "elapsed_seconds": 39.661,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": false,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "d0d9bbbc8e634f409e1bf1be793cad8a",
+      "synthesis_complete": true,
+      "task_id": "pilot6-03",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 64617,
+        "output_tokens": 757,
+        "reasoning_output_tokens": 129
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_separate",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-03-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 2,
+        "intent": 5,
+        "report": 1
+      },
+      "elapsed_seconds": 29.735,
+      "job_states": [
+        "failed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 1,
+      "oracle_verified": false,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "890421fe2fdf49f7b8ed2a635193ae89",
+      "synthesis_complete": false,
+      "task_id": "pilot6-03",
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 1,
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 84124,
+        "output_tokens": 892,
+        "reasoning_output_tokens": 217
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_combined",
+      "calls_observed": 7,
+      "calls_reserved": 7,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-03-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 2,
+        "intent": 5
+      },
+      "elapsed_seconds": 27.039,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "2fd921c48e1c4a64aeff7ddde06095dd",
+      "synthesis_complete": true,
+      "task_id": "pilot6-03",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 73722,
+        "output_tokens": 1059,
+        "reasoning_output_tokens": 222
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_combined",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-04-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 2,
+        "intent": 5,
+        "report": 1
+      },
+      "elapsed_seconds": 27.267,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": false,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 1,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 1
+      },
+      "report_rejections": 1,
+      "run_id": "7ebb38456036465bb1d05c6f677e2cc0",
+      "synthesis_complete": true,
+      "task_id": "pilot6-04",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 85064,
+        "output_tokens": 1063,
+        "reasoning_output_tokens": 67
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-04-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 43.526,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "c54405dfb2194a9a8478fb6cac1903ac",
+      "synthesis_complete": true,
+      "task_id": "pilot6-04",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 63951,
+        "output_tokens": 788,
+        "reasoning_output_tokens": 158
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_separate",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-04-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 2,
+        "intent": 5,
+        "report": 1
+      },
+      "elapsed_seconds": 27.909,
+      "job_states": [
+        "completed",
+        "failed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 1,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "f0f419fdb7e64c94bb03f538b92e6686",
+      "synthesis_complete": false,
+      "task_id": "pilot6-04",
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 1,
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 84267,
+        "output_tokens": 825,
+        "reasoning_output_tokens": 195
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "pilot6-05-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 42.405,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "595c87de3bd94eebb05d11629643e30b",
+      "synthesis_complete": true,
+      "task_id": "pilot6-05",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 27648,
+        "input_tokens": 63952,
+        "output_tokens": 818,
+        "reasoning_output_tokens": 204
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_separate",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-05-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 2,
+        "intent": 6
+      },
+      "elapsed_seconds": 25.845,
+      "job_states": [
+        "failed",
+        "failed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 2,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "7e8678ca2a52415cb0109d9d097cdb6c",
+      "synthesis_complete": false,
+      "task_id": "pilot6-05",
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 2
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 84173,
+        "output_tokens": 800,
+        "reasoning_output_tokens": 244
+      },
+      "usage_complete": true
+    },
+    {
+      "actions": 4,
+      "arm": "multi_combined",
+      "calls_observed": 8,
+      "calls_reserved": 8,
+      "candidate_ready_jobs": 2,
+      "case": "pilot6-05-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 2,
+        "intent": 6
+      },
+      "elapsed_seconds": 29.448,
+      "job_states": [
+        "completed",
+        "failed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 1,
+      "oracle_verified": true,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 1,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 1
+      },
+      "report_rejections": 1,
+      "run_id": "8dbade513d6f47a3a36a4060d51150bf",
+      "synthesis_complete": false,
+      "task_id": "pilot6-05",
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 1,
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 84420,
+        "output_tokens": 1204,
+        "reasoning_output_tokens": 269
+      },
+      "usage_complete": true
+    }
+  ],
+  "repetitions_per_task": 1,
+  "retained_content": "answer-free metrics; no candidates, components, digests, or oracle values",
+  "seed": 2026111806,
+  "study": "issue6-feasibility-pilot-2026-11-18",
+  "trial_order": {
+    "pilot6-00-rep-0": [
+      "multi_combined",
+      "multi_separate",
+      "single"
+    ],
+    "pilot6-01-rep-0": [
+      "multi_combined",
+      "multi_separate",
+      "single"
+    ],
+    "pilot6-02-rep-0": [
+      "single",
+      "multi_separate",
+      "multi_combined"
+    ],
+    "pilot6-03-rep-0": [
+      "single",
+      "multi_separate",
+      "multi_combined"
+    ],
+    "pilot6-04-rep-0": [
+      "multi_combined",
+      "single",
+      "multi_separate"
+    ],
+    "pilot6-05-rep-0": [
+      "single",
+      "multi_separate",
+      "multi_combined"
+    ]
+  }
+}

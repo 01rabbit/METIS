@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from metis.evaluation.issue6_handoff_diagnostic import analyze
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,3 +28,15 @@ def test_pilot_analysis_rejects_prior_study_shape() -> None:
         assert "6 new task clusters" in str(exc)
     else:
         raise AssertionError("30-cluster data accepted as six-cluster pilot")
+
+
+def test_pilot_result_matches_frozen_identity_and_negative_outcome() -> None:
+    path = ROOT / "docs/reports/data/issue6-feasibility-pilot-2026-11-18.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    result = analyze(data, expected_clusters=6)
+    assert len(data["records"]) == 18
+    assert result["primary_contrast_multi_combined_minus_single"] == -0.3333
+    assert result["primary_gain_gate_met"] is False
+    data["seed"] += 1
+    with pytest.raises(ValueError, match="preregistration"):
+        analyze(data, expected_clusters=6)

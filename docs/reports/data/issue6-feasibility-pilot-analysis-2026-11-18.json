@@ -1,0 +1,145 @@
+{
+  "arms": {
+    "multi_combined": {
+      "candidate_ready_call_ceiling_failures": 2,
+      "candidate_ready_jobs_at_termination": 10,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 11,
+        "intent": 33,
+        "report": 2
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 7.667,
+      "mean_calls_reserved": 7.667,
+      "mean_elapsed_seconds": 28.584,
+      "mean_input_tokens": 80805.2,
+      "mean_output_tokens": 1113.2,
+      "model_turn_budget_denials": 2,
+      "oracle_verified": 4,
+      "report_rejection_categories": {
+        "other_validation": 3
+      },
+      "report_rejection_stages": {
+        "persistence": 3
+      },
+      "report_rejections": 3,
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 2,
+        "completed": 10
+      },
+      "token_usage_complete": true,
+      "trials": 6,
+      "workflow_complete": 4,
+      "workflow_complete_oracle_verified": 2
+    },
+    "multi_separate": {
+      "candidate_ready_call_ceiling_failures": 4,
+      "candidate_ready_jobs_at_termination": 12,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate": 12,
+        "intent": 29,
+        "report": 7
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 8,
+      "mean_calls_reserved": 8,
+      "mean_elapsed_seconds": 27.113,
+      "mean_input_tokens": 84241.3,
+      "mean_output_tokens": 880.8,
+      "model_turn_budget_denials": 5,
+      "oracle_verified": 5,
+      "report_rejection_categories": {},
+      "report_rejection_stages": {},
+      "report_rejections": 0,
+      "terminal_reason_categories": {
+        "call_budget_or_turn_limit": 5,
+        "completed": 7
+      },
+      "token_usage_complete": true,
+      "trials": 6,
+      "workflow_complete": 2,
+      "workflow_complete_oracle_verified": 2
+    },
+    "single": {
+      "candidate_ready_call_ceiling_failures": 0,
+      "candidate_ready_jobs_at_termination": 5,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 5,
+        "intent": 30,
+        "report": 1
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 6,
+      "mean_calls_reserved": 6,
+      "mean_elapsed_seconds": 45.193,
+      "mean_input_tokens": 64193.7,
+      "mean_output_tokens": 871.3,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 4,
+      "report_rejection_categories": {},
+      "report_rejection_stages": {},
+      "report_rejections": 0,
+      "terminal_reason_categories": {
+        "completed": 6
+      },
+      "token_usage_complete": true,
+      "trials": 6,
+      "workflow_complete": 6,
+      "workflow_complete_oracle_verified": 4
+    }
+  },
+  "bootstrap": {
+    "resampling_unit": "task_id",
+    "samples": 10000,
+    "seed": 20261119
+  },
+  "cli": "0.169.0",
+  "discordant_pairs": {
+    "combined_vs_separate": {
+      "both": 0,
+      "left_only": 2,
+      "neither": 2,
+      "right_only": 2
+    },
+    "combined_vs_single": {
+      "both": 1,
+      "left_only": 1,
+      "neither": 1,
+      "right_only": 3
+    }
+  },
+  "distinct_task_clusters": 6,
+  "handoff_completion_cluster_bootstrap_95_interval": [
+    -0.3333,
+    0.8333
+  ],
+  "handoff_completion_contrast_multi_combined_minus_multi_separate": 0.3333,
+  "handoff_oracle_correctness_cluster_bootstrap_95_interval": [
+    -0.6667,
+    0.3333
+  ],
+  "handoff_oracle_correctness_contrast_multi_combined_minus_multi_separate": -0.1667,
+  "limitations": [
+    "One trial per synthetic task cluster; the cluster bootstrap reflects task sampling, not within-task repetition.",
+    "The combined-handoff contrast includes its report-timing and retry behavior, not only the saved call.",
+    "A positive handoff mechanism contrast does not alone prove the historical call-starvation hypothesis.",
+    "Synthetic encoding tasks do not establish general CTF or AlpacaHack performance.",
+    "Provider cost is unknown."
+  ],
+  "mechanism_cluster_bootstrap_95_interval": [
+    -0.6667,
+    0.6667
+  ],
+  "mechanism_contrast_multi_combined_minus_multi_separate": 0,
+  "model": "gpt-6.1-sol",
+  "primary_cluster_bootstrap_95_interval": [
+    -0.8333,
+    0.3333
+  ],
+  "primary_contrast_multi_combined_minus_single": -0.3333,
+  "primary_gain_gate_met": false,
+  "study": "issue6-feasibility-pilot-2026-11-18"
+}
