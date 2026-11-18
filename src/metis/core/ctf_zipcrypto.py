@@ -216,34 +216,117 @@ def _stay_first_stage_candidate(index: int, random_firsts: tuple[int, ...],
         key1_product_high, key2_crc_bits_2_15, first_carry, second_carry)
 
 
+def _stay_predict_second_byte_difference_np(indices: np.ndarray, random_first: int,
+                                             first_stream: np.ndarray, key0_crc_low: np.ndarray,
+                                             key1_product_high: np.ndarray,
+                                             key2_crc_bits_2_15: np.ndarray,
+                                             first_carry: int | np.ndarray,
+                                             second_carry: int | np.ndarray) -> np.ndarray:
+    """Vectorized partial-state predictor for one header observation."""
+    first_low = key0_crc_low ^ (CRCTAB_NP[random_first] & np.uint32(0xFF))
+    second_first_plaintext = random_first ^ first_stream
+    second_low = key0_crc_low ^ (CRCTAB_NP[second_first_plaintext] & np.uint32(0xFF))
+    first_offset = first_low.astype(np.uint64) * np.uint64(MULT) + np.uint64(1)
+    second_offset = second_low.astype(np.uint64) * np.uint64(MULT) + np.uint64(1)
+    first_high = (key1_product_high + (first_offset >> np.uint64(24)) + first_carry) & 0xFF
+    second_high = (key1_product_high + (second_offset >> np.uint64(24)) + second_carry) & 0xFF
+    first_key2 = (key2_crc_bits_2_15 ^ CRCTAB_NP[first_high.astype(np.intp)]) & 0xFFFC
+    second_key2 = (key2_crc_bits_2_15 ^ CRCTAB_NP[second_high.astype(np.intp)]) & 0xFFFC
+    first_value = (first_key2.astype(np.uint64) & 0xFFFF) | np.uint64(2)
+    second_value = (second_key2.astype(np.uint64) & 0xFFFF) | np.uint64(2)
+    first_stream2 = (first_value * (first_value ^ np.uint64(1)) >> np.uint64(8)) & 0xFF
+    second_stream2 = (second_value * (second_value ^ np.uint64(1)) >> np.uint64(8)) & 0xFF
+    # Keep the index argument explicit to make accidental array reordering visible
+    # at call sites; all outputs have the same candidate axis.
+    if len(indices) != len(first_stream2):
+        raise ValueError("Stay vector candidate arrays have inconsistent lengths")
+    return (first_stream2 ^ second_stream2).astype(np.uint8)
+
+
 def _stay_first_stage_scan_chunk(random_firsts: tuple[int, ...],
                                  observed_differences: tuple[int, ...], start: int, stop: int,
                                  *, max_candidates: int = 100_000,
                                  seconds: float = 30.0, max_hits: int = 4096
                                  ) -> dict[str, Any]:
-    """Scan a bounded half-open candidate range and return a resumable cursor."""
+    """Vector-scan a bounded 40-bit range and return a resumable cursor."""
     if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 40):
         raise ValueError("Stay scan range must be within the 40-bit candidate space")
-    if type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 20:
-        raise ValueError("Stay scan candidate bound must be between 1 and 2^20")
+    if type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 40:
+        raise ValueError("Stay scan candidate bound must be between 1 and 2^40")
     if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
             or not 0 < seconds <= 300):
         raise ValueError("Stay scan deadline must be between zero and 300 seconds")
     if type(max_hits) is not int or not 1 <= max_hits <= 4096:
         raise ValueError("Stay scan hit bound must be between 1 and 4096")
+    if (len(random_firsts) != len(observed_differences) or len(random_firsts) < 5
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *observed_differences))):
+        raise ValueError("Stay scan requires five or more pairs of observation bytes")
     bounded_stop = min(stop, start + max_candidates)
     deadline = time.monotonic() + seconds
     hits: list[tuple[int, tuple[int, ...]]] = []
     cursor = start
+    batch_size = 1 << 20
     while cursor < bounded_stop:
-        if cursor & 0xFF == 0 and time.monotonic() >= deadline:
+        if time.monotonic() >= deadline:
             break
-        masks = _stay_first_stage_candidate(cursor, random_firsts, observed_differences)
-        cursor += 1
-        if masks is not None:
-            hits.append((cursor - 1, masks))
-            if len(hits) >= max_hits:
+        batch_stop = min(cursor + batch_size, bounded_stop)
+        indices = np.arange(cursor, batch_stop, dtype=np.uint64)
+        first_stream = (indices & np.uint64(0xFF)).astype(np.uint32)
+        key0_crc_low = (indices >> np.uint64(8) & np.uint64(0xFF)).astype(np.uint32)
+        key1_product_high = (indices >> np.uint64(16) & np.uint64(0xFF)).astype(np.uint64)
+        first_carry = (indices >> np.uint64(24) & np.uint64(1)).astype(np.uint64)
+        key2_crc_bits_2_15 = (
+            ((indices >> np.uint64(25) & np.uint64(0x3F)) << np.uint64(10))
+            | ((indices >> np.uint64(31) & np.uint64(0xFF)) << np.uint64(2))
+        ).astype(np.uint32)
+        second_carry = (indices >> np.uint64(39) & np.uint64(1)).astype(np.uint64)
+        first_prediction = _stay_predict_second_byte_difference_np(
+            indices, random_firsts[0], first_stream, key0_crc_low, key1_product_high,
+            key2_crc_bits_2_15, first_carry, second_carry)
+        keep = first_prediction == observed_differences[0]
+        indices = indices[keep]
+        first_stream = first_stream[keep]
+        key0_crc_low = key0_crc_low[keep]
+        key1_product_high = key1_product_high[keep]
+        key2_crc_bits_2_15 = key2_crc_bits_2_15[keep]
+        carry_masks = np.zeros((len(random_firsts), len(indices)), dtype=np.uint8)
+        if len(indices):
+            carry_masks[0] = (1 << (first_carry[keep] * 2 + second_carry[keep])).astype(np.uint8)
+        for member_index in range(1, len(random_firsts)):
+            member_mask = np.zeros(len(indices), dtype=np.uint8)
+            for carry1 in (0, 1):
+                for carry2 in (0, 1):
+                    prediction = _stay_predict_second_byte_difference_np(
+                        indices, random_firsts[member_index], first_stream, key0_crc_low,
+                        key1_product_high, key2_crc_bits_2_15, carry1, carry2)
+                    member_mask |= (prediction == observed_differences[member_index]).astype(np.uint8) << (
+                        carry1 * 2 + carry2)
+            keep = member_mask != 0
+            indices = indices[keep]
+            first_stream = first_stream[keep]
+            key0_crc_low = key0_crc_low[keep]
+            key1_product_high = key1_product_high[keep]
+            key2_crc_bits_2_15 = key2_crc_bits_2_15[keep]
+            carry_masks = carry_masks[:, keep]
+            member_mask = member_mask[keep]
+            carry_masks[member_index] = member_mask
+            if not len(indices):
                 break
+        if len(indices):
+            room = max_hits - len(hits)
+            take = min(room, len(indices))
+            hit_indices = indices[:take]
+            for position, candidate in enumerate(hit_indices):
+                hits.append((int(candidate), tuple(int(value) for value in carry_masks[:, position])))
+            if take < len(indices) or len(hits) >= max_hits:
+                # Candidate IDs between the last hit and batch_stop were filtered
+                # too, so resume after this whole batch. Returning last_hit + 1
+                # would rescan harmlessly, but can repeatedly fill the hit cap
+                # before making progress when dense ranges are supplied.
+                cursor = batch_stop
+                break
+        cursor = batch_stop
     return {"next_index": cursor, "complete": cursor >= stop,
             "scanned": cursor - start, "hits": tuple(hits)}
 

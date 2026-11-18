@@ -212,7 +212,17 @@ the domain. The focused suite now has nine passing tests.
 `_stay_first_stage_scan_chunk` adds a half-open range, candidate-count cap,
 wall-time check, hit-count cap, and `next_index` cursor for resumable bounded
 scans. A split-range regression confirms the next chunk finds a planted
-candidate at the boundary. This is a Python reference scanner for correctness
-and small chunks; no throughput benchmark was run, and it is not yet suitable
-for scanning the complete 2^40 space or exposed as a METIS artifact tool. The
-focused suite now has ten passing tests.
+candidate at the boundary. The bounded chunk was vectorized with NumPy and
+cross-checked against the scalar filter on a planted 256-candidate range. A
+synthetic local benchmark scanned 16 million candidates in 0.226 seconds on
+macOS 27.2.1 arm64, using one process and reporting no hits (about 74.1 million
+candidates/second). The measurement harness did not include the current full
+multi-member carry-filter path, so it cannot support a 2^40 runtime estimate.
+Neither in-sandbox nor target throughput has been measured. The scan is still
+not exposed as a METIS artifact tool, and no complete 2^40 range has been
+scanned. The focused suite now has ten passing tests.
+
+Review of resumability found that stopping at the hit cap could return a cursor
+inside an already-filtered batch and repeatedly rescan it on dense ranges. The
+cursor now advances to that batch's end; the focused regression checks this
+behavior. The focused suite passed (10 tests).

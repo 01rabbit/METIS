@@ -344,6 +344,7 @@ def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> Non
     from metis.core.ctf_zipcrypto import (
         M32,
         MULT,
+        _stay_first_stage_candidate,
         _stay_first_stage_scan_chunk,
     )
 
@@ -379,6 +380,21 @@ def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> Non
     assert second["next_index"] == index + 1
     assert second["complete"] is True
     assert second["hits"] and second["hits"][0][0] == index
+
+    vector_chunk = _stay_first_stage_scan_chunk(
+        random_firsts, observed, index, index + 256, max_candidates=256)
+    scalar_hits = tuple(
+        (candidate, masks)
+        for candidate in range(index, index + 256)
+        if (masks := _stay_first_stage_candidate(candidate, random_firsts, observed)) is not None
+    )
+    assert vector_chunk["complete"] is True
+    assert vector_chunk["hits"] == scalar_hits
+
+    capped = _stay_first_stage_scan_chunk(
+        random_firsts, observed, index, index + 256, max_candidates=256, max_hits=1)
+    assert capped["hits"] == scalar_hits[:1]
+    assert capped["next_index"] == index + 256
 
 
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
