@@ -719,3 +719,13 @@ recorded no solve. This does not establish host reboot recovery.
 This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
+
+Issue #6's first conditional-delegation pilot stopped after nine records when
+the lead could spend all four mediated actions before fallback; the partial
+records are retained only as aborted evidence. A separately committed and
+pushed 12-cluster pilot reserved two actions for fallback and ran 24 arms once.
+Workflow-complete verified results were 11/12 conditional versus 12/12 single,
+paired difference −8.33 points (descriptive cluster interval [−25.00, 0.00]).
+The nonpositive stop applies; no larger or held-out trial followed. P5's
+measured-gain gate and dependent P6 remain open. See
+`docs/reports/issue6-conditional-reserve-pilot-results-2026-11-18.md`.

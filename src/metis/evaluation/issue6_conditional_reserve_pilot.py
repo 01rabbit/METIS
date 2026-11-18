@@ -85,6 +85,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         "trials": 12,
         "workflow_verified": {arm: sum(by_key[(case, arm)]["workflow_verified"] for case in cases)
                               for arm in ARMS},
+        "raw_oracle_verified": {arm: sum(by_key[(case, arm)]["oracle_verified"] for case in cases)
+                                for arm in ARMS},
         "fallback_dispatched": sum(by_key[(case, "conditional")]["fallback_dispatched"] for case in cases),
         "conditional_minus_single": round(statistics.mean(deltas), 4),
         "cluster_bootstrap_95_interval": _interval(deltas),
@@ -95,8 +97,26 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         "mean_calls_reserved": {
             arm: round(statistics.mean(by_key[(case, arm)]["calls_reserved"] for case in cases), 3)
             for arm in ARMS},
+        "mean_actions": {
+            arm: round(statistics.mean(by_key[(case, arm)]["actions"] for case in cases), 3)
+            for arm in ARMS},
         "mean_elapsed_seconds": {
             arm: round(statistics.mean(by_key[(case, arm)]["elapsed_seconds"] for case in cases), 3)
+            for arm in ARMS},
+        "report_rejections": {arm: sum(by_key[(case, arm)]["report_rejections"] for case in cases)
+                              for arm in ARMS},
+        "model_turn_budget_denials": {
+            arm: sum(by_key[(case, arm)]["model_turn_budget_denials"] for case in cases)
+            for arm in ARMS},
+        "token_usage_complete": {arm: all(by_key[(case, arm)]["usage_complete"] for case in cases)
+                                 for arm in ARMS},
+        "input_tokens": {
+            arm: (sum(by_key[(case, arm)]["usage"]["input_tokens"] for case in cases)
+                  if all(by_key[(case, arm)]["usage_complete"] for case in cases) else "unknown")
+            for arm in ARMS},
+        "output_tokens": {
+            arm: (sum(by_key[(case, arm)]["usage"]["output_tokens"] for case in cases)
+                  if all(by_key[(case, arm)]["usage_complete"] for case in cases) else "unknown")
             for arm in ARMS},
         "primary_positive": statistics.mean(deltas) > 0,
         "p5_gate_met": False,

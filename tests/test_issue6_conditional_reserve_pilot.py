@@ -55,6 +55,8 @@ def test_conditional_pilot_analyzes_complete_pairs_and_finalizes(tmp_path: Path)
     data, families, order = _fixture()
     result = analyze(data)
     assert result["workflow_verified"] == {"single": 12, "conditional": 1}
+    assert result["raw_oracle_verified"] == {"single": 12, "conditional": 1}
+    assert result["mean_actions"] == {"single": 2, "conditional": 2}
     assert result["conditional_minus_single"] == -0.9167
     assert result["primary_positive"] is False
     output = tmp_path / "final.json"
@@ -76,6 +78,19 @@ def test_conditional_pilot_rejects_duplicate_and_fabricated_success() -> None:
     conditional["workflow_verified"] = True
     with pytest.raises(ValueError, match="inconsistent"):
         analyze(data)
+
+
+def test_committed_conditional_trial_matches_committed_analysis() -> None:
+    directory = ROOT / "docs/reports/data"
+    data = json.loads((directory / "issue6-conditional-reserve-pilot-2026-11-18.json").read_text(
+        encoding="utf-8"))
+    expected = json.loads((directory / "issue6-conditional-reserve-pilot-analysis-2026-11-18.json").read_text(
+        encoding="utf-8"))
+    result = analyze(data)
+    assert result == expected
+    assert result["workflow_verified"] == {"single": 12, "conditional": 11}
+    assert result["conditional_minus_single"] == -0.0833
+    assert result["fallback_dispatched"] == 2
 
 
 def test_conditional_fallback_uses_second_wave_and_remaining_budget(tmp_path: Path) -> None:

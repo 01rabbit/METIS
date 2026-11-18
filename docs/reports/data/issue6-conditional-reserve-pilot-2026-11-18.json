@@ -1,0 +1,2503 @@
+{
+  "arms": [
+    "single",
+    "conditional"
+  ],
+  "cli": "0.169.0",
+  "comparisons": [
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 28.748,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 31496,
+            "output_tokens": 739,
+            "reasoning_output_tokens": 360
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 41.122,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 64134,
+            "output_tokens": 705,
+            "reasoning_output_tokens": 95
+          }
+        }
+      },
+      "case": "reserve12-00-rep-0",
+      "task_id": "reserve12-00"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 29.495,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 31521,
+            "output_tokens": 724,
+            "reasoning_output_tokens": 338
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 43.076,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 64170,
+            "output_tokens": 721,
+            "reasoning_output_tokens": 102
+          }
+        }
+      },
+      "case": "reserve12-01-rep-0",
+      "task_id": "reserve12-01"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 26.57,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 31491,
+            "output_tokens": 494,
+            "reasoning_output_tokens": 124
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 5,
+          "calls_reserved": 5,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 4
+          },
+          "elapsed_seconds": 34.376,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 27648,
+            "input_tokens": 53194,
+            "output_tokens": 646,
+            "reasoning_output_tokens": 107
+          }
+        }
+      },
+      "case": "reserve12-02-rep-0",
+      "task_id": "reserve12-02"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 25.721,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 31726,
+            "output_tokens": 633,
+            "reasoning_output_tokens": 220
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 5,
+          "calls_reserved": 5,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 4
+          },
+          "elapsed_seconds": 30.377,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 53234,
+            "output_tokens": 532,
+            "reasoning_output_tokens": 0
+          }
+        }
+      },
+      "case": "reserve12-03-rep-0",
+      "task_id": "reserve12-03"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 4,
+            "report": 1
+          },
+          "elapsed_seconds": 66.638,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 63068,
+            "output_tokens": 1526,
+            "reasoning_output_tokens": 741
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 52.188,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 64110,
+            "output_tokens": 817,
+            "reasoning_output_tokens": 184
+          }
+        }
+      },
+      "case": "reserve12-04-rep-0",
+      "task_id": "reserve12-04"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 49.014,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": false,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 31487,
+            "output_tokens": 1336,
+            "reasoning_output_tokens": 896
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 41.39,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 64218,
+            "output_tokens": 749,
+            "reasoning_output_tokens": 126
+          }
+        }
+      },
+      "case": "reserve12-05-rep-0",
+      "task_id": "reserve12-05"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 33.311,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 31788,
+            "output_tokens": 800,
+            "reasoning_output_tokens": 399
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 5,
+          "calls_reserved": 5,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 4
+          },
+          "elapsed_seconds": 35.952,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 53233,
+            "output_tokens": 612,
+            "reasoning_output_tokens": 54
+          }
+        }
+      },
+      "case": "reserve12-06-rep-0",
+      "task_id": "reserve12-06"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 32.297,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 31503,
+            "output_tokens": 763,
+            "reasoning_output_tokens": 385
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 5,
+          "calls_reserved": 5,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 4
+          },
+          "elapsed_seconds": 38.097,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 53175,
+            "output_tokens": 695,
+            "reasoning_output_tokens": 155
+          }
+        }
+      },
+      "case": "reserve12-07-rep-0",
+      "task_id": "reserve12-07"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 37.775,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 31788,
+            "output_tokens": 960,
+            "reasoning_output_tokens": 509
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 42.446,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 64183,
+            "output_tokens": 790,
+            "reasoning_output_tokens": 161
+          }
+        }
+      },
+      "case": "reserve12-08-rep-0",
+      "task_id": "reserve12-08"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 46.047,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 31511,
+            "output_tokens": 1146,
+            "reasoning_output_tokens": 756
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 42.024,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 64166,
+            "output_tokens": 722,
+            "reasoning_output_tokens": 101
+          }
+        }
+      },
+      "case": "reserve12-09-rep-0",
+      "task_id": "reserve12-09"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 2,
+          "calls_observed": 3,
+          "calls_reserved": 3,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 2
+          },
+          "elapsed_seconds": 37.798,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 13824,
+            "input_tokens": 31492,
+            "output_tokens": 1028,
+            "reasoning_output_tokens": 642
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 46.449,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 20736,
+            "input_tokens": 64142,
+            "output_tokens": 886,
+            "reasoning_output_tokens": 253
+          }
+        }
+      },
+      "case": "reserve12-10-rep-0",
+      "task_id": "reserve12-10"
+    },
+    {
+      "arms": {
+        "conditional": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 4,
+            "report": 1
+          },
+          "elapsed_seconds": 88.025,
+          "job_states": [
+            "completed",
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 2
+          },
+          "usage": {
+            "cached_input_tokens": 41472,
+            "input_tokens": 63283,
+            "output_tokens": 2268,
+            "reasoning_output_tokens": 1439
+          }
+        },
+        "single": {
+          "actions": 4,
+          "calls_observed": 6,
+          "calls_reserved": 6,
+          "candidate_ready_jobs": 1,
+          "decision_counts": {
+            "candidate_report": 1,
+            "intent": 5
+          },
+          "elapsed_seconds": 41.287,
+          "job_states": [
+            "completed"
+          ],
+          "model_turn_budget_denials": 0,
+          "oracle_verified": true,
+          "peer_reserve_denials": 0,
+          "report_rejection_categories": {
+            "duplicate_action": 0,
+            "evidence_provenance": 0,
+            "lifecycle_budget": 0,
+            "other_validation": 0,
+            "output_limit": 0,
+            "privacy": 0,
+            "schema_or_options": 0
+          },
+          "report_rejection_stages": {
+            "normalization": 0,
+            "normalization_or_persistence": 0,
+            "persistence": 0
+          },
+          "report_rejections": 0,
+          "synthesis_complete": true,
+          "terminal_reason_categories": {
+            "completed": 1
+          },
+          "usage": {
+            "cached_input_tokens": 34560,
+            "input_tokens": 64226,
+            "output_tokens": 785,
+            "reasoning_output_tokens": 171
+          }
+        }
+      },
+      "case": "reserve12-11-rep-0",
+      "task_id": "reserve12-11"
+    }
+  ],
+  "distinct_tasks": 12,
+  "encoding_pairs": {
+    "reserve12-00": [
+      "base64",
+      "base32"
+    ],
+    "reserve12-01": [
+      "base64",
+      "base32"
+    ],
+    "reserve12-02": [
+      "hex",
+      "base64"
+    ],
+    "reserve12-03": [
+      "hex",
+      "base64"
+    ],
+    "reserve12-04": [
+      "base64",
+      "base85"
+    ],
+    "reserve12-05": [
+      "base85",
+      "base64"
+    ],
+    "reserve12-06": [
+      "hex",
+      "base32"
+    ],
+    "reserve12-07": [
+      "base32",
+      "hex"
+    ],
+    "reserve12-08": [
+      "base32",
+      "percent"
+    ],
+    "reserve12-09": [
+      "base32",
+      "percent"
+    ],
+    "reserve12-10": [
+      "base85",
+      "hex"
+    ],
+    "reserve12-11": [
+      "hex",
+      "base85"
+    ]
+  },
+  "model": "gpt-6.1-sol",
+  "order_seed": 315483442,
+  "reasoning_effort": "low",
+  "records": [
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-00-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 28.748,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "f124da227ea04475b91b77995c7855c8",
+      "synthesis_complete": true,
+      "task_id": "reserve12-00",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 31496,
+        "output_tokens": 739,
+        "reasoning_output_tokens": 360
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-00-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 41.122,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "1b01333618444b949a683539cf67a4c7",
+      "synthesis_complete": true,
+      "task_id": "reserve12-00",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 64134,
+        "output_tokens": 705,
+        "reasoning_output_tokens": 95
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-01-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 29.495,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "e97c5c054ae14b4480bdcf5ca1ccd29a",
+      "synthesis_complete": true,
+      "task_id": "reserve12-01",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 31521,
+        "output_tokens": 724,
+        "reasoning_output_tokens": 338
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-01-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 43.076,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "5cc7b90ed03a42318cf892f97b3fc913",
+      "synthesis_complete": true,
+      "task_id": "reserve12-01",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 64170,
+        "output_tokens": 721,
+        "reasoning_output_tokens": 102
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 5,
+      "calls_reserved": 5,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-02-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 4
+      },
+      "elapsed_seconds": 34.376,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "559c983ed40f4bfdbe8f7240c9306019",
+      "synthesis_complete": true,
+      "task_id": "reserve12-02",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 27648,
+        "input_tokens": 53194,
+        "output_tokens": 646,
+        "reasoning_output_tokens": 107
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-02-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 26.57,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "486887dae2e94fcda3fefbc9eff30797",
+      "synthesis_complete": true,
+      "task_id": "reserve12-02",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 31491,
+        "output_tokens": 494,
+        "reasoning_output_tokens": 124
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 5,
+      "calls_reserved": 5,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-03-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 4
+      },
+      "elapsed_seconds": 30.377,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "53e1be34019f429a9a2787c42168dd2b",
+      "synthesis_complete": true,
+      "task_id": "reserve12-03",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 53234,
+        "output_tokens": 532,
+        "reasoning_output_tokens": 0
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-03-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 25.721,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "7987b72856d442858e55720499249a10",
+      "synthesis_complete": true,
+      "task_id": "reserve12-03",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 31726,
+        "output_tokens": 633,
+        "reasoning_output_tokens": 220
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "conditional",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-04-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 4,
+        "report": 1
+      },
+      "elapsed_seconds": 66.638,
+      "fallback_dispatched": true,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "63398739e8b943adad8d08824e3c3389",
+      "synthesis_complete": true,
+      "task_id": "reserve12-04",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 63068,
+        "output_tokens": 1526,
+        "reasoning_output_tokens": 741
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-04-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 52.188,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "b31194d76aa24a8598446469d8aae5e1",
+      "synthesis_complete": true,
+      "task_id": "reserve12-04",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 64110,
+        "output_tokens": 817,
+        "reasoning_output_tokens": 184
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-05-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 41.39,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "6a53aae4a5d24b82af106d4ac5d4bd05",
+      "synthesis_complete": true,
+      "task_id": "reserve12-05",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 64218,
+        "output_tokens": 749,
+        "reasoning_output_tokens": 126
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-05-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 49.014,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": false,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "ce1859fec3d5486a831d392adfd19905",
+      "synthesis_complete": true,
+      "task_id": "reserve12-05",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 31487,
+        "output_tokens": 1336,
+        "reasoning_output_tokens": 896
+      },
+      "usage_complete": true,
+      "verified_assignment_state": null,
+      "workflow_verified": false
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 5,
+      "calls_reserved": 5,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-06-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 4
+      },
+      "elapsed_seconds": 35.952,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "4e52616b87824587b1ccf90e84b7b522",
+      "synthesis_complete": true,
+      "task_id": "reserve12-06",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 53233,
+        "output_tokens": 612,
+        "reasoning_output_tokens": 54
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-06-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 33.311,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "74b68ebf28cc478bb30f6b1605d81dc0",
+      "synthesis_complete": true,
+      "task_id": "reserve12-06",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 31788,
+        "output_tokens": 800,
+        "reasoning_output_tokens": 399
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 5,
+      "calls_reserved": 5,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-07-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 4
+      },
+      "elapsed_seconds": 38.097,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "7bad64c886824e4fb3546a897fec9055",
+      "synthesis_complete": true,
+      "task_id": "reserve12-07",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 53175,
+        "output_tokens": 695,
+        "reasoning_output_tokens": 155
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-07-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 32.297,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "6304f5569ed54d778a09fabc3c550dad",
+      "synthesis_complete": true,
+      "task_id": "reserve12-07",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 31503,
+        "output_tokens": 763,
+        "reasoning_output_tokens": 385
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-08-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 37.775,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "0186bf28b44144fd8d544dedda5e991f",
+      "synthesis_complete": true,
+      "task_id": "reserve12-08",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 31788,
+        "output_tokens": 960,
+        "reasoning_output_tokens": 509
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-08-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 42.446,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "3afab7ae0b09427686e98c84ba416b56",
+      "synthesis_complete": true,
+      "task_id": "reserve12-08",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 64183,
+        "output_tokens": 790,
+        "reasoning_output_tokens": 161
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-09-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 46.047,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "0a617432196741d6841f60ab2079a5d3",
+      "synthesis_complete": true,
+      "task_id": "reserve12-09",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 31511,
+        "output_tokens": 1146,
+        "reasoning_output_tokens": 756
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-09-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 42.024,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "8eaf50399d824851b91231b7f847ad12",
+      "synthesis_complete": true,
+      "task_id": "reserve12-09",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 64166,
+        "output_tokens": 722,
+        "reasoning_output_tokens": 101
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-10-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 46.449,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "6907aec781d541c3a8633276e15e386e",
+      "synthesis_complete": true,
+      "task_id": "reserve12-10",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 20736,
+        "input_tokens": 64142,
+        "output_tokens": 886,
+        "reasoning_output_tokens": 253
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 2,
+      "arm": "conditional",
+      "calls_observed": 3,
+      "calls_reserved": 3,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-10-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 2
+      },
+      "elapsed_seconds": 37.798,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "b705a6b217ef4c33881e229a26568fba",
+      "synthesis_complete": true,
+      "task_id": "reserve12-10",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 13824,
+        "input_tokens": 31492,
+        "output_tokens": 1028,
+        "reasoning_output_tokens": 642
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "conditional",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-11-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 4,
+        "report": 1
+      },
+      "elapsed_seconds": 88.025,
+      "fallback_dispatched": true,
+      "job_states": [
+        "completed",
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "a39823b88c9548fda1b265d9b1fc388d",
+      "synthesis_complete": true,
+      "task_id": "reserve12-11",
+      "terminal_reason_categories": {
+        "completed": 2
+      },
+      "usage": {
+        "cached_input_tokens": 41472,
+        "input_tokens": 63283,
+        "output_tokens": 2268,
+        "reasoning_output_tokens": 1439
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    },
+    {
+      "actions": 4,
+      "arm": "single",
+      "calls_observed": 6,
+      "calls_reserved": 6,
+      "candidate_ready_jobs": 1,
+      "case": "reserve12-11-rep-0",
+      "cli": "0.169.0",
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 1,
+        "intent": 5
+      },
+      "elapsed_seconds": 41.287,
+      "fallback_dispatched": false,
+      "job_states": [
+        "completed"
+      ],
+      "model": "gpt-6.1-sol",
+      "model_turn_budget_denials": 0,
+      "oracle_verified": true,
+      "peer_reserve_denials": 0,
+      "reasoning_effort": "low",
+      "report_rejection_categories": {
+        "duplicate_action": 0,
+        "evidence_provenance": 0,
+        "lifecycle_budget": 0,
+        "other_validation": 0,
+        "output_limit": 0,
+        "privacy": 0,
+        "schema_or_options": 0
+      },
+      "report_rejection_stages": {
+        "normalization": 0,
+        "normalization_or_persistence": 0,
+        "persistence": 0
+      },
+      "report_rejections": 0,
+      "run_id": "1c90e8c3760c4a03978a777a6daf663a",
+      "synthesis_complete": true,
+      "task_id": "reserve12-11",
+      "terminal_reason_categories": {
+        "completed": 1
+      },
+      "usage": {
+        "cached_input_tokens": 34560,
+        "input_tokens": 64226,
+        "output_tokens": 785,
+        "reasoning_output_tokens": 171
+      },
+      "usage_complete": true,
+      "verified_assignment_state": "completed",
+      "workflow_verified": true
+    }
+  ],
+  "repetitions_per_task": 1,
+  "retained_content": "answer-free metrics; no candidates, components, digests, or oracle values",
+  "seed": 2026111829,
+  "study": "issue6-conditional-reserve-pilot-2026-11-18",
+  "trial_order": {
+    "reserve12-00-rep-0": [
+      "conditional",
+      "single"
+    ],
+    "reserve12-01-rep-0": [
+      "conditional",
+      "single"
+    ],
+    "reserve12-02-rep-0": [
+      "single",
+      "conditional"
+    ],
+    "reserve12-03-rep-0": [
+      "single",
+      "conditional"
+    ],
+    "reserve12-04-rep-0": [
+      "conditional",
+      "single"
+    ],
+    "reserve12-05-rep-0": [
+      "single",
+      "conditional"
+    ],
+    "reserve12-06-rep-0": [
+      "single",
+      "conditional"
+    ],
+    "reserve12-07-rep-0": [
+      "single",
+      "conditional"
+    ],
+    "reserve12-08-rep-0": [
+      "conditional",
+      "single"
+    ],
+    "reserve12-09-rep-0": [
+      "conditional",
+      "single"
+    ],
+    "reserve12-10-rep-0": [
+      "single",
+      "conditional"
+    ],
+    "reserve12-11-rep-0": [
+      "conditional",
+      "single"
+    ]
+  }
+}
