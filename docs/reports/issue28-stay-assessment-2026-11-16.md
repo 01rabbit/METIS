@@ -159,3 +159,27 @@ SAT encoding or the published staged attack. It does show that a direct
 bit-vector transcription is not an immediately usable substitute for Stay's
 23-bit decomposition and carry-pruned candidate-lifting stages. No formula,
 synthetic state, or target-derived candidate is retained in the repository.
+
+## Stay key1 candidate-lifting primitive (2026-11-18)
+
+Section 3's multiplication decomposition now has a concrete reduced-width
+implementation. Let `P = key1_0 * 0x08088405 mod 2^32` and, for each observed
+header transition, let `a` be the known low byte of the updated `key0` and
+`q = a * 0x08088405 + 1`. The observed top byte of `key1_1` and a guessed
+carry from `P_low24 + q_low24` determine `P_high8` and an inclusive interval
+for `P_low24`. Multiple observations must agree on the same high byte and
+their carry intervals intersect. Candidate `key1_0` values are lifted from
+that product interval with the modular inverse of the odd ZipCrypto
+multiplier. This follows the decomposition and carry-bound description in
+[Stay's section 3](https://math.ucr.edu/~mike/zipattacks.pdf).
+
+`_stay_key1_product_interval` and `_stay_lift_key1_candidates` implement this
+primitive. The focused test reduces the word to 16 bits, generates 100 planted
+states, and compares the complete lifted set against direct exhaustive
+enumeration with all observed top bytes and carry guesses. The six tests in
+`tests/test_stay_header_differential.py` passed; Ruff and mypy passed for the
+changed source and test. This validates only this arithmetic primitive. The
+full 23-bit/40-bit first stage, its stream-byte and preimage-table candidate
+generation, later stages, full-key CRC/decryption checks, sandbox runtime,
+and target key recovery remain unimplemented or unverified. Issue #28 and
+ksnctf #39 remain open.

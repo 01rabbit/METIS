@@ -23,7 +23,7 @@ import os
 import struct
 import time
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,6 +65,65 @@ def _stay_carry_interval(low_addends: tuple[int, ...], carries: tuple[int, ...],
         if lower > upper:
             return None
     return lower, upper
+
+
+def _stay_key1_product_interval(addends: tuple[int, ...], top_bytes: tuple[int, ...],
+                                carries: tuple[int, ...], *, bits: int = 24
+                                ) -> tuple[int, int, int] | None:
+    """Recover the shared high byte and low-word interval of ``key1 * MULT``.
+
+    Each observation is the high byte of ``(key1 + addend) * MULT + 1``.
+    A guessed carry from adding the known ``addend * MULT + 1`` to the
+    multiplied key fixes the product high byte and contributes one exact
+    interval constraint on its low ``bits``. This is the candidate-lifting
+    primitive described in Stay's divide-and-conquer stages.
+    """
+    if (len(addends) != len(top_bytes) or len(addends) != len(carries)
+            or not addends or type(bits) is not int or not 1 <= bits <= 24):
+        raise ValueError("Stay product observations or word width are invalid")
+    limit = 1 << bits
+    if any(type(value) is not int or not 0 <= value < limit for value in addends):
+        raise ValueError("Stay addends must fit the low word")
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in top_bytes):
+        raise ValueError("Stay top bytes must be bytes")
+    if any(type(carry) is not int or carry not in (0, 1) for carry in carries):
+        raise ValueError("carry guesses must be zero or one")
+
+    low_mask = limit - 1
+    product_high: int | None = None
+    low_addends: list[int] = []
+    for addend, top_byte, carry in zip(addends, top_bytes, carries, strict=True):
+        offset = addend * MULT + 1
+        inferred_high = (top_byte - (offset >> bits) - carry) & 0xFF
+        if product_high is None:
+            product_high = inferred_high
+        elif product_high != inferred_high:
+            return None
+        low_addends.append(offset & low_mask)
+
+    interval = _stay_carry_interval(tuple(low_addends), carries, bits=bits)
+    if interval is None or product_high is None:
+        return None
+    return product_high, interval[0], interval[1]
+
+
+def _stay_lift_key1_candidates(product_interval: tuple[int, int, int], *, bits: int = 24
+                               ) -> Iterator[int]:
+    """Lift a product interval to key1 values using the odd ZipCrypto multiplier."""
+    if type(bits) is not int or not 1 <= bits <= 24:
+        raise ValueError("Stay product word width is invalid")
+    if (len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)):
+        raise ValueError("Stay product interval must contain three integers")
+    product_high, lower, upper = product_interval
+    limit = 1 << bits
+    if not 0 <= product_high <= 0xFF or not 0 <= lower <= upper < limit:
+        raise ValueError("Stay product interval is out of range")
+    word_mask = (1 << (bits + 8)) - 1
+    multiplier_inverse = pow(MULT, -1, word_mask + 1)
+    product_base = product_high << bits
+    for low in range(lower, upper + 1):
+        yield ((product_base | low) * multiplier_inverse) & word_mask
 
 
 def _tables() -> tuple[list[int], list[int]]:

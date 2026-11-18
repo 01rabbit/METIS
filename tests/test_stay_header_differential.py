@@ -154,6 +154,49 @@ def test_stay_carry_interval_handles_exact_boundaries_and_bad_guesses() -> None:
         _stay_carry_interval((1,), (0,), bits=1.5)  # type: ignore[arg-type]
 
 
+def test_stay_key1_product_lifting_matches_reduced_width_exhaustive_oracle() -> None:
+    """Carry pruning and inverse multiplication must retain exactly the direct survivors."""
+    from metis.core.ctf_zipcrypto import (
+        MULT,
+        _stay_key1_product_interval,
+        _stay_lift_key1_candidates,
+    )
+
+    rng = random.Random(0x51A7)
+    bits = 8
+    word_mask = (1 << (bits + 8)) - 1
+    for _ in range(100):
+        planted = rng.randrange(word_mask + 1)
+        addends = tuple(rng.randrange(1 << bits) for _ in range(6))
+        product = planted * MULT & word_mask
+        carries = tuple(
+            int((product & ((1 << bits) - 1))
+                + (addend * MULT + 1 & ((1 << bits) - 1)) >= 1 << bits)
+            for addend in addends
+        )
+        top_bytes = tuple(
+            ((product + addend * MULT + 1) & word_mask) >> bits
+            for addend in addends
+        )
+        interval = _stay_key1_product_interval(addends, top_bytes, carries, bits=bits)
+        assert interval is not None
+        lifted = set(_stay_lift_key1_candidates(interval, bits=bits))
+        direct = {
+            key1 for key1 in range(word_mask + 1)
+            if all(
+                ((key1 * MULT + addend * MULT + 1) & word_mask) >> bits == top
+                and int(((key1 * MULT) & ((1 << bits) - 1))
+                        + ((addend * MULT + 1) & ((1 << bits) - 1)) >= 1 << bits) == carry
+                for addend, top, carry in zip(addends, top_bytes, carries, strict=True)
+            )
+        }
+        assert lifted == direct
+        assert planted in lifted
+
+    inconsistent = (top_bytes[0] ^ 1, *top_bytes[1:])
+    assert _stay_key1_product_interval(addends, inconsistent, carries, bits=bits) is None
+
+
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
     """Check the shared second-byte relation and reject altered PRNG observations."""
     from pathlib import Path
