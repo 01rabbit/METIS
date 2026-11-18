@@ -36,6 +36,8 @@
   },
   "p5_gate_met": false,
   "primary_positive": false,
+  "provider_cost_usd": "unknown",
+  "raw_model_transcripts_attested": false,
   "raw_oracle_verified": {
     "conditional": 11,
     "single": 12

@@ -28,6 +28,9 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
     families = data.get("encoding_pairs")
     if (data.get("study") != STUDY or data.get("seed") != SEED
             or data.get("order_seed") != ORDER_SEED or data.get("arms") != list(ARMS)
+            or data.get("distinct_tasks") != 12 or data.get("repetitions_per_task") != 1
+            or data.get("retained_content") !=
+            "answer-free metrics; no candidates, components, digests, or oracle values"
             or not isinstance(families, dict)
             or sorted(families) != [f"reserve12-{index:02d}" for index in range(12)]
             or Counter(tuple(sorted(pair)) for pair in families.values()) != PAIR_COUNTS):
@@ -69,11 +72,23 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
         if (row["task_id"] != row["case"].rsplit("-rep-", 1)[0]
                 or row["model"] != data["model"] or row["cli"] != data["cli"]
                 or row["model"] != "gpt-6.1-sol" or row["cli"] != "0.169.0"
-                or row["reasoning_effort"] != "low" or row["actions"] > 4
-                or row["calls_reserved"] > 8
+                or row["reasoning_effort"] != "low"
+                or type(row["actions"]) is not int or not 0 <= row["actions"] <= 4
+                or type(row["calls_reserved"]) is not int or not 0 <= row["calls_reserved"] <= 8
+                or type(row["calls_observed"]) is not int
+                or not 0 <= row["calls_observed"] <= row["calls_reserved"]
+                or row["cost_usd"] != "unknown"
                 or row["workflow_verified"] != (row["oracle_verified"] is True
                                                 and row["verified_assignment_state"] == "completed")):
             raise ValueError("conditional pilot record is inconsistent")
+        if row["usage_complete"]:
+            usage = row["usage"]
+            if (not isinstance(usage, dict)
+                    or any(type(usage.get(name)) is not int or usage[name] < 0 for name in (
+                        "input_tokens", "output_tokens", "cached_input_tokens", "reasoning_output_tokens"))
+                    or usage["cached_input_tokens"] > usage["input_tokens"]
+                    or usage["reasoning_output_tokens"] > usage["output_tokens"]):
+                raise ValueError("conditional pilot token usage is inconsistent")
         if row["arm"] == "single" and (row["fallback_dispatched"] or len(row["job_states"]) != 1):
             raise ValueError("single arm has invalid job states")
         if row["arm"] == "conditional" and len(row["job_states"]) != (2 if row["fallback_dispatched"] else 1):
@@ -118,6 +133,8 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             arm: (sum(by_key[(case, arm)]["usage"]["output_tokens"] for case in cases)
                   if all(by_key[(case, arm)]["usage_complete"] for case in cases) else "unknown")
             for arm in ARMS},
+        "provider_cost_usd": "unknown",
+        "raw_model_transcripts_attested": False,
         "primary_positive": statistics.mean(deltas) > 0,
         "p5_gate_met": False,
     }

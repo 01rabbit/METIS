@@ -39,3 +39,15 @@ output, or private paths. A recursive key audit and scans for absolute private
 paths and 64-hex values found none. Temporary run and oracle directories were
 removed on normal exit. The final file was published only after all 24 unique
 case-arm records were present; interruption checkpoints used `.partial.json`.
+
+## Review follow-up (2026-11-19)
+
+The analyzer now rejects mismatched task counts, unreserved or over-budget
+model calls, fabricated dollar costs, and incomplete or impossible token
+accounting when usage is marked complete. The retained analysis explicitly
+marks provider dollar cost as unknown and original model transcript attestation
+as unavailable. This strengthens checks of the answer-free metrics; it cannot
+reconstruct deleted transcripts or independently prove what the provider
+returned. The registered nonpositive stop remains in force. Any new policy
+would require its own preregistration and independent held-out evaluation;
+these records are not reused as held-out acceptance evidence.

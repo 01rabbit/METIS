@@ -80,6 +80,24 @@ def test_conditional_pilot_rejects_duplicate_and_fabricated_success() -> None:
         analyze(data)
 
 
+def test_conditional_pilot_rejects_unaccounted_usage_and_fabricated_cost() -> None:
+    data, _, _ = _fixture()
+    data["records"][0]["cost_usd"] = 0.01
+    with pytest.raises(ValueError, match="inconsistent"):
+        analyze(data)
+    data, _, _ = _fixture()
+    row = data["records"][0]
+    row["usage_complete"] = True
+    row["usage"] = {"input_tokens": 1, "output_tokens": 1,
+                    "cached_input_tokens": 2, "reasoning_output_tokens": 0}
+    with pytest.raises(ValueError, match="token usage"):
+        analyze(data)
+    data, _, _ = _fixture()
+    data["distinct_tasks"] = 13
+    with pytest.raises(ValueError, match="preregistration"):
+        analyze(data)
+
+
 def test_committed_conditional_trial_matches_committed_analysis() -> None:
     directory = ROOT / "docs/reports/data"
     data = json.loads((directory / "issue6-conditional-reserve-pilot-2026-11-18.json").read_text(
