@@ -16,10 +16,14 @@ do not say whether a candidate was ready when a job failed, whether a
 candidate/report handoff failed, or whether a further model turn was denied.
 These are **unobserved mechanisms**, not zero counts or established causes.
 
-The [prospective handoff diagnostic preregistration](issue6-handoff-diagnostic-preregistration-2026-11-18.md)
-uses unused task clusters, symmetric final composition and protected oracle,
-and the same eight-call, four-action, two-slot and 600-second run caps. It
-specifies the event counters needed to distinguish candidate-ready failures,
-report rejection, and model-turn budget denial. Its primary gain gate is the
-paired, workflow-complete oracle result against the single arm. This legacy
-diagnosis does not alter the negative replication result or establish a gain.
+The [handoff diagnostic preregistration](issue6-handoff-diagnostic-preregistration-2026-11-18.md)
+specified newly seeded task contents, symmetric final composition and protected
+oracle, and the same eight-call, four-action, two-slot and 600-second run caps.
+Its task labels (`task-00` through `task-29`) repeat the earlier label pattern;
+the new seed generated new contents. The [completed diagnostic](issue6-handoff-diagnostic-results-2026-11-18.md)
+already contains all 90 arm-runs and did not meet its primary measured-gain
+gate. Its retained counters distinguish candidate-ready failures, report
+rejections, and model-turn budget denials. This legacy diagnosis does not alter
+either negative result or establish a gain. The retained output path is already
+occupied, so rerunning this registered pilot would be a repeat of completed
+work, not a prospective experiment.
