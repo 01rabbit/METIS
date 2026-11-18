@@ -532,11 +532,12 @@ also reports run-scoped job states (including `unknown`), pending action and
 model-turn reservations, active-operation and sandbox-worker registrations,
 and pending-candidate counts from the same read-only SQLite snapshot. Missing
 subsystem tables are marked unavailable; inconsistent model-turn reservation
-records fail closed. No identifiers, failure text, candidate values, paths, or
-digests are returned. Reservations are not provider-confirmed usage, and worker
-registration does not prove liveness. This still does not provide cost/provider
+records and partial reservation schemas fail closed. No identifiers, failure
+text, candidate values, paths, or digests are returned. Reservations are not
+provider-confirmed usage, and worker registration does not prove liveness. This
+still does not provide cost/provider
 usage or artifact-retention accounting, and is not a tamper-proof signature or
-full operator UI. Focused validation passed: 13 audit tests, Ruff, mypy, and
+full operator UI. Focused validation passed: 15 audit tests, Ruff, mypy, and
 `git diff --check`. Issue #9 remains open. See the original
 [`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md)
 and the [unified operational audit](reports/issue9-unified-operational-audit-2026-11-18.md).

@@ -174,6 +174,26 @@ def test_audit_fails_closed_when_turn_reservations_exist_without_budget(tmp_path
     assert database.read_bytes() == before
 
 
+@pytest.mark.parametrize("present_table", ["agent_run_turn_budgets", "agent_turn_reservations"])
+def test_audit_fails_closed_on_partial_turn_reservation_schema(tmp_path, present_table):
+    database = tmp_path / "runs.sqlite"
+    run_id = start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        if present_table == "agent_run_turn_budgets":
+            db.execute("CREATE TABLE agent_run_turn_budgets (run_id TEXT, turn_limit INTEGER, turns_reserved INTEGER)")
+        else:
+            db.execute("CREATE TABLE agent_turn_reservations (run_id TEXT, private_reservation TEXT)")
+            db.execute("INSERT INTO agent_turn_reservations VALUES (?, ?)", (run_id, "private-reservation"))
+    before = database.read_bytes()
+    result = audit(database, run_id)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "unavailable or corrupt" in result.stderr
+    assert "private-reservation" not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert database.read_bytes() == before
+
+
 def test_audit_operational_counts_share_the_event_chain_snapshot(tmp_path):
     database = tmp_path / "runs.sqlite"
     run_id = start(CodexSession(database))

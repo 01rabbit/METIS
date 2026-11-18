@@ -35,7 +35,7 @@ gates.
 
 ```text
 .venv/bin/pytest -q tests/test_run_audit.py
-13 passed
+15 passed
 .venv/bin/ruff check src/metis/core/store.py tests/test_run_audit.py
 All checks passed!
 .venv/bin/mypy src/metis/core/store.py
@@ -45,9 +45,9 @@ git diff --check
 
 Coverage includes mixed job states, unknown state normalization, other-run
 exclusion, outstanding reservations, privacy omissions, read-only deterministic
-output, unavailable optional tables, inconsistent or orphaned model-turn
-accounting, and a concurrent writer demonstrating that operational counters
-share the event-chain snapshot.
+output, unavailable optional tables, inconsistent/orphaned/partial-schema
+model-turn accounting, and a concurrent writer demonstrating that operational
+counters share the event-chain snapshot.
 
 Issue #9 remains open; this improves local operator visibility but does not
 replace its P7, host-reboot, signed-release, retention, secure-storage, and

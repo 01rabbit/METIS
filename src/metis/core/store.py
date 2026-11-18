@@ -204,7 +204,10 @@ class RunStore:
                 operational["pending_action_reservations"] = {
                     "available": True, "count": _AuditCount(count=count).count,
                 }
-            if {"agent_run_turn_budgets", "agent_turn_reservations"} <= tables:
+            turn_tables = {"agent_run_turn_budgets", "agent_turn_reservations"}
+            if len(turn_tables & tables) == 1:
+                raise ValueError("model-turn reservation schema is incomplete")
+            if turn_tables <= tables:
                 turn_row = db.execute("SELECT turn_limit, turns_reserved FROM agent_run_turn_budgets "
                                       "WHERE run_id=?", (run_id,)).fetchone()
                 reservation_count = db.execute(
