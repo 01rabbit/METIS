@@ -178,6 +178,11 @@
   },
   {
    "ctf": "alpacahack-daily-2026-08-metis-evaluation",
+   "problem": "rfc100008",
+   "writeup": "alpacahack-daily-2026-08-metis-evaluation/rfc100008.md"
+  },
+  {
+   "ctf": "alpacahack-daily-2026-08-metis-evaluation",
    "problem": "springing",
    "writeup": "alpacahack-daily-2026-08-metis-evaluation/springing.md"
   },

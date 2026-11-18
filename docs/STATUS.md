@@ -358,6 +358,15 @@ budgets, cost reporting, and ablations remain outstanding, so Issue #8 stays
 open. See
 [`issue8-alpacahack-not-so-pyfk-probe-2026-11-18.md`](reports/issue8-alpacahack-not-so-pyfk-probe-2026-11-18.md).
 
+A second official solve, AlpacaHack Daily Web task `RFC100008`, used the
+registered Flask archive and one official instance. The instance's automatic
+`OPTIONS` response disclosed its generated route method; one exact-method
+request reached `/rfc100008`, and the logged-in official browser showed
+`Solved`. METIS attestation verified the browser verdict and the write-up
+answer check matched. This run was `unlisted`, not preregistered held-out, so
+it adds no P7 benchmark result. Issue #8 remains open. See
+[`issue8-alpacahack-rfc100008-2026-11-18.md`](reports/issue8-alpacahack-rfc100008-2026-11-18.md).
+
 An earlier 30-case paired synthetic scheduler benchmark verifies the same
 tasks in both arms (30/30) and
 measures 60 vs 30 deterministic FakeHost provider rounds for a sequential
