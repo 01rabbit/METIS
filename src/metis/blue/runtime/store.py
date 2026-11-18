@@ -204,6 +204,7 @@ class Store:
             raise ValueError('Invalid terminal state')
         with self.transaction() as db:
             self.authorize(db,run,token)
+            self._hook('finish_locked')
             if db.execute("SELECT 1 FROM connections WHERE run=? AND task=? AND state!='stopped'",(run,task)).fetchone():
                 raise ValueError('Stop active connections before finishing this task')
             changed = db.execute('UPDATE tasks SET state=?,result=?,finished=? WHERE run=? AND id=? AND state=?', (state,redact(result),time.time(),run,task,'running')).rowcount
@@ -227,10 +228,37 @@ class Store:
             db.execute('INSERT INTO connections VALUES(?,?,?,?,?,?,?,NULL,?,NULL)',(cid,run,task,resource,protocol,action,'starting',time.time()))
         return cid
 
-    def connection_state(self,cid,state,pid=None):
-        if state not in ('running','stopped'):raise ValueError('Invalid connection state')
+    def connection_state(self, cid, state, pid=None):
+        """Move a connection forward only: ``starting -> running -> stopped``.
+
+        ``running`` also requires that its task is still running and still holds the resource
+        lease, so a late or duplicated callback cannot revive a connection after ``finish``.
+        """
+        if state not in ('running', 'stopped'):
+            raise ValueError('Invalid connection state')
         with self.transaction() as db:
-            db.execute('UPDATE connections SET state=?,pid=COALESCE(?,pid),finished=? WHERE id=?',(state,pid,time.time() if state=='stopped' else None,cid))
+            self._hook('connection_state_locked')
+            row = db.execute('SELECT c.state, c.run, c.task, c.resource, t.state FROM connections c '
+                             'LEFT JOIN tasks t ON t.run=c.run AND t.id=c.task WHERE c.id=?', (cid,)).fetchone()
+            if row is None:
+                raise ValueError('Unknown connection')
+            current, run, task, resource, task_state = row
+            if state == 'stopped':
+                if current == 'stopped':
+                    return
+            else:
+                if current != 'starting':
+                    raise ValueError('Connection cannot become running from ' + str(current))
+                leased = db.execute('SELECT 1 FROM leases WHERE run=? AND task=? AND resource=?',
+                                    (run, task, resource)).fetchone()
+                if task_state != 'running' or not leased:
+                    raise ValueError('Connection cannot run without a running task and its lease')
+            db.execute('UPDATE connections SET state=?,pid=COALESCE(?,pid),finished=? WHERE id=?',
+                       (state, pid, time.time() if state == 'stopped' else None, cid))
+
+    @staticmethod
+    def _hook(point):
+        """Test seam: called inside lifecycle transactions (no-op in production)."""
 
     def tasks(self, run):
         with self.connect() as db:
