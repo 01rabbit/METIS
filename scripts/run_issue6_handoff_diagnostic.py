@@ -71,7 +71,9 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
     if arm in {"single", "conditional"}:
         assignments = [dict(by_role["crypto-specialist"])]
         assignments[0]["inputs"] = {"artifacts": artifacts}
-        assignments[0]["max_turns"] = BUDGET["turns"] if arm == "single" else BUDGET["turns"] // 2
+        # max_turns is the mediated-action cap, not the model-call cap. Reserve
+        # two of four actions for a possible second wave.
+        assignments[0]["max_turns"] = BUDGET["turns"] if arm == "single" else 2
         assignments[0]["objective"] = (
             "Decode both independent components and return only the two components, as JSON lowercase hex. "
             "Do not compute the final digest.")
@@ -117,7 +119,7 @@ def make_conditional_fallback(ledger: AgentLedger, run_id: str,
     assignment = dict(next(item for item in plan["assignments"]
                            if item["role"] == "forensics-specialist"))
     assignment["inputs"] = {"artifacts": artifacts}
-    assignment["max_turns"] = BUDGET["turns"] // 2
+    assignment["max_turns"] = 2
     assignment["objective"] = "Independently decode both components; return their bytes as a private JSON hex pair."
     plan["assignments"] = [assignment]
     plan["decision"]["required_roles"] = [assignment["role"]]

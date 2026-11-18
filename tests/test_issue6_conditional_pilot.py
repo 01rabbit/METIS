@@ -95,7 +95,11 @@ def test_conditional_fallback_uses_second_wave_and_remaining_budget(tmp_path: Pa
     scheduler.enqueue(run_id, lead["plan"]["wave_id"])
     started = scheduler.dispatch(run_id)["started"]
     assert len(started) == 1
-    assert scheduler.jobs(run_id, lead["plan"]["wave_id"])[0]["max_turns"] == 4
+    assert scheduler.jobs(run_id, lead["plan"]["wave_id"])[0]["max_turns"] == 2
+    for artifact in lead["artifacts"]:
+        scheduler.intent(run_id, started[0]["assignment_id"], started[0]["attempt_id"],
+                         {"kind": "artifact", "tool": "text", "artifact": artifact})
+    assert session.context(run_id)["actions_remaining"] == 2
     scheduler.fail(started[0]["assignment_id"], started[0]["attempt_id"], "no candidate")
     assert scheduler.ledger.synthesize(run_id, lead["plan"]["wave_id"])["decision"]["ready_for_synthesis"]
     fallback = diagnostic.make_conditional_fallback(scheduler.ledger, run_id, lead["artifacts"])
@@ -104,6 +108,6 @@ def test_conditional_fallback_uses_second_wave_and_remaining_budget(tmp_path: Pa
     assert len(second) == 1
     fallback_job = scheduler.jobs(run_id, fallback["plan"]["wave_id"])[0]
     assert fallback_job["role"] == "forensics-specialist"
-    assert fallback_job["max_turns"] == 4
+    assert fallback_job["max_turns"] == 2
     assert scheduler.brief(run_id, fallback["plan"]["assignments"][0],
                            second[0]["attempt_id"])["artifacts"] == lead["artifacts"]

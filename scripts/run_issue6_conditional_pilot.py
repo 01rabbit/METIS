@@ -46,6 +46,7 @@ def _finalize(records: list[dict], families: dict[str, list[str]],
 
 
 def main() -> None:
+    raise SystemExit("this nine-record pilot was aborted; do not rerun or complete it")
     if OUTPUT.exists() or PARTIAL.exists():
         raise SystemExit(f"refusing to overwrite pilot data: {OUTPUT} or {PARTIAL}")
     if (diagnostic.BUDGET != {"turns": 8, "actions": 4, "slots": 2, "wall_seconds": 600}
