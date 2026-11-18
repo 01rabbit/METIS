@@ -533,6 +533,33 @@ def test_stay_carry_interval_search_has_a_visit_cap(monkeypatch) -> None:
             1, (0xF,) * 5, (1, 2, 3, 4, 5)))
 
 
+def test_stage2_chunk_reuses_first_stage_intervals(monkeypatch) -> None:
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    index = 0
+    masks = (1,) * 5
+    firsts = (1, 2, 3, 4, 5)
+    seconds = (6, 7, 8, 9, 10)
+    observed = (0,) * 5
+    expected = tuple(guess for guess in range(8) if zipcrypto._stay_stage2_candidate_matches(
+        index, masks, firsts, seconds, observed, guess & 0xFF,
+        (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF))
+    original = zipcrypto._stay_first_stage_key1_intervals
+    calls = 0
+
+    def count_intervals(*args):
+        nonlocal calls
+        calls += 1
+        yield from original(*args)
+
+    monkeypatch.setattr(zipcrypto, "_stay_first_stage_key1_intervals", count_intervals)
+    chunk = zipcrypto._stay_stage2_scan_chunk(index, masks, firsts, seconds, observed,
+                                              start=0, stop=8, max_candidates=8,
+                                              max_hits=8, seconds=10)
+    assert tuple(guess for guess, _witness in chunk.hits) == expected
+    assert calls == 1
+
+
 def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
     from metis.core.ctf_zipcrypto import (
         M32,

@@ -540,7 +540,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                                    observed_third_differences: tuple[int, ...],
                                    key0_crc_bits_8_15: int,
                                    key2_crc_bits_16_23_and_0_1: int, q8: int, *,
-                                   product_witness: list[int] | None = None) -> bool:
+                                   product_witness: list[int] | None = None,
+                                   prepared_intervals: tuple[tuple[tuple[int, int, int], tuple[int, ...]],
+                                                             ...] | None = None) -> bool:
     """Exactly test one Stage 2 partial guess against shared interval constraints.
 
     This is a bounded one-candidate predicate, not a keyspace enumerator. It
@@ -570,8 +572,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
     key2_crc = (key2_crc_low14 | (key2_crc_bits_16_23_and_0_1 >> 2) << 16
                 | (key2_crc_bits_16_23_and_0_1 & 0x3))
 
-    for interval, carry_pairs in _stay_first_stage_key1_intervals(
-            index, carry_masks, random_firsts):
+    intervals = (prepared_intervals if prepared_intervals is not None else
+                 _stay_first_stage_key1_intervals(index, carry_masks, random_firsts))
+    for interval, carry_pairs in intervals:
         offsets: list[int] = []
         for random_first, random_second, pair in zip(
                 random_firsts, random_seconds, carry_pairs, strict=True):
@@ -695,6 +698,9 @@ def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
             or not 0 < seconds <= 300):
         raise ValueError("invalid Stay Stage 2 scan bounds")
     deadline = time.monotonic() + seconds
+    # The Stage 1 carry intervals depend on the hit, not on any Stage 2 guess.
+    # Materialize once per bounded chunk instead of rebuilding for every guess.
+    prepared_intervals = tuple(_stay_first_stage_key1_intervals(index, carry_masks, random_firsts))
     hits: list[tuple[int, int]] = []
     cursor = start
     visited = 0
@@ -709,7 +715,7 @@ def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
                 index, carry_masks, random_firsts, random_seconds,
                 observed_third_differences, guess & 0xFF,
                 (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
-                product_witness=witness):
+                product_witness=witness, prepared_intervals=prepared_intervals):
             hits.append((guess, witness[0]))
         cursor += 1
         visited += 1
