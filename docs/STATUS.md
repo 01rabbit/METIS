@@ -630,8 +630,19 @@ plausible reconciliation: section 5's 26 guesses may exclude the carry, then
 add two pass-specific carries. The low-word carry constraints give exact
 intervals; a bounded helper and reduced-width exhaustive oracle test their
 intersection. The paper's claimed roughly 2^8 surviving `key1_0` values is
-still an expected size, not a validated workload, and full candidate lifting
-is absent. The replacement #39 run's 7/7 PRNG header-byte match still does
-not recover keys or solve the challenge. No inverse search is claimed; Issue
-#28 remains open. See
+still an expected size, not a validated workload. The replacement #39 run's
+7/7 PRNG header-byte match still does not recover keys or solve the challenge.
+No inverse search is claimed; Issue #28 remains open. See
+`docs/reports/issue28-zipcrypto-2026-11-16.md`.
+
+The authorized official archive's complete 2^40 Stay Stage 1 index domain was
+then scanned in bounded chunks inside the isolated ZipCrypto profile. The
+filter kept 360 private first-stage candidates. A second bounded sandbox
+analysis applied the shared-key1 carry interval helper: 88 interval records
+remained, with a sum of 98,222,960 interval values before deduplication across
+carry choices. This is a Stage 1 reduction only; no Stage 2 filtering, full
+key recovery, member decryption/CRC verification with recovered keys, or
+official submission occurred. The interval analysis is not yet exposed as a
+registered artifact tool. Issue #28 and ksnctf #39 remain open. Full details:
+`docs/reports/issue28-stay-assessment-2026-11-16.md` and
 `docs/reports/issue28-zipcrypto-2026-11-16.md`.
