@@ -196,6 +196,8 @@ eight passing tests, with Ruff and mypy clean.
 
 `_stay_first_stage_carry_masks` applies the first file's fixed carry pair and
 branches over the four possible carry pairs for every additional file. A
-500-state synthetic test confirms that the direct double-encryption
-observation retains the true carry pair in every member mask. It still does
-not enumerate candidate tuples or execute Stay's 40-bit first-stage search.
+100-state seven-member synthetic test confirms that the direct
+double-encryption observation retains the true carry pair in every member
+mask. It then intersects all 14 first-byte key1 carry constraints and verifies
+that interval lifting retains the planted initial key1. It still does not
+enumerate Stay's 40-bit partial-state tuples or execute the first-stage search.

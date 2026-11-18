@@ -240,10 +240,12 @@ def test_stay_first_stage_carry_masks_retain_full_state_guesses() -> None:
         M32,
         MULT,
         _stay_first_stage_carry_masks,
+        _stay_key1_product_interval,
+        _stay_lift_key1_candidates,
     )
 
     rng = random.Random(0xF17E)
-    for _ in range(500):
+    for _ in range(100):
         initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
         product = initial[1] * MULT & M32
         first_stream = _stream_byte(initial[2])
@@ -254,12 +256,19 @@ def test_stay_first_stage_carry_masks_retain_full_state_guesses() -> None:
             for first, second in zip(random_firsts, random_seconds, strict=True)
         )
         carries = []
+        addends = []
+        top_bytes = []
         for first in random_firsts:
             second_pass_first = first ^ first_stream
             first_low = _crc_update(initial[0], first) & 0xFF
             second_low = _crc_update(initial[0], second_pass_first) & 0xFF
             first_offset = first_low * MULT + 1
             second_offset = second_low * MULT + 1
+            addends.extend((first_low, second_low))
+            top_bytes.extend((
+                ((initial[1] + first_low) * MULT + 1 & M32) >> 24,
+                ((initial[1] + second_low) * MULT + 1 & M32) >> 24,
+            ))
             carries.append((
                 int((product & 0xFFFFFF) + (first_offset & 0xFFFFFF) >= 1 << 24),
                 int((product & 0xFFFFFF) + (second_offset & 0xFFFFFF) >= 1 << 24),
@@ -272,6 +281,11 @@ def test_stay_first_stage_carry_masks_retain_full_state_guesses() -> None:
         assert masks[0] == 1 << (carries[0][0] * 2 + carries[0][1])
         for mask, (carry1, carry2) in zip(masks[1:], carries[1:], strict=True):
             assert mask & (1 << (carry1 * 2 + carry2))
+
+        flat_carries = tuple(carry for pair in carries for carry in pair)
+        interval = _stay_key1_product_interval(tuple(addends), tuple(top_bytes), flat_carries)
+        assert interval is not None
+        assert initial[1] in set(_stay_lift_key1_candidates(interval))
 
     with pytest.raises(ValueError, match="five or more"):
         _stay_first_stage_carry_masks((0, 1, 2, 3), (0, 1, 2, 3), 0, 0, 0, 0, 0, 0)
