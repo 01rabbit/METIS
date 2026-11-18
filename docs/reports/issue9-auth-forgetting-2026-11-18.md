@@ -29,12 +29,24 @@ forget during intake prevents initial persistence. Fresh requests send no
 cookie, and a repeated forget reports no further local credential removal. No
 real credential or external provider is used.
 
+The separate live-run emergency-stop branch now has a local real-container
+rehearsal. `tests/test_ctf_sandbox.py::test_real_engine_cli_cancel_confirms_container_teardown`
+passed against the immutable sandbox image
+`sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b`
+on the Colima Linux ARM64 VM. The CLI cancelled a running worker, confirmed
+container teardown, removed its worker record, retained the action charge, and
+recorded no solve. This is synthetic local execution, not a host reboot drill.
+
 The focused web workflow and request suites, Ruff, and mypy passed locally.
 Exact-head CI for the preceding code revision found one older intake fixture
 whose fake client did not implement the new generation attribute; the fixture
 now matches the `SafeHTTP` client interface. Exact-head CI at `0212645` passed:
 full tests, Ruff, mypy, fixture validation, distribution build, sandbox checks,
 and the ARM64 seccomp job.
+
+The live-run cancel rehearsal passed locally after that exact-head CI, using
+the immutable Colima ARM64 image described above. Its focused result was one
+passing test.
 
 This is local METIS state management. It does not revoke a token or cookie at a
 CTF provider, erase SQLite WAL pages or backups, clear user-managed environment

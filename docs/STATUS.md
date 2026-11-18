@@ -664,6 +664,9 @@ construction and the initial-save interleaving; the web workflow/request suites,
 Ruff, and mypy passed locally. CI caught an older test double missing the new
 client generation field; the fixture was corrected, and exact-head CI at
 `0212645` passed the full suite, static checks, build, sandbox, and ARM64 job.
+The real Docker CLI-cancel rehearsal also passed on the Colima Linux ARM64 VM:
+container teardown was confirmed, the action charge remained, and no solve was
+fabricated. This does not establish host reboot recovery.
 This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
