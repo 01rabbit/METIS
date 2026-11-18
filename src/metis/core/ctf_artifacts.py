@@ -486,7 +486,7 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "zipcrypto_info": set(), "infozip_seed": {"generator", "time_from", "time_to", "pid_bits", "seconds"},
     "zipcrypto_attack": {"member", "plaintext_hex", "offset", "seconds"},
     "zipcrypto_stay_scan": {"random_header_bytes_hex", "start", "stop", "max_candidates", "seconds", "max_hits"},
-    "zipcrypto_decrypt": {"member", "keys", "max_bytes"},
+    "zipcrypto_decrypt": {"member", "keys", "max_bytes", "expected_random_header_hex"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
     "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
@@ -891,7 +891,17 @@ def _zipcrypto(data: bytes, tool: str, options: dict,
     keys = options.get("keys")
     if not isinstance(keys, str):
         raise TypeError("keys: 'x,y,z' hex words from zipcrypto_attack")
-    result = zc.decrypt_member(data, name, zc.parse_keys(keys))
+    expected_header_hex = options.get("expected_random_header_hex")
+    expected_header = None
+    if expected_header_hex is not None:
+        if not isinstance(expected_header_hex, str) or len(expected_header_hex) != 20:
+            raise ValueError("expected_random_header_hex must be exactly ten bytes")
+        try:
+            expected_header = bytes.fromhex(expected_header_hex)
+        except ValueError as exc:
+            raise ValueError("expected_random_header_hex must be hexadecimal") from exc
+    result = zc.decrypt_member(data, name, zc.parse_keys(keys),
+                              expected_random_header=expected_header)
     plain = result.pop("plaintext")
     if len(plain) > bounded_integer(options, "max_bytes", 1_048_576, 1, 1_048_576):
         raise ValueError("decrypted member exceeds max_bytes")

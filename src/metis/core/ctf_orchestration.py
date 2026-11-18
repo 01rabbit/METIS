@@ -147,6 +147,9 @@ class AgentLedger:
                                  "or time them out first")
             if not context["actions_remaining"] or not context["seconds_remaining"]:
                 raise ValueError("no budget left for another wave")
+            turn_budget = self._specialist_turn_budget(run_id)
+            if turn_budget is not None and turn_budget["remaining"] <= 0:
+                raise ValueError("no specialist model turns left for another wave")
             if not reason or len(reason.strip()) < 10:
                 raise ValueError("a new wave needs --reason naming the unresolved, different hypothesis")
             abstract_text(reason)
@@ -168,6 +171,18 @@ class AgentLedger:
             db.execute("INSERT INTO ctf_agent_waves(wave_id,run_id,plan,created) VALUES (?,?,?,?)",
                        (wave_id, run_id, json.dumps(plan, sort_keys=True), time.time()))
         return plan
+
+    def _specialist_turn_budget(self, run_id: str) -> dict[str, int] | None:
+        with sqlite3.connect(self.database) as db:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_run_turn_budgets'"
+            ).fetchone()
+            row = (db.execute(
+                "SELECT turn_limit,turns_reserved FROM agent_run_turn_budgets WHERE run_id=?", (run_id,)
+            ).fetchone() if exists else None)
+        if row is None:
+            return None
+        return {"limit": row[0], "reserved": row[1], "remaining": row[0] - row[1]}
 
     def record_report(self, run_id: str, wave_id: str, assignment_id: str,
                       report: dict[str, Any], *, attempt_id: str | None = None) -> dict[str, Any]:
@@ -365,17 +380,21 @@ class AgentLedger:
                               for item in contradicted_hypotheses}
         contradicted = bool(contradicted_hypotheses)
         budget = bool(context["actions_remaining"] and context["seconds_remaining"])
+        specialist_turn_budget = self._specialist_turn_budget(run_id)
         new_wave_reasons = []
         if unresolved:
             new_wave_reasons.append("required assignments unresolved")
         if not budget:
             new_wave_reasons.append("budget exhausted")
+        if specialist_turn_budget is not None and specialist_turn_budget["remaining"] <= 0:
+            new_wave_reasons.append("specialist model-turn budget exhausted")
         if not open_hypotheses and not contradicted:
             new_wave_reasons.append("no open or contradicted hypothesis")
         return {
             "run_id": run_id,
             "wave_id": wave_id,
             "complete": not missing,
+            "specialist_turn_budget": specialist_turn_budget,
             "missing_assignments": missing,
             "reports": reports,
             "supported_hypotheses": [item["hypothesis"] for item in supported],

@@ -846,6 +846,21 @@ def test_new_wave_requires_resolution_budget_and_a_different_hypothesis(state, t
     decision = ledger.synthesize(run_id, wave["wave_id"])["decision"]
     assert decision["ready_for_synthesis"] and not decision["complete"]
     assert decision["ended_without_report"] and decision["new_wave"]["allowed"]
+    with sqlite3.connect(state) as db:
+        turn_limit = db.execute(
+            "SELECT turn_limit FROM agent_run_turn_budgets WHERE run_id=?", (run_id,),
+        ).fetchone()[0]
+        db.execute("UPDATE agent_run_turn_budgets SET turns_reserved=? WHERE run_id=?",
+                   (turn_limit, run_id))
+    exhausted = ledger.synthesize(run_id, wave["wave_id"])
+    assert exhausted["specialist_turn_budget"] == {
+        "limit": turn_limit, "reserved": turn_limit, "remaining": 0,
+    }
+    assert "specialist model-turn budget exhausted" in exhausted["decision"]["new_wave"]["blocked_by"]
+    with pytest.raises(ValueError, match="no specialist model turns"):
+        ledger.create_wave(run_id, reason="A separate container layer may hold the data.")
+    with sqlite3.connect(state) as db:
+        db.execute("UPDATE agent_run_turn_budgets SET turns_reserved=0 WHERE run_id=?", (run_id,))
     with pytest.raises(ValueError, match="--reason"):
         ledger.create_wave(run_id)
     follow = ledger.create_wave(run_id, reason="A second container layer may hold the data.")

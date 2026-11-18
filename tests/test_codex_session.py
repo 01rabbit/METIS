@@ -77,8 +77,8 @@ def test_native_invalid_inputs_cannot_be_executed():
         "matched_leaked_bytes": "7"}, ("987654321", "deadbeef", "private detail")),
     ("zipcrypto_decrypt", {
         "name": "secret-name", "size": 12, "crc_ok": True,
-        "plaintext": b"private-plaintext", "base64": "private-base64",
-    }, {"crc_ok": "True", "plaintext_bytes": "12"},
+        "stay_header_ok": True, "plaintext": b"private-plaintext", "base64": "private-base64",
+    }, {"crc_ok": "True", "plaintext_bytes": "12", "stay_header_ok": "True"},
      ("secret-name", "private-plaintext", "private-base64")),
     ("zipcrypto_stay_scan", {
         "next_index": 99, "complete": False, "scanned": 99, "hits_count": 2,

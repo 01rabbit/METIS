@@ -76,6 +76,7 @@ def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
     elif tool == "zipcrypto_decrypt":
         add("crc_ok", result.get("crc_ok"))
         add("plaintext_bytes", result.get("size"))
+        add("stay_header_ok", result.get("stay_header_ok"))
     elif tool == "zipcrypto_info":
         members = result.get("members")
         add("member_count", len(members) if isinstance(members, list) else None)

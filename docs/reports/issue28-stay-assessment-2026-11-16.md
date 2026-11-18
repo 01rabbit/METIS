@@ -347,3 +347,27 @@ it does not establish that a compatible missing high byte of the full key2
 state exists, reconstruct full keys, or validate all archive CRCs. Any later
 recovery stage must test the missing state bits and all member CRCs before
 reporting a candidate.
+
+An independent recovery review refined the raw Stage 2 domain estimate: after
+materializing the 88 interval records and treating the two pass-specific carry
+choices as internal branches, the partial-state domain is at most
+`88 * 2^26 = 5,905,580,032` interval/guess pairs before byte-three filtering.
+This corrects the earlier coarse `360 * 2^28` base-tuple estimate for the
+current interval representation. It is an operation count, not a measured
+runtime or survivor count. Stage 2 currently returns only a Boolean and drops
+the product/carry witness needed by later full-state reconstruction. No target
+Stage 2 enumeration or key recovery has occurred.
+
+## Full-member forward validation (2026-11-18)
+
+`decrypt_member` now optionally accepts the ten expected Info-ZIP PRNG header
+bytes. In that mode it checks both plaintext header check bytes, decrypts the
+first ten intermediate header bytes with the reset cipher state and compares
+them to the expected PRNG bytes, then validates the complete member body CRC.
+A deterministic seven-member Info-ZIP fixture passes this check and agrees
+with CPython's independent `zipfile` plaintext oracle. Flipping stored header
+bytes 2, 10, or 11 for each member is rejected (21 negative cases).
+
+This validates a supplied complete key state and known PRNG headers; it does
+not recover a key, run the Stage 2 search, or solve official #39. The fixture
+test is recorded in `tests/test_ctf_zipcrypto.py`.

@@ -98,6 +98,11 @@ def test_identity_normalises_types_key_order_and_hex_spelling(env):
         effective_options(root, names[2], "hex", {"offset": 16, "length": 256})
     assert canonical_data("gcd", '{"b": 6, "a": "0x0c"}') == canonical_data("gcd", '{"a":12,"b":"6"}')
     assert canonical_data("hex_decode", "41 42\n43") == canonical_data("hex_decode", "414243")
+    assert effective_options(None, None, "zipcrypto_decrypt", {
+        "expected_random_header_hex": "DE AD BE EF 00 11 22 33 44 55",
+    }) == effective_options(None, None, "zipcrypto_decrypt", {
+        "expected_random_header_hex": "deadbeef001122334455",
+    })
     assert canonical_data("base64_decode", " QUJD") != canonical_data("base64_decode", "QUJD")  # not equivalent
     one = intent_identity("data", "xor", None, {}, '{"data":"6162","key":"01"}', root)
     two = intent_identity("data", "xor", None, {}, '{"key":"01","data":"6162"}', root)

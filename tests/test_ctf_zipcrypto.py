@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from metis.core import ctf_zipcrypto as zc
-from metis.core.ctf_artifacts import ALLOWED_OPTIONS, ARTIFACT_TOOLS, inspect_file
+from metis.core.ctf_artifacts import ALLOWED_OPTIONS, ARTIFACT_TOOLS, inspect_bytes, inspect_file
 
 FIXTURE = Path(__file__).parent / "fixtures" / "infozip-glibc-vector.zip"
 GLIBC = {1: [138, 71, 48, 144, 184, 185, 40, 177, 62, 249, 177, 175],
@@ -77,6 +77,43 @@ def test_cipher_interoperates_with_zipfile(tmp_path):
 def test_glibc_rand_matches_the_real_glibc():
     produced = zc.glibc_rand_bytes(np.array(list(GLIBC), dtype=np.uint64), 12)
     assert [list(map(int, row)) for row in produced] == list(GLIBC.values())
+
+
+def test_stay_member_validation_checks_both_headers_and_all_member_crcs():
+    archive = FIXTURE.read_bytes()
+    seed_result = zc.infozip_seed(archive, seconds=120)
+    assert seed_result["found"] is True
+    entries = [entry for entry in zc.members(archive) if entry["encrypted"]]
+    random_headers = [bytes.fromhex(value) for value in seed_result["random_header_bytes"]]
+    initial_keys = zc.Keys.from_password(b"testpass")
+
+    assert len(entries) == len(random_headers) == 7
+    with zipfile.ZipFile(FIXTURE) as handle:
+        for entry, random_header in zip(entries, random_headers, strict=True):
+            recovered = zc.decrypt_member(
+                archive, entry["name"], initial_keys,
+                expected_random_header=random_header,
+            )
+            assert recovered["crc_ok"] is True
+            assert recovered["plaintext"] == handle.read(entry["name"], pwd=b"testpass")
+            routed = inspect_bytes(
+                archive, "zipcrypto_decrypt",
+                {"member": entry["name"],
+                 "keys": f"{initial_keys.x:08x},{initial_keys.y:08x},{initial_keys.z:08x}",
+                 "expected_random_header_hex": random_header.hex()},
+            )
+            assert routed["crc_ok"] is True and routed["stay_header_ok"] is True
+            assert routed["size"] == len(recovered["plaintext"])
+
+    for entry, random_header in zip(entries, random_headers, strict=True):
+        for header_offset in (2, 10, 11):
+            damaged = bytearray(archive)
+            damaged[entry["data_offset"] + header_offset] ^= 1
+            with pytest.raises(ValueError):
+                zc.decrypt_member(
+                    bytes(damaged), entry["name"], initial_keys,
+                    expected_random_header=random_header,
+                )
 
 
 def test_infozip_seed_recovers_every_random_header_byte():

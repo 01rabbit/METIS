@@ -1303,12 +1303,33 @@ def parse_keys(value: str) -> Keys:
     return Keys(*parts)
 
 
-def decrypt_member(data: bytes, name: str, keys: Keys) -> dict[str, Any]:
+def decrypt_member(data: bytes, name: str, keys: Keys,
+                   *, expected_random_header: bytes | None = None) -> dict[str, Any]:
+    """Decrypt and CRC-check one member, optionally validating a Stay double header.
+
+    When ``expected_random_header`` is supplied, it must be the ten Info-ZIP
+    PRNG bytes for this member. The stored member has one encrypted layer over
+    the whole payload; Info-ZIP applied an additional first layer only to the
+    ten random header bytes. Validate all check bytes available in the ZIP
+    header and recover those ten bytes through the reset cipher state before
+    accepting the member.
+    """
     entry = next((item for item in members(data) if item["name"] == name), None)
     if entry is None or not entry["encrypted"]:
         raise ValueError("no such encrypted member")
     plain = keys.decrypt(member_bytes(data, entry))
     header, body = plain[:12], plain[12:]
+    if expected_random_header is not None:
+        if not isinstance(expected_random_header, bytes) or len(expected_random_header) != 10:
+            raise ValueError("expected_random_header must contain ten bytes")
+        checks = check_bytes(entry)
+        if entry["data_descriptor"]:
+            checks = {11: checks[11]}
+        if any(header[offset] != value for offset, value in checks.items()):
+            raise ValueError("check bytes mismatch: wrong keys or header")
+        recovered_random_header = keys.decrypt(header[:10])
+        if recovered_random_header != expected_random_header:
+            raise ValueError("double-encrypted random header mismatch")
     if header[11] != check_bytes(entry)[11]:
         raise ValueError("check byte mismatch: wrong keys")
     if entry["method"] == 8:
@@ -1318,4 +1339,5 @@ def decrypt_member(data: bytes, name: str, keys: Keys) -> dict[str, Any]:
     crc_ok = f"{zlib.crc32(body) & M32:08x}" == entry["crc32"]
     if not crc_ok:
         raise ValueError("CRC mismatch: wrong keys")
-    return {"name": name, "size": len(body), "crc_ok": crc_ok, "plaintext": body}
+    return {"name": name, "size": len(body), "crc_ok": crc_ok,
+            "stay_header_ok": expected_random_header is not None, "plaintext": body}

@@ -118,7 +118,8 @@ TOOL_HINTS = (
      "zipcrypto_attack{member,plaintext_hex,offset,seconds<=300} is the "
      "Biham-Kocher known-plaintext attack (>=12 known bytes of the member's data, 8 contiguous; offset 0 = first "
      "data byte) and returns keys x,y,z; derive tool zipcrypto_decrypt{member,keys:'x,y,z'} registers the "
-     "plaintext."),
+     "plaintext. For a Stay double-encrypted Info-ZIP header, optionally provide "
+     "expected_random_header_hex with the ten recovered PRNG bytes to validate both header layers."),
     ("derive tool tls_http_body{factor,connection,side,message} on the PCAP registers one decrypted HTTP body as a "
     "new artifact (name returned); then inspect it (overview/text/image) or view it if it is a picture."),
 )

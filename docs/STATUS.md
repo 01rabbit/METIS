@@ -289,6 +289,12 @@ exhaustion, and immutable-run-limit tests pass. Bounded autopilot now fails
 closed unless its runner explicitly advertises this controller-side reservation
 mechanism. Manual BridgeHost delegation remains outside that guarantee.
 Token/cost limits are not enforceable when usage is unknown.
+The planner now also refuses to create a subsequent wave after the run-wide
+specialist model-turn reservations are exhausted, and synthesis reports that
+budget as a blocker. A regression forces the budget to its cap after one wave,
+checks the synthesis gate, and confirms no second wave is created. This prevents
+planning work that the controller cannot run; it does not change the benchmark
+results or establish a multi-agent gain.
 
 The historical 30-task diverse real-model benchmark reported 12/60 multi-arm
 workflow-complete oracle solves versus 0/60 single, a 20-point difference
@@ -670,6 +676,15 @@ joint residue query, incremental carry pruning, and a 32,768-visit fail-closed
 cap. Distinct pass-carry offsets match the full recurrence. The partial
 predicate does not establish the missing high byte of the key2 CRC state;
 complete key recovery and all-member CRC validation remain required.
+
+The revised raw Stage 2 domain estimate is 88 interval records × 2^26 partial
+guesses = 5,905,580,032 interval/guess pairs before byte-three filtering. This
+is an operation count, not a measured runtime or survivor count. A full-member
+forward verifier now optionally checks the two known header bytes, the ten
+Info-ZIP PRNG bytes after the reset-cipher pass, and the body CRC. Its seven-
+member synthetic fixture agrees with CPython `zipfile`; 21 mutations of header
+bytes 2, 10, or 11 are rejected. This validates supplied keys only; Stage 2
+enumeration, full key recovery, and the official #39 verdict remain incomplete.
 
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
 origin cookies and fences stale clients from sending or restoring them. State
