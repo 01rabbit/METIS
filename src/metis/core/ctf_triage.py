@@ -21,7 +21,8 @@ PLAYBOOKS = {
                       "JavaScript-built problem pages: reopen with `metis web open --render` (scoped Chromium)."],
             "limit": "Live requests only to granted origins; raw TCP services via `metis remote` grants."},
     "forensics": {"tools": ["overview", "strings", "hex", "zip_list", "zip_read", "gzip", "image", "image_lsb", "pcap",
-                            "tls_certificates", "x509"],
+                            "tls_certificates", "x509", "evtx_xml", "cloudtrail", "email", "browser_history",
+                            "json_records", "sqlite"],
                   "steps": ["Identify real magic and size; do not trust the extension.",
                             "Inspect metadata and structure before trying extraction or bit planes.",
                             "Preserve original bytes and digest; derive bounded artifacts without executing them."],
@@ -52,7 +53,8 @@ def triage(manifest: ChallengeManifest) -> dict:
     hints = {
         "crypto": ("rsa", "cipher", "xor", "encrypt", "暗号"),
         "web": ("http", "jwt", ".html", ".js", ".php", "cookie", "web"),
-        "forensics": (".png", ".jpg", ".pcap", ".zip", ".gz", "forensic", "steg"),
+        "forensics": (".png", ".jpg", ".pcap", ".zip", ".gz", "forensic", "steg", ".evtx", ".eml", ".mbox",
+                      "cloudtrail", "event log", "incident", "phish", "browser history", "siem", "splunk"),
         "rev": ("reverse", "crackme", "elf", ".exe", ".wasm"),
         "pwn": ("pwn", "stack", "heap", "overflow", "canary"),
     }

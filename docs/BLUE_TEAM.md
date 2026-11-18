@@ -51,7 +51,7 @@ pre-commit と CI の両方で実行する。
 | `email` | `email` | EML / MBOX | 全ヘッダーの原文（中身の真偽は未検証として扱う）、MIME 部品の種類・ファイル名・復号後のハッシュ、構造の欠陥 |
 | `browser_history` | `browser` | Chromium・Firefox の履歴 SQLite（WAL 付き） | 訪問・URL・ダウンロード、時刻の変換 |
 | `json_records` | `json` | 厳密な JSON（重複キーは拒否、数値は字句のまま保持） | 型付きの値の木。`field` 指定時は直下フィールドの最大値（同値を全て保持） |
-| `cloudtrail` | `cloudtrail` | CloudTrail の JSON | eventID ごとの重複・矛盾、認証・操作の結果、期間の絞り込み |
+| `cloudtrail` | `cloudtrail` | CloudTrail の JSON | eventID ごとの重複・矛盾、認証・操作の結果、期間の絞り込み、送信元アドレス・User-Agent・リージョン・エラーコード（記録された値。行為者の証明ではない） |
 | `evtx_xml` | `evtx-xml` | `wevtutil` / EvtxECmd の XML 出力 | EventID、Provider、SystemTime、EventData の名前と値 |
 
 - run の成果物には、専門家の intent（`kind: artifact`）か `metis codex artifact` で使う。上限は 8 MiB、
@@ -59,6 +59,14 @@ pre-commit と CI の両方で実行する。
 - ローカルのファイルには `metis evidence KIND FILE [--since ... --until ...] [--out .metis-state/x.json]`。
   `--out` は `.metis-state/` 配下の新しいファイルだけに書く（上書き・シンボリックリンク経由は拒否）。
 - バイナリの EVTX、メモリイメージ、ディスクイメージは対象外。外部ツールで XML などに変換してから読む。
+- `metis plan` は forensics の担当に、これらの読み取りを推奨ツールとして渡す。問題文や成果物名に `.evtx`、`.eml`、
+  `cloudtrail`、`incident`、`phish` などがあれば、分類が未指定でも forensics を候補にする。
+
+## 準備度評価
+
+`python3 -m metis.blue.runtime.readiness_eval` は、`blue/` 直下からでも METIS のチェックアウト直下からでも実行できる
+（例: `--cases blue/examples/readiness-cases.json --out blue/.state/benchmarks/x.prompt.txt`）。出力先は
+`blue/.state/benchmarks/` の外には書かない。
 
 ## SIEM の検索（`metis siem`）
 

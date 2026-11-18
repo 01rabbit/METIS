@@ -154,7 +154,8 @@ _OBJECTIVE = {
     "web": "Map supplied application evidence and propose one scoped, verifiable web hypothesis.",
     "pwn": "Determine mitigations, input boundary, and a plausible exploitation primitive.",
     "rev": "Recover control flow, constants, and the candidate validation transformation.",
-    "forensics": "Identify containers and metadata, then test the most likely hidden-data layer.",
+    "forensics": ("Identify containers and metadata, then test the most likely hidden-data layer; for logs and "
+                  "incident evidence, read records with the bounded evidence readers and cite record locations."),
     "misc": "Classify the representation and reduce it to a more specific, testable problem.",
 }
 
