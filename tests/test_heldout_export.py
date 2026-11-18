@@ -39,6 +39,8 @@ def test_snapshot_exports_only_chain_backed_fields_and_unknown_resources(tmp_pat
     assert result["oracle"] == "official" and result["oracle_verified"] is True
     assert result["reserved_model_calls"] == 1
     assert result["successful_mediated_actions"] == 1
+    assert result["event_span_seconds"] >= 0
+    assert "elapsed_seconds" not in result
     assert result["tokens"] is None and result["cost_usd"] is None
     assert result["workflow_complete"] is None and result["task_exposure"] is None
     assert "private-output-canary" not in json.dumps(result)

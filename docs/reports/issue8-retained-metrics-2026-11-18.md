@@ -130,12 +130,14 @@ requires its own exact-head CI result.
 `python -m metis.evaluation.heldout_export STATE.sqlite RUN_ID` emits a
 fixed-field, answer-free snapshot from one validated event-chain transaction.
 It derives terminal status, last evidence sequence, official or protected
-fixture verification type, elapsed controller wall time, executing-event count,
+fixture verification type, first-to-last event span, executing-event count,
 and controller model-turn/action counts when those tables exist. Missing tables
 and provider token/cost usage remain `null`; model rationales, tool output,
 candidate values and raw event details are never exported. The snapshot does
 not infer workflow completion, prior task exposure or solvability, so it is not
-a complete `Trial` and cannot alone score the P7 acceptance gate.
+a complete `Trial` and cannot alone score the P7 acceptance gate. The event
+span includes idle time and must not be used as a benchmark trial's active
+runtime.
 
 The local focused exporter and analyzer suite passed, including a
 secret-bearing event detail, missing counters, unknown run, corrupted chain and

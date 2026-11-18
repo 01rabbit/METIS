@@ -64,7 +64,7 @@ def snapshot_run(database: Path, run_id: str) -> dict[str, object]:
             "run_id": run_id, "evidence_sequence": terminal.sequence,
             "terminal_status": terminal.status.value,
             "oracle": oracle, "oracle_verified": verified,
-            "elapsed_seconds": elapsed,
+            "event_span_seconds": elapsed,
             "executing_events": sum(event.status == RunStatus.EXECUTING for event in events),
             "reserved_model_calls": model_calls, "successful_mediated_actions": mediated_actions,
             "tokens": None, "cost_usd": None,
