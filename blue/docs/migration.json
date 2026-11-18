@@ -1,0 +1,1441 @@
+{
+  "source_manifests": 19,
+  "entries": [
+    {
+      "source_id": "knowledge-001",
+      "kind": "skill",
+      "skill": "ctf-blue-solve",
+      "source_sha256": "423a8503c2e3207d224137008284c3b00f4ae3099a03c75c712ae31488673606",
+      "target": "skills/ctf-blue-solve/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "4b503cfffb6d88864b86e33c976f63c8dc27a636f4348f1ad776b8cc17e350ab",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-002",
+      "kind": "skill",
+      "skill": "ctf-crypto-solve",
+      "source_sha256": "43e98347891f8a79b294deb0b2ba4350586ee219823a7983d73c5338312f6f41",
+      "target": "skills/ctf-crypto-solve/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "3e8501de9d80c1f0c43bb6492b4116e86f08faf926cd930ffe632b0191f2959e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-crypto-solve/references/encrypted-evidence.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-003",
+      "kind": "skill",
+      "skill": "ctf-platform-ops",
+      "source_sha256": "cc5ab65d3d6fd62f0050ddabe3ba4693e6d4fb2726bb999c7654e7eafde6037d",
+      "target": "skills/ctf-platform-ops/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "b16810b1b8cb293be721aef1f736816ae8e9eb306a318e92d2a30fa8aa808d76",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-004",
+      "kind": "skill",
+      "skill": "ctf-pwn-solve",
+      "source_sha256": "9a11e16bfdded403cc4ce8662a0cec6759ce1a9a5875750283004aa0e2a0d817",
+      "target": "skills/ctf-pwn-solve/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "70e9b22a3428db51efc1e3808c25846c017b4034fe4cec485fd8634fba62f7e9",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-pwn-solve/references/crash-evidence.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-005",
+      "kind": "skill",
+      "skill": "soc-browser-console",
+      "source_sha256": "60f5d389cebcbed567e1ba064d73e0fa4041081a3da098fd48190324bc221689",
+      "target": "skills/soc-browser-console/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "5fd177d2cb06a1641e8c67c4efd3c5a6c2526a39b53e827ef2579f55ab7d4f17",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-browser-console/references/intelligence-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-006",
+      "kind": "skill",
+      "skill": "soc-cloud-identity-forensics",
+      "source_sha256": "7b150abfcd2fbc8a8365993715cb84c2b290486f93eb3473b81bd9adce0c95cd",
+      "target": "skills/soc-cloud-identity-forensics/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "4115d199e591d57aef4dd95e7c49b298c0bcce106e3aea3196b90232f62b232e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-cloud-identity-forensics/references/exact-populations.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-007",
+      "kind": "reference",
+      "skill": "soc-cloud-identity-forensics",
+      "source_sha256": "a6684788fcdd9c8230db2a6f69403881b88a62a751fa10646786b8c1bac9cfc1",
+      "target": "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "3d1ddcedddb04daffc1b616a5b37b7a456b7537de7e21735e1025c9484ac37b3",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-008",
+      "kind": "reference",
+      "skill": "soc-cloud-identity-forensics",
+      "source_sha256": "cb9c028008522ad14886b140f27ac29e63ed3839ccd8a7951fc26f8ed59f9007",
+      "target": "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "2e32a21d6377257bc29a59fc18a4d8b8349831eebe79cae4d0961434c83e4090",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-009",
+      "kind": "reference",
+      "skill": "soc-cloud-identity-forensics",
+      "source_sha256": "1395e741e7aa5a95c773e1a93f02c671694b2e5a4dcc74af17ba34fc419bb39f",
+      "target": "skills/soc-cloud-identity-forensics/references/gcp-kubernetes.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "3e36f7d3059d08210e5a516e4c700ad31a863c153d067761da37231142ba6edf",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-010",
+      "kind": "skill",
+      "skill": "soc-detection-engineering",
+      "source_sha256": "11f2e1c535884038ddaddc3e9bd4a5a7822e3024368816fc609d0874aeec930e",
+      "target": "skills/soc-detection-engineering/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "6cfcfdd0fb04c8fed80cd8701b146cc7824179fb4a21fa528c7ee41281016aa4",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/coverage.md",
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md",
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md",
+        "skills/soc-detection-engineering/references/telemetry-specialist.md",
+        "skills/soc-detection-engineering/references/telemetry-windows.md",
+        "skills/soc-host-forensics/references/linux-artifacts.md",
+        "skills/soc-host-forensics/references/windows-artifacts.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md",
+        "skills/soc-network-forensics/references/packet-format-map.md",
+        "skills/soc-siem-hunt/references/elastic.md",
+        "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-011",
+      "kind": "skill",
+      "skill": "soc-host-forensics",
+      "source_sha256": "d4318b9b981a8eeb3d3491e599efe9383cd87cb29396ffa762dbbcbb5dd1e4ee",
+      "target": "skills/soc-host-forensics/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "732f8e5327f1419f035404053bba4d0740ebccd89bfd184647053a60f0a04d21",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-host-forensics/references/analyst-handbook.md",
+        "skills/soc-host-forensics/references/parser-integrity.md",
+        "skills/soc-host-forensics/references/windows-artifacts.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-012",
+      "kind": "reference",
+      "skill": "soc-host-forensics",
+      "source_sha256": "57ae5aee282e35584a260e7610c899903bd99199af7b203997301b18daab4c46",
+      "target": "skills/soc-host-forensics/references/linux-artifacts.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "bb9dc8576f7aca931c12c5f022f57213167b9142a988740fac26f85e3be466d6",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-malware-triage/references/document-mobile-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-013",
+      "kind": "reference",
+      "skill": "soc-host-forensics",
+      "source_sha256": "57fe1858f31317f8a75bfbd6301053e1626fa52bbcc7ab5055ab8bd76ce81a47",
+      "target": "skills/soc-host-forensics/references/memory-analysis.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "a6a3b3f67e84616102255483d18d61fbd642f32c089bb7153203ffa6b73f39ef",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-014",
+      "kind": "reference",
+      "skill": "soc-host-forensics",
+      "source_sha256": "80ca28049350410aff0b52e3e6af014369b889f3ede55adef63cf3e4ed12b410",
+      "target": "skills/soc-host-forensics/references/windows-artifacts.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "32a0046618fe599f491ebda623bf38ffde30c68084a27acbc14b455c8cde367d",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-malware-triage/references/document-mobile-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-015",
+      "kind": "skill",
+      "skill": "soc-incident-report",
+      "source_sha256": "b97243d7bb61cfaadffd24182275183ce2207fa394ba900d3542c4a7562ab25b",
+      "target": "skills/soc-incident-report/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "b1f10ab6386343aa4dcf038d4edadb2514e9c7a0775e77756d58fada81d5182f",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-016",
+      "kind": "skill",
+      "skill": "soc-lab-access",
+      "source_sha256": "77bbf807add910baf9e633199c9bc3b0aa65339b0b422c1fe7754d326966ef01",
+      "target": "skills/soc-lab-access/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "dd6c9722997bdae342bbc1234e89aeaee5acb13fc9ec19b113834917cb10a1fd",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-remote-triage/references/live-collection-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-017",
+      "kind": "skill",
+      "skill": "soc-malware-triage",
+      "source_sha256": "4279f7c4af75309d44287040aa1619a10e20e77dce4e5110784b07ff28a33443",
+      "target": "skills/soc-malware-triage/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "55b82ba27847a27a6161623e598342e191684e8c638985a1b8fe85b1efc1da16",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-crypto-solve/references/encrypted-evidence.md",
+        "skills/soc-host-forensics/references/windows-artifacts.md",
+        "skills/soc-malware-triage/references/analyst-handbook.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md",
+        "skills/soc-malware-triage/references/executable-field-map.md",
+        "skills/soc-malware-triage/references/static-evidence.md",
+        "skills/soc-triage/references/artifact-integrity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-018",
+      "kind": "skill",
+      "skill": "soc-network-forensics",
+      "source_sha256": "c866f37c476174f0737bff067b905b5e18c3290fe47b2a2577133343e456e0de",
+      "target": "skills/soc-network-forensics/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "e5ece413498cae740fb98832fff91292f4b9d36fb114294791887cbb8f4b2c8c",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-malware-triage/references/document-mobile-fields.md",
+        "skills/soc-network-forensics/references/analyst-handbook.md",
+        "skills/soc-network-forensics/references/packet-format-map.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-019",
+      "kind": "skill",
+      "skill": "soc-remote-triage",
+      "source_sha256": "cbfafc30b5f684278a942f75a9432b03e5b53aab9ab7cb8abf46a6dc62dcffc4",
+      "target": "skills/soc-remote-triage/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "04bc86f09d105aa5f8904239c43b582254b78ddc87645fe3dd27ffa3d6a186e4",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-remote-triage/references/live-collection-fields.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-020",
+      "kind": "skill",
+      "skill": "soc-siem-hunt",
+      "source_sha256": "3529072a75a74a3dae32751700427efe30716f9181639ac815e01232af910564",
+      "target": "skills/soc-siem-hunt/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "c695b14ed3b5ae5cd0f7676d15032817787904a56631a9f94e948882829930b6",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-021",
+      "kind": "reference",
+      "skill": "soc-siem-hunt",
+      "source_sha256": "b81034ac753cb17bf308a6604dc31a7a0639143f53329079f9b87c0490d60b96",
+      "target": "skills/soc-siem-hunt/references/elastic.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "d13c0025f60c6b747591a599cfe3603a6c04429a45bc5c2baa8cc637376a22f8",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-022",
+      "kind": "reference",
+      "skill": "soc-siem-hunt",
+      "source_sha256": "8014e6138b0b4143dc9b90d63d39fe91779a50e6c924f7eaaf49edace6395f8b",
+      "target": "skills/soc-siem-hunt/references/sentinel-kql.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "09e1cc37aec9fa44106b8a75606044827d2b894476bfb81989f88eb8b2dafa5e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-email-forensics/references/message-analysis.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-023",
+      "kind": "reference",
+      "skill": "soc-siem-hunt",
+      "source_sha256": "f50540a19dee13d03a035bcd0f97ccfc5dc7f125017a9d5ef4670d8045f5fe90",
+      "target": "skills/soc-siem-hunt/references/splunk-spl.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "93533fd64b09be873e30e744b7467814e8a546e34b66304572ab0974a1e5ca63",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-024",
+      "kind": "reference",
+      "skill": "soc-siem-hunt",
+      "source_sha256": "63bb82daa2c7da29ecaeb4ca76bd0db709d1e163956fc0e5a16dcba73bda5072",
+      "target": "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "d74bf149de1cb0518bd6b6e888b666eebf5332b1a70ca3d9a350af8f58522864",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-025",
+      "kind": "skill",
+      "skill": "soc-triage",
+      "source_sha256": "f5c8652e3bc7f3e8b0fcc7a380580b0da49a3d6aba3f26b7e7b0a27cf638e6fe",
+      "target": "skills/soc-triage/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "4b95de31a8b05be3bbce63de4409ea2f1a723a9c730a0b38f62b9d764ada9965",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/blue-owner/references/worker-contract.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md",
+        "skills/soc-triage/references/artifact-integrity.md",
+        "skills/soc-triage/references/container-and-structured-fields.md",
+        "skills/soc-triage/references/evidence-locators.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-026",
+      "kind": "skill",
+      "skill": "solve-orchestration",
+      "source_sha256": "c7257a730e8413bdac4a95ba5caf5579ac023521a6b71ceacd6b17d1c5f41a9f",
+      "target": "skills/solve-orchestration/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "6ef239cd51a75c63bf43150a03c987b1d40ea89067188dbac4b98cc94e36afb2",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/blue-owner/SKILL.md",
+        "skills/blue-owner/references/worker-contract.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-027",
+      "kind": "skill",
+      "skill": "evidence-question-answering",
+      "source_sha256": "60e310309fcae3a17ea9d989e2d6411fdd53db60c68bc08787525b846fddc18a",
+      "target": "skills/evidence-question-answering/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "92e24f7c1d5166f8611b7bcba7795db842ac736c1f586e27d59ea74c9ec3a8fb",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md",
+        "skills/soc-triage/references/artifact-integrity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-028",
+      "kind": "skill",
+      "skill": "soc-evidence-cycle",
+      "source_sha256": "75f39cea3eeab9042295587f3f238e57e1fa703e1b685c2d5c19cc43fcdd3def",
+      "target": "skills/soc-evidence-cycle/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "68063a86d5d06732e5c04ce33ce2fa4a1ff9901eac22b61a5cdf1d1abc10211f",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-triage/references/artifact-integrity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-029",
+      "kind": "skill",
+      "skill": "evidence-question-answering",
+      "source_sha256": "9d4970b76ed52ca26e5b52884a1067ae5711db340311ffd1a2f4471d6448820a",
+      "target": "skills/evidence-question-answering/SKILL.md",
+      "mode": "reviewed-defensive-adaptation",
+      "target_sha256": "92e24f7c1d5166f8611b7bcba7795db842ac736c1f586e27d59ea74c9ec3a8fb",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-030",
+      "kind": "index",
+      "source_sha256": "53f9440754a2db7863e419530cc774fc768d6a36277a08e4f6988e912a4fef09",
+      "target": "detections/README.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "d0e2d14198fa99399195964de8ec5915df4dbc201df6168b7398b9a68d6cdcf5",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-031",
+      "kind": "detection",
+      "source_sha256": "9133a36894116382a829caf1bf46d0e00da70390a15a87ac152e910a61c87b06",
+      "target": "detections/memory-and-platform/macos-control-bypass-residue.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "36b1daf75e1c377014f39d80f38e039c99d7e5441e5d1be27e3f07df8a56df70",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-specialist.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-032",
+      "kind": "detection",
+      "source_sha256": "c9697ffbdaeb0e6abfda6ab0c372cc03cbe49aec3a4f219bd11ea2e59ea1e5b6",
+      "target": "detections/memory-and-platform/memory-corruption-exploitation-residue.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "6e3119a3b1c1505aa70de3f2fefebc7d7caa91a2eb318a94fa50cfff5b97c5ce",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-specialist.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-033",
+      "kind": "detection",
+      "source_sha256": "857c2bd0510169f8c6139312b04698d5f0a1b8141eeedefc864973f8eb1f0b05",
+      "target": "detections/intrusion-indicators/client-side-lnk-libraryms.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "e6b78cd0a50950c3e525baf7cac8a672a1ba241b92e84d67df186cb2e305ccc7",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-034",
+      "kind": "detection",
+      "source_sha256": "bc5caf543e2f7049ecb3782c676a17f5ae5468ba1661de569a31eb8d8d5130f9",
+      "target": "detections/intrusion-indicators/linux-privesc.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "1390c1601f672f924d0e3329f0499ac4611a54287e175c5942b99375d7cba0c5",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-035",
+      "kind": "detection",
+      "source_sha256": "982fccd6afccb0d759fd042d04c803de350984910eaedf7bdef63e7673602cb7",
+      "target": "detections/intrusion-indicators/llmnr-nbtns-poisoning-relay.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "f65f5392cb91c2e7c3cafa8bb1d4d36d9be47252a1f6e340fe0371784b6edc10",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md",
+        "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-036",
+      "kind": "detection",
+      "source_sha256": "79f0dfc8a422c9cd98f317e033904bf9cb139169a5a7a49b2ed58202b959c51c",
+      "target": "detections/intrusion-indicators/port-redirection-tunneling.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "d2fd41b6e1ac6a666ce5824ff45dd676892606300d772f40ab07b2e14c353714",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-037",
+      "kind": "detection",
+      "source_sha256": "a60adf839088059de37b0ac3ac5a8c3499801cce4eb476493721f49cab1af8b3",
+      "target": "detections/intrusion-indicators/recon-portscan-enum.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "ccc0f4e59b0c508ab88c1298e4a68a0119f9f3f1b595bfa62749e3be8791f65e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-038",
+      "kind": "detection",
+      "source_sha256": "25b2f9ee6126e8490807cb391bd60787ae9b80b455d311829282b01333f673d2",
+      "target": "detections/intrusion-indicators/vuln-scanning.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "489681d7462cd035e8f60433884df772cb43f900c7ddc8ce10ddef35ddd84364",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-039",
+      "kind": "detection",
+      "source_sha256": "a8433de8e784b8ae4475463c8a43e096c14c5ec59446f3ccd6298fb550dd684a",
+      "target": "detections/intrusion-indicators/windows-privesc.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "94a029baa76e0c55a4d0b975f3a436fecc7219eb46f2c3d027066ca9e612cbf9",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-040",
+      "kind": "detection",
+      "source_sha256": "8a7dad4853e962eb655742af8562c64950ad3603891bb1b61d1c6ee3d384f97a",
+      "target": "detections/advanced-intrusion-indicators/ad-delegation-abuse.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "bfa3d70dfffd747ae1b6830faf6f6d60e2220bdc5b6b1009526c00d8b6b7ff3a",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-041",
+      "kind": "detection",
+      "source_sha256": "7ce59e71a5d1f5f6de721ca11d1ef0c70751826157bf882da5dd68cf863ca822",
+      "target": "detections/advanced-intrusion-indicators/applocker-wdac-bypass.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "000e06e6894fe60fff0f9bbb8fc9618b618dedd12bf404a3949b925864d1bf3f",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-042",
+      "kind": "detection",
+      "source_sha256": "f9b2daa5d8a38183aa3de573e153824034d338099ce07dcd3a7396ca833ed2ff",
+      "target": "detections/advanced-intrusion-indicators/lsass-credential-access.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "009e074b64d87e05b6aa81fd12e31257bde730d653bda1d8333b3153adc8b76e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-043",
+      "kind": "detection",
+      "source_sha256": "d50f7dcc58cec95eb1c1977b2d6fb17cf17195bddbfd7ca635df28f6b7203776",
+      "target": "detections/advanced-intrusion-indicators/mssql-attack.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "174c7ea4917a5604016677644ecbfce515e5bd96e8b75f5d118a71eeec5fa54d",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-044",
+      "kind": "detection",
+      "source_sha256": "8f5c76d02a379503ca7802a792a31940c5883ddbd424f1b43af9ecc1d4a37874",
+      "target": "detections/advanced-intrusion-indicators/network-filter-bypass-domain-fronting.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "35d9a616343df4397f2fc5b53bf313e8a5b3ec17af2fc06574d89370005dfdbf",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-045",
+      "kind": "detection",
+      "source_sha256": "9d9b1b1646009f874e494c164974014e77c059b76d735d315b47bc2b464cd87d",
+      "target": "detections/advanced-intrusion-indicators/process-injection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "54284534ac37b8f7f5f0cbfb0cf20df9570e854e0c115906e367f944606f08ba",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-046",
+      "kind": "detection",
+      "source_sha256": "9451a08e72c78d8d5a8fe96ddea73541bb7cd8cea2ffe0871744a31e6b2223b6",
+      "target": "detections/foundations/ics-ot-protocol-and-command-anomaly.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "a881939a816131a98f352fd43adcf6736732875a059e4dc23d548f8540679280",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-specialist.md",
+        "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-047",
+      "kind": "detection",
+      "source_sha256": "21578c7ec4f4076090e7df60505f5cd096eede6f9d2acbfaa1daec140b253fef",
+      "target": "detections/foundations/phishing-email-and-landing-detection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "833796b431eb5df3007f56b77d936dec746b03c5ae7408358ff5277352b40ac8",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-048",
+      "kind": "detection",
+      "source_sha256": "d24f7d9b27408d04825c86aed6a6edba225b056eb67fc19fd7369fe32163e5f1",
+      "target": "detections/foundations/ransomware-behavioral-detection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "b032b93dfdb216fa6c8aea96c03962590976088e581645b8d09de114cf54acef",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-049",
+      "kind": "detection",
+      "source_sha256": "71d90e6e2116ac73788610d680abe45134da6c42f8f498e930ee8acef5b82d75",
+      "target": "detections/foundations/wireless-rogue-ap-and-deauth-detection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "34be320bd01571967df143d921bafe75953590f11a09456bcad69a3b6bdc4b39",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-specialist.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-050",
+      "kind": "detection",
+      "source_sha256": "7b09a6e9e2e9acdb24f62f1d61ad8c5242594bae3e96796f36447b84b6f25412",
+      "target": "detections/malware/reflective-loader/ATTACK.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "ad1f347af95b06da8a6dac0e37da0b50a3781f3ae4bdcfb49000966b8e50a7b7",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-051",
+      "kind": "detection",
+      "source_sha256": "39c318c773ed9f9f82b19ed8f7177647f3b37f5bad42810bf2fcf7aa9a331118",
+      "target": "detections/malware/reflective-loader/behavior.yml",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "845f20f374d516b7574ff042c937782025bb84bc5387e11deca76554a57221d7",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-052",
+      "kind": "detection",
+      "source_sha256": "e79d065d4b2c5fb95aac81a74fee4bbb0caf8f4e44282b9f70828d0a3e8630e6",
+      "target": "detections/malware/reflective-loader/loader.yar",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "4ae22eae57a10042eccb51d55dcb17bb20c4b97ebd3bf6043c486e319aae10ba",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-053",
+      "kind": "detection",
+      "source_sha256": "305020f1d39e1b34e41e5e53fbeddd2c363af921e8b7ea159af15a1fe1bb7660",
+      "target": "detections/application/app-logging-and-error-exposure.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "6b9c528c61837523bb5f9039fa827926fd53750b879c42d53246af13608b8d15",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-054",
+      "kind": "detection",
+      "source_sha256": "3d3389fc815bc2de32a2e1f3659f17516b3ef78868a9a4f81a61750e11eaa9f3",
+      "target": "detections/application/injection-attempt-detection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "fcfe86e1d110ebf25785e26f888b5406b7284abb03af7707fcee3c8551c9467e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-055",
+      "kind": "detection",
+      "source_sha256": "cb5d209b0520d32f97dd141b195a7870c0f27b85317ca6e5d83123a91f53b59e",
+      "target": "detections/application/xss-attempt-detection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "d16e70cca8f4d4c4e9cec5aabbb04a45d91bda64627abd90db22e7aa901213b2",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-056",
+      "kind": "detection",
+      "source_sha256": "32965ebebaad8d36e136f7841b95b18eca66291f580700efca99232205445823",
+      "target": "detections/application/cookie-and-session-flag-anomalies.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "aa711c93ae5822024c9420ef6e4f4e5dd39613610f4eef18544570d2aa10a649",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-057",
+      "kind": "detection",
+      "source_sha256": "d78214f098e99cc83bf20daf1c8b367b4d9feb2624bf6f0189aee5934eb1367a",
+      "target": "detections/application/security-misconfiguration-exposure.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "c2af79078e2fad17e40bdc6ec33415d2dc10f8b2c499d55251fb590446f4269a",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-058",
+      "kind": "detection",
+      "source_sha256": "242dd3cae557e24d7c580e87aa12356930343428dbb73ac591a06b782dc1d413",
+      "target": "detections/application/session-hijack-and-auth-anomaly.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "f76406414c41b49ec6e5753120504120b3d72ee3e89b153a27df0b4a7ffc2fb7",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-059",
+      "kind": "detection",
+      "source_sha256": "ddbdc0e6c102716a3fa73232f266fecbf90e30a3cb9ec30ea3b47d87edd68e5e",
+      "target": "detections/application/sqli-confirmation-and-db-access-anomaly.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "b92e604cbb3c0d8258dc50106b1c09357388e674d4f659b6d799605770e6a169",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-060",
+      "kind": "detection",
+      "source_sha256": "99ab907bf94c717376536275b98067c753aa9dacfbc59aa71614bbe06abc3554",
+      "target": "detections/endpoint/script-host-dropper.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "dea68509c5aa3c81d8f5c2ac35eeae3b427c751fc3d04a75c33459243dcb57cd",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-061",
+      "kind": "detection",
+      "source_sha256": "68e42d8121987defe951156ff6bb99a9951cdcc3c2a03ca4cef656b77c7f7c18",
+      "target": "detections/endpoint/iis-worker-spawns-shell.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "360a53e76b95e2670cfd156dffb9aca06c0d18b286f019a451152b43f0070190",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-062",
+      "kind": "detection",
+      "source_sha256": "81feacf137bf292d9972cb1769e61059ff592848cccaab0286adb15c317609ad",
+      "target": "detections/endpoint/office-macro-spawn.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "0ea7b607d505e8c8cc43191b3d658acdcb8fc355ee62a7f170f3078f79713201",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-063",
+      "kind": "detection",
+      "source_sha256": "83a5fd3440ceff71988f67027c6135fc8052ef39f5f9836350a8ea36ac42f2de",
+      "target": "detections/endpoint/uac-bypass-registry-hijack.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "7a34e09aa743b108ff96f082bede88178282ffcc4a0de7e140024da95a9bb329",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-064",
+      "kind": "detection",
+      "source_sha256": "6afd5afe4b0eaa69eb586eb5f676714432b02264ca209686fa67cb8c254aa498",
+      "target": "detections/endpoint/service-anomalous-imagepath.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "45702c58d2a3bf7a471aa8ade965f4d4e626eb59736af83c24bc7265e014f714",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-065",
+      "kind": "detection",
+      "source_sha256": "a0a5cb073be716932d8fb829f74819f467beb8b932a817bcd5ecdc2b8b769198",
+      "target": "detections/endpoint/linux-daemon-spawns-shell.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "64c6be22a93ff26e3eaab9afea3579eef0d4bd55f52c71e5d1a92bc81ed007bf",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-066",
+      "kind": "detection",
+      "source_sha256": "8f4b94bb7bb45866cb76ce1511c2b634b49fb7df495b575387e2fa5aa24958c2",
+      "target": "detections/endpoint/linux-webapp-to-shell.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "f2abc30ffbe5ec082a2049ae7bdeef3c802a18505150a4c9f991bc0b8d365580",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-067",
+      "kind": "detection",
+      "source_sha256": "86c2661826cc742c1d357f9fcf4e5d2dd73c545fd90dd9d93360a0beb0490d19",
+      "target": "detections/endpoint/linux-privesc-sudo-gtfobins.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "04234aeb0e414af25c1d39eaa9473e7185bea40ac79a9e4b4b23ea720efb5931",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-068",
+      "kind": "detection",
+      "source_sha256": "490c25cb390214229285e4ccc3e33a20159107012dcaf2a5bbb657b78cf3147d",
+      "target": "detections/endpoint/c2-beacon-detection.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "3c71375ee7882aea7a3ca000d12d4f2cf82631c726561614f6dc7426fa5d0811",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-069",
+      "kind": "detection",
+      "source_sha256": "174af2b8db8cd7b6dc89119e72a059d9559ca4b06321f8abfa9de776fa5c5d14",
+      "target": "detections/endpoint/amsi-bypass-defense-impairment.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "2dfb830fdfb10e23e83444993d8c4f4d25ee507139ebddaec8b5dd36712a03f2",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-070",
+      "kind": "detection",
+      "source_sha256": "c254b9e821ea0a835f78b839aeb82fee780d6eca0ebeb149decd0920de8feefa",
+      "target": "detections/endpoint/ad-enumeration-ldap-recon.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "7ddd489fe8a8b5677043c17b6660bcc22607e1d8a4239b54990f344d98006683",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md",
+        "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-071",
+      "kind": "detection",
+      "source_sha256": "c6acf6936cda6d414816982dfa4b6bde7123950a4c3689f37171aa4eb710d732",
+      "target": "detections/endpoint/egress-tunneling.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "a5d02e85d0e30c1e86dd32e8c271eeb929730a247e31de05d69960abb7ca0389",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-072",
+      "kind": "detection",
+      "source_sha256": "033c654432e9932c9b3eecd8b108a0ea806a3b6bd3ac9748a4e98d48d887509c",
+      "target": "detections/endpoint/lateral-movement-pth-kerberoast.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "e2efe55e89a3ed3453b58accef3cf8de1930ce95a02d1768dcf1a164b666ce30",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-073",
+      "kind": "detection",
+      "source_sha256": "d6505fd9e7fdc71ff6925f7b469851b7c611dfe74bbd4f9a7bdb5c2bdfa74a76",
+      "target": "detections/endpoint/ad-persistence.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "6f1d248d02febad905e80ac994b704dd2d03251c49d84b1f72747bca05e04e9f",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-windows.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-074",
+      "kind": "detection",
+      "source_sha256": "66a7b39c562126e4ebdf0124f6bcf7bc1686ab1da8cf1937435ee04b7e0ed0b6",
+      "target": "detections/endpoint/elk-detection-rules.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "19d30f620554a8553c5b2256feac0433fc663ea64572eef92aa44f8b9436940d",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-siem-hunt/references/elastic.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-075",
+      "kind": "detection",
+      "source_sha256": "a7df5497aa7608f0f44904a29745d731b6f26aad7f2ea5202d3f8661fa8e26e9",
+      "target": "detections/endpoint/multistage-killchain-correlation.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "dbbe0aa83e5a2ac30ab10120fb22aeddce306a34b99aa5b1e747056fc863db08",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-076",
+      "kind": "detection",
+      "source_sha256": "28db8b9436e81118d259d854b4b4dabe5e183597644106ed64c6c2ab70693aac",
+      "target": "detections/hunting/hunt-methodology.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "1b75e619b8ef16a0d9622c2fad6c60d606fa85852208f30c90b16bced860c56a",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-077",
+      "kind": "detection",
+      "source_sha256": "2a07a4c946438492dac1586920677afb2eed86077a831b3abae22c3d20637e54",
+      "target": "detections/hunting/actor-ttp-ransomware.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "0ba61a70e6c964b4366e2799215aeb14168ceca4d49e951325d6f4851f0ad334",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-078",
+      "kind": "detection",
+      "source_sha256": "0634344ae6de10ab6679722e62e5e218561b18b2cb3a73ebec8abc60a95f67fc",
+      "target": "detections/hunting/hunt-reporting-tlp.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "1d51ac4b29a7369fc38521bb30fc72f1cc4bd484178bbb4c1edf8fc3eaf1e2ba",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-079",
+      "kind": "detection",
+      "source_sha256": "12490e030dfce6fb1f1b29474cea8c214c75bbbf2988bf48f7cd90e6cecd25a9",
+      "target": "detections/hunting/network-hunt-beacon.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "d42cc77bc5b62e178525b9aa6ac30571a72bad1873420dcd25749f8e77a7ee89",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-linux-network.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-080",
+      "kind": "detection",
+      "source_sha256": "0bbceddf8bb01e7608e1e71adf2af3f1c30cabaf50f3c694dbdbd44c93463927",
+      "target": "detections/hunting/endpoint-hunt-stackcount.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "5258891a63144464249e99dd43f3cc94f5fe43da89116c30545b8300f0866693",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-081",
+      "kind": "detection",
+      "source_sha256": "8ac890b467231f882c63d89ef123de060e023a56c3b5873355ad8d360cb89de8",
+      "target": "detections/hunting/behavioral-hunt-no-ioc.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "f938046d29af45b2908224dd0f3a94a9c0767b4b0802c00b5012c4172547de73",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-082",
+      "kind": "detection",
+      "source_sha256": "a9fc1b56a93872ce39b8e2b832c45d1fa377491b840f20f13b3021ee8c840a3c",
+      "target": "detections/hunting/cloud-hunt-azure.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "a670df13936c1f8e0fd710bd9ad854fb4a3722b6a4db6371f99865a67782d957",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-083",
+      "kind": "detection",
+      "source_sha256": "1175b060e4853e7bbad8005f6a2b0892e1121bbe9f58a296ad2b18f796e7b2cb",
+      "target": "detections/web/cors-cross-origin.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "024ca3fd750496c4eaf9b6ffc48132a15943cc552eed0505665be44f3cc49afc",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-084",
+      "kind": "detection",
+      "source_sha256": "40dd55db8da02211e373dc4e70be624ff70da004114e166b604595ff90d633ca",
+      "target": "detections/web/xxe.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "8bafd961fa108432fcc848a8239eddaabd1ecd5274f10b05fd218edfba7a7c2d",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-085",
+      "kind": "detection",
+      "source_sha256": "2765becd7e599decf4047a11365a58f61decb2abc87195327ecc1529bb6619c1",
+      "target": "detections/web/ssti.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "fba4832f943c889770713951700e798a923d2be8388dfb1c06920f42a2b35bc2",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-086",
+      "kind": "detection",
+      "source_sha256": "5572998832a74f4f67d24a653d2f8fcc769827a46afebcc142e3ee2e323ae964",
+      "target": "detections/web/ssrf.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "375b187efd75d01bc872bc21f72bd00854c079357d0dc5981e85e13543054250",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-087",
+      "kind": "detection",
+      "source_sha256": "7b89e7c36d05df83b83ec8d613ac613e253605ecaf3796554183085b3c85e71f",
+      "target": "detections/web/idor.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "3e5124396e1e9813a82ab695bc2ff1c96a2f2b774cb22895e8b40c253b411e6b",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-088",
+      "kind": "detection",
+      "source_sha256": "c870e0d723a175e6451137ab36f6f1e075f2c1719d3e992b63fb9bc0f8b3c6d4",
+      "target": "detections/web-advanced/insecure-deserialization.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "84181ef2d2d8e88bc347bad02c203c250b2f49e5d2cda05726464a699f433ad4",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-089",
+      "kind": "detection",
+      "source_sha256": "9e22ca334b932aec0ae63c3c67486a77a90a1b9ebbef435bf6162e7770967be0",
+      "target": "detections/web-advanced/prototype-pollution.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "b83986a0b65b4cd763a16de48e070b40d8c8b07d586c2fcfb02b2e6cbc6be8d1",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-090",
+      "kind": "detection",
+      "source_sha256": "fdfcc2efc2a44ef36e21f0b6a127e997f8539a981c122f6472ad4238cb4bc29f",
+      "target": "detections/web-advanced/type-juggling-auth-bypass.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "a298c82bac5e5c1cbbabaa94eacc46383161006cb3aedabfdfa36a7597c4069c",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-091",
+      "kind": "detection",
+      "source_sha256": "59a876acaadf9c17b1acd5edfb8562b46cd9d465d41a0a730c3a35bc16fa6939",
+      "target": "detections/web-advanced/web-auth-bypass-logic.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "c904b04d00bb058c9cce9ff194a674fd4028056b87496366bf1e7caddc0b642e",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-092",
+      "kind": "runbook",
+      "source_sha256": "d16db0ff74c3ee5c203ca881fccae44603c3a8136a9b0fcc3305d702f9c7bfd8",
+      "target": "skills/soc-detection-engineering/references/validation-integrity.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "7c1cfba925a70293270327cdf4e7a032d5a18583405f9ab85d1573b43a3b1761",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-093",
+      "kind": "runbook",
+      "source_sha256": "56bf0a6cf382cdc47d7fcd0da8791a96a136540e5540e0cca72338153f38aa0c",
+      "target": "skills/soc-detection-engineering/references/validation-integrity.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "7c1cfba925a70293270327cdf4e7a032d5a18583405f9ab85d1573b43a3b1761",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-094",
+      "kind": "runbook",
+      "source_sha256": "22c9d77907e74cb801df204a70362201cce5500b552a208f423857066ab07869",
+      "target": "skills/soc-triage/references/artifact-integrity.md",
+      "mode": "defensive-reconstruction",
+      "additional_targets": [
+        "skills/soc-browser-artifacts/references/history-downloads.md",
+        "skills/soc-cloud-identity-forensics/references/exact-populations.md",
+        "skills/soc-host-forensics/references/linux-artifacts.md",
+        "skills/soc-host-forensics/references/memory-analysis.md",
+        "skills/soc-host-forensics/references/parser-integrity.md",
+        "skills/soc-host-forensics/references/windows-artifacts.md",
+        "skills/soc-malware-triage/references/document-mobile-fields.md",
+        "skills/soc-malware-triage/references/static-evidence.md",
+        "skills/soc-network-forensics/references/analyst-handbook.md",
+        "skills/soc-network-forensics/references/packet-format-map.md"
+      ],
+      "target_sha256": "e58497cd3e071d571578498fdcae897f862e99282456a00d8d0e0e8c3dfa74aa",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-095",
+      "kind": "runbook",
+      "source_sha256": "dce4385c53fcc12a984011254c65c30bb6ee41bf06f3705f6b3504de408fc4bd",
+      "target": "skills/ctf-blue-solve/references/analyst-handbook.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "2859556c8714d7c7f1630f162b05346c86d94c577d8063591b9f9018d5022cf6",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-096",
+      "kind": "runbook",
+      "source_sha256": "a0f32585f6a9fb3a7909821fe18489b8e9d0ab0fb1fa0f29e8c9edcce489af45",
+      "target": "skills/ctf-blue-solve/references/analyst-handbook.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "2859556c8714d7c7f1630f162b05346c86d94c577d8063591b9f9018d5022cf6",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-097",
+      "kind": "runbook",
+      "source_sha256": "cd49c6900d52369a919f721dbaa398188285db7816c9dce513a9353e2a767acd",
+      "target": "skills/soc-triage/references/artifact-integrity.md",
+      "mode": "defensive-reconstruction",
+      "additional_targets": [
+        "skills/ctf-blue-solve/references/analyst-handbook.md"
+      ],
+      "target_sha256": "e58497cd3e071d571578498fdcae897f862e99282456a00d8d0e0e8c3dfa74aa",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-098",
+      "kind": "runbook",
+      "source_sha256": "d19b4d2c4a45aa3366f46d1004317d7ab766497e02c81519db5e47c3c67c5277",
+      "target": "skills/soc-triage/references/artifact-integrity.md",
+      "mode": "defensive-reconstruction",
+      "additional_targets": [
+        "AGENTS.md",
+        "skills/ctf-platform-ops/SKILL.md"
+      ],
+      "target_sha256": "e58497cd3e071d571578498fdcae897f862e99282456a00d8d0e0e8c3dfa74aa",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-099",
+      "kind": "runbook",
+      "source_sha256": "4f291ed22b7838f5695034dce176fa525cb6457a364db4f36a373a82c88ae07f",
+      "target": "skills/soc-triage/references/artifact-integrity.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "e58497cd3e071d571578498fdcae897f862e99282456a00d8d0e0e8c3dfa74aa",
+      "expression_review": "no-long-match",
+      "additional_targets": [
+        "skills/ctf-platform-ops/SKILL.md"
+      ]
+    },
+    {
+      "source_id": "knowledge-100",
+      "kind": "runbook",
+      "source_sha256": "6ec7c767a0c97205c0febb8e3818af57cc89608bd55adbef4cbff43d25d683fe",
+      "target": "skills/soc-triage/references/artifact-integrity.md",
+      "mode": "defensive-reconstruction",
+      "additional_targets": [
+        "skills/soc-host-forensics/references/parser-integrity.md",
+        "skills/soc-malware-triage/references/static-evidence.md",
+        "skills/soc-triage/references/evidence-locators.md"
+      ],
+      "target_sha256": "e58497cd3e071d571578498fdcae897f862e99282456a00d8d0e0e8c3dfa74aa",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-101",
+      "kind": "index",
+      "source_sha256": "99da98905855ecb9de86e25645ec663e0d09d7b9b15f039c9a5fa07d13a3b965",
+      "target": "playbooks/README.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "ed9991745557f4651fa8802cb2656e0aa458879e001f4f35258abe25e12105bd",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-102",
+      "kind": "playbook",
+      "source_sha256": "93199c38d6107d901977b08b4c51f59618299da27fd1f423146ee9ad610589db",
+      "target": "playbooks/incident-response/incident-taxonomy.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "60d7204cdaef9620b293619cc9fac84a7a137c6b849637163875493bcce17e4e",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-103",
+      "kind": "playbook",
+      "source_sha256": "570fd52874a48e2196645fc7017be818d05247e962f72c2e8990f154f1d67160",
+      "target": "playbooks/incident-response/ir-frameworks-roles.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "7acb69a928cff34fcb59fdd19d6dd67a703d98622bde5eb376528eb1cd441544",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-104",
+      "kind": "playbook",
+      "source_sha256": "d3db4c6d971a80cc167942493302593b4da6983698cd18a045d0915449bdb047",
+      "target": "playbooks/incident-response/ir-lifecycle.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "36ab067f4ae91a1f8a335af00f7745ccef49b223d10907ddb18c94867a01e761",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-105",
+      "kind": "playbook",
+      "source_sha256": "b7c2f9f2d43ce217b93d2b6026c91629d977de0cc923c1cfa53c4b0c9b4fb835",
+      "target": "playbooks/incident-response/comms-plan.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "5b0c46de464b6093d09d41c7b177706af1d92ef7d38740c7c3a32e975a21a23f",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-106",
+      "kind": "playbook",
+      "source_sha256": "c4822fb8aa1953fa53da2a4d86ee95c5660d55d48bec9957c1335eb13df3726d",
+      "target": "playbooks/incident-response/common-attack-iocs.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "b47ba69c833a61e5308f646b20a53cde7291beecc5a25afec40937a8ac3c64af",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-107",
+      "kind": "playbook",
+      "source_sha256": "9836749c9a82c97cd67bf5f75fab89a37687dcfc80909ea6bea011f80832d373",
+      "target": "playbooks/incident-response/detection-identification.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "9c39c4c2c10739f9b7a2696e4cfb5f68063af88ea0c29e766ddd752dfcb6621b",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-108",
+      "kind": "playbook",
+      "source_sha256": "8b49930d14de8dfc0bb1f370cd3add39ff8cd630c87bf0aa25e8c691b3685bfd",
+      "target": "playbooks/incident-response/impact-assessment.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "fea9e74f2a4b7bc89bdc949cc26aa2f69d12f8f13d6e357fb4feaacd94385ece",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-109",
+      "kind": "playbook",
+      "source_sha256": "a88e9d81a2697bf1385d77c897721eea17c85f5f55fe8ab9c5793dcc650cac19",
+      "target": "playbooks/incident-response/dfir-evidence.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "61f3c038f17cb0eff66b7bcf80e4c28a8dfbb2ee502b7f423a68bc4b713a70a2",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-110",
+      "kind": "playbook",
+      "source_sha256": "ec2d12bde9063623019bb1cd4a10e7e4353412322c3d23ade3ea840a46d9a54c",
+      "target": "playbooks/incident-response/case-management.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "817a0c964f5c159322b8aa5495833cb26978fbc82b6dab8066da1921b7f94128",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-111",
+      "kind": "playbook",
+      "source_sha256": "b2fd421425a1512f4e58ae6683276e3f495364c926ddb5894a54aa6039df4136",
+      "target": "playbooks/incident-response/containment.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "e720f0b83a45929602c9fdb6a7d598754c98032842b557edb58f2652b045c633",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-112",
+      "kind": "playbook",
+      "source_sha256": "9d1413d1c3616c692d9e235c5d78c492556bfdc04dca734b44cad25053f54668",
+      "target": "playbooks/incident-response/eradication-recovery.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "7d773bdf99db03b1d6f67c2fd436eb8f9f937a3b897604cd8ab13b509e58c57e",
+      "expression_review": "no-long-match"
+    },
+    {
+      "source_id": "knowledge-113",
+      "kind": "playbook",
+      "source_sha256": "23376de0358a983ebcf576386c625165bfb74e58705c6f34eab4d4211742af2c",
+      "target": "playbooks/incident-response/postmortem-rca.md",
+      "mode": "defensive-reconstruction",
+      "target_sha256": "58995a1d18f0f43cad6e089e2a540b23eb37c55849b7d102b806acb25281d4fc",
+      "expression_review": "no-long-match"
+    }
+  ],
+  "schema_version": 2,
+  "target_digests": {
+    "AGENTS.md": "1763b239387b7a053a1668e9714e3c4ee36ce8d20150da8968ffd2876e8c16b2",
+    "detections/README.md": "d0e2d14198fa99399195964de8ec5915df4dbc201df6168b7398b9a68d6cdcf5",
+    "detections/advanced-intrusion-indicators/ad-delegation-abuse.md": "bfa3d70dfffd747ae1b6830faf6f6d60e2220bdc5b6b1009526c00d8b6b7ff3a",
+    "detections/advanced-intrusion-indicators/applocker-wdac-bypass.md": "000e06e6894fe60fff0f9bbb8fc9618b618dedd12bf404a3949b925864d1bf3f",
+    "detections/advanced-intrusion-indicators/lsass-credential-access.md": "009e074b64d87e05b6aa81fd12e31257bde730d653bda1d8333b3153adc8b76e",
+    "detections/advanced-intrusion-indicators/mssql-attack.md": "174c7ea4917a5604016677644ecbfce515e5bd96e8b75f5d118a71eeec5fa54d",
+    "detections/advanced-intrusion-indicators/network-filter-bypass-domain-fronting.md": "35d9a616343df4397f2fc5b53bf313e8a5b3ec17af2fc06574d89370005dfdbf",
+    "detections/advanced-intrusion-indicators/process-injection.md": "54284534ac37b8f7f5f0cbfb0cf20df9570e854e0c115906e367f944606f08ba",
+    "detections/application/app-logging-and-error-exposure.md": "6b9c528c61837523bb5f9039fa827926fd53750b879c42d53246af13608b8d15",
+    "detections/application/cookie-and-session-flag-anomalies.md": "aa711c93ae5822024c9420ef6e4f4e5dd39613610f4eef18544570d2aa10a649",
+    "detections/application/injection-attempt-detection.md": "fcfe86e1d110ebf25785e26f888b5406b7284abb03af7707fcee3c8551c9467e",
+    "detections/application/security-misconfiguration-exposure.md": "c2af79078e2fad17e40bdc6ec33415d2dc10f8b2c499d55251fb590446f4269a",
+    "detections/application/session-hijack-and-auth-anomaly.md": "f76406414c41b49ec6e5753120504120b3d72ee3e89b153a27df0b4a7ffc2fb7",
+    "detections/application/sqli-confirmation-and-db-access-anomaly.md": "b92e604cbb3c0d8258dc50106b1c09357388e674d4f659b6d799605770e6a169",
+    "detections/application/xss-attempt-detection.md": "d16e70cca8f4d4c4e9cec5aabbb04a45d91bda64627abd90db22e7aa901213b2",
+    "detections/endpoint/ad-enumeration-ldap-recon.md": "7ddd489fe8a8b5677043c17b6660bcc22607e1d8a4239b54990f344d98006683",
+    "detections/endpoint/ad-persistence.md": "6f1d248d02febad905e80ac994b704dd2d03251c49d84b1f72747bca05e04e9f",
+    "detections/endpoint/amsi-bypass-defense-impairment.md": "2dfb830fdfb10e23e83444993d8c4f4d25ee507139ebddaec8b5dd36712a03f2",
+    "detections/endpoint/c2-beacon-detection.md": "3c71375ee7882aea7a3ca000d12d4f2cf82631c726561614f6dc7426fa5d0811",
+    "detections/endpoint/egress-tunneling.md": "a5d02e85d0e30c1e86dd32e8c271eeb929730a247e31de05d69960abb7ca0389",
+    "detections/endpoint/elk-detection-rules.md": "19d30f620554a8553c5b2256feac0433fc663ea64572eef92aa44f8b9436940d",
+    "detections/endpoint/iis-worker-spawns-shell.md": "360a53e76b95e2670cfd156dffb9aca06c0d18b286f019a451152b43f0070190",
+    "detections/endpoint/lateral-movement-pth-kerberoast.md": "e2efe55e89a3ed3453b58accef3cf8de1930ce95a02d1768dcf1a164b666ce30",
+    "detections/endpoint/linux-daemon-spawns-shell.md": "64c6be22a93ff26e3eaab9afea3579eef0d4bd55f52c71e5d1a92bc81ed007bf",
+    "detections/endpoint/linux-privesc-sudo-gtfobins.md": "04234aeb0e414af25c1d39eaa9473e7185bea40ac79a9e4b4b23ea720efb5931",
+    "detections/endpoint/linux-webapp-to-shell.md": "f2abc30ffbe5ec082a2049ae7bdeef3c802a18505150a4c9f991bc0b8d365580",
+    "detections/endpoint/multistage-killchain-correlation.md": "dbbe0aa83e5a2ac30ab10120fb22aeddce306a34b99aa5b1e747056fc863db08",
+    "detections/endpoint/office-macro-spawn.md": "0ea7b607d505e8c8cc43191b3d658acdcb8fc355ee62a7f170f3078f79713201",
+    "detections/endpoint/script-host-dropper.md": "dea68509c5aa3c81d8f5c2ac35eeae3b427c751fc3d04a75c33459243dcb57cd",
+    "detections/endpoint/service-anomalous-imagepath.md": "45702c58d2a3bf7a471aa8ade965f4d4e626eb59736af83c24bc7265e014f714",
+    "detections/endpoint/uac-bypass-registry-hijack.md": "7a34e09aa743b108ff96f082bede88178282ffcc4a0de7e140024da95a9bb329",
+    "detections/foundations/ics-ot-protocol-and-command-anomaly.md": "a881939a816131a98f352fd43adcf6736732875a059e4dc23d548f8540679280",
+    "detections/foundations/phishing-email-and-landing-detection.md": "833796b431eb5df3007f56b77d936dec746b03c5ae7408358ff5277352b40ac8",
+    "detections/foundations/ransomware-behavioral-detection.md": "b032b93dfdb216fa6c8aea96c03962590976088e581645b8d09de114cf54acef",
+    "detections/foundations/wireless-rogue-ap-and-deauth-detection.md": "34be320bd01571967df143d921bafe75953590f11a09456bcad69a3b6bdc4b39",
+    "detections/hunting/actor-ttp-ransomware.md": "0ba61a70e6c964b4366e2799215aeb14168ceca4d49e951325d6f4851f0ad334",
+    "detections/hunting/behavioral-hunt-no-ioc.md": "f938046d29af45b2908224dd0f3a94a9c0767b4b0802c00b5012c4172547de73",
+    "detections/hunting/cloud-hunt-azure.md": "a670df13936c1f8e0fd710bd9ad854fb4a3722b6a4db6371f99865a67782d957",
+    "detections/hunting/endpoint-hunt-stackcount.md": "5258891a63144464249e99dd43f3cc94f5fe43da89116c30545b8300f0866693",
+    "detections/hunting/hunt-methodology.md": "1b75e619b8ef16a0d9622c2fad6c60d606fa85852208f30c90b16bced860c56a",
+    "detections/hunting/hunt-reporting-tlp.md": "1d51ac4b29a7369fc38521bb30fc72f1cc4bd484178bbb4c1edf8fc3eaf1e2ba",
+    "detections/hunting/network-hunt-beacon.md": "d42cc77bc5b62e178525b9aa6ac30571a72bad1873420dcd25749f8e77a7ee89",
+    "detections/intrusion-indicators/client-side-lnk-libraryms.md": "e6b78cd0a50950c3e525baf7cac8a672a1ba241b92e84d67df186cb2e305ccc7",
+    "detections/intrusion-indicators/linux-privesc.md": "1390c1601f672f924d0e3329f0499ac4611a54287e175c5942b99375d7cba0c5",
+    "detections/intrusion-indicators/llmnr-nbtns-poisoning-relay.md": "f65f5392cb91c2e7c3cafa8bb1d4d36d9be47252a1f6e340fe0371784b6edc10",
+    "detections/intrusion-indicators/port-redirection-tunneling.md": "d2fd41b6e1ac6a666ce5824ff45dd676892606300d772f40ab07b2e14c353714",
+    "detections/intrusion-indicators/recon-portscan-enum.md": "ccc0f4e59b0c508ab88c1298e4a68a0119f9f3f1b595bfa62749e3be8791f65e",
+    "detections/intrusion-indicators/vuln-scanning.md": "489681d7462cd035e8f60433884df772cb43f900c7ddc8ce10ddef35ddd84364",
+    "detections/intrusion-indicators/windows-privesc.md": "94a029baa76e0c55a4d0b975f3a436fecc7219eb46f2c3d027066ca9e612cbf9",
+    "detections/malware/reflective-loader/ATTACK.md": "ad1f347af95b06da8a6dac0e37da0b50a3781f3ae4bdcfb49000966b8e50a7b7",
+    "detections/malware/reflective-loader/behavior.yml": "845f20f374d516b7574ff042c937782025bb84bc5387e11deca76554a57221d7",
+    "detections/malware/reflective-loader/loader.yar": "4ae22eae57a10042eccb51d55dcb17bb20c4b97ebd3bf6043c486e319aae10ba",
+    "detections/memory-and-platform/macos-control-bypass-residue.md": "36b1daf75e1c377014f39d80f38e039c99d7e5441e5d1be27e3f07df8a56df70",
+    "detections/memory-and-platform/memory-corruption-exploitation-residue.md": "6e3119a3b1c1505aa70de3f2fefebc7d7caa91a2eb318a94fa50cfff5b97c5ce",
+    "detections/web-advanced/insecure-deserialization.md": "84181ef2d2d8e88bc347bad02c203c250b2f49e5d2cda05726464a699f433ad4",
+    "detections/web-advanced/prototype-pollution.md": "b83986a0b65b4cd763a16de48e070b40d8c8b07d586c2fcfb02b2e6cbc6be8d1",
+    "detections/web-advanced/type-juggling-auth-bypass.md": "a298c82bac5e5c1cbbabaa94eacc46383161006cb3aedabfdfa36a7597c4069c",
+    "detections/web-advanced/web-auth-bypass-logic.md": "c904b04d00bb058c9cce9ff194a674fd4028056b87496366bf1e7caddc0b642e",
+    "detections/web/cors-cross-origin.md": "024ca3fd750496c4eaf9b6ffc48132a15943cc552eed0505665be44f3cc49afc",
+    "detections/web/idor.md": "3e5124396e1e9813a82ab695bc2ff1c96a2f2b774cb22895e8b40c253b411e6b",
+    "detections/web/ssrf.md": "375b187efd75d01bc872bc21f72bd00854c079357d0dc5981e85e13543054250",
+    "detections/web/ssti.md": "fba4832f943c889770713951700e798a923d2be8388dfb1c06920f42a2b35bc2",
+    "detections/web/xxe.md": "8bafd961fa108432fcc848a8239eddaabd1ecd5274f10b05fd218edfba7a7c2d",
+    "playbooks/README.md": "ed9991745557f4651fa8802cb2656e0aa458879e001f4f35258abe25e12105bd",
+    "playbooks/incident-response/case-management.md": "817a0c964f5c159322b8aa5495833cb26978fbc82b6dab8066da1921b7f94128",
+    "playbooks/incident-response/common-attack-iocs.md": "b47ba69c833a61e5308f646b20a53cde7291beecc5a25afec40937a8ac3c64af",
+    "playbooks/incident-response/comms-plan.md": "5b0c46de464b6093d09d41c7b177706af1d92ef7d38740c7c3a32e975a21a23f",
+    "playbooks/incident-response/containment.md": "e720f0b83a45929602c9fdb6a7d598754c98032842b557edb58f2652b045c633",
+    "playbooks/incident-response/detection-identification.md": "9c39c4c2c10739f9b7a2696e4cfb5f68063af88ea0c29e766ddd752dfcb6621b",
+    "playbooks/incident-response/dfir-evidence.md": "61f3c038f17cb0eff66b7bcf80e4c28a8dfbb2ee502b7f423a68bc4b713a70a2",
+    "playbooks/incident-response/eradication-recovery.md": "7d773bdf99db03b1d6f67c2fd436eb8f9f937a3b897604cd8ab13b509e58c57e",
+    "playbooks/incident-response/impact-assessment.md": "fea9e74f2a4b7bc89bdc949cc26aa2f69d12f8f13d6e357fb4feaacd94385ece",
+    "playbooks/incident-response/incident-taxonomy.md": "60d7204cdaef9620b293619cc9fac84a7a137c6b849637163875493bcce17e4e",
+    "playbooks/incident-response/ir-frameworks-roles.md": "7acb69a928cff34fcb59fdd19d6dd67a703d98622bde5eb376528eb1cd441544",
+    "playbooks/incident-response/ir-lifecycle.md": "36ab067f4ae91a1f8a335af00f7745ccef49b223d10907ddb18c94867a01e761",
+    "playbooks/incident-response/postmortem-rca.md": "58995a1d18f0f43cad6e089e2a540b23eb37c55849b7d102b806acb25281d4fc",
+    "skills/blue-owner/SKILL.md": "a73cc1df1a31728b54e39e0eb30b200e058590ff85f9054fcf26d4f9bbc8071a",
+    "skills/blue-owner/references/worker-contract.md": "67a470cde8cc0c0fbfda24ddf4aa219945753df85401095796b203367b62ec91",
+    "skills/ctf-blue-solve/SKILL.md": "4b503cfffb6d88864b86e33c976f63c8dc27a636f4348f1ad776b8cc17e350ab",
+    "skills/ctf-blue-solve/references/analyst-handbook.md": "2859556c8714d7c7f1630f162b05346c86d94c577d8063591b9f9018d5022cf6",
+    "skills/ctf-crypto-solve/SKILL.md": "3e8501de9d80c1f0c43bb6492b4116e86f08faf926cd930ffe632b0191f2959e",
+    "skills/ctf-platform-ops/SKILL.md": "b16810b1b8cb293be721aef1f736816ae8e9eb306a318e92d2a30fa8aa808d76",
+    "skills/ctf-pwn-solve/SKILL.md": "70e9b22a3428db51efc1e3808c25846c017b4034fe4cec485fd8634fba62f7e9",
+    "skills/evidence-question-answering/SKILL.md": "92e24f7c1d5166f8611b7bcba7795db842ac736c1f586e27d59ea74c9ec3a8fb",
+    "skills/soc-browser-artifacts/SKILL.md": "b82240acfabd289363caa6b23d67759ee12cab209ab60f44e34a678bc4acd385",
+    "skills/soc-browser-artifacts/references/history-downloads.md": "3eb41bc236b48566eb66c1dbf16cea90f421e6e42c28a1e72b0e0de2111c7d8f",
+    "skills/soc-browser-console/SKILL.md": "5fd177d2cb06a1641e8c67c4efd3c5a6c2526a39b53e827ef2579f55ab7d4f17",
+    "skills/soc-cloud-identity-forensics/SKILL.md": "4115d199e591d57aef4dd95e7c49b298c0bcce106e3aea3196b90232f62b232e",
+    "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md": "3d1ddcedddb04daffc1b616a5b37b7a456b7537de7e21735e1025c9484ac37b3",
+    "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md": "2e32a21d6377257bc29a59fc18a4d8b8349831eebe79cae4d0961434c83e4090",
+    "skills/soc-cloud-identity-forensics/references/exact-populations.md": "20ab45df9554eab45d495e3ecc908827bfba6210b1593cae8001e1c9aff0bd75",
+    "skills/soc-cloud-identity-forensics/references/gcp-kubernetes.md": "3e36f7d3059d08210e5a516e4c700ad31a863c153d067761da37231142ba6edf",
+    "skills/soc-detection-engineering/SKILL.md": "6cfcfdd0fb04c8fed80cd8701b146cc7824179fb4a21fa528c7ee41281016aa4",
+    "skills/soc-detection-engineering/references/coverage.md": "7453f544eeb97508487479fd72f5a17001f22a5d0cabe4196a4123510cfb952d",
+    "skills/soc-detection-engineering/references/validation-integrity.md": "7c1cfba925a70293270327cdf4e7a032d5a18583405f9ab85d1573b43a3b1761",
+    "skills/soc-email-forensics/SKILL.md": "b4532e0fdb286166ad3035f2fed63f0df4c07812274f5d961a516c7736f4ba6c",
+    "skills/soc-email-forensics/references/message-analysis.md": "2f521d21240ec1eb738d3a894de50982e6fb189d8642527de1936f3a316bd393",
+    "skills/soc-evidence-cycle/SKILL.md": "68063a86d5d06732e5c04ce33ce2fa4a1ff9901eac22b61a5cdf1d1abc10211f",
+    "skills/soc-host-forensics/SKILL.md": "732f8e5327f1419f035404053bba4d0740ebccd89bfd184647053a60f0a04d21",
+    "skills/soc-host-forensics/references/analyst-handbook.md": "f58b591abda7b8ac3bd277773e3608d2971440b8c290c7a7d6504d25967bb669",
+    "skills/soc-host-forensics/references/linux-artifacts.md": "bb9dc8576f7aca931c12c5f022f57213167b9142a988740fac26f85e3be466d6",
+    "skills/soc-host-forensics/references/memory-analysis.md": "a6a3b3f67e84616102255483d18d61fbd642f32c089bb7153203ffa6b73f39ef",
+    "skills/soc-host-forensics/references/parser-integrity.md": "f05f290b2f0a327a99035f290e44c0e36c169d60257b5013758e34e98a434f7f",
+    "skills/soc-host-forensics/references/windows-artifacts.md": "32a0046618fe599f491ebda623bf38ffde30c68084a27acbc14b455c8cde367d",
+    "skills/soc-incident-report/SKILL.md": "b1f10ab6386343aa4dcf038d4edadb2514e9c7a0775e77756d58fada81d5182f",
+    "skills/soc-lab-access/SKILL.md": "dd6c9722997bdae342bbc1234e89aeaee5acb13fc9ec19b113834917cb10a1fd",
+    "skills/soc-malware-triage/SKILL.md": "55b82ba27847a27a6161623e598342e191684e8c638985a1b8fe85b1efc1da16",
+    "skills/soc-malware-triage/references/analyst-handbook.md": "ccca173dd2699c7699478e48d7fabb3998517e28d61af9c6e86619fb9c2925a1",
+    "skills/soc-malware-triage/references/static-evidence.md": "aba4deb172b6b6265116202b123125d75dd0d8d1d129a35eac24366cba6697dc",
+    "skills/soc-network-forensics/SKILL.md": "e5ece413498cae740fb98832fff91292f4b9d36fb114294791887cbb8f4b2c8c",
+    "skills/soc-network-forensics/references/analyst-handbook.md": "a6f93207bb59586da9125ff95d13861255a3ee0f7bc04319ca5755b4c95c824e",
+    "skills/soc-remote-triage/SKILL.md": "04bc86f09d105aa5f8904239c43b582254b78ddc87645fe3dd27ffa3d6a186e4",
+    "skills/soc-siem-hunt/SKILL.md": "c695b14ed3b5ae5cd0f7676d15032817787904a56631a9f94e948882829930b6",
+    "skills/soc-siem-hunt/references/elastic.md": "d13c0025f60c6b747591a599cfe3603a6c04429a45bc5c2baa8cc637376a22f8",
+    "skills/soc-siem-hunt/references/sentinel-kql.md": "09e1cc37aec9fa44106b8a75606044827d2b894476bfb81989f88eb8b2dafa5e",
+    "skills/soc-siem-hunt/references/splunk-spl.md": "93533fd64b09be873e30e744b7467814e8a546e34b66304572ab0974a1e5ca63",
+    "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md": "d74bf149de1cb0518bd6b6e888b666eebf5332b1a70ca3d9a350af8f58522864",
+    "skills/soc-triage/SKILL.md": "4b95de31a8b05be3bbce63de4409ea2f1a723a9c730a0b38f62b9d764ada9965",
+    "skills/soc-triage/references/artifact-integrity.md": "e58497cd3e071d571578498fdcae897f862e99282456a00d8d0e0e8c3dfa74aa",
+    "skills/solve-orchestration/SKILL.md": "6ef239cd51a75c63bf43150a03c987b1d40ea89067188dbac4b98cc94e36afb2",
+    "skills/soc-siem-hunt/references/observability-sources.md": "62b52efd63ce9af7bf97842a86296ab874115ad9e5ed7744e3103e01f671e5e4",
+    "skills/soc-network-forensics/references/packet-format-map.md": "dab210d7ade71a6a4dd9f742f0f6f3d7d8e8652304a83105c39288d81ea17308",
+    "skills/soc-detection-engineering/references/telemetry-application-identity.md": "a5aef9a349d9d216a3130eaa04679cfeab53a5c78d70fd43abcb8d311c72c956",
+    "skills/soc-detection-engineering/references/telemetry-linux-network.md": "7654923f91b122f857a5689a138e09969a2dec1d64ecfa3ab7fc71033ffef64c",
+    "skills/soc-detection-engineering/references/telemetry-specialist.md": "a4acd65d49cd62c2171e0dc0d479625ce6d6e1220b10f7a9e0cec856c4f29bf2",
+    "skills/soc-detection-engineering/references/telemetry-windows.md": "4ae64b18f18ac237a1af9594feea43e4ee111b64da61b3f71266bfe43759cfe3",
+    "skills/soc-triage/references/evidence-locators.md": "5db995c6540e51f5fd6bd7e5dd4780273fd9edbb48e0650ae2845840f52e72c7",
+    "skills/soc-triage/references/container-and-structured-fields.md": "c192c9419122477649a6180c71a4ae40e29af5adcf01bad9be43f268bebde985",
+    "skills/soc-remote-triage/references/live-collection-fields.md": "663980ddae90b1e85710230b8abd027918def380b613b0f95a84bde574ac2e47",
+    "skills/soc-browser-console/references/intelligence-fields.md": "eaff6a4a2d8108c3078bd51ee9ff9428003aa03e9ce2de08465d96aa3e28d170",
+    "skills/soc-malware-triage/references/executable-field-map.md": "8d2db140c1710e1f19675df4e51850eebf5ab610a3b70e899d83627fe9ece6c6",
+    "skills/soc-malware-triage/references/document-mobile-fields.md": "f18b39278d112ea1a2aa8bcf9a0da4aae488f6ef09b0b518a2740a80f7518d5a",
+    "skills/soc-malware-triage/references/api-monitor-candidate-layout.md": "cf5d5e3db0ad0e7162d36340a72ce0f0dfb9f98b48b1051d8060ca4a423d4d12",
+    "skills/ctf-pwn-solve/references/crash-evidence.md": "c220648481c4414b65db9980d75dc6aec71efc260ced8b14fd2b4662c42ba72f",
+    "skills/ctf-crypto-solve/references/encrypted-evidence.md": "8a1a8022749489ebab1e0002e0b00abaf6eb853277c0fcef0dff6659e7654675"
+  },
+  "review_scope": "Historical source file correspondence and current target integrity. See knowledge-decisions.json for defensive topic decisions and expression-review.json for the current expression screen. Not proof of source-wide statement equivalence or legal clearance."
+}

@@ -165,7 +165,7 @@ def test_specialists_without_the_owner_key_cannot_self_issue_permits(tmp_path, m
         permits.issue("run", "task", "svc", "patch", "self-issued", owner_key="anything")
     created = init_owner_key(database)
     key_file = tmp_path / ".metis-state" / "private" / "owner.key"
-    assert created == {"owner_key": str(key_file), "created": True}
+    assert created == {"owner_key": str(key_file), "created": True, "adopted_existing_file": False}
     assert oct(key_file.stat().st_mode & 0o777) == "0o600"
     assert oct(key_file.parent.stat().st_mode & 0o777) == "0o700"
     assert init_owner_key(database)["created"] is False  # never rotated silently
@@ -206,3 +206,108 @@ def test_contest_rejects_cycles_and_reports_abandoned_prerequisites(tmp_path):
     board.update(contest, "one", {"state": "abandoned"})
     assert board.board(contest)["blocked_by_prerequisites"] == {"three": ["one"], "two": ["one"]}
     assert board.dispatch(contest)["blocked_by_prerequisites"] == {"three": ["one"], "two": ["one"]}
+
+
+def test_interrupted_or_concurrent_owner_init_recovers(tmp_path):
+    database = tmp_path / ".metis-state" / "metis.sqlite"
+    key_file = tmp_path / ".metis-state" / "private" / "owner.key"
+    key_file.parent.mkdir(parents=True, mode=0o700)
+    descriptor = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(descriptor, ("ab" * 32 + "\n").encode())  # left by an init interrupted before its digest
+    os.close(descriptor)
+    assert init_owner_key(database)["adopted_existing_file"] is True
+    assert read_owner_key(database) == "ab" * 32
+    ScopedPermits(database).issue("run", "task", "svc", "patch", "after recovery", owner_key="ab" * 32)
+    assert init_owner_key(database)["key_file_matches"] is True
+
+    other = tmp_path / "other" / "metis.sqlite"
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(init_owner_key(other))) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(results) == 6
+    assert sum(result.get("created", False) for result in results) == 1
+    assert all(result.get("key_file_matches", True) for result in results)
+    ScopedPermits(other).issue("run", "task", "svc", "patch", "single key", owner_key=read_owner_key(other))
+    assert not list((tmp_path / "other" / "private").glob(".owner.key.*"))
+
+    bad = tmp_path / "bad" / "metis.sqlite"
+    (tmp_path / "bad" / "private").mkdir(parents=True, mode=0o700)
+    descriptor = os.open(tmp_path / "bad" / "private" / "owner.key", os.O_WRONLY | os.O_CREAT, 0o600)
+    os.write(descriptor, b"partial")
+    os.close(descriptor)
+    with pytest.raises(PermissionError, match="malformed"):
+        init_owner_key(bad)
+
+
+def _registered(database):
+    import sqlite3
+
+    with sqlite3.connect(database) as db:
+        return db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='metis_owner'").fetchone()[0] and \
+            db.execute("SELECT COUNT(*) FROM metis_owner").fetchone()[0]
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "world_readable", "hardlink", "linked_directory"])
+def test_unsafe_existing_key_file_is_never_adopted(tmp_path, unsafe, monkeypatch):
+    monkeypatch.delenv("METIS_OWNER_KEY", raising=False)
+    database = tmp_path / "state" / "metis.sqlite"
+    private = tmp_path / "state" / "private"
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    secret = outside / "key"
+    descriptor = os.open(secret, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.write(descriptor, ("cd" * 32 + "\n").encode())
+    os.close(descriptor)
+    (tmp_path / "state").mkdir()
+    if unsafe == "linked_directory":
+        private.symlink_to(outside, target_is_directory=True)
+    else:
+        private.mkdir(mode=0o700)
+        if unsafe == "symlink":
+            (private / "owner.key").symlink_to(secret)
+        elif unsafe == "hardlink":
+            os.link(secret, private / "owner.key")
+        else:
+            descriptor = os.open(private / "owner.key", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(descriptor, ("cd" * 32 + "\n").encode())
+            os.close(descriptor)
+            os.chmod(private / "owner.key", 0o644)
+    with pytest.raises(PermissionError):
+        init_owner_key(database)
+    assert not _registered(database)
+    with pytest.raises(PermissionError):
+        ScopedPermits(database).issue("run", "task", "svc", "patch", "via unsafe key", owner_key="cd" * 32)
+    if unsafe != "linked_directory":
+        with pytest.raises(PermissionError):
+            read_owner_key(database)
+
+
+def test_registered_key_with_missing_or_unsafe_file_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.delenv("METIS_OWNER_KEY", raising=False)
+    database = tmp_path / "state" / "metis.sqlite"
+    init_owner_key(database)
+    key_file = tmp_path / "state" / "private" / "owner.key"
+    assert init_owner_key(database)["key_file_matches"] is True
+    os.chmod(key_file, 0o640)
+    with pytest.raises(PermissionError, match="0600"):
+        init_owner_key(database)
+    with pytest.raises(PermissionError, match="0600"):
+        read_owner_key(database)
+    key_file.unlink()
+    with pytest.raises(PermissionError, match="missing"):
+        init_owner_key(database)
+
+
+def test_reused_pid_does_not_keep_an_expired_lease(tmp_path, monkeypatch):
+    from metis.core import resources
+
+    broker = ResourceBroker(tmp_path / "s.sqlite")
+    key = _owner(tmp_path / "s.sqlite")
+    broker.configure("sandbox", 1, owner_key=key)
+    lease = broker.try_acquire("a", {"sandbox": 1}, ttl=1, pid=os.getpid())
+    assert broker.reap(now=time.time() + 5)["kept"] == [lease]  # same process: kept
+    monkeypatch.setattr(resources, "_process_start", lambda pid: "another-process-start")
+    assert broker.reap(now=time.time() + 5) == {"reaped": [lease], "kept": []}

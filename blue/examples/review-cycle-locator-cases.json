@@ -1,0 +1,609 @@
+[
+  {
+    "id": "offline_controlset",
+    "question": "An offline SYSTEM hive has Select/Current DWORD 2. A collected service definition is needed. Return the literal control-set key name to inspect (without hive prefix), and whether a live CurrentControlSet alias may be assumed to exist inside this offline hive.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "control_set": "ControlSet002",
+      "assume_live_alias": false
+    }
+  },
+  {
+    "id": "process_field_identity",
+    "question": "A Security event 4688 has NewProcessId=0x1440 and ProcessId=0x710. The question asks which field identifies the newly started process. Return its exact field name and decimal PID. Do not return the creator PID.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "field": "NewProcessId",
+      "pid": 5184
+    }
+  },
+  {
+    "id": "process_network_join",
+    "question": "Two Sysmon process records on one host reuse ProcessId 3100 at different times; their ProcessGuid values differ. The network event exposes both fields. Return the exact preferred entity field for correlating this connection with process creation, and whether PID alone resolves this example.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "join_field": "ProcessGuid",
+      "pid_alone_sufficient": false
+    }
+  },
+  {
+    "id": "split_script_record",
+    "question": "A PowerShell script block is split across events. Return the field that groups its fragments and the field that orders those fragments. Report field names, not reconstructed script content.",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "group_field": "ScriptBlockId",
+      "order_field": "MessageNumber"
+    }
+  },
+  {
+    "id": "journal_time_domain",
+    "question": "A journald JSON export exposes __REALTIME_TIMESTAMP and __MONOTONIC_TIMESTAMP. Which exact field supplies epoch wall time, and how many of its units are one second? Can a monotonic value alone be ordered across two different boots?",
+    "references": [
+      "skills/soc-host-forensics/references/linux-artifacts.md"
+    ],
+    "expected": {
+      "wall_time_field": "__REALTIME_TIMESTAMP",
+      "units_per_second": 1000000,
+      "cross_boot_monotonic_order": false
+    }
+  },
+  {
+    "id": "audit_event_population",
+    "question": "On one host the same msg=audit(1720000000.250:42) appears on a SYSCALL row and two PATH rows, with item values 0 and 1. How many audit events and how many path-item records are represented? Is serial 42 alone a globally unique cross-host event key?",
+    "references": [
+      "skills/soc-host-forensics/references/linux-artifacts.md"
+    ],
+    "expected": {
+      "audit_events": 1,
+      "path_items": 2,
+      "serial_globally_unique": false
+    }
+  },
+  {
+    "id": "proc_namespace",
+    "question": "A collector reads /proc/420/net/tcp. Does that file by itself prove that every listed connection is owned by PID 420? Which procfs subdirectory under that PID can expose socket inode links for ownership correlation? Return just the directory name.",
+    "references": [
+      "skills/soc-remote-triage/references/live-collection-fields.md"
+    ],
+    "expected": {
+      "all_owned_by_pid": false,
+      "ownership_directory": "fd"
+    }
+  },
+  {
+    "id": "service_names",
+    "question": "A Win32_Service row contains Name=\"SyntheticIndexer\", DisplayName=\"Document indexing\", PathName=\"C:\\Program Files\\Example\\indexer.exe --service\". Return the field name for the configured executable/arguments and the field name for stable service identification.",
+    "references": [
+      "skills/soc-remote-triage/references/live-collection-fields.md"
+    ],
+    "expected": {
+      "image_field": "PathName",
+      "identifier_field": "Name"
+    }
+  },
+  {
+    "id": "cloud_issuer_identity",
+    "question": "A CloudTrail assumed-role event has userIdentity.arn for a session and userIdentity.sessionContext.sessionIssuer.arn for the IAM role. Does sessionIssuer.arn by itself identify the human operator? Return the exact top-level deduplication field and whether a GetObject event with no recorded API error proves all response bytes arrived.",
+    "references": [
+      "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md"
+    ],
+    "expected": {
+      "human_identified": false,
+      "dedup_field": "eventID",
+      "full_delivery_proven": false
+    }
+  },
+  {
+    "id": "graph_vs_table",
+    "question": "A supplied Microsoft Graph signIn object uses status.errorCode as a JSON number. A different export comes from the Sentinel SigninLogs table. Return the success/error result column used by that table, and whether raw Graph and table field names can be swapped without mapping.",
+    "references": [
+      "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md"
+    ],
+    "expected": {
+      "table_result_field": "ResultType",
+      "same_unmapped_schema": false
+    }
+  },
+  {
+    "id": "kube_audit_stages",
+    "question": "A Kubernetes audit export has RequestReceived and ResponseComplete records with the same auditID, user and requestURI. Is this necessarily two requests? Return the request-correlation field and whether ResponseComplete with HTTP 200 alone proves a command inside a pod ran successfully.",
+    "references": [
+      "skills/soc-cloud-identity-forensics/references/gcp-kubernetes.md"
+    ],
+    "expected": {
+      "two_requests": false,
+      "join_field": "auditID",
+      "command_success_proven": false
+    }
+  },
+  {
+    "id": "splunk_time_fields",
+    "question": "A Splunk event exposes _time and _indextime. Which field is event time and which is ingestion time? A bounded export is capped at its row limit; may its row count be claimed as the full incident count?",
+    "references": [
+      "skills/soc-siem-hunt/references/splunk-spl.md"
+    ],
+    "expected": {
+      "event_time_field": "_time",
+      "ingestion_time_field": "_indextime",
+      "complete_incident_count": false
+    }
+  },
+  {
+    "id": "wazuh_fim_locator",
+    "question": "A Wazuh FIM JSON record contains location=\"syscheck\", agent.id=\"011\" and syscheck.path=\"/etc/example.conf\". Return the exact dotted field identifying the monitored file path, and whether location is that file path.",
+    "references": [
+      "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+    ],
+    "expected": {
+      "file_field": "syscheck.path",
+      "location_is_file_path": false
+    }
+  },
+  {
+    "id": "zeek_file_connection",
+    "question": "A Zeek files.log record exposes fuid=F1 and conn_uids=[C1,C2]. conn.log uses uid=C1 and uid=C2. Which files.log field links this file to the connection records? How many candidate connections exist, and is fuid interchangeable with uid?",
+    "references": [
+      "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+    ],
+    "expected": {
+      "link_field": "conn_uids",
+      "connections": 2,
+      "same_identifier": false
+    }
+  },
+  {
+    "id": "suricata_transaction",
+    "question": "Two HTTP transactions share one Suricata flow_id but have different tx_id values. Return those two field names in the order needed to identify one transaction within the observed sensor/session, and whether flow_id alone distinguishes the transactions.",
+    "references": [
+      "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md"
+    ],
+    "expected": {
+      "fields": [
+        "flow_id",
+        "tx_id"
+      ],
+      "flow_alone_sufficient": false
+    }
+  },
+  {
+    "id": "chrome_visits",
+    "question": "A Chromium History database has one urls row id=8 and three visits rows whose url value is 8. What is the number of recorded visits? Return the visits-side foreign-key column and the urls-side key column, in that order.",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "visit_count": 3,
+      "join_columns": [
+        "url",
+        "id"
+      ]
+    }
+  },
+  {
+    "id": "firefox_visit_clock",
+    "question": "Firefox moz_historyvisits.visit_date contains 1700000000000000. Return its units per second and UTC epoch year; do not apply the Chromium 1601 epoch.",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "units_per_second": 1000000,
+      "epoch_year": 1970
+    }
+  },
+  {
+    "id": "mail_repeated_headers",
+    "question": "An EML has two Authentication-Results fields: one inserted by a trusted receiver and one lower untrusted sender-supplied field claiming dkim=pass. May the untrusted field authenticate the message? Is a Message-ID string alone proof of unique delivery or a user click?",
+    "references": [
+      "skills/soc-email-forensics/references/message-analysis.md"
+    ],
+    "expected": {
+      "untrusted_result_authenticates": false,
+      "message_id_proves_delivery_or_click": false
+    }
+  },
+  {
+    "id": "zip_duplicate_name",
+    "question": "A ZIP central directory has two entries both named audit.json, at different header_offset values. Does selecting only filename uniquely cite the evidence? Return the exact ZipInfo property naming the local-header byte offset.",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "filename_is_unique": false,
+      "offset_property": "header_offset"
+    }
+  },
+  {
+    "id": "gzip_size_limit",
+    "question": "A GZIP trailer records ISIZE=1. Does this guarantee only one uncompressed byte, and may ISIZE alone be used as a safe decompression bound?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "guarantees_one_byte": false,
+      "safe_bound": false
+    }
+  },
+  {
+    "id": "exact_numeric_selector",
+    "question": "METIS reads a root object with a rows array using --records-key rows --field amount. The two row values are 9007199254740992 and 9007199254740993. Return the zero-based maximum row index and its exact original decimal string. Does --field accept a nested JSON Pointer such as /rows/1/amount?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "maximum_index": 1,
+      "lexeme": "9007199254740993",
+      "pointer_selector_supported": false
+    }
+  },
+  {
+    "id": "typed_rpc_join",
+    "question": "Within one captured session, a request id is the string \"17\" and a response id is the number 17. Are they a matching pair? A separate request has no id: does absent response to that notification prove a failure?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "matching_pair": false,
+      "absence_proves_failure": false
+    }
+  },
+  {
+    "id": "provider_first_seen",
+    "question": "An intelligence file object has first_submission_date and last_analysis_date. The question asks when that service first received the file. Return the precise attribute to use and whether it proves the time the file first executed on the victim.",
+    "references": [
+      "skills/soc-browser-console/references/intelligence-fields.md"
+    ],
+    "expected": {
+      "attribute": "first_submission_date",
+      "proves_first_execution": false
+    }
+  },
+  {
+    "id": "path_vs_evidence",
+    "question": "The collector saves a copy at .state/evidence/copy.bin but provides no original host path. May the local path be reported as the original host path? A JSON key is a/b~c: return the JSON Pointer token for that root key, including its leading slash.",
+    "references": [
+      "skills/soc-triage/references/evidence-locators.md"
+    ],
+    "expected": {
+      "local_path_is_original": false,
+      "pointer": "/a~1b~0c"
+    }
+  },
+  {
+    "id": "token_adjustment_roles",
+    "question": "For a Security 4703 record, return the raw field naming the SID of the adjusted token and the raw field listing privileges switched off. Does the event alone prove subsequent use of a privilege?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-windows.md"
+    ],
+    "expected": {
+      "token_sid_field": "TargetUserSid",
+      "disabled_list_field": "DisabledPrivilegeList",
+      "later_use_proven": false
+    }
+  },
+  {
+    "id": "directory_handle_request",
+    "question": "A Security 4661 has HandleId=0 and an audited AD/SAM object. Can HandleId=0 serve as a global object identifier? Does the record alone prove every attribute of that object was read?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-windows.md"
+    ],
+    "expected": {
+      "global_object_id": false,
+      "all_attributes_read": false
+    }
+  },
+  {
+    "id": "mac_exec_image_roles",
+    "question": "For ES_EVENT_TYPE_NOTIFY_EXEC, return the native message coordinate of the new image process structure. If the message process and new-image process have the same PID, does that prove identical execution identity?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-specialist.md"
+    ],
+    "expected": {
+      "new_image_coordinate": "event.exec.target",
+      "same_execution_identity": false
+    }
+  },
+  {
+    "id": "mac_attribute_value",
+    "question": "For ES_EVENT_TYPE_NOTIFY_SETEXTATTR, return the full native message coordinate containing the extended attribute name. Does this event alone supply the new attribute bytes and prove that quarantine flags were cleared?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-specialist.md"
+    ],
+    "expected": {
+      "name_coordinate": "event.setextattr.extattr",
+      "new_bytes_provided": false,
+      "flags_cleared_proven": false
+    }
+  },
+  {
+    "id": "sql_audit_locator",
+    "question": "From sys.fn_get_audit_file output, return the file name field, record-offset field and split-record sequence field. Does message 33205 alone specifically identify impersonation?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+    ],
+    "expected": {
+      "file_field": "file_name",
+      "offset_field": "audit_file_offset",
+      "fragment_field": "sequence_number",
+      "impersonation_proven": false
+    }
+  },
+  {
+    "id": "sql_config_direction",
+    "question": "A SQL message 15457 reports a setting changed from 1 to 0. Does the event by itself prove that the feature was enabled, or that it was used?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-application-identity.md"
+    ],
+    "expected": {
+      "enablement_proven": false,
+      "use_proven": false
+    }
+  },
+  {
+    "id": "ti_in_wild_clock",
+    "question": "A VirusTotal file object contains a service in-the-wild first-observation attribute as well as submission time. Return the exact in-the-wild attribute name without its data.attributes prefix and its units per second. May a missing in-the-wild value be replaced with first_submission_date?",
+    "references": [
+      "skills/soc-browser-console/references/intelligence-fields.md"
+    ],
+    "expected": {
+      "field": "first_seen_itw_date",
+      "units_per_second": 1,
+      "substitute_submission": false
+    }
+  },
+  {
+    "id": "browser_duration_clock",
+    "question": "A Chromium visits record has visit_duration=2500000. Return the duration in integer milliseconds. Should the calendar epoch offset used for visit_time be added to this value?",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "milliseconds": 2500,
+      "add_epoch_offset": false
+    }
+  },
+  {
+    "id": "download_annotation_clock",
+    "question": "Firefox downloads/metaData contains numeric endTime in the documented implementation. Return how many units make one second. Does having this field alone demonstrate a successfully completed download?",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "units_per_second": 1000,
+      "successful_download_proven": false
+    }
+  },
+  {
+    "id": "tls_schema_selection",
+    "question": "A query targets ECS-normalized fields. Return the exact client TLS fingerprint field and client server-name field. Are those selectors interchangeable with the Suricata EVE native JSON coordinates without a mapping?",
+    "references": [
+      "skills/soc-siem-hunt/references/elastic.md"
+    ],
+    "expected": {
+      "fingerprint_field": "tls.client.ja3",
+      "server_name_field": "tls.client.server_name",
+      "same_unmapped_coordinates": false
+    }
+  },
+  {
+    "id": "can_length_identity",
+    "question": "A Classical SocketCAN can_frame has len=8 and len8_dlc=12. How many payload bytes does it contain? Does a recorded CAN identifier by itself authenticate the sending node?",
+    "references": [
+      "skills/soc-network-forensics/references/packet-format-map.md"
+    ],
+    "expected": {
+      "payload_bytes": 8,
+      "sender_authenticated": false
+    }
+  },
+  {
+    "id": "rtp_media_clock",
+    "question": "Under the RTP audio/video profile, payload type 8 has no negotiated override. Return the codec name and clock rate. Does an RTP timestamp represent Unix seconds? Does matching SSRC alone justify joining two different RTP sessions?",
+    "references": [
+      "skills/soc-network-forensics/references/packet-format-map.md"
+    ],
+    "expected": {
+      "codec": "PCMA",
+      "clock_hz": 8000,
+      "unix_seconds": false,
+      "cross_session_join": false
+    }
+  },
+  {
+    "id": "sysmon_case_sensitive_guids",
+    "question": "For the documented Sysmon 13.30/schema 4.81, return the exact source-process GUID field name in event 8 version 2 and event 10 version 3. Is their capitalization identical?",
+    "references": [
+      "skills/soc-detection-engineering/references/telemetry-windows.md"
+    ],
+    "expected": {
+      "event8_field": "SourceProcessGuid",
+      "event10_field": "SourceProcessGUID",
+      "identical_capitalization": false
+    }
+  },
+  {
+    "id": "archive_history_storage",
+    "question": "For 7-Zip GUI 24.09, return the native registry value type of HKCU/Software/7-Zip/Compression/ArcHistory. Does each stored archive path carry its own timestamp in this value?",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "registry_type": "REG_BINARY",
+      "per_item_timestamp": false
+    }
+  },
+  {
+    "id": "lime_range_length",
+    "question": "A validated LiME version 1 memory range has s_addr=0x2000 and e_addr=0x2fff. Return its expected payload size in bytes and its header size in bytes. Does an all-zero captured payload alone prove that the corresponding memory was empty?",
+    "references": [
+      "skills/soc-host-forensics/references/memory-analysis.md"
+    ],
+    "expected": {
+      "payload_bytes": 4096,
+      "header_bytes": 32,
+      "empty_memory_proven": false
+    }
+  },
+  {
+    "id": "oci_history_alignment",
+    "question": "An acquired OCI image config has three history entries in order, with empty_layer values false, true and false. All history is present and consistent. How many filesystem layers do these entries represent? Does the true entry consume a rootfs.diff_ids element? Must a compressed manifest layer digest equal its uncompressed DiffID?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "layers": 2,
+      "empty_consumes_diffid": false,
+      "digests_must_equal": false
+    }
+  },
+  {
+    "id": "intel_hex_start_record",
+    "question": "An Intel HEX report labels record type 03 as start linear. Is that label correct? Return the two-character record type for start linear. Do uncovered address holes prove that the original bytes were zero?",
+    "references": [
+      "skills/soc-triage/references/container-and-structured-fields.md"
+    ],
+    "expected": {
+      "label_correct": false,
+      "start_linear_type": "05",
+      "holes_prove_zero": false
+    }
+  },
+  {
+    "id": "model_serialization_clearance",
+    "question": "A PyTorch checkpoint is being inspected statically. Does an empty get_unsafe_globals_in_checkpoint result prove that no dynamically created classes are involved? Does weights_only guarantee safety and prevent denial of service?",
+    "references": [
+      "skills/soc-malware-triage/references/static-evidence.md"
+    ],
+    "expected": {
+      "dynamic_classes_excluded": false,
+      "safety_guaranteed": false
+    }
+  },
+  {
+    "id": "pca_complete_locator",
+    "question": "For the documented Windows 10 / Server 2019 PCA Store candidate, return the complete registry key with HKCU as the root. Does locating the key also validate the SACP binary offsets?",
+    "references": [
+      "skills/soc-host-forensics/references/windows-artifacts.md"
+    ],
+    "expected": {
+      "key": "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Store",
+      "binary_offsets_validated": false
+    }
+  },
+  {
+    "id": "safari_epoch_join",
+    "question": "An acquired Safari database matches the described external reader contract. Give the referenced item ID column as table.column, the CFAbsoluteTime epoch year, and the integer offset added to these seconds to obtain Unix seconds.",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "item_key": "history_items.id",
+      "epoch_year": 2001,
+      "unix_offset_seconds": 978307200
+    }
+  },
+  {
+    "id": "native_host_manifest",
+    "question": "In a Windows Chrome native messaging manifest, name the field holding the host binary location and the array field holding permitted extension origins. Does an acquired registration alone prove host execution?",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "binary_field": "path",
+      "origins_field": "allowed_origins",
+      "execution_proved": false
+    }
+  },
+  {
+    "id": "defender_identity_native_types",
+    "question": "For Defender IdentityLogonEvents, give the exact native data types of ReportId, LogonType and DestinationPort. Use the documented type names.",
+    "references": [
+      "skills/soc-siem-hunt/references/sentinel-kql.md"
+    ],
+    "expected": {
+      "report_id_type": "string",
+      "logon_type": "string",
+      "destination_port_type": "int"
+    }
+  },
+  {
+    "id": "export_candidate_clocks",
+    "question": "A collector-associated SQLite export contains Files.Created and Files.Modified, both with equal integer values. Without a verified exporter schema, can these names alone establish Unix-millisecond clocks or a causal relationship?",
+    "references": [
+      "skills/soc-browser-artifacts/references/history-downloads.md"
+    ],
+    "expected": {
+      "clock_established": false,
+      "causality_established": false
+    }
+  },
+  {
+    "id": "saleae_container_boundary",
+    "question": "An acquired .sal ZIP contains digital-0.bin and meta.json. Can the internal binary be assumed to follow the published binary-export layout? Does METIS include a validated .sal internal decoder? Can renaming a Logic 1 .logicdata file convert it to Logic 2?",
+    "references": [
+      "skills/soc-network-forensics/references/packet-format-map.md"
+    ],
+    "expected": {
+      "export_layout_assumed": false,
+      "bundled_internal_decoder": false,
+      "rename_converts": false
+    }
+  },
+  {
+    "id": "acct_v3_clock_unit",
+    "question": "For the Linux v6.12 format-3 writer contract, an already decoded ac_etime float is 250. Return the accounting ticks per second and elapsed milliseconds. Is a float representation sufficient to infer seconds without this version contract?",
+    "references": [
+      "skills/soc-host-forensics/references/linux-artifacts.md"
+    ],
+    "expected": {
+      "ticks_per_second": 100,
+      "elapsed_milliseconds": 2500,
+      "float_implies_seconds": false
+    }
+  },
+  {
+    "id": "zip_descriptor_header",
+    "question": "In the described CPython 3.14 traditional-encryption check with flag bit 3 set, choose the header check source from DOS_TIME or CRC. Do zero local-header sizes alone prove an empty member, and does the short header check authenticate the full member?",
+    "references": [
+      "skills/ctf-crypto-solve/references/encrypted-evidence.md"
+    ],
+    "expected": {
+      "check_source": "DOS_TIME",
+      "empty_member_proved": false,
+      "full_member_authenticated": false
+    }
+  },
+  {
+    "id": "softap_typed_condition",
+    "question": "For the cited AOSP 8 Soft AP store, return the authType width in bytes, its byte order using big or little, and the named authType constant for which no preSharedKey string is read. Does this stored configuration prove hotspot activity?",
+    "references": [
+      "skills/soc-malware-triage/references/document-mobile-fields.md"
+    ],
+    "expected": {
+      "auth_type_bytes": 4,
+      "byte_order": "big",
+      "no_key_constant": "KeyMgmt.NONE",
+      "activity_proved": false
+    }
+  },
+  {
+    "id": "android_sms_storage_clock",
+    "question": "For the cited AOSP 10 r1 provider on an FBE device, choose CE or DE for the SMS store and raw store. Return units per second for the default inserted sms.date. Does sms.date_sent default zero prove an observed 1970 event?",
+    "references": [
+      "skills/soc-malware-triage/references/document-mobile-fields.md"
+    ],
+    "expected": {
+      "sms_store": "CE",
+      "raw_store": "DE",
+      "date_units_per_second": 1000,
+      "zero_proves_1970_event": false
+    }
+  }
+]

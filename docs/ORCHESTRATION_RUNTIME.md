@@ -124,9 +124,16 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
   - `metis resource reap` は、期限切れで、かつ記録したプロセスがこのホストで終了していると確かめられた lease だけを
     解放する。保持者が生きている、別ホスト、記録が無い（タスクに貸した lease）ものは `kept` として残し、
     時間の経過だけでは解放しない。他者の lease の解放（`metis resource release --reason ...`）は所有者の操作。
+    プロセス ID の再利用に備え、lease を取ったプロセスの起動時刻の目印も記録し、一致しなければ別のプロセスとみなす。
 - 所有者鍵: `metis permit init` を Daybreak が一度だけ実行すると、`<状態ディレクトリ>/private/owner.key`
   （0600、ディレクトリは 0700）を作り、データベースにはその SHA-256 だけを記録する。許可の発行、容量の変更、
   他者の lease の解放は、この鍵を示さないと拒否する（`--owner-key-file` または `METIS_OWNER_KEY`）。
+  初期化は1トランザクションで直列化し、鍵ファイルは一時名で書いてから置く。途中で止まって鍵ファイルだけが
+  残った場合は、次の `metis permit init` がそのファイルを採用して復旧する。採用するのは、シンボリックリンクを
+  たどらずに開け、自分が所有する、リンク数1・0600 の通常ファイルで、置き場所が自分の 0700 ディレクトリの
+  場合だけ。それ以外は拒否する。鍵が登録済みなのにファイルが無い、一致しない、権限が広い場合もエラーにする。
+- 接続の状態は `starting → running → stopped` の順にしか進まない。停止済みの接続や終了したタスクの接続を、
+  遅れて届いた報告で `running` に戻すことはできない。
 - `metis permit issue RUN TASK RESOURCE ACTION --reason ... [--ttl 300] [--uses 1]` は、外部の状態を変える
   操作（attack-defense のパッチ投入など）に対する、完全一致・期限付き・回数付きの許可を出す。
   ワイルドカードは拒否する。消費（`ScopedPermits.consume`）は原子的で、最後の1回を二重に使えない。
@@ -136,53 +143,6 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
   （Claude Code のサブエージェントなど）は、鍵ファイルを読むことも、データベースへ直接書くこともできる。
   そうしたエージェントに対しては、この仕組みは記録と誤操作防止にとどまり、強制には OS レベルの分離
   （別ユーザーやサンドボックス）が要る。
-
-### モデル呼び出し枠の借用（任意の実験経路）
-
-`AgentScheduler.enqueue(run_id, wave_id, dynamic_borrowing=True)` は、run の
-**最初の wave のみ**で利用できる。assignment が 2 件以上あり、その件数が run の
-確定済み呼び出し上限以下の場合に限る。既定では従来の固定枠を使う。
-有効にした assignment は、run の上限とスキーマ上の 20 intent の小さい方まで
-自分の枠を使える。run 全体のモデル呼び出し上限と action 上限は変わらない。
-
-同じ run lock と SQLite transaction の中で、まだ一度も予約していない
-queued または running の各 peer に最初の 1 回を残す。残りがこの保護枠に
-達した assignment は `model_turn_peer_reserve` で失敗する。この仕組みは
-最初の呼び出し機会を残すもので、呼び出しの成功や job 完了は保証しない。
-running の peer がまだ呼び出しを始めていない場合にも直ちに失敗するため、
-高速な job が先に止まる可能性がある。今後の事前登録した測定で、この
-公平性と完了率を確認する。再試行分は同じ run 上限から消費し、返金しない。
-取消後は新たに予約できない。この変更では通常の実行や benchmark に
-自動で有効化しない。
-
-### 状態と attempt
-
-`queued → running → completed | failed | cancelled | timed_out`、停止を確認できない場合は `unknown`
-（slot を占有したまま。`metis agent release ASSIGNMENT_ID` で確認後に解放）。
-再実行（`agent retry`）は新しい attempt を作り、最大3回。古い attempt の intent・報告は拒否して監査ログ
-（`agent_job_log`）に残る。
-
-### slot
-
-同時実行数 = `min(ホストの上限, 全体slot, run ごとのslot, wave の担当数)`。
-`metis agent slots --global 4 --per-run 2` で設定（既定 4 / 2）。足りない分は `queued` のまま。
-大会の `max_parallel`（同時に着手する問題数）とは別の上限で、両方が効く。
-model-turn budgetは同コマンドの `--specialist-turn-budget` でrun開始前に指定できる（既定24、範囲1–256）。
-runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設定変更は既存runへ適用しない。
-
-
-### 共有リソースとスコープ付き許可
-
-- 名前付きリソース（`sandbox`、`browser` など）の容量を `metis resource configure NAME --capacity N`
-  で設定すると、同じ状態ファイルを使う全プロセス（並列の専門家、スウォーム、別の run）で共有される。
-  要求する枠の組は1トランザクションで全部取るか何も取らない。容量を設定していないリソースは制限しない。
-  - `metis sandbox run` は `sandbox` を1枠、`web open --render` は `browser` を1枠借りる（待機の上限はそれぞれ300秒と120秒）。
-  - lease には期限がある。期限切れの回収（`metis resource reap`）と明示の解放（`metis resource release`）は、
-    保持者の停止を確かめてから行う。容量は、借りている枠数より小さくできない。
-- `metis permit issue RUN TASK RESOURCE ACTION --reason ... [--ttl 300] [--uses 1]` は、外部の状態を変える
-  操作（attack-defense のパッチ投入など）に対する、完全一致・期限付き・回数付きの許可を出す。
-  ワイルドカードは拒否する。消費（`ScopedPermits.consume`）は原子的で、最後の1回を二重に使えない。
-  発行は Daybreak（オーナー）だけが行う。
 
 ### モデル
 

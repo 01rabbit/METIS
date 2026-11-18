@@ -1,0 +1,1248 @@
+{
+  "policy": "independent-lessons-v1",
+  "snapshot_sha256": "9da4b7ede3b0c7e35d2c716c6f72ce971461c9a2ea963e360ac037ac487f15d4",
+  "scope": "Similarity candidates; neither infringement findings nor copyright clearance.",
+  "files": [
+    {
+      "target": "skills/blue-owner/SKILL.md",
+      "target_sha256": "0f35fe7e6fd8860c3e087312251ddd257d75b07c6329a69ef0229121be491810",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/blue-owner/references/worker-contract.md",
+      "target_sha256": "316989e1ae440ff8bd07dfe3110fa84ef93751771cc901c0332d7f2533d0f91a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-blue-solve/SKILL.md",
+      "target_sha256": "4b503cfffb6d88864b86e33c976f63c8dc27a636f4348f1ad776b8cc17e350ab",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-blue-solve/references/analyst-handbook.md",
+      "target_sha256": "2859556c8714d7c7f1630f162b05346c86d94c577d8063591b9f9018d5022cf6",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-crypto-solve/SKILL.md",
+      "target_sha256": "3e8501de9d80c1f0c43bb6492b4116e86f08faf926cd930ffe632b0191f2959e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-crypto-solve/references/encrypted-evidence.md",
+      "target_sha256": "6192967c5959b586dd6d43a00ddb3b17e18aa738f72773e2556a09abad513312",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-platform-ops/SKILL.md",
+      "target_sha256": "b16810b1b8cb293be721aef1f736816ae8e9eb306a318e92d2a30fa8aa808d76",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-pwn-solve/SKILL.md",
+      "target_sha256": "70e9b22a3428db51efc1e3808c25846c017b4034fe4cec485fd8634fba62f7e9",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/ctf-pwn-solve/references/crash-evidence.md",
+      "target_sha256": "c220648481c4414b65db9980d75dc6aec71efc260ced8b14fd2b4662c42ba72f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/evidence-question-answering/SKILL.md",
+      "target_sha256": "18c3a76ac9eeee21e01c0f145e806562a54d10addc2c8f67f2e81c3de30890d2",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-browser-artifacts/SKILL.md",
+      "target_sha256": "058355ad4e458176198d3da0fec206ddcfd4716a0edfeeec4b47f69278937a4d",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-browser-artifacts/references/history-downloads.md",
+      "target_sha256": "e7e03c3b0364a47886ff7aee99c6b5e78372e22ae6cbc764b15607f231c039fa",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-browser-console/SKILL.md",
+      "target_sha256": "5fd177d2cb06a1641e8c67c4efd3c5a6c2526a39b53e827ef2579f55ab7d4f17",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-browser-console/references/intelligence-fields.md",
+      "target_sha256": "eaff6a4a2d8108c3078bd51ee9ff9428003aa03e9ce2de08465d96aa3e28d170",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-cloud-identity-forensics/SKILL.md",
+      "target_sha256": "4115d199e591d57aef4dd95e7c49b298c0bcce106e3aea3196b90232f62b232e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-cloud-identity-forensics/references/aws-cloudtrail.md",
+      "target_sha256": "3d1ddcedddb04daffc1b616a5b37b7a456b7537de7e21735e1025c9484ac37b3",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-cloud-identity-forensics/references/entra-m365-okta.md",
+      "target_sha256": "2e32a21d6377257bc29a59fc18a4d8b8349831eebe79cae4d0961434c83e4090",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-cloud-identity-forensics/references/exact-populations.md",
+      "target_sha256": "20ab45df9554eab45d495e3ecc908827bfba6210b1593cae8001e1c9aff0bd75",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-cloud-identity-forensics/references/gcp-kubernetes.md",
+      "target_sha256": "3e36f7d3059d08210e5a516e4c700ad31a863c153d067761da37231142ba6edf",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/SKILL.md",
+      "target_sha256": "6cfcfdd0fb04c8fed80cd8701b146cc7824179fb4a21fa528c7ee41281016aa4",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/references/coverage.md",
+      "target_sha256": "7453f544eeb97508487479fd72f5a17001f22a5d0cabe4196a4123510cfb952d",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/references/telemetry-application-identity.md",
+      "target_sha256": "918808a3e7438f1387a46a7272a19e82409667480c4c5bc6ac7dd69859ca12dc",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/references/telemetry-linux-network.md",
+      "target_sha256": "7654923f91b122f857a5689a138e09969a2dec1d64ecfa3ab7fc71033ffef64c",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/references/telemetry-specialist.md",
+      "target_sha256": "632d14f351bba9892270f98dc5a5cc6cd70a7b97f0d6b29087b895b0b30b0198",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/references/telemetry-windows.md",
+      "target_sha256": "4ae64b18f18ac237a1af9594feea43e4ee111b64da61b3f71266bfe43759cfe3",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-detection-engineering/references/validation-integrity.md",
+      "target_sha256": "7c1cfba925a70293270327cdf4e7a032d5a18583405f9ab85d1573b43a3b1761",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-email-forensics/SKILL.md",
+      "target_sha256": "13366b4b42c55bf5ebf29f5834ccc6efdba75e88f31b5ca9e1f271061ed81880",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-email-forensics/references/message-analysis.md",
+      "target_sha256": "2f521d21240ec1eb738d3a894de50982e6fb189d8642527de1936f3a316bd393",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-evidence-cycle/SKILL.md",
+      "target_sha256": "68063a86d5d06732e5c04ce33ce2fa4a1ff9901eac22b61a5cdf1d1abc10211f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-host-forensics/SKILL.md",
+      "target_sha256": "732f8e5327f1419f035404053bba4d0740ebccd89bfd184647053a60f0a04d21",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-host-forensics/references/analyst-handbook.md",
+      "target_sha256": "f58b591abda7b8ac3bd277773e3608d2971440b8c290c7a7d6504d25967bb669",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-host-forensics/references/linux-artifacts.md",
+      "target_sha256": "d31e0155ba652d2ec95d4bb177eb1436f215094c6155976a1432556c3227dabc",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-host-forensics/references/memory-analysis.md",
+      "target_sha256": "29391829e5e94652d0cb98972412aa28e47f31a7925bde55082133559d07bae9",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-host-forensics/references/parser-integrity.md",
+      "target_sha256": "15643ad4eb1fd668c287acb9ca85545d336b71f6099081142cc17dcf81e7f52a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-host-forensics/references/windows-artifacts.md",
+      "target_sha256": "a4366152277d886aee5d634c46b8119064a216b942d9499644aeb34b84715bd0",
+      "identical": false,
+      "long_overlap": true,
+      "native_registry_only": true,
+      "native_registry_sha256": [
+        "2813713eb512eea8a2af6e451ede388101e78d0838ba3847717325ce8d6067da"
+      ],
+      "disposition": "requires-expression-review"
+    },
+    {
+      "target": "skills/soc-incident-report/SKILL.md",
+      "target_sha256": "b1f10ab6386343aa4dcf038d4edadb2514e9c7a0775e77756d58fada81d5182f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-lab-access/SKILL.md",
+      "target_sha256": "826ecf74c3d0c28d21dc3101901ee49cf2b74da5265cbb7d511b7b0465397ccd",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-malware-triage/SKILL.md",
+      "target_sha256": "55b82ba27847a27a6161623e598342e191684e8c638985a1b8fe85b1efc1da16",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-malware-triage/references/analyst-handbook.md",
+      "target_sha256": "0234b453d307997c36a16e02480667ac084a0af6a71db03f0fef4843a1a12911",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-malware-triage/references/api-monitor-candidate-layout.md",
+      "target_sha256": "6e2e222485a850118b145088f3897b0970572558803626d9ca568adff3902564",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-malware-triage/references/document-mobile-fields.md",
+      "target_sha256": "58d021231787af5b0230ea18aef5756f9b8986624633616a372d41ff416785f4",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-malware-triage/references/executable-field-map.md",
+      "target_sha256": "faa74cbc4eee9cfa891fcb271a1d02fa4472c1d912c47fe583e42ead32483a33",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-malware-triage/references/static-evidence.md",
+      "target_sha256": "6d2035396cd6e4c6c0a5b56f5b645b854f54edb4a7f83bf491f1b787712d61f5",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-network-forensics/SKILL.md",
+      "target_sha256": "e5ece413498cae740fb98832fff91292f4b9d36fb114294791887cbb8f4b2c8c",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-network-forensics/references/analyst-handbook.md",
+      "target_sha256": "a6f93207bb59586da9125ff95d13861255a3ee0f7bc04319ca5755b4c95c824e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-network-forensics/references/packet-format-map.md",
+      "target_sha256": "3770d894a04a45b9e90cd40ba0a4b55b9375e007d303e0edbf8e26ad94e02d55",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-remote-triage/SKILL.md",
+      "target_sha256": "04bc86f09d105aa5f8904239c43b582254b78ddc87645fe3dd27ffa3d6a186e4",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-remote-triage/references/live-collection-fields.md",
+      "target_sha256": "663980ddae90b1e85710230b8abd027918def380b613b0f95a84bde574ac2e47",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-siem-hunt/SKILL.md",
+      "target_sha256": "c695b14ed3b5ae5cd0f7676d15032817787904a56631a9f94e948882829930b6",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-siem-hunt/references/elastic.md",
+      "target_sha256": "d13c0025f60c6b747591a599cfe3603a6c04429a45bc5c2baa8cc637376a22f8",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-siem-hunt/references/observability-sources.md",
+      "target_sha256": "5233f91de327170881cac8ea6a97f6d85c0fd22607410f090ca0ba38f70162b6",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-siem-hunt/references/sentinel-kql.md",
+      "target_sha256": "09e1cc37aec9fa44106b8a75606044827d2b894476bfb81989f88eb8b2dafa5e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-siem-hunt/references/splunk-spl.md",
+      "target_sha256": "93533fd64b09be873e30e744b7467814e8a546e34b66304572ab0974a1e5ca63",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-siem-hunt/references/wazuh-zeek-suricata.md",
+      "target_sha256": "dd3f711d0c903092b2acb70bd40bf77d8a752b6fdd731671f7eaf51a85ae127e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-triage/SKILL.md",
+      "target_sha256": "4b95de31a8b05be3bbce63de4409ea2f1a723a9c730a0b38f62b9d764ada9965",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-triage/references/artifact-integrity.md",
+      "target_sha256": "0d939d9eae8da48da86f31e7f465ab7bca626d1f7432b96ceae999edcf7ed892",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-triage/references/container-and-structured-fields.md",
+      "target_sha256": "eafb62e0f24b46fa9ccf8cc1e44eb6886d1c00fb6f33e2648f70d67c967b6a60",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/soc-triage/references/evidence-locators.md",
+      "target_sha256": "ff1997448ac0e7839b9797b09513278a58142bf545681782693bf136128d3c16",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "skills/solve-orchestration/SKILL.md",
+      "target_sha256": "473886bb21890c0f4fb5f84c4d586d9d1a12cfc5f80182db217ac9ebdb49ea9a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/README.md",
+      "target_sha256": "6e921653025914ad846a573b6eb8ee6aa78cc1e91446d25b12fb030b24332e95",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/advanced-intrusion-indicators/ad-delegation-abuse.md",
+      "target_sha256": "bfa3d70dfffd747ae1b6830faf6f6d60e2220bdc5b6b1009526c00d8b6b7ff3a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/advanced-intrusion-indicators/applocker-wdac-bypass.md",
+      "target_sha256": "000e06e6894fe60fff0f9bbb8fc9618b618dedd12bf404a3949b925864d1bf3f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/advanced-intrusion-indicators/lsass-credential-access.md",
+      "target_sha256": "009e074b64d87e05b6aa81fd12e31257bde730d653bda1d8333b3153adc8b76e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/advanced-intrusion-indicators/mssql-attack.md",
+      "target_sha256": "174c7ea4917a5604016677644ecbfce515e5bd96e8b75f5d118a71eeec5fa54d",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/advanced-intrusion-indicators/network-filter-bypass-domain-fronting.md",
+      "target_sha256": "35d9a616343df4397f2fc5b53bf313e8a5b3ec17af2fc06574d89370005dfdbf",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/advanced-intrusion-indicators/process-injection.md",
+      "target_sha256": "54284534ac37b8f7f5f0cbfb0cf20df9570e854e0c115906e367f944606f08ba",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/app-logging-and-error-exposure.md",
+      "target_sha256": "6b9c528c61837523bb5f9039fa827926fd53750b879c42d53246af13608b8d15",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/cookie-and-session-flag-anomalies.md",
+      "target_sha256": "aa711c93ae5822024c9420ef6e4f4e5dd39613610f4eef18544570d2aa10a649",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/injection-attempt-detection.md",
+      "target_sha256": "fcfe86e1d110ebf25785e26f888b5406b7284abb03af7707fcee3c8551c9467e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/security-misconfiguration-exposure.md",
+      "target_sha256": "c2af79078e2fad17e40bdc6ec33415d2dc10f8b2c499d55251fb590446f4269a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/session-hijack-and-auth-anomaly.md",
+      "target_sha256": "f76406414c41b49ec6e5753120504120b3d72ee3e89b153a27df0b4a7ffc2fb7",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/sqli-confirmation-and-db-access-anomaly.md",
+      "target_sha256": "b92e604cbb3c0d8258dc50106b1c09357388e674d4f659b6d799605770e6a169",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/application/xss-attempt-detection.md",
+      "target_sha256": "d16e70cca8f4d4c4e9cec5aabbb04a45d91bda64627abd90db22e7aa901213b2",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/ad-enumeration-ldap-recon.md",
+      "target_sha256": "7ddd489fe8a8b5677043c17b6660bcc22607e1d8a4239b54990f344d98006683",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/ad-persistence.md",
+      "target_sha256": "6f1d248d02febad905e80ac994b704dd2d03251c49d84b1f72747bca05e04e9f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/amsi-bypass-defense-impairment.md",
+      "target_sha256": "2dfb830fdfb10e23e83444993d8c4f4d25ee507139ebddaec8b5dd36712a03f2",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/c2-beacon-detection.md",
+      "target_sha256": "3c71375ee7882aea7a3ca000d12d4f2cf82631c726561614f6dc7426fa5d0811",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/egress-tunneling.md",
+      "target_sha256": "a5d02e85d0e30c1e86dd32e8c271eeb929730a247e31de05d69960abb7ca0389",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/elk-detection-rules.md",
+      "target_sha256": "19d30f620554a8553c5b2256feac0433fc663ea64572eef92aa44f8b9436940d",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/iis-worker-spawns-shell.md",
+      "target_sha256": "360a53e76b95e2670cfd156dffb9aca06c0d18b286f019a451152b43f0070190",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/lateral-movement-pth-kerberoast.md",
+      "target_sha256": "e2efe55e89a3ed3453b58accef3cf8de1930ce95a02d1768dcf1a164b666ce30",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/linux-daemon-spawns-shell.md",
+      "target_sha256": "64c6be22a93ff26e3eaab9afea3579eef0d4bd55f52c71e5d1a92bc81ed007bf",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/linux-privesc-sudo-gtfobins.md",
+      "target_sha256": "04234aeb0e414af25c1d39eaa9473e7185bea40ac79a9e4b4b23ea720efb5931",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/linux-webapp-to-shell.md",
+      "target_sha256": "f2abc30ffbe5ec082a2049ae7bdeef3c802a18505150a4c9f991bc0b8d365580",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/multistage-killchain-correlation.md",
+      "target_sha256": "dbbe0aa83e5a2ac30ab10120fb22aeddce306a34b99aa5b1e747056fc863db08",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/office-macro-spawn.md",
+      "target_sha256": "0ea7b607d505e8c8cc43191b3d658acdcb8fc355ee62a7f170f3078f79713201",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/script-host-dropper.md",
+      "target_sha256": "dea68509c5aa3c81d8f5c2ac35eeae3b427c751fc3d04a75c33459243dcb57cd",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/service-anomalous-imagepath.md",
+      "target_sha256": "45702c58d2a3bf7a471aa8ade965f4d4e626eb59736af83c24bc7265e014f714",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/endpoint/uac-bypass-registry-hijack.md",
+      "target_sha256": "7a34e09aa743b108ff96f082bede88178282ffcc4a0de7e140024da95a9bb329",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/foundations/ics-ot-protocol-and-command-anomaly.md",
+      "target_sha256": "a881939a816131a98f352fd43adcf6736732875a059e4dc23d548f8540679280",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/foundations/phishing-email-and-landing-detection.md",
+      "target_sha256": "833796b431eb5df3007f56b77d936dec746b03c5ae7408358ff5277352b40ac8",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/foundations/ransomware-behavioral-detection.md",
+      "target_sha256": "b032b93dfdb216fa6c8aea96c03962590976088e581645b8d09de114cf54acef",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/foundations/wireless-rogue-ap-and-deauth-detection.md",
+      "target_sha256": "34be320bd01571967df143d921bafe75953590f11a09456bcad69a3b6bdc4b39",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/actor-ttp-ransomware.md",
+      "target_sha256": "0ba61a70e6c964b4366e2799215aeb14168ceca4d49e951325d6f4851f0ad334",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/behavioral-hunt-no-ioc.md",
+      "target_sha256": "f938046d29af45b2908224dd0f3a94a9c0767b4b0802c00b5012c4172547de73",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/cloud-hunt-azure.md",
+      "target_sha256": "a670df13936c1f8e0fd710bd9ad854fb4a3722b6a4db6371f99865a67782d957",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/endpoint-hunt-stackcount.md",
+      "target_sha256": "5258891a63144464249e99dd43f3cc94f5fe43da89116c30545b8300f0866693",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/hunt-methodology.md",
+      "target_sha256": "1b75e619b8ef16a0d9622c2fad6c60d606fa85852208f30c90b16bced860c56a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/hunt-reporting-tlp.md",
+      "target_sha256": "4622288d7b9d9122ab25cdc9cfe837497f3c24c7f8e076091a48676563c3bff6",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/hunting/network-hunt-beacon.md",
+      "target_sha256": "d42cc77bc5b62e178525b9aa6ac30571a72bad1873420dcd25749f8e77a7ee89",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/client-side-lnk-libraryms.md",
+      "target_sha256": "e6b78cd0a50950c3e525baf7cac8a672a1ba241b92e84d67df186cb2e305ccc7",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/linux-privesc.md",
+      "target_sha256": "1390c1601f672f924d0e3329f0499ac4611a54287e175c5942b99375d7cba0c5",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/llmnr-nbtns-poisoning-relay.md",
+      "target_sha256": "f65f5392cb91c2e7c3cafa8bb1d4d36d9be47252a1f6e340fe0371784b6edc10",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/port-redirection-tunneling.md",
+      "target_sha256": "d2fd41b6e1ac6a666ce5824ff45dd676892606300d772f40ab07b2e14c353714",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/recon-portscan-enum.md",
+      "target_sha256": "ccc0f4e59b0c508ab88c1298e4a68a0119f9f3f1b595bfa62749e3be8791f65e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/vuln-scanning.md",
+      "target_sha256": "489681d7462cd035e8f60433884df772cb43f900c7ddc8ce10ddef35ddd84364",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/intrusion-indicators/windows-privesc.md",
+      "target_sha256": "94a029baa76e0c55a4d0b975f3a436fecc7219eb46f2c3d027066ca9e612cbf9",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/malware/reflective-loader/ATTACK.md",
+      "target_sha256": "ad1f347af95b06da8a6dac0e37da0b50a3781f3ae4bdcfb49000966b8e50a7b7",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/malware/reflective-loader/behavior.yml",
+      "target_sha256": "845f20f374d516b7574ff042c937782025bb84bc5387e11deca76554a57221d7",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/malware/reflective-loader/loader.yar",
+      "target_sha256": "4f0fc96302682b7aca15e811c4d74ce5f98e6fd16d80ba2747efbe17c829d172",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/memory-and-platform/macos-control-bypass-residue.md",
+      "target_sha256": "36b1daf75e1c377014f39d80f38e039c99d7e5441e5d1be27e3f07df8a56df70",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/memory-and-platform/memory-corruption-exploitation-residue.md",
+      "target_sha256": "6e3119a3b1c1505aa70de3f2fefebc7d7caa91a2eb318a94fa50cfff5b97c5ce",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web/cors-cross-origin.md",
+      "target_sha256": "024ca3fd750496c4eaf9b6ffc48132a15943cc552eed0505665be44f3cc49afc",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web/idor.md",
+      "target_sha256": "3e5124396e1e9813a82ab695bc2ff1c96a2f2b774cb22895e8b40c253b411e6b",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web/ssrf.md",
+      "target_sha256": "375b187efd75d01bc872bc21f72bd00854c079357d0dc5981e85e13543054250",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web/ssti.md",
+      "target_sha256": "fba4832f943c889770713951700e798a923d2be8388dfb1c06920f42a2b35bc2",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web/xxe.md",
+      "target_sha256": "8bafd961fa108432fcc848a8239eddaabd1ecd5274f10b05fd218edfba7a7c2d",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web-advanced/insecure-deserialization.md",
+      "target_sha256": "84181ef2d2d8e88bc347bad02c203c250b2f49e5d2cda05726464a699f433ad4",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web-advanced/prototype-pollution.md",
+      "target_sha256": "b83986a0b65b4cd763a16de48e070b40d8c8b07d586c2fcfb02b2e6cbc6be8d1",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web-advanced/type-juggling-auth-bypass.md",
+      "target_sha256": "a298c82bac5e5c1cbbabaa94eacc46383161006cb3aedabfdfa36a7597c4069c",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "detections/web-advanced/web-auth-bypass-logic.md",
+      "target_sha256": "c904b04d00bb058c9cce9ff194a674fd4028056b87496366bf1e7caddc0b642e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/README.md",
+      "target_sha256": "38b6da1dd2ae96926088e99bd42d222adc09a667e3067b1e7172ac48e7444e4d",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/case-management.md",
+      "target_sha256": "114ad420102ffaa65f09d0961295209031c2b4cb6e5635d8f48500fa4c08db8f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/common-attack-iocs.md",
+      "target_sha256": "b47ba69c833a61e5308f646b20a53cde7291beecc5a25afec40937a8ac3c64af",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/comms-plan.md",
+      "target_sha256": "5b0c46de464b6093d09d41c7b177706af1d92ef7d38740c7c3a32e975a21a23f",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/containment.md",
+      "target_sha256": "e720f0b83a45929602c9fdb6a7d598754c98032842b557edb58f2652b045c633",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/detection-identification.md",
+      "target_sha256": "9c39c4c2c10739f9b7a2696e4cfb5f68063af88ea0c29e766ddd752dfcb6621b",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/dfir-evidence.md",
+      "target_sha256": "eea47b2e1ddd9156c390ba79f1c1942c8e5770cf6a32ccd701e120662135fc2a",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/eradication-recovery.md",
+      "target_sha256": "7d773bdf99db03b1d6f67c2fd436eb8f9f937a3b897604cd8ab13b509e58c57e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/impact-assessment.md",
+      "target_sha256": "fea9e74f2a4b7bc89bdc949cc26aa2f69d12f8f13d6e357fb4feaacd94385ece",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/incident-taxonomy.md",
+      "target_sha256": "60d7204cdaef9620b293619cc9fac84a7a137c6b849637163875493bcce17e4e",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/ir-frameworks-roles.md",
+      "target_sha256": "7acb69a928cff34fcb59fdd19d6dd67a703d98622bde5eb376528eb1cd441544",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/ir-lifecycle.md",
+      "target_sha256": "36ab067f4ae91a1f8a335af00f7745ccef49b223d10907ddb18c94867a01e761",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    },
+    {
+      "target": "playbooks/incident-response/postmortem-rca.md",
+      "target_sha256": "58995a1d18f0f43cad6e089e2a540b23eb37c55849b7d102b806acb25281d4fc",
+      "identical": false,
+      "long_overlap": false,
+      "native_registry_only": false,
+      "native_registry_sha256": [],
+      "disposition": "no-long-match"
+    }
+  ],
+  "summary": {
+    "files": 134,
+    "identical": 0,
+    "requires_expression_review": 1
+  },
+  "errors": [
+    "existing-expression-review-required"
+  ],
+  "adjudications": [
+    {
+      "target": "skills/soc-host-forensics/references/windows-artifacts.md",
+      "target_sha256": "a4366152277d886aee5d634c46b8119064a216b942d9499644aeb34b84715bd0",
+      "native_registry_sha256": [
+        "2813713eb512eea8a2af6e451ede388101e78d0838ba3847717325ce8d6067da"
+      ],
+      "disposition": "independently-verified-native-factual-identifier",
+      "independent_review": [
+        {
+          "reviewer": "fresh_data_audit",
+          "receipt_sha256": "2cc81f892751e4786cde51bcb30c94ffa9603911942a2d7bbc477abd25ce4eec"
+        }
+      ],
+      "primary_urls": [
+        "https://support.microsoft.com/en-us/topic/kb5017811-manage-transport-layer-security-tls-1-0-and-1-1-after-default-behavior-change-on-september-20-2022-e95b1b47-9c7c-4d64-9baf-610604a64c3e"
+      ],
+      "limit": "Identifier and declared version only; not a binary schema or rights clearance."
+    }
+  ],
+  "adjudication_summary": {
+    "reviewed_native_identifier_files": 1,
+    "unresolved_expression_review": 0
+  },
+  "raw_result_preserved": true
+}

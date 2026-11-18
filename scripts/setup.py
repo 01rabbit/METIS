@@ -73,6 +73,16 @@ def configure_claude_code(root: Path) -> dict:
     target.mkdir(exist_ok=True)
     for name in ("skills", "agents", "commands"):
         shutil.copytree(source / name, target / name, dirs_exist_ok=True)
+    # Blue Team skills stay canonical under blue/skills; link them so their relative
+    # references to blue/docs, detections and playbooks keep resolving.
+    linked = []
+    for skill in sorted((root / "blue" / "skills").glob("*/SKILL.md")):
+        link = target / "skills" / skill.parent.name
+        if link.is_symlink() or not link.exists():
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(Path("..") / ".." / "blue" / "skills" / skill.parent.name, target_is_directory=True)
+            linked.append(skill.parent.name)
     settings_path = target / "settings.local.json"
     settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
     sandbox = settings.setdefault("sandbox", {})
@@ -86,7 +96,7 @@ def configure_claude_code(root: Path) -> dict:
             excluded.append(pattern)
     settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
     domains = sandbox.get("network", {}).get("allowedDomains", [])
-    return {"copied": ["skills", "agents", "commands"], "removed_stale_paths": stale,
+    return {"copied": ["skills", "agents", "commands"], "linked_blue_skills": linked, "removed_stale_paths": stale,
             "sandbox_excluded_commands": excluded, "allowed_domains_kept": domains}
 
 

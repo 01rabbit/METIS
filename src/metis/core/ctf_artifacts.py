@@ -635,6 +635,8 @@ def _evidence(data: bytes, tool: str, options: dict) -> dict:
     for key, value in extra.items():
         if not isinstance(value, str) or len(value) > 200:
             raise ValueError(f"{key} must be a short string")
+    if extra.get("email_format", "auto") not in {"auto", "eml", "mbox"}:
+        raise ValueError("email_format must be auto, eml or mbox")
     report = analyze_bytes(EVIDENCE_TOOLS[tool], data, Limits(bytes=MAX_ARTIFACT, records=records, seconds=15.0),
                            **extra)
     return dict(report)

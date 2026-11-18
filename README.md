@@ -119,7 +119,7 @@ See [CTF quick start](docs/CTF_QUICKSTART.md) for the practical flow and
 - Isolated dynamic execution (run/strace/ltrace/gdb/pwntools scripts) in a
   no-network container; challenge programs never run on the host.
 - Optional JavaScript rendering with out-of-scope requests aborted.
-- Claude Code project skill, `/ctf` command and eight category subagents
+- Claude Code project skill, `/ctf` command and nine category subagents (including the Blue Team `ctf-blue`)
   (install from `integrations/claude-code/`).
 - Official CTFd, rCTF and ksnctf JSON verdicts and explicitly configured HTML-form verdicts; reflected
   candidates and HTTP status alone are rejected as proof.
