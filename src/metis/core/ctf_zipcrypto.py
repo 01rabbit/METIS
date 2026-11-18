@@ -639,6 +639,52 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
     return False
 
 
+@dataclass(frozen=True)
+class StayStage2Chunk:
+    next_index: int
+    hits: tuple[tuple[int, int], ...]  # packed guess, compatible key1 product
+    reason: str
+
+
+def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
+                            random_firsts: tuple[int, ...], random_seconds: tuple[int, ...],
+                            observed_third_differences: tuple[int, ...], *,
+                            start: int, stop: int, max_candidates: int,
+                            max_hits: int, seconds: float) -> StayStage2Chunk:
+    """Scan a half-open 26-bit guess range with explicit resumable limits.
+
+    Guess layout: key0 CRC bits 8..15, key2 CRC bits 16..23 and 0..1,
+    then q8. Hits remain in caller memory; this helper performs no I/O.
+    """
+    if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 26
+            or type(max_candidates) is not int or max_candidates < 1
+            or type(max_hits) is not int or max_hits < 1
+            or not 0 < seconds <= 300):
+        raise ValueError("invalid Stay Stage 2 scan bounds")
+    deadline = time.monotonic() + seconds
+    hits: list[tuple[int, int]] = []
+    cursor = start
+    visited = 0
+    while cursor < stop:
+        if visited >= max_candidates:
+            return StayStage2Chunk(cursor, tuple(hits), "candidate_limit")
+        if time.monotonic() >= deadline:
+            return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+        guess = cursor
+        witness: list[int] = []
+        if _stay_stage2_candidate_matches(
+                index, carry_masks, random_firsts, random_seconds,
+                observed_third_differences, guess & 0xFF,
+                (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+                product_witness=witness):
+            hits.append((guess, witness[0]))
+        cursor += 1
+        visited += 1
+        if len(hits) >= max_hits:
+            return StayStage2Chunk(cursor, tuple(hits), "hit_limit")
+    return StayStage2Chunk(cursor, tuple(hits), "complete")
+
+
 def _stay_predict_second_byte_difference_np(indices: np.ndarray, random_first: int,
                                              first_stream: np.ndarray, key0_crc_low: np.ndarray,
                                              key1_product_high: np.ndarray,

@@ -538,6 +538,7 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         M32,
         MULT,
         _stay_first_stage_candidate,
+        _stay_stage2_scan_chunk,
         _stay_stage2_candidate_matches,
     )
 
@@ -586,6 +587,41 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
             index, carry_masks, random_firsts, random_seconds,
             tuple(value ^ 0x5A for value in observed_third),
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
+
+        if _ == 0:
+            guess = ((key0_crc16 >> 8) & 0xFF) | key2_stage2 << 8 | q8 << 18
+            positive = _stay_stage2_scan_chunk(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                start=guess, stop=guess + 1, max_candidates=1, max_hits=1, seconds=2)
+            assert positive.reason == "hit_limit"
+            assert positive.next_index == guess + 1
+            assert positive.hits == ((guess, witnesses[0]),)
+            negative = _stay_stage2_scan_chunk(
+                index, carry_masks, random_firsts, random_seconds,
+                tuple(value ^ 0x5A for value in observed_third),
+                start=guess, stop=guess + 1, max_candidates=1, max_hits=1, seconds=2)
+            assert negative.reason == "complete" and not negative.hits
+            limited = _stay_stage2_scan_chunk(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                start=guess, stop=guess + 2, max_candidates=1, max_hits=2, seconds=2)
+            assert limited.reason == "candidate_limit"
+            assert limited.next_index == guess + 1
+            resumed = _stay_stage2_scan_chunk(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                start=limited.next_index, stop=guess + 2, max_candidates=1, max_hits=2, seconds=2)
+            assert resumed.next_index == guess + 2
+
+
+def test_stay_stage2_scan_time_limit_keeps_cursor(monkeypatch) -> None:
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    ticks = iter((0.0, 1.0))
+    monkeypatch.setattr(zipcrypto.time, "monotonic", lambda: next(ticks))
+    result = zipcrypto._stay_stage2_scan_chunk(
+        0, (1,) * 5, (0,) * 5, (0,) * 5, (0,) * 5,
+        start=17, stop=18, max_candidates=1, max_hits=1, seconds=0.5)
+    assert result.reason == "time_limit"
+    assert result.next_index == 17 and not result.hits
 
 
 def test_stay_stage2_two_update_key1_formula_matches_full_recurrence() -> None:
