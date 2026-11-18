@@ -1,0 +1,14 @@
+{
+  "index": "security_events",
+  "start": "2026-01-01T00:00:00Z",
+  "end": "2026-01-01T01:00:00Z",
+  "filters": {
+    "host": "asset-7"
+  },
+  "fields": [
+    "_time",
+    "host",
+    "EventCode"
+  ],
+  "limit": 100
+}

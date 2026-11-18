@@ -1,0 +1,43 @@
+{
+  "evidence-host": {
+    "protocol": "ssh",
+    "host": "192.0.2.10",
+    "user": "analyst",
+    "port": 22,
+    "resource": "analysis-vm",
+    "identity_file": "~/.ssh/metis-analysis",
+    "allowed_log_paths": [
+      "/var/log/auth.log"
+    ],
+    "log_path": "/var/log/auth.log"
+  },
+  "desktop-rdp": {
+    "protocol": "rdp",
+    "host": "192.0.2.10",
+    "user": "analyst",
+    "resource": "analysis-vm"
+  },
+  "desktop-vnc": {
+    "protocol": "vnc",
+    "host": "192.0.2.10",
+    "resource": "analysis-vm",
+    "password_file": "~/.config/metis/vnc.passwd"
+  },
+  "analysis-proxy": {
+    "protocol": "socks",
+    "host": "192.0.2.10",
+    "user": "analyst",
+    "local_port": 1080,
+    "resource": "analysis-vm"
+  },
+  "analysis-vpn": {
+    "protocol": "vpn",
+    "config_file": ".metis-state/private/analysis.ovpn",
+    "resource": "analysis-vm"
+  },
+  "siem-console": {
+    "protocol": "browser",
+    "url": "https://siem.example.invalid",
+    "resource": "browser-session"
+  }
+}
