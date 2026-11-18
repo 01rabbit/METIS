@@ -1208,14 +1208,15 @@ def _stay_recover_keys_for_product(product: int, index: int, guess: int,
             x, y, z = update(x, y, z, cipher_plain)
         assert stored_fourth is not None
         for offset in np.flatnonzero(stored_fourth == stored_headers[0][3]):
+            position = cursor + int(offset)
             if time.monotonic() >= deadline:
-                return StayKeyRecoveryChunk(cursor, tuple(hits), "time_limit")
+                return StayKeyRecoveryChunk(position, tuple(hits), "time_limit")
             keys = Keys(int(x0[offset]), key1, int(z0[offset]))
             if all(keys.encrypt(keys.encrypt(header[:10])) == stored[:10]
                    for header, stored in zip(random_headers, stored_headers, strict=True)):
                 hits.append((keys.x, keys.y, keys.z))
                 if len(hits) >= max_hits:
-                    return StayKeyRecoveryChunk(cursor + int(offset) + 1, tuple(hits), "hit_limit")
+                    return StayKeyRecoveryChunk(position + 1, tuple(hits), "hit_limit")
         visited += end - cursor
         cursor = end
     return StayKeyRecoveryChunk(cursor, tuple(hits), "complete")

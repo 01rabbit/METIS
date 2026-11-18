@@ -773,6 +773,13 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
                 start=0, stop=1 << 24,
                 max_candidates=1 << 24, max_hits=1, seconds=10)
             assert initial in recovered.keys
+            limited_keys = _stay_recover_keys_for_product(
+                product, index, guess, random_headers, stored_headers,
+                start=extra, stop=extra + 2,
+                max_candidates=1, max_hits=4, seconds=10)
+            assert limited_keys.reason == "candidate_limit"
+            assert limited_keys.next_extra == extra + 1
+            assert limited_keys.keys == (initial,)
             mutated = list(stored_headers)
             mutated[0] = mutated[0][:3] + bytes([mutated[0][3] ^ 1]) + mutated[0][4:]
             rejected = _stay_recover_keys_for_product(
