@@ -35,6 +35,8 @@ BUDGET = {"turns": 8, "actions": 4, "slots": 2, "wall_seconds": 600}
 ENCODINGS = ("base64", "base32", "hex", "base85", "base64url", "percent")
 FAMILIES = list(combinations(ENCODINGS, 2))
 TASK_REPETITIONS = 1
+TASK_PREFIX = "task"
+EVALUATION_SPLIT = "heldout"
 COMPONENT_ALPHABET = (string.ascii_letters + string.digits + " .,;:-_!?()[]{}").encode()
 OUTPUT = Path("docs/reports/data/issue6-handoff-diagnostic-2026-11-18.json")
 ORACLE_FILE: Path
@@ -152,7 +154,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         "computes SHA-256(component 0 + NUL + component 1) and uses a protected local oracle.")
     run_id = session.intake(title=f"Synthetic paired benchmark {case_id}", description=description,
                             paths=paths, categories=["crypto", "forensics"], max_actions=BUDGET["actions"],
-                            wall_seconds=BUDGET["wall_seconds"], evaluation_split="heldout")["run_id"]
+                            wall_seconds=BUDGET["wall_seconds"], evaluation_split=EVALUATION_SPLIT)["run_id"]
     run_root = session.artifact_root(run_id)
     if run_root is None:
         raise RuntimeError("run artifact root is unavailable")
@@ -271,7 +273,7 @@ def main() -> None:
     task_index = 0
     for family in FAMILIES:
         for _instance in range(2):
-            task_id = f"task-{task_index:02d}"
+            task_id = f"{TASK_PREFIX}-{task_index:02d}"
             assigned_family = list(family)
             if rng.randrange(2):
                 assigned_family.reverse()

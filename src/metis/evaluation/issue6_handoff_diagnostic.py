@@ -5,11 +5,33 @@ import json
 import random
 import statistics
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any
 
 ARMS = ("single", "multi_separate", "multi_combined")
 BOOTSTRAP_SAMPLES = 10_000
 BOOTSTRAP_SEED = 20261119
+
+
+@dataclass(frozen=True)
+class StudyShape:
+    """Frozen study identity supplied by the caller, outside generic analysis."""
+
+    study: str
+    seed: int
+    order_seed: int
+    task_ids: tuple[str, ...]
+    pair_counts: tuple[tuple[tuple[str, str], int], ...]
+
+
+PILOT_SHAPE = StudyShape(
+    study="issue6-feasibility-pilot-2026-11-18",
+    seed=2026111806,
+    order_seed=2026111806 ^ 0x6A09E667,
+    task_ids=tuple(f"pilot6-{index:02d}" for index in range(6)),
+    pair_counts=((('base32', 'base64'), 2), (('base64', 'hex'), 2),
+                 (('base64', 'base85'), 2)),
+)
 
 
 def _percentile(values: list[float], probability: float) -> float:
@@ -32,18 +54,28 @@ def _cluster_interval(rows: list[dict[str, Any]], contrast: str) -> list[float]:
     return [round(_percentile(estimates, 0.025), 4), round(_percentile(estimates, 0.975), 4)]
 
 
-def analyze(data: dict[str, Any]) -> dict[str, Any]:
+def analyze(data: dict[str, Any], *, expected_clusters: int = 30,
+            study_shape: StudyShape | None = None) -> dict[str, Any]:
     task_families = data["encoding_pairs"]
     task_ids = sorted(task_families)
-    if len(task_ids) != 30 or data.get("repetitions_per_task") != 1:
-        raise ValueError("expected 30 new task clusters with one trial each")
+    if study_shape is not None:
+        observed_pairs = [tuple(sorted(task_families[task_id])) for task_id in task_ids]
+        pair_counts = Counter(observed_pairs)
+        if (data.get("study") != study_shape.study
+                or data.get("seed") != study_shape.seed
+                or data.get("order_seed") != study_shape.order_seed
+                or task_ids != list(study_shape.task_ids)
+                or dict(pair_counts) != dict(study_shape.pair_counts)):
+            raise ValueError("study identity, seed, or task families disagree with preregistration")
+    if len(task_ids) != expected_clusters or data.get("repetitions_per_task") != 1:
+        raise ValueError(f"expected {expected_clusters} new task clusters with one trial each")
     if data.get("arms") != list(ARMS):
         raise ValueError("unexpected diagnostic arms")
     records = data["records"]
     keys = [(row["case"], row["arm"]) for row in records]
     cases = sorted({row["case"] for row in records})
     expected = {(case, arm) for case in cases for arm in ARMS}
-    if len(cases) != 30 or len(keys) != len(set(keys)) or set(keys) != expected:
+    if len(cases) != expected_clusters or len(keys) != len(set(keys)) or set(keys) != expected:
         raise ValueError("expected exactly one result per case and arm")
     by_key = {(row["case"], row["arm"]): row for row in records}
     comparisons = {row["case"]: row for row in data["comparisons"]}
@@ -163,7 +195,10 @@ def main() -> int:
     parser.add_argument("input", type=Path)
     args = parser.parse_args()
     try:
-        result = analyze(json.loads(args.input.read_text(encoding="utf-8")))
+        data = json.loads(args.input.read_text(encoding="utf-8"))
+        shape = PILOT_SHAPE if data.get("study") == PILOT_SHAPE.study else None
+        result = analyze(data, expected_clusters=len(shape.task_ids) if shape else 30,
+                         study_shape=shape)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, sort_keys=True, indent=2))
