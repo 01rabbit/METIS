@@ -21,7 +21,7 @@ returned HTTP 200 with an empty body and an `Allow` header containing `OPTIONS`
 and the instance's generated method. One request using that exact method and
 route returned the expected response shape. The candidate stayed in a mode-0600
 temporary file and was submitted once through the logged-in official browser.
-The actual method token and flag are omitted from this report and the run log.
+The actual method token is omitted from this report but is retained in the scoped OPTIONS response event; the candidate flag is omitted from both this report and the run log.
 
 ## Evidence and limits
 
