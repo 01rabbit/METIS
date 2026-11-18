@@ -296,7 +296,7 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
         pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a numpy-enabled sandbox image")
     from metis.core.codex_session import CodexSession
     from metis.core.ctf_sandbox import configure
-    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan, run_zipcrypto_stay_stage2
 
     data = FIXTURE.read_bytes()
     seed = zc.infozip_seed(data, seconds=120)
@@ -337,6 +337,25 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     assert result["hits_count"] == 1, result
     shard = database.parent / result["candidate_shard"]
     assert json.loads(shard.read_text())["hits"] == [[index, list(expected_masks)]]
+
+    key0_crc = zc.crc32(state.x, 0)
+    key2_crc_full = zc.crc32(state.z, 0)
+    q8 = ((product * zc.MULT) & zc.M32) >> 24
+    key2_stage2 = ((key2_crc_full >> 16) << 2 & 0x3FC) | (key2_crc_full & 0x3)
+    guess = ((key0_crc >> 8) & 0xFF) | (key2_stage2 << 8) | (q8 << 18)
+    stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
+        "random_header_bytes_hex": b"".join(headers).hex(),
+        "stage1_shard": shard.name, "hit_index": 0,
+        "start": guess, "stop": guess + 1, "max_candidates": 1,
+        "seconds": 30, "max_hits": 1,
+    })
+    assert stage2["hits_count"] == 1, stage2
+    assert stage2["next_index"] == guess + 1 and stage2["complete"]
+    stage2_shard = database.parent / stage2["candidate_shard"]
+    assert stage2_shard.stat().st_mode & 0o777 == 0o600
+    stage2_hits = json.loads(stage2_shard.read_text())["hits"]
+    assert stage2_hits[0][0] == guess
+    assert stage2_hits[0][1] >> 24 == product >> 24
 
 
 def test_stay_stage2_runner_keeps_witness_private(tmp_path, monkeypatch):
