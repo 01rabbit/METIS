@@ -161,6 +161,65 @@ def _stay_predict_second_byte_difference(random_first: int, first_stream: int,
     return stream(first_key2_low) ^ stream(second_key2_low)
 
 
+def _stay_predict_third_byte_difference(random_first: int, random_second: int,
+                                         first_stream: int, key0_crc_bits_0_15: int,
+                                         key1_product_high: int, key2_crc_bits_0_23: int,
+                                         first_pass_carry1: int, second_pass_carry1: int,
+                                         q8: int, first_pass_carry2: int,
+                                         second_pass_carry2: int) -> int:
+    """Predict the two-pass third-byte stream XOR from Stay's Stage 2 guesses.
+
+    ``key0_crc_bits_0_15`` is the low 16 bits of ``crc32(key0, 0)``;
+    ``key2_crc_bits_0_23`` is the low 24 bits of ``crc32(key2, 0)``. The two
+    first-update carries are pass-specific Stage 1 choices; the two
+    second-update carries and ``q8 = MSB(key1 * MULT**2)`` are Stage 2 guesses.
+    This is a predictor only: it does not enumerate Stage 2 candidates.
+    """
+    byte_values = (random_first, random_second, first_stream, key1_product_high, q8)
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in byte_values):
+        raise ValueError("Stay Stage 2 byte guesses must be bytes")
+    if (type(key0_crc_bits_0_15) is not int or not 0 <= key0_crc_bits_0_15 <= 0xFFFF
+            or type(key2_crc_bits_0_23) is not int or not 0 <= key2_crc_bits_0_23 <= 0xFFFFFF):
+        raise ValueError("Stay Stage 2 CRC guesses are out of range")
+    carries = (first_pass_carry1, second_pass_carry1,
+               first_pass_carry2, second_pass_carry2)
+    if any(type(carry) is not int or carry not in (0, 1) for carry in carries):
+        raise ValueError("Stay Stage 2 carry guesses must be zero or one")
+
+    multiplier2 = MULT * MULT
+
+    def low_after_two(crc_low16: int, first_plain: int, second_plain: int) -> tuple[int, int]:
+        first = crc_low16 ^ (CRCTAB[first_plain] & 0xFFFF)
+        second = ((first >> 8) ^ CRCTAB[(first ^ second_plain) & 0xFF]) & 0xFF
+        return first & 0xFF, second
+
+    def second_key1_high(a1: int, a2: int, carry1: int, carry2: int) -> tuple[int, int]:
+        offset1 = a1 * MULT + 1
+        high1 = (key1_product_high + (offset1 >> 24) + carry1) & 0xFF
+        total2 = a1 * multiplier2 + MULT + a2 * MULT + 1
+        # q8 is the high byte of key1*M^2; carry2 is the guessed low-word carry.
+        high2 = (q8 + (total2 >> 24) + carry2) & 0xFF
+        return high1, high2
+
+    def stream_after_two(plain0: int, plain1: int, carry1: int, carry2: int) -> tuple[int, int]:
+        a1, a2 = low_after_two(key0_crc_bits_0_15, plain0, plain1)
+        high1, high2 = second_key1_high(a1, a2, carry1, carry2)
+        key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[high1]) & 0xFFFFFF
+        first_stream2 = ((((key2_after_first & 0xFFFF) | 2)
+                          * (((key2_after_first & 0xFFFF) | 2) ^ 1)) >> 8) & 0xFF
+        key2_after_second = ((key2_after_first >> 8)
+                             ^ CRCTAB[(key2_after_first ^ high2) & 0xFF]) & 0xFFFF
+        second_stream2 = (((key2_after_second | 2) * (key2_after_second | 3)) >> 8) & 0xFF
+        return first_stream2, second_stream2
+
+    first_pass_s1, first_pass_s2 = stream_after_two(
+        random_first, random_second, first_pass_carry1, first_pass_carry2)
+    _, second_pass_s2 = stream_after_two(
+        random_first ^ first_stream, random_second ^ first_pass_s1,
+        second_pass_carry1, second_pass_carry2)
+    return first_pass_s2 ^ second_pass_s2
+
+
 def _stay_first_stage_carry_masks(random_firsts: tuple[int, ...],
                                   observed_differences: tuple[int, ...],
                                   first_stream: int, key0_crc_low: int,

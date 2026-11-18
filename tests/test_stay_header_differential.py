@@ -71,6 +71,59 @@ def test_stay_first_header_cancellation_and_second_byte_relation() -> None:
             random_header[0], initial)
 
 
+def test_stay_stage2_third_byte_predictor_matches_planted_full_states() -> None:
+    from metis.core.ctf_zipcrypto import _stay_predict_third_byte_difference
+
+    rng = random.Random(20261119)
+    wrong_q8_changed = False
+    wrong_carry_changed = False
+    for _ in range(10_000):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        random_header = bytes(rng.getrandbits(8) for _ in range(10))
+        x0, y0, z0 = initial
+        product1 = y0 * MULT & MASK32
+        product2 = y0 * MULT * MULT & MASK32
+        assert ((product1 * MULT) & MASK32) >> 24 == product2 >> 24
+        crc0 = _crc_update(x0, 0)
+        crc2 = _crc_update(z0, 0)
+        first_stream = _stream_byte(z0)
+
+        first_pass = _encrypt(random_header, initial)
+        stored_header = _encrypt(first_pass, initial)
+        def carry_after_two(p0: int, p1: int) -> tuple[int, int]:
+            key0_1 = _crc_update(x0, p0)
+            a1 = key0_1 & 0xFF
+            first_offset = a1 * MULT + 1
+            carry1 = ((product1 & 0xFFFFFF) + (first_offset & 0xFFFFFF)) >> 24
+            key0_2 = _crc_update(key0_1, p1)
+            a2 = key0_2 & 0xFF
+            total2 = a1 * MULT * MULT + MULT + a2 * MULT + 1
+            carry2 = ((product2 & 0xFFFFFF) + (total2 & 0xFFFFFF)) >> 24
+            return carry1, carry2
+
+        stage1_carry1, stage2_carry1 = carry_after_two(random_header[0], random_header[1])
+        # The second pass consumes the first pass's ciphertext bytes as plaintext.
+        stage1_carry2, stage2_carry2 = carry_after_two(first_pass[0], first_pass[1])
+        predicted = _stay_predict_third_byte_difference(
+            random_header[0], random_header[1], first_stream, crc0 & 0xFFFF,
+            product1 >> 24, crc2 & 0xFFFFFF, stage1_carry1, stage1_carry2,
+            product2 >> 24, stage2_carry1, stage2_carry2)
+        assert predicted == (stored_header[2] ^ random_header[2])
+
+        wrong_q8 = _stay_predict_third_byte_difference(
+            random_header[0], random_header[1], first_stream, crc0 & 0xFFFF,
+            product1 >> 24, crc2 & 0xFFFFFF, stage1_carry1, stage1_carry2,
+            (product2 >> 24) ^ 1, stage2_carry1, stage2_carry2)
+        wrong_q8_changed |= wrong_q8 != predicted
+        wrong_carry = _stay_predict_third_byte_difference(
+            random_header[0], random_header[1], first_stream, crc0 & 0xFFFF,
+            product1 >> 24, crc2 & 0xFFFFFF, stage1_carry1, stage1_carry2,
+            product2 >> 24, stage2_carry1 ^ 1, stage2_carry2)
+        wrong_carry_changed |= wrong_carry != predicted
+
+    assert wrong_q8_changed and wrong_carry_changed
+
+
 def test_stay_reduced_subspace_filter_matches_exhaustive_forward_oracle() -> None:
     """A small candidate filter must retain exactly the direct-oracle survivors."""
     rng = random.Random(98_765)
