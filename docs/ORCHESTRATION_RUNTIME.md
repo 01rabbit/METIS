@@ -79,6 +79,24 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   CodexCLI経路では別に、providerを呼ぶ前にrun-wide model-turn reservationを1つ消費する。
   model turnは失敗・timeout・再試行でも返金しない。いずれかの上限超過は追加tool/model実行を拒否する。
 
+#### Shared model-call borrowing (opt-in engineering path)
+
+`AgentScheduler.enqueue(run_id, wave_id, dynamic_borrowing=True)` enables borrowing
+for a fresh wave with at least two assignments and no more assignments than the
+run's snapshotted model-call cap. The default remains the existing fixed
+assignment limit. Opt-in jobs may use up to the smaller of the run cap and the
+assignment schema's 20-intent ceiling as their assignment
+intent limit; the run-wide model-call reservation and action cap still apply.
+Under the run lock and one SQLite transaction, reservation preserves one model
+call for every queued or running peer that has never reserved a call. An active
+job reaching that protected remainder fails with `model_turn_peer_reserve`;
+the peer can then make its first call. This is a minimum opportunity to call,
+not a guarantee that every model call succeeds or every job completes. It can
+end a fast job before a slow peer starts, so a future benchmark must measure
+that fairness tradeoff explicitly. Retries consume the same run cap and never
+refund prior reservations. Cancellation refuses new reservations. No automatic
+benchmark or production workflow enables this policy in this change.
+
 ### 状態と attempt
 
 `queued → running → completed | failed | cancelled | timed_out`、停止を確認できない場合は `unknown`

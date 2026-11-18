@@ -620,7 +620,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             outcome = stopped_result
             break
         if reservation is None:
-            outcome = {"state": "failed", "reason": "run specialist model-turn budget exhausted"}
+            outcome = {"state": "failed", "reason": _job(scheduler, assignment_id).get("failure")
+                       or "run specialist model-turn budget exhausted"}
             break
         if stopped():
             outcome = stop_outcome("run or attempt stopped before provider call")
@@ -649,7 +650,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 outcome = stopped_result
                 break
             if retry_reservation is None:
-                outcome = {"state": "failed", "reason": "run specialist model-turn budget exhausted before retry"}
+                outcome = {"state": "failed", "reason": _job(scheduler, assignment_id).get("failure")
+                           or "run specialist model-turn budget exhausted before retry"}
                 break
             if stopped():
                 outcome = stop_outcome("run or attempt stopped before transient retry")
