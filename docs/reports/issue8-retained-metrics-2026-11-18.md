@@ -124,3 +124,23 @@ The exact focused run passed 39 tests across `test_heldout_analysis.py` and
 modules. Exact-head CI for the preceding `eb36968` commit passed Python,
 sandbox and linux-arm64-seccomp checks; the reconciliation change is newer and
 requires its own exact-head CI result.
+
+## Read-only run snapshot increment (post-merge)
+
+`python -m metis.evaluation.heldout_export STATE.sqlite RUN_ID` emits a
+fixed-field, answer-free snapshot from one validated event-chain transaction.
+It derives terminal status, last evidence sequence, official or protected
+fixture verification type, elapsed controller wall time, executing-event count,
+and controller model-turn/action counts when those tables exist. Missing tables
+and provider token/cost usage remain `null`; model rationales, tool output,
+candidate values and raw event details are never exported. The snapshot does
+not infer workflow completion, prior task exposure or solvability, so it is not
+a complete `Trial` and cannot alone score the P7 acceptance gate.
+
+The local focused exporter and analyzer suite passed, including a
+secret-bearing event detail, missing counters, unknown run, corrupted chain and
+sanitized CLI error.
+Ruff, mypy and `git diff --check` passed for the new module and test. The next
+step is a trial-level exporter that joins independently reviewed task metadata,
+job/synthesis completion and actual provider usage to these ledger facts, then
+reconciles each trial before the repeated held-out study.
