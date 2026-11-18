@@ -35,6 +35,7 @@ BUDGET = {"turns": 8, "actions": 4, "slots": 2, "wall_seconds": 600}
 ENCODINGS = ("base64", "base32", "hex", "base85", "base64url", "percent")
 FAMILIES = list(combinations(ENCODINGS, 2))
 TASK_REPETITIONS = 1
+TASK_PREFIX = "task"
 COMPONENT_ALPHABET = (string.ascii_letters + string.digits + " .,;:-_!?()[]{}").encode()
 OUTPUT = Path("docs/reports/data/issue6-handoff-diagnostic-2026-11-18.json")
 ORACLE_FILE: Path
@@ -271,7 +272,7 @@ def main() -> None:
     task_index = 0
     for family in FAMILIES:
         for _instance in range(2):
-            task_id = f"task-{task_index:02d}"
+            task_id = f"{TASK_PREFIX}-{task_index:02d}"
             assigned_family = list(family)
             if rng.randrange(2):
                 assigned_family.reverse()

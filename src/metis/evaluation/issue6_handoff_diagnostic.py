@@ -32,18 +32,18 @@ def _cluster_interval(rows: list[dict[str, Any]], contrast: str) -> list[float]:
     return [round(_percentile(estimates, 0.025), 4), round(_percentile(estimates, 0.975), 4)]
 
 
-def analyze(data: dict[str, Any]) -> dict[str, Any]:
+def analyze(data: dict[str, Any], *, expected_clusters: int = 30) -> dict[str, Any]:
     task_families = data["encoding_pairs"]
     task_ids = sorted(task_families)
-    if len(task_ids) != 30 or data.get("repetitions_per_task") != 1:
-        raise ValueError("expected 30 new task clusters with one trial each")
+    if len(task_ids) != expected_clusters or data.get("repetitions_per_task") != 1:
+        raise ValueError(f"expected {expected_clusters} new task clusters with one trial each")
     if data.get("arms") != list(ARMS):
         raise ValueError("unexpected diagnostic arms")
     records = data["records"]
     keys = [(row["case"], row["arm"]) for row in records]
     cases = sorted({row["case"] for row in records})
     expected = {(case, arm) for case in cases for arm in ARMS}
-    if len(cases) != 30 or len(keys) != len(set(keys)) or set(keys) != expected:
+    if len(cases) != expected_clusters or len(keys) != len(set(keys)) or set(keys) != expected:
         raise ValueError("expected exactly one result per case and arm")
     by_key = {(row["case"], row["arm"]): row for row in records}
     comparisons = {row["case"]: row for row in data["comparisons"]}
@@ -163,7 +163,9 @@ def main() -> int:
     parser.add_argument("input", type=Path)
     args = parser.parse_args()
     try:
-        result = analyze(json.loads(args.input.read_text(encoding="utf-8")))
+        data = json.loads(args.input.read_text(encoding="utf-8"))
+        expected_clusters = 6 if data.get("study") == "issue6-feasibility-pilot-2026-11-18" else 30
+        result = analyze(data, expected_clusters=expected_clusters)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, sort_keys=True, indent=2))
