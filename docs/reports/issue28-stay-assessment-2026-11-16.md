@@ -319,3 +319,13 @@ one-candidate validation, not enumeration of the 28-bit Stage 2 space.
 It does not reconstruct full keys, check all member CRCs, or submit a candidate.
 No official archive candidate was tested by this predicate. Issue #28 remains
 open.
+
+## Projection check on saved Stage 1 intervals (2026-11-18)
+
+The interval-to-q8 helper was applied locally to the private Stage 1 shards for
+run `0045b063168045c289eaef276dab21c2`. The analysis printed aggregate counts
+only: 360 first-stage candidates, 88 interval records, and 98,222,960 summed
+interval values. Each of the 88 intervals admits all 256 q8 values, so q8
+consistency is a required correctness check but does not reduce the present
+Stage 2 search space. Candidate IDs and values were not printed or added to
+tracked files. This aggregate analysis is not a Stage 2 search or solve.

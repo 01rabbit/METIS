@@ -676,3 +676,10 @@ recorded no solve. This does not establish host reboot recovery.
 This does not revoke provider credentials, erase SQLite WAL/backups, clear
 user-managed environment variables, or complete P8. See
 `docs/reports/issue9-auth-forgetting-2026-11-18.md`.
+
+A post-implementation aggregate check of the private Stage 1 shards reproduced
+360 candidates, 88 carry intervals, and 98,222,960 summed interval values. All
+88 intervals admit all 256 `q8` values, so the q8 constraint does not reduce
+the current search space. The check emitted aggregate counts only and did not
+run Stage 2 enumeration. Details are in
+`docs/reports/issue28-stay-assessment-2026-11-16.md`.
