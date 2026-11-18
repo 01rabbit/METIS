@@ -647,6 +647,7 @@ def _stay_stage2_first_member_preimages(index: int, random_first: int, random_se
     Each row is (key2 Stage 2 bits, first-pass carry, second-pass carry).
     This is an exact local preimage list; shared product intervals and other
     members still need to be checked. Its 4,096 predictor calls are bounded.
+    This is a research primitive; the production Stage 2 worker does not use it.
     """
     if (type(index) is not int or not 0 <= index < 1 << 40
             or any(type(value) is not int or not 0 <= value <= 255
