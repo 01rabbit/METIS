@@ -94,6 +94,9 @@ def test_intent_then_report_completes_the_attempt(setup):
     assert runner.models == ["model-a", "model-a"]
     usage = next(j for j in scheduler.jobs(run_id) if j["assignment_id"] == job["assignment_id"])["usage"]
     assert usage["host"] == "codex-exec" and usage["input_tokens"] == 20
+    # Fields no turn reported stay unknown instead of being summed as zero.
+    assert usage["cached_input_tokens"] is None and "cached_input_tokens" in usage["unknown_fields"]
+    assert usage["usage_complete"] is False
     with sqlite3.connect(database) as db:
         events = [row[0] for row in db.execute("SELECT event FROM agent_job_log WHERE assignment_id=? ORDER BY id",
                                                (job["assignment_id"],))]
@@ -693,6 +696,8 @@ def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
     assert len(result["codex_turns"]) == 2
     usage = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])["usage"]
     assert usage["turns"] == 2
+    # The failed turn reported no usage, so the total is unknown; the reported part stays visible.
+    assert usage["input_tokens"] is None and usage["known_subtotals"]["input_tokens"] == 10
     hard = ScriptedRunner([CodexTurn(returncode=1, message=None, stderr_tail="schema error"),
                            CodexTurn(returncode=0, message="{}")])
     second = started[1]

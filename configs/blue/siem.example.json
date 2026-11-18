@@ -1,0 +1,27 @@
+{
+  "splunk-read": {
+    "provider": "splunk",
+    "base_url": "https://siem.example.invalid:8089",
+    "token_env": "METIS_SPLUNK_TOKEN",
+    "resource": "splunk",
+    "indexes": ["security_events"],
+    "fields": ["_time", "host", "sourcetype", "EventCode", "user"],
+    "max_rows": 1000,
+    "page_size": 250,
+    "max_window_seconds": 3600,
+    "timeout_seconds": 30
+  },
+  "elastic-read": {
+    "provider": "elastic",
+    "base_url": "https://search.example.invalid:9200",
+    "token_env": "METIS_ELASTIC_TOKEN",
+    "auth_scheme": "ApiKey",
+    "resource": "elastic",
+    "indexes": ["security-events"],
+    "fields": ["@timestamp", "host.name", "event.code", "user.name"],
+    "timestamp_field": "@timestamp",
+    "max_rows": 1000,
+    "max_window_seconds": 3600,
+    "timeout_seconds": 30
+  }
+}
