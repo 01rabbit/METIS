@@ -301,6 +301,60 @@ if __name__ == "__main__":
 '''
 
 
+_STAY_RECOVER_WORKER = _CGROUP_GUARD + r'''
+if __name__ == "__main__":
+    import json, os, time
+    from pathlib import Path
+    print("METIS_PHASE:stay-key-recovery", flush=True)
+    request = json.loads(Path(os.environ["METIS_STDIN"]).read_text())
+    if not cgroup_limits_ok():
+        print(json.dumps({"reason": "isolation_unavailable"}))
+        raise SystemExit(0)
+    archive = Path(os.environ["METIS_TARGET"]).read_bytes()
+    entries = [entry for entry in members(archive) if entry["encrypted"]]
+    headers = bytes.fromhex(request["random_header_bytes_hex"])
+    if len(entries) < 5 or len(entries) > 64 or len(headers) != 10 * len(entries):
+        print(json.dumps({"reason": "observation_count_mismatch"}))
+        raise SystemExit(0)
+    random_headers = tuple(headers[10 * i:10 * i + 10] for i in range(len(entries)))
+    stored_headers = tuple(member_bytes(archive, entry)[:12] for entry in entries)
+    if any(len(stored) != 12 or stored[0] != header[0]
+           for stored, header in zip(stored_headers, random_headers, strict=True)):
+        print(json.dumps({"reason": "header_observation_mismatch"}))
+        raise SystemExit(0)
+    firsts = tuple(header[0] for header in random_headers)
+    observed_second = tuple(stored[1] ^ header[1] for stored, header in zip(
+        stored_headers, random_headers, strict=True))
+    index = request["candidate_index"]
+    masks = _stay_first_stage_candidate(index, firsts, observed_second)
+    if masks is None or list(masks) != request["carry_masks"]:
+        print(json.dumps({"reason": "stage1_observation_mismatch"}))
+        raise SystemExit(0)
+    started = time.monotonic()
+    chunk = _stay_recover_keys_for_guess(
+        index, masks, random_headers, stored_headers, request["guess"],
+        start_product=request["start_product"], start_extra=request["start_extra"],
+        max_products=request["max_products"], max_candidates=request["max_candidates"],
+        max_hits=request["max_hits"], seconds=max(1, request["seconds"] - 2))
+    verified = []
+    for parts in chunk.keys:
+        keys = Keys(*parts)
+        try:
+            if all(decrypt_member(archive, entry["name"], keys,
+                                  expected_random_header=header)["crc_ok"]
+                   for entry, header in zip(entries, random_headers, strict=True)):
+                verified.append(parts)
+        except (ValueError, EOFError):
+            continue
+    print(json.dumps({"result": {"next_product": chunk.next_product,
+                                  "next_extra": chunk.next_extra,
+                                  "product_count": chunk.product_count,
+                                  "reason": chunk.reason,
+                                  "seconds": round(time.monotonic() - started, 3),
+                                  "keys": verified}}, separators=(",", ":")))
+'''
+
+
 def run_zipcrypto_attack(database: Path, run_id: str, artifact: str, options: dict[str, Any],
                          *, _profile: str = "zipcrypto", _operation_id: str | None = None) -> dict[str, Any]:
     """Fixed-purpose route: no caller-controlled script, image, or resource settings."""
@@ -501,6 +555,111 @@ def run_zipcrypto_stay_stage2(database: Path, run_id: str, artifact: str, option
             raise
         shard_ref = str(output.relative_to(database.parent))
     return {**scan, "hits_count": len(candidate_hits), "candidate_shard": shard_ref}
+
+
+def run_zipcrypto_stay_recover(database: Path, run_id: str, artifact: str,
+                               options: dict[str, Any], *, _profile: str = "zipcrypto",
+                               _operation_id: str | None = None) -> dict[str, Any]:
+    """Recover keys from one private Stage 2 hit in the bounded sandbox."""
+    if _profile != "zipcrypto":
+        return {"reason": "isolation_unavailable", "stage": "sandbox-profile"}
+    stage2_ref = options.get("stage2_shard")
+    if not isinstance(stage2_ref, str) or not re.fullmatch(
+            rf"private-stay/{re.escape(run_id)}/s2-[0-9a-f]{{32}}\.json", stage2_ref):
+        return {"reason": "private_state_unavailable", "stage": "stage2-shard"}
+    shard_root = database.parent / "private-stay" / run_id
+    stage2_file = database.parent / stage2_ref
+
+    def secure_file(path: Path) -> bool:
+        return (not path.is_symlink() and path.is_file()
+                and not path.stat().st_mode & 0o077 and path.stat().st_size <= 262_144)
+
+    if (shard_root.parent.is_symlink() or shard_root.is_symlink()
+            or not shard_root.is_dir() or shard_root.stat().st_mode & 0o077
+            or shard_root.parent.stat().st_mode & 0o077 or not secure_file(stage2_file)):
+        return {"reason": "private_state_unavailable", "stage": "stage2-shard"}
+    try:
+        stage2 = json.loads(stage2_file.read_text(encoding="utf-8"))
+        stage1_ref = stage2["stage1_shard"]
+        if not isinstance(stage1_ref, str) or not re.fullmatch(
+                rf"private-stay/{re.escape(run_id)}/[0-9a-f]{{32}}\.json", stage1_ref):
+            raise ValueError("invalid Stage 1 reference")
+        stage1_file = database.parent / stage1_ref
+        if not secure_file(stage1_file):
+            raise ValueError("invalid Stage 1 file")
+        stage1 = json.loads(stage1_file.read_text(encoding="utf-8"))
+        index, masks = stage1["hits"][stage2["hit_index"]]
+        guess, _witness = stage2["hits"][options["hit_index"]]
+        count = len(bytes.fromhex(options["random_header_bytes_hex"])) // 10
+        if (type(index) is not int or not 0 <= index < 1 << 40
+                or type(guess) is not int or not 0 <= guess < 1 << 26
+                or not isinstance(masks, list) or len(masks) != count
+                or any(type(mask) is not int or not 1 <= mask <= 15 for mask in masks)):
+            raise ValueError("invalid private hit")
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
+        return {"reason": "private_state_unavailable", "stage": "stage2-shard"}
+    source = Path(__file__).with_name("ctf_zipcrypto.py").read_text(encoding="utf-8")
+    script = ("import sys\nprint('METIS_PHASE:worker-imports', flush=True)\n"
+              f"exec(compile({source!r}, '<metis-zipcrypto>', 'exec'), globals())\n"
+              + _STAY_RECOVER_WORKER)
+    if len(script.encode()) > 262_144:
+        return {"reason": "isolation_unavailable", "stage": "worker-package"}
+    request = {key: options[key] for key in (
+        "random_header_bytes_hex", "start_product", "start_extra", "max_products",
+        "max_candidates", "max_hits", "seconds")}
+    request.update(candidate_index=index, carry_masks=masks, guess=guess)
+    try:
+        result = Sandbox(database).execute(run_id, SandboxRequest(
+            target=artifact, mode="script", script=script, stdin=json.dumps(request).encode(),
+            timeout=options["seconds"]), _reserved=_operation_id is not None,
+            _profile=_profile, _operation_id=_operation_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"reason": "isolation_unavailable", "stage": "sandbox",
+                "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    failure = _sandbox_failure(result)
+    if failure is not None:
+        return failure
+    try:
+        lines = result["stdout"]["text"].splitlines()
+        payload = json.loads(next(line for line in reversed(lines)
+                                  if line and not line.startswith("METIS_PHASE:")))
+        if payload.get("reason"):
+            return {"reason": payload["reason"], "stage": "input-validation"}
+        scan = payload["result"]
+        keys = scan.pop("keys")
+        if (not isinstance(keys, list) or len(keys) > options["max_hits"]
+                or type(scan.get("next_product")) is not int
+                or not options["start_product"] <= scan["next_product"] <= 4096
+                or type(scan.get("next_extra")) is not int
+                or not 0 <= scan["next_extra"] < 1 << 24
+                or type(scan.get("product_count")) is not int
+                or not 0 <= scan["product_count"] <= 4096
+                or scan.get("reason") not in {"complete", "candidate_limit", "time_limit",
+                                            "hit_limit", "product_limit"}
+                or any(not isinstance(key, list) or len(key) != 3
+                       or any(type(part) is not int or not 0 <= part <= 0xFFFFFFFF for part in key)
+                       for key in keys)):
+            raise ValueError("invalid worker output")
+    except (KeyError, TypeError, ValueError, StopIteration):
+        return {"reason": "worker_failed", "stage": "worker-output"}
+    key_ref = None
+    if keys:
+        output = shard_root / f"k-{uuid4().hex}.json"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(output, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({"stage2_shard": stage2_ref, "hit_index": options["hit_index"],
+                           "keys": keys}, stream, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
+        key_ref = str(output.relative_to(database.parent))
+    return {**scan, "keys_count": len(keys), "key_shard": key_ref}
 
 
 def _sandbox_failure(result: dict[str, Any]) -> dict[str, Any] | None:

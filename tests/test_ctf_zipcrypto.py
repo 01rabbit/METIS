@@ -296,7 +296,11 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
         pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a numpy-enabled sandbox image")
     from metis.core.codex_session import CodexSession
     from metis.core.ctf_sandbox import configure
-    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan, run_zipcrypto_stay_stage2
+    from metis.core.ctf_zipcrypto_worker import (
+        run_zipcrypto_stay_recover,
+        run_zipcrypto_stay_scan,
+        run_zipcrypto_stay_stage2,
+    )
 
     data = FIXTURE.read_bytes()
     seed = zc.infozip_seed(data, seconds=120)
@@ -356,8 +360,66 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     stage2_hits = json.loads(stage2_shard.read_text())["hits"]
     assert stage2_hits[0][0] == guess
     assert stage2_hits[0][1] >> 24 == product >> 24
-    if os.environ.get("METIS_TEST_STAY_STAGE2_PROBE") == "1":
-        for count in (1_000, 10_000):
+    products: list[int] = []
+    assert zc._stay_stage2_candidate_matches(
+        index, expected_masks, random_firsts, tuple(header[1] for header in headers),
+        tuple(zc.member_bytes(data, entry)[2] ^ header[2]
+              for entry, header in zip(encrypted, headers, strict=True)),
+        guess & 0xFF, (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+        product_witness=products, max_product_witnesses=4096)
+    recovery_options = {
+        "random_header_bytes_hex": b"".join(headers).hex(),
+        "stage2_shard": stage2["candidate_shard"], "hit_index": 0,
+        "start_product": products.index(product), "start_extra": 0,
+        "max_products": 1, "max_candidates": 1 << 24,
+        "seconds": 60, "max_hits": 1,
+    }
+    partial = run_zipcrypto_stay_recover(database, run_id, artifact, {
+        **recovery_options, "max_candidates": 1024})
+    assert partial["reason"] == "candidate_limit", partial
+    assert partial["next_product"] == products.index(product)
+    assert partial["next_extra"] == 1024 and partial["keys_count"] == 0
+    recovery = run_zipcrypto_stay_recover(database, run_id, artifact, {
+        **recovery_options, "start_extra": partial["next_extra"],
+        "max_candidates": (1 << 24) - partial["next_extra"]})
+    assert recovery["keys_count"] == 1, recovery
+    assert "keys" not in recovery
+    key_file = database.parent / recovery["key_shard"]
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert json.loads(key_file.read_text())["keys"] == [[state.x, state.y, state.z]]
+    assert products.index(product) > 0
+    previous = zc._stay_recover_keys_for_guess(
+        index, expected_masks, tuple(headers),
+        tuple(zc.member_bytes(data, entry)[:12] for entry in encrypted), guess,
+        start_product=products.index(product) - 1, start_extra=0,
+        max_products=1, max_candidates=1 << 24, max_hits=1, seconds=30)
+    assert previous.reason == "candidate_limit", previous
+    assert previous.next_product == products.index(product) and previous.next_extra == 0
+    resumed = zc._stay_recover_keys_for_guess(
+        index, expected_masks, tuple(headers),
+        tuple(zc.member_bytes(data, entry)[:12] for entry in encrypted), guess,
+        start_product=previous.next_product, start_extra=previous.next_extra,
+        max_products=1, max_candidates=1 << 24, max_hits=1, seconds=30)
+    assert (state.x, state.y, state.z) in resumed.keys
+    repeated = zc._stay_stage2_scan_chunk(
+        index, (expected_masks[0],) * 7,
+        (headers[0][0],) * 7, (headers[0][1],) * 7,
+        (zc.member_bytes(data, encrypted[0])[2] ^ headers[0][2],) * 7,
+        start=guess - 32768, stop=guess + 32768,
+        max_candidates=65536, max_hits=4096, seconds=30)
+    assert repeated.reason == "complete" and len(repeated.hits) == 692
+    vector_stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
+        "random_header_bytes_hex": b"".join(headers).hex(),
+        "stage1_shard": result["candidate_shard"], "hit_index": 0,
+        "start": guess - 512, "stop": guess + 1, "max_candidates": 513,
+        "seconds": 30, "max_hits": 4,
+    })
+    assert vector_stage2["hits_count"] >= 1, vector_stage2
+    assert any(hit[0] == guess for hit in json.loads(
+        (database.parent / vector_stage2["candidate_shard"]).read_text())["hits"])
+    probe_mode = os.environ.get("METIS_TEST_STAY_STAGE2_PROBE")
+    if probe_mode in {"1", "large"}:
+        for count in ((1_000, 10_000, 1 << 23) if probe_mode == "large" else (1_000, 10_000)):
             probe = run_zipcrypto_stay_stage2(database, run_id, artifact, {
                 "random_header_bytes_hex": b"".join(headers).hex(),
                 "stage1_shard": result["candidate_shard"], "hit_index": 0,
@@ -367,6 +429,26 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
             print("Stage 2 probe:", {key: probe.get(key) for key in (
                 "reason", "scanned", "next_index", "complete", "seconds", "hits_count")})
             assert probe.get("next_index") is not None, probe.get("reason")
+
+
+def test_stay_recover_controller_bounds_options():
+    from metis.core.ctf_artifacts import inspect_bytes
+
+    received = []
+    def runner(_data, settings):
+        received.append(settings)
+        return {"keys_count": 0}
+
+    options = {"random_header_bytes_hex": "00" * 50,
+               "stage2_shard": f"private-stay/{'a' * 32}/s2-{'b' * 32}.json"}
+    assert inspect_bytes(b"archive", "zipcrypto_stay_recover", options,
+                         zipcrypto_runner=runner) == {"keys_count": 0}
+    assert received[0]["max_products"] == 1
+    for update in ({"stage2_shard": "../bad"}, {"max_products": 4097},
+                   {"start_extra": 1 << 24}, {"seconds": 301}):
+        with pytest.raises(ValueError):
+            inspect_bytes(b"archive", "zipcrypto_stay_recover", {**options, **update},
+                          zipcrypto_runner=runner)
 
 
 def test_stay_stage2_runner_keeps_witness_private(tmp_path, monkeypatch):
@@ -424,6 +506,11 @@ def test_stay_stage2_controller_bounds_options():
     inspect_bytes(b"archive", "zipcrypto_stay_stage2", options, zipcrypto_runner=runner)
     assert seen[0]["start"] == 5 and seen[0]["stop"] == 8
     assert seen[0]["stage1_shard"] == options["stage1_shard"]
+    inspect_bytes(b"archive", "zipcrypto_stay_stage2",
+                  {**options, "max_candidates": 1 << 23}, zipcrypto_runner=runner)
+    with pytest.raises(ValueError):
+        inspect_bytes(b"archive", "zipcrypto_stay_stage2",
+                      {**options, "max_candidates": (1 << 23) + 1}, zipcrypto_runner=runner)
     with pytest.raises(ValueError):
         inspect_bytes(b"archive", "zipcrypto_stay_stage2", {**options, "stop": 4},
                       zipcrypto_runner=runner)

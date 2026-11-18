@@ -544,7 +544,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                                    key2_crc_bits_16_23_and_0_1: int, q8: int, *,
                                    product_witness: list[int] | None = None,
                                    prepared_intervals: tuple[tuple[tuple[int, int, int], tuple[int, ...]],
-                                                             ...] | None = None) -> bool:
+                                                             ...] | None = None,
+                                   deadline: float | None = None,
+                                   max_product_witnesses: int = 1) -> bool:
     """Exactly test one Stage 2 partial guess against shared interval constraints.
 
     This is a bounded one-candidate predicate, not a keyspace enumerator. It
@@ -566,6 +568,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
             or not 0 <= key2_crc_bits_16_23_and_0_1 <= 0x3FF
             or type(q8) is not int or not 0 <= q8 <= 0xFF):
         raise ValueError("Stay Stage 2 guesses are out of range")
+    if (type(max_product_witnesses) is not int or not 1 <= max_product_witnesses <= 4096
+            or max_product_witnesses > 1 and product_witness is None):
+        raise ValueError("Stay Stage 2 product witness limit is invalid")
 
     first_stream = index & 0xFF
     key0_crc = (index >> 8 & 0xFF) | (key0_crc_bits_8_15 << 8)
@@ -576,22 +581,34 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
 
     intervals = (prepared_intervals if prepared_intervals is not None else
                  tuple(_stay_first_stage_key1_intervals(index, carry_masks, random_firsts)))
-    # The first member's third-byte observation depends on its Stage 1 carry
-    # pair, but not on the product interval. Reject a guess before visiting
-    # every interval when none of those pairs can explain the observation.
-    first_options: dict[int, tuple[int, ...]] = {}
-    for pair in {pairs[0] for _interval, pairs in intervals}:
-        first_options[pair] = tuple(
-            carry2_first * 2 + carry2_second
-            for carry2_first in (0, 1) for carry2_second in (0, 1)
-            if _stay_predict_third_byte_difference(
-                random_firsts[0], random_seconds[0], first_stream, key0_crc,
-                product_high, key2_crc, pair >> 1, pair & 1, q8,
-                carry2_first, carry2_second) == observed_third_differences[0])
-    if not any(first_options.values()):
-        return False
+    initial_product_count = len(product_witness) if product_witness is not None else 0
+    seen_products = set(product_witness or ())
+    # Third-byte predictions depend on the member and first-update carry pair,
+    # not on the product interval. Compute each distinct option once, then
+    # discard interval branches that cannot explain all observed members.
+    member_options: list[dict[int, tuple[int, ...]]] = []
+    for member, (random_first, random_second, observed) in enumerate(zip(
+            random_firsts, random_seconds, observed_third_differences, strict=True)):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Stay Stage 2 member sieve exceeded deadline")
+        options_by_pair: dict[int, tuple[int, ...]] = {}
+        for pair in {pairs[member] for _interval, pairs in intervals}:
+            options_by_pair[pair] = tuple(
+                carry2_first * 2 + carry2_second
+                for carry2_first in (0, 1) for carry2_second in (0, 1)
+                if _stay_predict_third_byte_difference(
+                    random_first, random_second, first_stream, key0_crc,
+                    product_high, key2_crc, pair >> 1, pair & 1, q8,
+                    carry2_first, carry2_second) == observed)
+        if not any(options_by_pair.values()):
+            return False
+        member_options.append(options_by_pair)
     for interval, carry_pairs in intervals:
-        if not first_options[carry_pairs[0]]:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Stay Stage 2 interval filtering exceeded deadline")
+        current_member_options = tuple(member_options[member][pair]
+                                       for member, pair in enumerate(carry_pairs))
+        if not all(current_member_options):
             continue
         offsets: list[int] = []
         for random_first, random_second, pair in zip(
@@ -600,33 +617,9 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                 random_first, random_second, first_stream, key0_crc,
                 product_high, key2_crc, pair >> 1))
 
-        member_carry_options: list[tuple[int, ...]] = []
-        for member, (random_first, random_second, observed, pair) in enumerate(zip(
-                random_firsts, random_seconds, observed_third_differences,
-                carry_pairs, strict=True)):
-            first_carry1, second_carry1 = pair >> 1, pair & 1
-            if member == 0:
-                member_carry_options.append(first_options[pair])
-                continue
-            options: list[int] = []
-            for first_carry2 in (0, 1):
-                for second_carry2 in (0, 1):
-                    predicted = _stay_predict_third_byte_difference(
-                        random_first, random_second, first_stream, key0_crc,
-                        product_high, key2_crc, first_carry1, second_carry1,
-                        q8, first_carry2, second_carry2)
-                    if predicted == observed:
-                        options.append(first_carry2 * 2 + second_carry2)
-            if not options:
-                break
-            member_carry_options.append(tuple(options))
-        if len(member_carry_options) != count:
-            continue
-
         low_limit = 1 << 24
         current_interval = interval
         current_offsets = tuple(offsets)
-        current_member_options = tuple(member_carry_options)
 
         def shared_residue_exists(member: int, lower: int, upper: int, *,
                                   _interval=current_interval,
@@ -635,16 +628,32 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                                   _limit=low_limit) -> bool:
             if lower > upper:
                 return False
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Stay Stage 2 residue filtering exceeded deadline")
             if member == count:
                 if product_witness is None:
                     return _stay_q8_residue_interval_nonempty(_interval, q8, lower, upper)
-                witness = _stay_q8_residue_interval_witness(_interval, q8, lower, upper)
-                if witness is None:
-                    return False
-                product_witness.append((_interval[0] << 24) | witness)
-                return True
+                product_cursor = _interval[1]
+                found = False
+                while product_cursor <= _interval[2]:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError("Stay Stage 2 product enumeration exceeded deadline")
+                    witness = _stay_q8_residue_interval_witness(
+                        (_interval[0], product_cursor, _interval[2]), q8, lower, upper)
+                    if witness is None:
+                        break
+                    product = (_interval[0] << 24) | witness
+                    if product not in seen_products:
+                        product_witness.append(product)
+                        seen_products.add(product)
+                        found = True
+                    if len(product_witness) >= max_product_witnesses:
+                        return True
+                    product_cursor = witness + 1
+                return found
             first_addend = _offsets[member * 2]
             second_addend = _offsets[member * 2 + 1]
+            found = False
             for pair in _choices[member]:
                 next_lower, next_upper = lower, upper
                 for addend, carry in ((first_addend, pair >> 1),
@@ -655,12 +664,15 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
                     else:
                         next_upper = min(next_upper, threshold - 1)
                 if shared_residue_exists(member + 1, next_lower, next_upper):
-                    return True
-            return False
+                    found = True
+                    if product_witness is None or len(product_witness) >= max_product_witnesses:
+                        return True
+            return found
 
-        if shared_residue_exists(0, 0, low_limit - 1):
+        if (shared_residue_exists(0, 0, low_limit - 1)
+                and (product_witness is None or len(product_witness) >= max_product_witnesses)):
             return True
-    return False
+    return len(product_witness) > initial_product_count if product_witness is not None else False
 
 
 def _stay_stage2_first_member_preimages(index: int, random_first: int, random_second: int,
@@ -703,6 +715,64 @@ class StayStage2Chunk:
     reason: str
 
 
+def _stay_stage2_first_member_mask_np(index: int, random_first: int, random_second: int,
+                                      observed_third: int, guesses: np.ndarray,
+                                      first_pairs: tuple[int, ...], *,
+                                      deadline: float | None = None) -> np.ndarray:
+    """Vectorized necessary first-member sieve over packed Stage 2 guesses.
+
+    Every surviving guess still passes through the scalar shared-interval
+    predicate. This routine may retain false positives but must not drop any
+    guess whose first-member third-byte relation is satisfiable.
+    """
+    if guesses.ndim != 1 or guesses.dtype != np.uint32:
+        raise ValueError("Stay Stage 2 sieve expects a uint32 guess vector")
+    packed = guesses.astype(np.uint64)
+    key0_crc = np.uint64((index >> 8) & 0xFF) | ((packed & np.uint64(0xFF)) << np.uint64(8))
+    bits = (packed >> np.uint64(8)) & np.uint64(0x3FF)
+    key2_crc = (np.uint64(((index >> 25) & 0x3F) << 10 | ((index >> 31) & 0xFF) << 2)
+                | ((bits >> np.uint64(2)) << np.uint64(16)) | (bits & np.uint64(3)))
+    q8 = (packed >> np.uint64(18)) & np.uint64(0xFF)
+    first_stream = index & 0xFF
+    product_high = (index >> 16) & 0xFF
+    mask = np.zeros(len(guesses), dtype=np.bool_)
+
+    def streams(plain0: int, plain1: int | np.ndarray, carry1: int,
+                carry2: int) -> tuple[np.ndarray, np.ndarray]:
+        first = (key0_crc ^ np.uint64(CRCTAB[plain0] & 0xFFFF)) & np.uint64(0xFFFF)
+        a1 = first & np.uint64(0xFF)
+        second_index = ((first ^ plain1) & np.uint64(0xFF)).astype(np.intp)
+        a2 = ((first >> np.uint64(8)) ^ CRCTAB_NP[second_index]) & np.uint64(0xFF)
+        first_offset = a1 * np.uint64(MULT) + np.uint64(1)
+        high1 = (np.uint64(product_high) + (first_offset >> np.uint64(24))
+                 + np.uint64(carry1)) & np.uint64(0xFF)
+        total2 = (a1 * np.uint64(MULT * MULT) + np.uint64(MULT)
+                  + a2 * np.uint64(MULT) + np.uint64(1))
+        high2 = (q8 + (total2 >> np.uint64(24)) + np.uint64(carry2)) & np.uint64(0xFF)
+        key2_first = (key2_crc ^ CRCTAB_NP[high1.astype(np.intp)]) & np.uint64(0xFFFFFF)
+        state1 = (key2_first & np.uint64(0xFFFF)) | np.uint64(2)
+        stream1 = (state1 * (state1 ^ np.uint64(1)) >> np.uint64(8)) & np.uint64(0xFF)
+        key2_second = ((key2_first >> np.uint64(8))
+                       ^ CRCTAB_NP[((key2_first ^ high2) & np.uint64(0xFF)).astype(np.intp)])
+        key2_second &= np.uint64(0xFFFF)
+        state2 = key2_second | np.uint64(2)
+        stream2 = (state2 * (state2 ^ np.uint64(1)) >> np.uint64(8)) & np.uint64(0xFF)
+        return stream1, stream2
+
+    for pair in first_pairs:
+        for carry2_first in (0, 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Stay Stage 2 vector sieve exceeded deadline")
+            stream_first, stream_third = streams(random_first, random_second, pair >> 1,
+                                                 carry2_first)
+            for carry2_second in (0, 1):
+                _stream_second, second_third = streams(
+                    random_first ^ first_stream,
+                    random_second ^ stream_first, pair & 1, carry2_second)
+                mask |= (stream_third ^ second_third) == np.uint64(observed_third)
+    return mask
+
+
 def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
                             random_firsts: tuple[int, ...], random_seconds: tuple[int, ...],
                             observed_third_differences: tuple[int, ...], *,
@@ -735,23 +805,52 @@ def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
     hits: list[tuple[int, int]] = []
     cursor = start
     visited = 0
+    first_pairs = tuple(sorted({pairs[0] for _interval, pairs in prepared_intervals}))
     while cursor < stop:
         if visited >= max_candidates:
             return StayStage2Chunk(cursor, tuple(hits), "candidate_limit")
         if time.monotonic() >= deadline:
             return StayStage2Chunk(cursor, tuple(hits), "time_limit")
-        guess = cursor
-        witness: list[int] = []
-        if _stay_stage2_candidate_matches(
-                index, carry_masks, random_firsts, random_seconds,
-                observed_third_differences, guess & 0xFF,
-                (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
-                product_witness=witness, prepared_intervals=prepared_intervals):
-            hits.append((guess, witness[0]))
-        cursor += 1
-        visited += 1
-        if len(hits) >= max_hits:
-            return StayStage2Chunk(cursor, tuple(hits), "hit_limit")
+        block_start = cursor
+        block_stop = min(stop, cursor + min(65_536, max_candidates - visited))
+        try:
+            if not first_pairs:
+                survivor_offsets = np.empty(0, dtype=np.intp)
+            elif block_stop - block_start >= 256:
+                guesses = np.arange(block_start, block_stop, dtype=np.uint32)
+                first_mask = _stay_stage2_first_member_mask_np(
+                    index, random_firsts[0], random_seconds[0], observed_third_differences[0],
+                    guesses, first_pairs, deadline=deadline)
+                survivor_offsets = np.flatnonzero(first_mask)
+            else:
+                survivor_offsets = np.arange(block_stop - block_start)
+        except TimeoutError:
+            return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+        if time.monotonic() >= deadline:
+            return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+        for offset in survivor_offsets:
+            guess = block_start + int(offset)
+            visited += guess - cursor
+            cursor = guess
+            if time.monotonic() >= deadline:
+                return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+            witness: list[int] = []
+            try:
+                if _stay_stage2_candidate_matches(
+                        index, carry_masks, random_firsts, random_seconds,
+                        observed_third_differences, guess & 0xFF,
+                        (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+                        product_witness=witness, prepared_intervals=prepared_intervals,
+                        deadline=deadline):
+                    hits.append((guess, witness[0]))
+            except TimeoutError:
+                return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+            cursor += 1
+            visited += 1
+            if len(hits) >= max_hits:
+                return StayStage2Chunk(cursor, tuple(hits), "hit_limit")
+        visited += block_stop - cursor
+        cursor = block_stop
     return StayStage2Chunk(cursor, tuple(hits), "complete")
 
 
@@ -1054,6 +1153,172 @@ class Keys:
 
     def hex(self) -> dict[str, str]:
         return {"x": f"{self.x:08x}", "y": f"{self.y:08x}", "z": f"{self.z:08x}"}
+
+
+@dataclass(frozen=True)
+class StayKeyRecoveryChunk:
+    next_extra: int
+    keys: tuple[tuple[int, int, int], ...]
+    reason: str
+
+
+def _stay_recover_keys_for_product(product: int, index: int, guess: int,
+                                   random_headers: tuple[bytes, ...],
+                                   stored_headers: tuple[bytes, ...], *,
+                                   start: int, stop: int, max_candidates: int,
+                                   max_hits: int, seconds: float) -> StayKeyRecoveryChunk:
+    """Bound the remaining CRC high-bit search for one *supplied* product.
+
+    A Stage 2 hit may admit many products. This helper neither enumerates them
+    nor treats its first product witness as proof of a key. It keeps recovered
+    keys in caller memory; the sandbox worker must keep them private.
+    """
+    if (type(product) is not int or not 0 <= product <= M32
+            or type(index) is not int or not 0 <= index < 1 << 40
+            or type(guess) is not int or not 0 <= guess < 1 << 26
+            or type(start) is not int or type(stop) is not int
+            or not 0 <= start <= stop <= 1 << 24
+            or type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 24
+            or type(max_hits) is not int or not 1 <= max_hits <= 4096
+            or not 0 < seconds <= 300 or len(random_headers) < 5
+            or len(random_headers) != len(stored_headers)
+            or any(len(header) < 10 for header in (*random_headers, *stored_headers))):
+        raise ValueError("invalid Stay full-key recovery bounds or observations")
+    deadline = time.monotonic() + seconds
+    key0_low16 = ((index >> 8) & 0xFF) | ((guess & 0xFF) << 8)
+    key2_low24 = (((index >> 25) & 0x3F) << 10 | ((index >> 31) & 0xFF) << 2
+                  | (((guess >> 8) & 0x3FF) >> 2) << 16 | ((guess >> 8) & 3))
+    key1 = product * MULTINV & M32
+    hits: list[tuple[int, int, int]] = []
+    cursor = start
+    visited = 0
+    mask32 = np.uint64(M32)
+
+    def keystream(z: np.ndarray) -> np.ndarray:
+        state = (z & np.uint64(0xFFFF)) | np.uint64(2)
+        return (state * (state ^ np.uint64(1)) >> np.uint64(8)) & np.uint64(0xFF)
+
+    def update(x: np.ndarray, y: np.ndarray, z: np.ndarray,
+               plain: int | np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x = ((x >> np.uint64(8))
+             ^ CRCTAB_NP[((x ^ plain) & np.uint64(0xFF)).astype(np.intp)]) & mask32
+        y = ((y + (x & np.uint64(0xFF))) * np.uint64(MULT) + np.uint64(1)) & mask32
+        z = ((z >> np.uint64(8))
+             ^ CRCTAB_NP[((z ^ (y >> np.uint64(24))) & np.uint64(0xFF)).astype(np.intp)]) & mask32
+        return x, y, z
+
+    while cursor < stop:
+        if visited >= max_candidates:
+            return StayKeyRecoveryChunk(cursor, tuple(hits), "candidate_limit")
+        if time.monotonic() >= deadline:
+            return StayKeyRecoveryChunk(cursor, tuple(hits), "time_limit")
+        end = min(stop, cursor + min(65_536, max_candidates - visited))
+        extra = np.arange(cursor, end, dtype=np.uint32).astype(np.uint64)
+        crc0 = np.uint64(key0_low16) | ((extra & np.uint64(0xFFFF)) << np.uint64(16))
+        crc2 = np.uint64(key2_low24) | ((extra >> np.uint64(16)) << np.uint64(24))
+        x0 = ((crc0 << np.uint64(8)) & mask32) ^ CRCINV_NP[(crc0 >> np.uint64(24)).astype(np.intp)]
+        z0 = ((crc2 << np.uint64(8)) & mask32) ^ CRCINV_NP[(crc2 >> np.uint64(24)).astype(np.intp)]
+        y0 = np.full(len(extra), key1, dtype=np.uint64)
+        x, y, z = x0, y0, z0
+        first_cipher: list[np.ndarray] = []
+        for plain in random_headers[0][:4]:
+            first_cipher.append(np.uint64(plain) ^ keystream(z))
+            x, y, z = update(x, y, z, plain)
+        x, y, z = x0, y0, z0
+        stored_fourth: np.ndarray | None = None
+        for cipher_plain in first_cipher:
+            stored_fourth = cipher_plain ^ keystream(z)
+            x, y, z = update(x, y, z, cipher_plain)
+        assert stored_fourth is not None
+        for offset in np.flatnonzero(stored_fourth == stored_headers[0][3]):
+            position = cursor + int(offset)
+            if time.monotonic() >= deadline:
+                return StayKeyRecoveryChunk(position, tuple(hits), "time_limit")
+            keys = Keys(int(x0[offset]), key1, int(z0[offset]))
+            if all(keys.encrypt(keys.encrypt(header[:10])) == stored[:10]
+                   for header, stored in zip(random_headers, stored_headers, strict=True)):
+                hits.append((keys.x, keys.y, keys.z))
+                if len(hits) >= max_hits:
+                    return StayKeyRecoveryChunk(position + 1, tuple(hits), "hit_limit")
+        visited += end - cursor
+        cursor = end
+    return StayKeyRecoveryChunk(cursor, tuple(hits), "complete")
+
+
+@dataclass(frozen=True)
+class StayGuessRecoveryChunk:
+    next_product: int
+    next_extra: int
+    product_count: int
+    keys: tuple[tuple[int, int, int], ...]
+    reason: str
+
+
+def _stay_recover_keys_for_guess(index: int, carry_masks: tuple[int, ...],
+                                 random_headers: tuple[bytes, ...],
+                                 stored_headers: tuple[bytes, ...], guess: int, *,
+                                 start_product: int, start_extra: int,
+                                 max_products: int, max_candidates: int,
+                                 max_hits: int, seconds: float) -> StayGuessRecoveryChunk:
+    """Resume bounded key recovery across all enumerated products for one hit."""
+    if (type(start_product) is not int or start_product < 0
+            or type(start_extra) is not int or not 0 <= start_extra < 1 << 24
+            or type(max_products) is not int or not 1 <= max_products <= 4096
+            or type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 28
+            or type(max_hits) is not int or not 1 <= max_hits <= 4096
+            or not 0 < seconds <= 300 or len(random_headers) < 5
+            or len(random_headers) != len(stored_headers)
+            or any(len(header) < 10 for header in (*random_headers, *stored_headers))):
+        raise ValueError("invalid Stay guess recovery bounds or observations")
+    deadline = time.monotonic() + seconds
+    firsts = tuple(header[0] for header in random_headers)
+    seconds_bytes = tuple(header[1] for header in random_headers)
+    third = tuple(stored[2] ^ header[2] for stored, header in zip(
+        stored_headers, random_headers, strict=True))
+    products: list[int] = []
+    try:
+        matched = _stay_stage2_candidate_matches(
+            index, carry_masks, firsts, seconds_bytes, third,
+            guess & 0xFF, (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+            product_witness=products, max_product_witnesses=4096, deadline=deadline)
+    except TimeoutError:
+        return StayGuessRecoveryChunk(start_product, start_extra, len(products), (), "time_limit")
+    if len(products) >= 4096:
+        return StayGuessRecoveryChunk(start_product, start_extra, len(products), (), "product_limit")
+    if not matched or start_product > len(products):
+        return StayGuessRecoveryChunk(start_product, start_extra, len(products), (), "complete")
+    cursor_product, cursor_extra = start_product, start_extra
+    remaining = max_candidates
+    keys: list[tuple[int, int, int]] = []
+    processed = 0
+    while cursor_product < len(products):
+        if processed >= max_products or remaining <= 0:
+            return StayGuessRecoveryChunk(cursor_product, cursor_extra, len(products),
+                                          tuple(keys), "candidate_limit")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return StayGuessRecoveryChunk(cursor_product, cursor_extra, len(products),
+                                          tuple(keys), "time_limit")
+        chunk = _stay_recover_keys_for_product(
+            products[cursor_product], index, guess, random_headers, stored_headers,
+            start=cursor_extra, stop=1 << 24,
+            max_candidates=min(remaining, (1 << 24) - cursor_extra),
+            max_hits=max_hits - len(keys), seconds=min(left, 300))
+        remaining -= chunk.next_extra - cursor_extra
+        keys.extend(chunk.keys)
+        if chunk.reason == "hit_limit":
+            return StayGuessRecoveryChunk(cursor_product, chunk.next_extra, len(products),
+                                          tuple(keys), "hit_limit")
+        if chunk.reason == "time_limit":
+            return StayGuessRecoveryChunk(cursor_product, chunk.next_extra, len(products),
+                                          tuple(keys), "time_limit")
+        if chunk.reason == "candidate_limit":
+            return StayGuessRecoveryChunk(cursor_product, chunk.next_extra, len(products),
+                                          tuple(keys), "candidate_limit")
+        cursor_product += 1
+        cursor_extra = 0
+        processed += 1
+    return StayGuessRecoveryChunk(cursor_product, 0, len(products), tuple(keys), "complete")
 
 
 class BudgetExceeded(RuntimeError):

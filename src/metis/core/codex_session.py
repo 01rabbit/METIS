@@ -63,9 +63,12 @@ def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
             add("stage", result["stage"])
         for key in ("tried", "workers", "seconds"):
             add(key, result.get(key))
-    elif tool in {"zipcrypto_stay_scan", "zipcrypto_stay_stage2"}:
+    elif tool in {"zipcrypto_stay_scan", "zipcrypto_stay_stage2", "zipcrypto_stay_recover"}:
         for key in ("next_index", "complete", "scanned", "hits_count", "seconds"):
             add(key, result.get(key))
+        if tool == "zipcrypto_stay_recover":
+            for key in ("next_product", "next_extra", "product_count", "keys_count"):
+                add(key, result.get(key))
         if result.get("reason") in {"work_exceeds_budget", "memory_limit_exceeded", "isolation_unavailable",
                                      "worker_failed", "header_observation_mismatch",
                                      "observation_count_mismatch"}:
@@ -324,6 +327,11 @@ class CodexSession:
                     def zipcrypto_runner(data, settings):
                         return run_zipcrypto_stay_stage2(self.database, run_id, name, settings,
                                                          _operation_id=operation_id)
+                elif tool == "zipcrypto_stay_recover":
+                    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_recover
+                    def zipcrypto_runner(data, settings):
+                        return run_zipcrypto_stay_recover(self.database, run_id, name, settings,
+                                                          _operation_id=operation_id)
                 result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
                 output = {"run_id": run_id, "ok": True, "result": result, "_tool": tool}
             except ARTIFACT_ERRORS as exc:

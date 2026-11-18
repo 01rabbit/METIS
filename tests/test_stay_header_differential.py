@@ -3,7 +3,11 @@
 These verify one forward relation used by Stay section 4. They do not test
 the paper's inverse key-recovery search.
 """
+import os
 import random
+import time
+
+import pytest
 
 MASK32 = 0xFFFFFFFF
 MULT = 0x08088405
@@ -560,6 +564,83 @@ def test_stage2_chunk_reuses_first_stage_intervals(monkeypatch) -> None:
     assert calls == 1
 
 
+def test_stage2_member_sieve_reuses_predictions_across_intervals(monkeypatch) -> None:
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    calls = 0
+
+    def predict(*args):
+        nonlocal calls
+        calls += 1
+        return 0 if args[-2:] == (0, 0) else 1
+
+    monkeypatch.setattr(zipcrypto, "_stay_predict_third_byte_difference", predict)
+    monkeypatch.setattr(zipcrypto, "_stay_q8_residue_interval_nonempty",
+                        lambda *args: False)
+    intervals = (((0, 0, 0), (0,) * 5),) * 100
+    assert not zipcrypto._stay_stage2_candidate_matches(
+        0, (1,) * 5, (1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (0,) * 5,
+        0, 0, 0, prepared_intervals=intervals)
+    assert calls == 5 * 4
+
+
+def test_stage2_vector_first_member_matches_scalar_predictions() -> None:
+    import numpy as np
+
+    from metis.core.ctf_zipcrypto import (
+        _stay_predict_third_byte_difference,
+        _stay_stage2_first_member_mask_np,
+    )
+
+    rng = random.Random(2026111828)
+    index = rng.getrandbits(40)
+    guesses = np.array([rng.randrange(1 << 26) for _ in range(257)], dtype=np.uint32)
+    first, second, observed = 31, 147, 83
+    pairs = (0, 1, 2, 3)
+    vector = _stay_stage2_first_member_mask_np(index, first, second, observed, guesses, pairs)
+    expected = []
+    for packed in guesses:
+        guess = int(packed)
+        key0 = ((index >> 8) & 0xFF) | ((guess & 0xFF) << 8)
+        key2 = (((index >> 25) & 0x3F) << 10 | ((index >> 31) & 0xFF) << 2
+                | (((guess >> 8) & 0x3FF) >> 2) << 16 | ((guess >> 8) & 3))
+        expected.append(any(
+            _stay_predict_third_byte_difference(
+                first, second, index & 0xFF, key0, (index >> 16) & 0xFF,
+                key2, pair >> 1, pair & 1, (guess >> 18) & 0xFF,
+                carry_first, carry_second) == observed
+            for pair in pairs for carry_first in (0, 1) for carry_second in (0, 1)))
+    assert vector.tolist() == expected
+
+
+def test_stage2_member_sieve_timeout_does_not_advance_cursor(monkeypatch) -> None:
+    import time
+
+    import pytest
+
+    import metis.core.ctf_zipcrypto as zipcrypto
+
+    def slow_predict(*args):
+        time.sleep(0.002)
+        return 0
+
+    monkeypatch.setattr(zipcrypto, "_stay_predict_third_byte_difference", slow_predict)
+    with pytest.raises(TimeoutError, match="deadline"):
+        zipcrypto._stay_stage2_candidate_matches(
+            0, (1,) * 5, (1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (0,) * 5,
+            0, 0, 0, prepared_intervals=(((0, 0, 0), (0,) * 5),),
+            deadline=time.monotonic() + 0.001)
+
+    def timeout(*args, **kwargs):
+        raise TimeoutError("predicate deadline")
+
+    monkeypatch.setattr(zipcrypto, "_stay_stage2_candidate_matches", timeout)
+    chunk = zipcrypto._stay_stage2_scan_chunk(
+        0, (1,) * 5, (1, 2, 3, 4, 5), (6, 7, 8, 9, 10), (0,) * 5,
+        start=3, stop=4, max_candidates=1, max_hits=1, seconds=1)
+    assert chunk == zipcrypto.StayStage2Chunk(3, (), "time_limit")
+
+
 def test_stage2_preparation_obeys_deadline_and_skips_empty_range(monkeypatch) -> None:
     import time
 
@@ -597,6 +678,8 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         MULT,
         _stay_first_stage_candidate,
         _stay_first_stage_key1_intervals,
+        _stay_recover_keys_for_guess,
+        _stay_recover_keys_for_product,
         _stay_second_update_addends,
         _stay_stage2_candidate_matches,
         _stay_stage2_first_member_preimages,
@@ -610,7 +693,7 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
         product = initial[1] * MULT & M32
         key0_crc16 = _crc_update(initial[0], 0) & 0xFFFF
         key2_crc24 = _crc_update(initial[2], 0) & 0xFFFFFF
-        random_headers = tuple(bytes(rng.getrandbits(8) for _ in range(3)) for _ in range(7))
+        random_headers = tuple(bytes(rng.getrandbits(8) for _ in range(10)) for _ in range(7))
         first_passes = tuple(_encrypt(header, initial) for header in random_headers)
         stored_headers = tuple(_encrypt(first_pass, initial) for first_pass in first_passes)
         random_firsts = tuple(header[0] for header in random_headers)
@@ -683,6 +766,45 @@ def test_stay_stage2_exact_filter_retains_planted_shared_state() -> None:
             assert positive.reason == "hit_limit"
             assert positive.next_index == guess + 1
             assert positive.hits == ((guess, witnesses[0]),)
+            vector_chunk = _stay_stage2_scan_chunk(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                start=max(0, guess - 512), stop=guess + 1,
+                max_candidates=513, max_hits=513, seconds=10)
+            assert (guess, witnesses[0]) in vector_chunk.hits
+            products: list[int] = []
+            assert _stay_stage2_candidate_matches(
+                index, carry_masks, random_firsts, random_seconds, observed_third,
+                (key0_crc16 >> 8) & 0xFF, key2_stage2, q8,
+                product_witness=products, max_product_witnesses=4096,
+                deadline=time.monotonic() + 10)
+            assert product in products
+            assert len(products) < 4096
+            from_guess = _stay_recover_keys_for_guess(
+                index, carry_masks, random_headers, stored_headers, guess,
+                start_product=products.index(product), start_extra=0,
+                max_products=1, max_candidates=1 << 24,
+                max_hits=1, seconds=10)
+            assert initial in from_guess.keys
+            extra = ((_crc_update(initial[0], 0) >> 16) & 0xFFFF) | (
+                (_crc_update(initial[2], 0) >> 24) << 16)
+            recovered = _stay_recover_keys_for_product(
+                product, index, guess, random_headers, stored_headers,
+                start=0, stop=1 << 24,
+                max_candidates=1 << 24, max_hits=1, seconds=10)
+            assert initial in recovered.keys
+            limited_keys = _stay_recover_keys_for_product(
+                product, index, guess, random_headers, stored_headers,
+                start=extra, stop=extra + 2,
+                max_candidates=1, max_hits=4, seconds=10)
+            assert limited_keys.reason == "candidate_limit"
+            assert limited_keys.next_extra == extra + 1
+            assert limited_keys.keys == (initial,)
+            mutated = list(stored_headers)
+            mutated[0] = mutated[0][:3] + bytes([mutated[0][3] ^ 1]) + mutated[0][4:]
+            rejected = _stay_recover_keys_for_product(
+                product, index, guess, random_headers, tuple(mutated),
+                start=extra, stop=extra + 1, max_candidates=1, max_hits=4, seconds=10)
+            assert not rejected.keys
             negative = _stay_stage2_scan_chunk(
                 index, carry_masks, random_firsts, random_seconds,
                 tuple(value ^ 0x5A for value in observed_third),
@@ -880,3 +1002,54 @@ def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -
     wrong_stream = zc.glibc_rand_bytes(np.array([seed ^ 1], dtype=np.uint64), 70)[0]
     wrong_headers = [bytes(wrong_stream[i * 10:i * 10 + 10]) for i in range(len(members))]
     assert not jointly_consistent(wrong_headers)
+
+
+def test_stay_full_product_traversal_on_independent_sixteen_header_vector() -> None:
+    """Opt-in inverse search using an independent bitwise two-pass producer."""
+    if os.environ.get("METIS_TEST_SLOW") != "1":
+        pytest.skip("set METIS_TEST_SLOW=1 for full product traversal")
+    from metis.core import ctf_zipcrypto as zc
+
+    rng = random.Random(711)
+    initial = tuple(rng.getrandbits(32) for _ in range(3))
+    random_headers = tuple(rng.randbytes(10) for _ in range(16))
+    stored_headers = tuple(_encrypt(_encrypt(header, initial), initial)
+                           for header in random_headers)
+    key0, key1, key2 = initial
+    first_stream = _stream_byte(key2)
+    product = key1 * MULT & MASK32
+    key0_crc = _crc_update(key0, 0)
+    key2_crc = _crc_update(key2, 0)
+    first_low = _crc_update(key0, random_headers[0][0]) & 255
+    second_low = _crc_update(key0, random_headers[0][0] ^ first_stream) & 255
+    carry_first = int((product & 0xFFFFFF) + ((first_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+    carry_second = int((product & 0xFFFFFF) + ((second_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+    index = (first_stream | (key0_crc & 255) << 8 | (product >> 24) << 16
+             | carry_first << 24 | ((key2_crc & 0xFFFC) >> 10) << 25
+             | (((key2_crc & 0xFFFC) >> 2) & 255) << 31 | carry_second << 39)
+    masks = zc._stay_first_stage_candidate(
+        index, tuple(header[0] for header in random_headers),
+        tuple(stored[1] ^ header[1] for stored, header in zip(
+            stored_headers, random_headers, strict=True)))
+    assert masks is not None
+    q8 = ((product * MULT) & MASK32) >> 24
+    bits = (((key2_crc >> 16) << 2) & 0x3FC) | (key2_crc & 3)
+    guess = ((key0_crc >> 8) & 255) | (bits << 8) | (q8 << 18)
+
+    product_cursor = extra_cursor = 0
+    recovered: list[tuple[int, int, int]] = []
+    calls = 0
+    while True:
+        chunk = zc._stay_recover_keys_for_guess(
+            index, masks, random_headers, stored_headers, guess,
+            start_product=product_cursor, start_extra=extra_cursor,
+            max_products=4, max_candidates=1 << 26, max_hits=2, seconds=60)
+        calls += 1
+        recovered.extend(chunk.keys)
+        assert chunk.product_count == 33
+        assert chunk.reason in {"candidate_limit", "complete"}
+        if chunk.reason == "complete":
+            break
+        assert (chunk.next_product, chunk.next_extra) > (product_cursor, extra_cursor)
+        product_cursor, extra_cursor = chunk.next_product, chunk.next_extra
+    assert calls == 9 and recovered == [initial]
