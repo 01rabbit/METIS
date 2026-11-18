@@ -41,3 +41,13 @@ padding received the official ksnctf `correct` verdict; METIS run status is
 `solved`. This establishes the official #39 solve for Issue #28. The report
 intentionally omits the key, shares, and answer. The private checkpoint and
 official verdict remain in the run state.
+
+The first review of this runner identified three checkpoint integrity defects:
+uncertain operations could clear the in-flight marker, a fixed temporary name
+could block restart, and a reported key shard was not validated before success.
+The follow-up change keeps the marker until validated progress is committed,
+uses unique same-directory private temporary files, and validates the key
+shard's run path, file type, mode and key structure. Negative-path and restart
+tests cover rejected, malformed, stalled, failed and symlink cases. These
+changes harden future execution; the earlier official verdict is independently
+recorded in the original run state.

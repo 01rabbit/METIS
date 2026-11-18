@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -63,3 +64,101 @@ def test_full_scan_resumes_from_saved_cursor(tmp_path: Path, monkeypatch) -> Non
     outcome = runner.full(object(), path, saved, "00")
     assert outcome["phase"] == "no_key"
     assert json.loads(path.read_text())["full_cursor"] == 1
+
+
+@pytest.mark.parametrize("response", [
+    {"ok": False},
+    {"ok": True, "result": None},
+    {"ok": True, "result": {"next_index": 0}},
+    {"ok": True, "result": {"next_index": 1, "reason": "worker_failed"}},
+])
+def test_scan_uncertain_result_blocks_restart(tmp_path: Path, response: dict) -> None:
+    class Session:
+        def context(self, _run_id):
+            return {"status": "planning", "seconds_remaining": 300, "actions_remaining": 10}
+
+        def artifact(self, *_args):
+            return response
+
+    state = {"phase": "probe", "started_at": runner.time.time(), "actions": 0,
+             "inflight": None, "stage2_hits": []}
+    path = tmp_path / "progress.json"
+    with pytest.raises((RuntimeError, TypeError)):
+        runner._scan(Session(), path, state, {"shard": "private", "hit_index": 0}, "00", 0, 1)
+    reloaded = json.loads(path.read_text())
+    assert reloaded["inflight"]["kind"] == "stage2"
+    with pytest.raises(RuntimeError, match="audit before resume"):
+        runner._check_budget(reloaded, Session())
+
+
+def test_private_checkpoint_ignores_orphaned_temp(tmp_path: Path) -> None:
+    path = tmp_path / "progress.json"
+    (tmp_path / "progress.json.tmp").write_text("interrupted")
+    runner._write_private(path, {"phase": "safe"})
+    assert json.loads(path.read_text()) == {"phase": "safe"}
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("response", [
+    {"ok": False},
+    {"ok": True, "result": None},
+    {"ok": True, "result": {"keys_count": 1, "key_shard": "private-stay/"
+     + runner.RUN_ID + "/k-" + "0" * 32 + ".json"}},
+    {"ok": True, "result": {"keys_count": 0, "reason": "time_limit",
+     "next_product": 0, "next_extra": 0}},
+])
+def test_recovery_uncertain_result_blocks_restart(tmp_path: Path, response: dict) -> None:
+    root = tmp_path / "private-stay" / runner.RUN_ID
+    root.mkdir(parents=True)
+    os.chmod(root, 0o700)
+    shard = root / ("s2-" + "0" * 32 + ".json")
+    shard.write_text(json.dumps({"hits": [[1]]}))
+    os.chmod(shard, 0o600)
+
+    class Session:
+        database = tmp_path / "metis.sqlite"
+
+        def context(self, _run_id):
+            return {"status": "planning", "seconds_remaining": 300, "actions_remaining": 10}
+
+        def artifact(self, *_args):
+            return response
+
+    state = {"phase": "recovering", "started_at": runner.time.time(),
+             "actions": 0, "inflight": None,
+             "stage2_hits": [{"shard": str(shard.relative_to(tmp_path))}]}
+    path = root / "progress.json"
+    with pytest.raises((RuntimeError, TypeError)):
+        runner._recover(Session(), path, state, "00")
+    reloaded = json.loads(path.read_text())
+    assert reloaded["inflight"]["kind"] == "recover"
+    with pytest.raises(RuntimeError, match="audit before resume"):
+        runner._check_budget(reloaded, Session())
+
+
+def test_recovery_rejects_symlink_key_shard(tmp_path: Path) -> None:
+    root = tmp_path / "private-stay" / runner.RUN_ID
+    root.mkdir(parents=True)
+    os.chmod(root, 0o700)
+    shard = root / ("s2-" + "0" * 32 + ".json")
+    shard.write_text(json.dumps({"hits": [[1]]}))
+    os.chmod(shard, 0o600)
+    key_ref = "private-stay/" + runner.RUN_ID + "/k-" + "1" * 32 + ".json"
+    (tmp_path / key_ref).symlink_to(shard)
+
+    class Session:
+        database = tmp_path / "metis.sqlite"
+
+        def context(self, _run_id):
+            return {"status": "planning", "seconds_remaining": 300, "actions_remaining": 10}
+
+        def artifact(self, *_args):
+            return {"ok": True, "result": {"keys_count": 1, "key_shard": key_ref}}
+
+    state = {"phase": "recovering", "started_at": runner.time.time(),
+             "actions": 0, "inflight": None,
+             "stage2_hits": [{"shard": str(shard.relative_to(tmp_path))}]}
+    path = root / "progress.json"
+    with pytest.raises(RuntimeError, match="shard unsafe"):
+        runner._recover(Session(), path, state, "00")
+    assert json.loads(path.read_text())["inflight"]["kind"] == "recover"

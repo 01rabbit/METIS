@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -30,11 +31,8 @@ STAGE1_NAME = re.compile(r"[0-9a-f]{32}\.json")
 
 
 def _write_private(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(temporary, flags, 0o600)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, separators=(",", ":"), sort_keys=True)
@@ -151,19 +149,29 @@ def _scan(session: CodexSession, path: Path, state: dict[str, Any],
         "start": start, "stop": stop, "max_candidates": min(STAGE2_CHUNK, stop - start),
         "seconds": seconds, "max_hits": 4096})
     state["actions"] += 1
-    state["inflight"] = None
-    if not response.get("ok"):
-        _write_private(path, state)
+    if not isinstance(response, dict) or not response.get("ok"):
         raise RuntimeError("Stage 2 operation rejected")
-    result = response["result"]
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise TypeError("Stage 2 result malformed")
     if (type(result.get("next_index")) is not int
             or not start < result["next_index"] <= stop):
-        _write_private(path, state)
         raise RuntimeError("Stage 2 did not advance")
-    if result.get("reason") in {"memory_limit_exceeded", "isolation_unavailable", "worker_failed"}:
-        _write_private(path, state)
+    if result.get("reason") is not None:
         raise RuntimeError("Stage 2 worker failed")
+    if (type(result.get("hits_count")) is not int or result["hits_count"] < 0
+            or type(result.get("seconds")) not in (int, float)
+            or result["seconds"] < 0
+            or type(result.get("scanned")) is not int
+            or result["scanned"] != result["next_index"] - start
+            or type(result.get("complete")) is not bool
+            or result["complete"] != (result["next_index"] == stop)):
+        raise RuntimeError("Stage 2 result malformed")
+    if bool(result.get("candidate_shard")) != (result["hits_count"] > 0):
+        raise RuntimeError("Stage 2 shard count mismatch")
     if result.get("candidate_shard"):
+        if not isinstance(result["candidate_shard"], str):
+            raise RuntimeError("Stage 2 shard reference malformed")
         state["stage2_hits"].append({"shard": result["candidate_shard"],
                                      "hits_count": result["hits_count"]})
     return result
@@ -180,6 +188,8 @@ def _projection(records: list[dict[str, Any]], eligible_count: int) -> dict[str,
 
 
 def probe(session: CodexSession, path: Path, state: dict[str, Any], headers_hex: str) -> dict[str, Any]:
+    if state["phase"] not in {"probe", "ready", "needs_optimization"}:
+        raise RuntimeError("probe cannot run after the full scan has started")
     cases = _sample(state["eligible"])
     windows = ((0, PROBE_WINDOW),
                (GUESS_SPACE // 2 - PROBE_WINDOW // 2, GUESS_SPACE // 2 + PROBE_WINDOW // 2),
@@ -194,6 +204,7 @@ def probe(session: CodexSession, path: Path, state: dict[str, Any], headers_hex:
                                    "scanned": result["next_index"] - start,
                                    "seconds": result["seconds"],
                                    "hits_count": result["hits_count"]})
+            state["inflight"] = None
             _write_private(path, state)
             if result["next_index"] != stop:
                 raise RuntimeError("probe window incomplete; inspect private progress")
@@ -243,18 +254,34 @@ def _recover(session: CodexSession, path: Path, state: dict[str, Any],
             "max_products": 4, "max_candidates": 1 << 26,
             "seconds": seconds, "max_hits": 1})
         state["actions"] += 1
-        state["inflight"] = None
-        if not response.get("ok"):
-            _write_private(path, state)
+        if not isinstance(response, dict) or not response.get("ok"):
             raise RuntimeError("recovery operation rejected")
-        result = response["result"]
+        result = response.get("result")
+        if not isinstance(result, dict) or type(result.get("keys_count")) is not int:
+            raise RuntimeError("recovery result malformed")
         if result.get("keys_count", 0):
             key_ref = result.get("key_shard")
             if not isinstance(key_ref, str) or not re.fullmatch(
                     rf"private-stay/{RUN_ID}/k-[0-9a-f]{{32}}\.json", key_ref):
                 raise RuntimeError("recovery key shard missing")
+            key_path = session.database.parent / key_ref
+            key_root = key_path.parent
+            if (key_root.is_symlink() or not key_root.is_dir()
+                    or key_root.stat().st_mode & 0o077
+                    or key_path.is_symlink() or not key_path.is_file()
+                    or key_path.stat().st_mode & 0o077
+                    or key_path.stat().st_size > 262_144):
+                raise RuntimeError("recovery key shard unsafe")
+            key_data = json.loads(key_path.read_text(encoding="utf-8"))
+            keys = key_data.get("keys") if isinstance(key_data, dict) else None
+            if (not isinstance(keys, list) or len(keys) != result["keys_count"]
+                    or any(not isinstance(row, list) or len(row) != 3
+                           or any(type(value) is not int or not 0 <= value < 1 << 32
+                                  for value in row) for row in keys)):
+                raise RuntimeError("recovery key shard malformed")
             state["key_shard"] = key_ref
             state["phase"] = "key_found"
+            state["inflight"] = None
             _write_private(path, state)
             return {"phase": "key_found", "actions": state["actions"], "keys_count": result["keys_count"]}
         if result.get("reason") == "complete":
@@ -263,12 +290,11 @@ def _recover(session: CodexSession, path: Path, state: dict[str, Any],
         elif result.get("reason") in {"candidate_limit", "time_limit"}:
             new = (result.get("next_product"), result.get("next_extra"))
             if (type(new[0]) is not int or type(new[1]) is not int or new <= old):
-                _write_private(path, state)
                 raise RuntimeError("recovery cursor did not advance")
             state["recovery_product"], state["recovery_extra"] = new
         else:
-            _write_private(path, state)
             raise RuntimeError("recovery stopped without a complete result")
+        state["inflight"] = None
         _write_private(path, state)
     state["phase"] = "no_key"
     _write_private(path, state)
@@ -297,6 +323,7 @@ def full(session: CodexSession, path: Path, state: dict[str, Any],
             if state["full_next_index"] == GUESS_SPACE:
                 state["full_cursor"] += 1
                 state["full_next_index"] = 0
+            state["inflight"] = None
             _write_private(path, state)
         state["phase"] = "recovering"
         _write_private(path, state)
