@@ -20,6 +20,7 @@
       "report_rejection_categories": {
         "other_validation": 11
       },
+      "report_rejection_stages": {},
       "report_rejections": 11,
       "terminal_reason_categories": {
         "call_budget_or_turn_limit": 9,
@@ -50,6 +51,7 @@
       "report_rejection_categories": {
         "other_validation": 9
       },
+      "report_rejection_stages": {},
       "report_rejections": 9,
       "terminal_reason_categories": {
         "call_budget_or_turn_limit": 24,
@@ -78,6 +80,7 @@
       "model_turn_budget_denials": 0,
       "oracle_verified": 27,
       "report_rejection_categories": {},
+      "report_rejection_stages": {},
       "report_rejections": 0,
       "terminal_reason_categories": {
         "completed": 30

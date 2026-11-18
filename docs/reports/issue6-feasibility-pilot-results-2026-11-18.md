@@ -60,3 +60,9 @@ data for identity, seeds, task IDs and encoding-pair counts. The CLI selects
 the frozen pilot shape outside the analysis function; other studies can supply
 their own shape without adding study-specific branches inside `analyze()`.
 The retained dataset and numerical result have not changed.
+
+The review also found that the earlier 30-cluster handoff diagnostic's
+committed analysis JSON lacked the subsequently added
+`report_rejection_stages` field. We regenerated that JSON from its retained
+answer-free trial data. The only difference is an empty `{}` for that field
+in each arm; all outcome counts, contrasts and intervals are unchanged.
