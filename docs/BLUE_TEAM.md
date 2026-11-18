@@ -36,6 +36,25 @@ metis journal close   --case "$CASE" --outcome solved --summary "周期通信を
 
 clone ごとに一度 `git config core.hooksPath .githooks` を実行すると、コミット時に自動で走る。CI でも全体を検査する。
 
+## 証拠の読み取り（オフライン）
+
+ログやインシデントの証拠を、上限付きで構造化して読む。結果は観測であり、判定ではない。
+どの読み取りも `complete_for_input`（入力を最後まで読めたか）と `limitations`（言えないこと）を返す。
+
+| 成果物ツール | CLI の種別 | 対象 | 主な出力 |
+| --- | --- | --- | --- |
+| `email` | `email` | EML / MBOX | 全ヘッダーの原文（中身の真偽は未検証として扱う）、MIME 部品の種類・ファイル名・復号後のハッシュ、構造の欠陥 |
+| `browser_history` | `browser` | Chromium・Firefox の履歴 SQLite（WAL 付き） | 訪問・URL・ダウンロード、時刻の変換 |
+| `json_records` | `json` | 厳密な JSON（重複キーは拒否、数値は字句のまま保持） | 型付きの値の木。`field` 指定時は直下フィールドの最大値（同値を全て保持） |
+| `cloudtrail` | `cloudtrail` | CloudTrail の JSON | eventID ごとの重複・矛盾、認証・操作の結果、期間の絞り込み |
+| `evtx_xml` | `evtx-xml` | `wevtutil` / EvtxECmd の XML 出力 | EventID、Provider、SystemTime、EventData の名前と値 |
+
+- run の成果物には、専門家の intent（`kind: artifact`）か `metis codex artifact` で使う。上限は 8 MiB、
+  既定のレコード数は 200（`max_records` で 10,000 まで）。
+- ローカルのファイルには `metis evidence KIND FILE [--since ... --until ...] [--out .metis-state/x.json]`。
+  `--out` は `.metis-state/` 配下の新しいファイルだけに書く（上書き・シンボリックリンク経由は拒否）。
+- バイナリの EVTX、メモリイメージ、ディスクイメージは対象外。外部ツールで XML などに変換してから読む。
+
 ## 共有リソースとスコープ付き許可
 
 [ORCHESTRATION_RUNTIME.md](ORCHESTRATION_RUNTIME.md) の「共有リソースとスコープ付き許可」を参照。

@@ -32,6 +32,8 @@ from PIL import Image
 from metis.core.artifacts import artifact_stream
 from metis.core.ctf_tools import byte_view, number
 
+EVIDENCE_TOOLS = {"email": "email", "browser_history": "browser", "json_records": "json",
+                  "cloudtrail": "cloudtrail", "evtx_xml": "evtx-xml"}
 ARTIFACT_TOOLS = frozenset({
     "overview", "strings", "text", "hex", "elf", "disassemble", "zip_list", "zip_read",
     "gzip", "image", "image_lsb", "pcap",
@@ -40,6 +42,8 @@ ARTIFACT_TOOLS = frozenset({
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
     "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack",
     "zipcrypto_stay_scan", "zipcrypto_stay_stage2", "zipcrypto_decrypt",
+    # Blue-team evidence readers (metis.blue.evidence).
+    *EVIDENCE_TOOLS,
 })
 DERIVE_TOOLS = frozenset({
     "zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz", "base64_decode", "base32_decode",
@@ -496,6 +500,9 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "zlib": {"max_bytes"},
     "tar_list": set(), "tar_read": {"member", "max_bytes"},
     "bzip2": {"max_bytes"}, "xz": {"max_bytes"}, "pdf_text": {"pages"},
+    "email": {"email_format", "max_records"}, "browser_history": {"since", "until", "max_records"},
+    "json_records": {"field", "records_key", "max_records"}, "cloudtrail": {"since", "until", "max_records"},
+    "evtx_xml": {"max_records"},
 }
 
 
@@ -611,7 +618,23 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
         return _sqlite(data, options)
     if tool == "pdf_text":
         return _pdf_text(data, options)
+    if tool in EVIDENCE_TOOLS:
+        return _evidence(data, tool, options)
     raise ValueError("unsupported artifact analysis")
+
+
+def _evidence(data: bytes, tool: str, options: dict) -> dict:
+    """Run a METIS Blue evidence reader. Its report states completeness and limitations explicitly."""
+    from metis.blue.evidence import Limits, analyze_bytes
+
+    records = bounded_integer(options, "max_records", 200, 1, 10_000)
+    extra = {key: value for key, value in options.items() if key != "max_records"}
+    for key, value in extra.items():
+        if not isinstance(value, str) or len(value) > 200:
+            raise ValueError(f"{key} must be a short string")
+    report = analyze_bytes(EVIDENCE_TOOLS[tool], data, Limits(bytes=MAX_ARTIFACT, records=records, seconds=15.0),
+                           **extra)
+    return dict(report)
 
 
 def _tar(data: bytes, tool: str, options: dict) -> dict:
