@@ -90,9 +90,9 @@ def test_guard_flags_staged_snapshot_that_differs(tmp_path, monkeypatch):
     assert any("prohibited identifier: b.md" in e for e in module.check(staged=True))
 
 
-def test_metis_journal_cli_is_wired(tmp_path):
-    result = subprocess.run([str(ROOT / ".venv" / "bin" / "metis"), "journal", "--root", str(tmp_path / "j"),
-                             "open", "--case", "cli"], check=False, capture_output=True, text=True)
-    if result.returncode == 127 or not (ROOT / ".venv" / "bin" / "metis").exists():
-        pytest.skip("metis entry point not installed")
-    assert result.returncode == 0 and result.stdout.strip().endswith("-cli")
+def test_metis_journal_cli_is_wired(tmp_path, monkeypatch, capsys):
+    from metis import cli
+
+    monkeypatch.setattr("sys.argv", ["metis", "journal", "--root", str(tmp_path / "j"), "open", "--case", "cli"])
+    assert cli.main() == 0
+    assert capsys.readouterr().out.strip().endswith("-cli")
