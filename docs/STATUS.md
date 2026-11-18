@@ -209,10 +209,11 @@ Info-ZIP double-encrypted-header profile; the bounded seed search predicted the
 random bytes for every member. This is PRNG/header analysis only: those bytes
 are not Biham–Kocher known plaintext for the ZIP data stream; they are the
 stream-byte XOR constraints used by Stay section 4. A dummy-key decryption was
-rejected by the header check, and no Stay inverse recovery, independent
-synthetic Stay vector, or official submission has occurred. Issue #28 and
-ksnctf #39 remain open; see `reports/issue28-stay-assessment-2026-11-16.md`
-and the live run evidence.
+rejected by the header check. That assessment was superseded on 2026-11-19:
+the bounded Stage 2 continuation recovered a full key, independently validated
+all seven members, and received the official ksnctf `correct` verdict for #39.
+See `reports/issue28-target-stage2-2026-11-19.md` and the run evidence. Issue
+#28 can be closed after this change is reviewed and merged.
 
 A separate direct bit-vector SMT feasibility probe on two synthetic members
 returned `unknown` at a 60-second timeout. This does not test the target or a
