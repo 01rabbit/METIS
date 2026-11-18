@@ -388,3 +388,22 @@ seven-member planted Stage 2 cases also passed. The focused Stay suite passed
 product witness for later recovery; it does not establish that missing key0/key2
 bits are consistent, recover a full key, enumerate Stage 2, decrypt #39, or
 obtain an official verdict.
+
+## Bounded synthetic Stage 2 sandbox probe (2026-11-18)
+
+The opt-in seven-member synthetic test used the fixed networkless ZipCrypto
+container profile (2 GiB, four CPUs). It first checked one planted Stage 1 hit
+and one planted Stage 2 guess. Additional Stage 2 chunks scanned `[0, 1000)`
+and `[0, 10000)` for that vector. Both completed with zero hits and cursors
+1000 and 10000; worker-reported scan times were 0.022 and 0.203 seconds.
+These are short zero-hit synthetic measurements, not target throughput.
+
+The estimated 5,905,580,032 interval/guess pairs require at least 5,632
+actions at the Stage 2 tool's 1,048,576-candidate action cap, even if each
+action finishes instantly. This exceeds the controller's 1,000-action ceiling
+and ordinary 40-action run budget. Division by the observed 10,000-guess rate
+gives roughly 33 hours as a scale check only; target branching and hit density
+are unmeasured. The current worker scans one Stage 1 hit per call and recomputes
+its interval branches, so this estimate is optimistic for that interface. A
+stronger reduction or batching strategy is needed before a complete Stage 2
+attempt. No official archive Stage 2 scan or submission occurred.

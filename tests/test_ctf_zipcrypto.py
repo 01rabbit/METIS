@@ -356,6 +356,17 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     stage2_hits = json.loads(stage2_shard.read_text())["hits"]
     assert stage2_hits[0][0] == guess
     assert stage2_hits[0][1] >> 24 == product >> 24
+    if os.environ.get("METIS_TEST_STAY_STAGE2_PROBE") == "1":
+        for count in (1_000, 10_000):
+            probe = run_zipcrypto_stay_stage2(database, run_id, artifact, {
+                "random_header_bytes_hex": b"".join(headers).hex(),
+                "stage1_shard": shard.name, "hit_index": 0,
+                "start": 0, "stop": count, "max_candidates": count,
+                "seconds": 300, "max_hits": 1,
+            })
+            print("Stage 2 probe:", {key: probe.get(key) for key in (
+                "reason", "scanned", "next_index", "complete", "seconds", "hits_count")})
+            assert probe.get("next_index") is not None, probe.get("reason")
 
 
 def test_stay_stage2_runner_keeps_witness_private(tmp_path, monkeypatch):
