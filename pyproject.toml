@@ -39,6 +39,12 @@ addopts = "-q"
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint.per-file-ignores]
+# METIS Blue runtime: keep its verified exception contracts (callers catch ValueError/RuntimeError,
+# and provider failures are recorded per task) and its compact test layout.
+"src/metis/blue/runtime/*" = ["TRY004", "BLE001"]
+"tests/blue/*" = ["SIM117", "B023"]
+
 [[tool.mypy.overrides]]
 module = ["capstone", "capstone.*", "paramiko", "paramiko.*"]
 ignore_missing_imports = true

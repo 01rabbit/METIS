@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "endpoint": [
+    {"id":"E1","utc":"2026-01-15T00:00:00Z","host":"WORKSTATION-01","event_id":4688,"parent":"WINWORD.EXE","process":"powershell.exe","command_line_available":false},
+    {"id":"E2","utc":"2026-01-15T00:00:04Z","host":"WORKSTATION-01","event_id":3,"destination":"192.0.2.20","destination_port":443}
+  ],
+  "identity": [
+    {"id":"I1","utc":"2026-01-15T00:01:00Z","user":"analyst@example.invalid","result":"success","source":"192.0.2.30","mfa":"satisfied"}
+  ],
+  "coverage": {"start":"2026-01-15T00:00:00Z","end":"2026-01-15T00:02:00Z","dns":false,"file_access":false,"process_command_line":false}
+}

@@ -92,6 +92,10 @@ def register(sub: Any) -> None:
     connect.add_argument("--permit", help="scoped permit for state-changing actions (desktop, tunnel, control)")
     connect.add_argument("--execute", action="store_true")
     connect.add_argument("--timeout", type=int, default=60)
+    blue = sub.add_parser("blue", help="METIS Blue investigation runtime: owner + bounded worker pool "
+                          "(run, prepare, resume, status, report, view, finish, grant, import, benchmark, doctor)",
+                          add_help=False)
+    blue.add_argument("args", nargs=argparse.REMAINDER)
 
 
 def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | None:
@@ -170,6 +174,10 @@ def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | N
             parser.exit(2, "Connection rejected: " + str(exc)[:300] + "\n")
         print(json.dumps(result))
         return 2 if result.get("timed_out") or result.get("returncode", 0) else 0
+    if args.command == "blue":
+        from metis.blue.runtime import cli as blue_cli
+
+        return int(blue_cli.main(args.args or ["--help"]))
     if args.command == "evidence":
         return int(evidence.run(args))
     return None
