@@ -182,9 +182,23 @@ class ConnectionLedger:
         return cid
 
     def connection_state(self, cid: str, state: str, pid: int | None = None) -> None:
+        """Move a connection forward only: ``starting -> running -> stopped`` (or straight to stopped).
+
+        A late or stale report cannot revive a stopped connection, and nothing may report
+        ``running`` once its task is finished.
+        """
         if state not in ("running", "stopped"):
             raise ValueError("invalid connection state")
         with self.transaction() as db:
+            row = db.execute("SELECT c.state, t.state FROM blue_connections c LEFT JOIN blue_task_state t "
+                             "ON t.run=c.run AND t.task=c.task WHERE c.id=?", (cid,)).fetchone()
+            if row is None:
+                raise ValueError("unknown connection")
+            current, task_state = row[0], row[1]
+            if state == "running" and (current != "starting" or task_state == "finished"):
+                raise ValueError(f"connection cannot become running from {current}")
+            if state == "stopped" and current == "stopped":
+                return
             db.execute("UPDATE blue_connections SET state=?, pid=COALESCE(?, pid), finished=? WHERE id=?",
                        (state, pid, time.time() if state == "stopped" else None, cid))
 

@@ -165,7 +165,7 @@ def test_specialists_without_the_owner_key_cannot_self_issue_permits(tmp_path, m
         permits.issue("run", "task", "svc", "patch", "self-issued", owner_key="anything")
     created = init_owner_key(database)
     key_file = tmp_path / ".metis-state" / "private" / "owner.key"
-    assert created == {"owner_key": str(key_file), "created": True}
+    assert created == {"owner_key": str(key_file), "created": True, "adopted_existing_file": False}
     assert oct(key_file.stat().st_mode & 0o777) == "0o600"
     assert oct(key_file.parent.stat().st_mode & 0o777) == "0o700"
     assert init_owner_key(database)["created"] is False  # never rotated silently
@@ -206,3 +206,44 @@ def test_contest_rejects_cycles_and_reports_abandoned_prerequisites(tmp_path):
     board.update(contest, "one", {"state": "abandoned"})
     assert board.board(contest)["blocked_by_prerequisites"] == {"three": ["one"], "two": ["one"]}
     assert board.dispatch(contest)["blocked_by_prerequisites"] == {"three": ["one"], "two": ["one"]}
+
+
+def test_interrupted_or_concurrent_owner_init_recovers(tmp_path):
+    database = tmp_path / ".metis-state" / "metis.sqlite"
+    key_file = tmp_path / ".metis-state" / "private" / "owner.key"
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text("ab" * 32 + "\n")  # left by an init interrupted before its digest was recorded
+    assert init_owner_key(database)["adopted_existing_file"] is True
+    assert read_owner_key(database) == "ab" * 32
+    ScopedPermits(database).issue("run", "task", "svc", "patch", "after recovery", owner_key="ab" * 32)
+    assert init_owner_key(database)["key_file_matches"] is True
+
+    other = tmp_path / "other" / "metis.sqlite"
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(init_owner_key(other))) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(result.get("created", False) for result in results) == 1
+    assert all(result.get("key_file_matches", True) for result in results)
+    ScopedPermits(other).issue("run", "task", "svc", "patch", "single key", owner_key=read_owner_key(other))
+    assert not list((tmp_path / "other" / "private").glob(".owner.key.*"))
+
+    bad = tmp_path / "bad" / "metis.sqlite"
+    (tmp_path / "bad" / "private").mkdir(parents=True)
+    (tmp_path / "bad" / "private" / "owner.key").write_text("partial")
+    with pytest.raises(PermissionError, match="malformed"):
+        init_owner_key(bad)
+
+
+def test_reused_pid_does_not_keep_an_expired_lease(tmp_path, monkeypatch):
+    from metis.core import resources
+
+    broker = ResourceBroker(tmp_path / "s.sqlite")
+    key = _owner(tmp_path / "s.sqlite")
+    broker.configure("sandbox", 1, owner_key=key)
+    lease = broker.try_acquire("a", {"sandbox": 1}, ttl=1, pid=os.getpid())
+    assert broker.reap(now=time.time() + 5)["kept"] == [lease]  # same process: kept
+    monkeypatch.setattr(resources, "_process_start", lambda pid: "another-process-start")
+    assert broker.reap(now=time.time() + 5) == {"reaped": [lease], "kept": []}

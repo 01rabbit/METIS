@@ -31,6 +31,7 @@ import os
 import secrets
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -67,28 +68,63 @@ def _owner_table(db: sqlite3.Connection) -> None:
 
 
 def init_owner_key(database: Path) -> dict[str, Any]:
-    """Create the owner key once (0600 file in a 0700 directory) and record only its digest."""
+    """Create the owner key once (0600 file in a 0700 directory) and record only its digest.
+
+    The whole operation runs inside one ``BEGIN IMMEDIATE`` transaction, so concurrent calls are
+    serialized. The key file is written to a temporary name and linked into place, so it is either
+    absent or complete. A key file left by an interrupted earlier call (file present, digest not
+    yet recorded) is adopted instead of blocking recovery.
+    """
     path = owner_key_path(database)
     database.parent.mkdir(parents=True, exist_ok=True)
-    with closing(_connect(database)) as db:
-        _owner_table(db)
-        stored = db.execute("SELECT key_sha256 FROM metis_owner WHERE id=1").fetchone()
-    if stored is not None:
-        return {"owner_key": str(path), "created": False}
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    key = secrets.token_hex(32)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        stream.write(key + "\n")
     with closing(_connect(database)) as db:
         db.execute("BEGIN IMMEDIATE")
-        _owner_table(db)
-        if db.execute("SELECT 1 FROM metis_owner WHERE id=1").fetchone() is None:
+        try:
+            _owner_table(db)
+            stored = db.execute("SELECT key_sha256 FROM metis_owner WHERE id=1").fetchone()
+            existing = _read_key_file(path)
+            if stored is not None:
+                matches = existing is not None and hmac.compare_digest(
+                    hashlib.sha256(existing.encode()).hexdigest(), stored[0])
+                db.execute("COMMIT")
+                return {"owner_key": str(path), "created": False, "key_file_matches": matches}
+            adopted = existing is not None
+            key = existing if existing is not None else secrets.token_hex(32)
+            if not adopted:
+                _write_key_file(path, key)
             db.execute("INSERT INTO metis_owner VALUES (1, ?, ?)",
                        (hashlib.sha256(key.encode()).hexdigest(), time.time()))
-        db.execute("COMMIT")
-    return {"owner_key": str(path), "created": True}
+            db.execute("COMMIT")
+        except BaseException:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+    return {"owner_key": str(path), "created": not adopted, "adopted_existing_file": adopted}
+
+
+def _read_key_file(path: Path) -> str | None:
+    try:
+        value = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise PermissionError("owner key file is malformed; inspect it before re-running init")
+    return value
+
+
+def _write_key_file(path: Path, key: str) -> None:
+    temporary = path.with_name(f".owner.key.{secrets.token_hex(8)}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(key + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)  # fails if a key file appeared meanwhile; never overwrites
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_owner_key(database: Path, path: Path | None = None) -> str:
@@ -114,8 +150,28 @@ def require_owner(database: Path, key: str | None) -> None:
         raise PermissionError("owner key required for this operation")
 
 
-def _alive(pid: int | None, host: str | None) -> bool | None:
-    """True/False when the holder can be checked on this host, None when it cannot."""
+def _process_start(pid: int) -> str | None:
+    """A per-process start marker used to detect PID reuse; ``None`` when unavailable."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return "linux:" + stat.rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        pass
+    try:
+        result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                timeout=2, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    marker = result.stdout.strip()
+    return "ps:" + marker if result.returncode == 0 and marker else None
+
+
+def _alive(pid: int | None, host: str | None, started: str | None = None) -> bool | None:
+    """True/False when the holder can be checked on this host, None when it cannot.
+
+    A recorded start marker that no longer matches means the PID now names another process,
+    so the original holder is gone.
+    """
     if pid is None or host != socket.gethostname():
         return None
     try:
@@ -123,7 +179,11 @@ def _alive(pid: int | None, host: str | None) -> bool | None:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass
+    if started is not None:
+        current = _process_start(pid)
+        if current is not None and current != started:
+            return False
     return True
 
 
@@ -138,7 +198,7 @@ class ResourceBroker:
                 acquired REAL NOT NULL, expires REAL NOT NULL, purpose TEXT,
                 PRIMARY KEY(lease_id, name))""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(resource_leases)")}
-            for column in ("pid INTEGER", "host TEXT"):
+            for column in ("pid INTEGER", "host TEXT", "started TEXT"):
                 if column.split()[0] not in columns:
                     db.execute("ALTER TABLE resource_leases ADD COLUMN " + column)
             db.execute("""CREATE TABLE IF NOT EXISTS resource_events (
@@ -203,6 +263,7 @@ class ResourceBroker:
         if not 1 <= ttl <= MAX_LEASE_SECONDS:
             raise ValueError(f"lease ttl must be 1..{MAX_LEASE_SECONDS} seconds")
         now = time.time()
+        started = _process_start(pid) if pid is not None else None
         with self._transaction() as db:
             for name, units in wanted.items():
                 row = db.execute("SELECT capacity FROM resource_capacity WHERE name=?", (name,)).fetchone()
@@ -215,9 +276,9 @@ class ResourceBroker:
             lease_id = uuid4().hex
             for name, units in wanted.items():
                 db.execute("INSERT INTO resource_leases (lease_id, name, holder, units, acquired, expires, purpose, "
-                           "pid, host) VALUES (?,?,?,?,?,?,?,?,?)",
+                           "pid, host, started) VALUES (?,?,?,?,?,?,?,?,?,?)",
                            (lease_id, name, holder, units, now, now + ttl, (purpose or "")[:200], pid,
-                            socket.gethostname() if pid is not None else None))
+                            socket.gethostname() if pid is not None else None, started))
             self._event(db, lease_id, None, "acquired", {"holder": holder, "resources": wanted})
         return lease_id
 
@@ -267,10 +328,10 @@ class ResourceBroker:
         reaped: list[str] = []
         kept: list[str] = []
         with self._transaction() as db:
-            rows = db.execute("SELECT lease_id, MAX(pid), MAX(host) FROM resource_leases WHERE expires < ? "
-                              "GROUP BY lease_id ORDER BY lease_id", (moment,)).fetchall()
-            for lease_id, pid, host in rows:
-                if _alive(pid, host) is False:
+            rows = db.execute("SELECT lease_id, MAX(pid), MAX(host), MAX(started) FROM resource_leases "
+                              "WHERE expires < ? GROUP BY lease_id ORDER BY lease_id", (moment,)).fetchall()
+            for lease_id, pid, host, started in rows:
+                if _alive(pid, host, started) is False:
                     db.execute("DELETE FROM resource_leases WHERE lease_id=?", (lease_id,))
                     self._event(db, lease_id, None, "reaped", {"reason": "lease expired and holder process gone"})
                     reaped.append(lease_id)
@@ -321,9 +382,9 @@ class ResourceBroker:
                 "SELECT name, capacity FROM resource_capacity ORDER BY name")}
             leases = [{"lease_id": row[0], "resource": row[1], "holder": row[2], "units": row[3],
                        "acquired": row[4], "expires": row[5], "expired": row[5] < now, "purpose": row[6] or None,
-                       "holder_alive": _alive(row[7], row[8])}
+                       "holder_alive": _alive(row[7], row[8], row[9])}
                       for row in db.execute("SELECT lease_id, name, holder, units, acquired, expires, purpose, "
-                                            "pid, host FROM resource_leases ORDER BY acquired, name")]
+                                            "pid, host, started FROM resource_leases ORDER BY acquired, name")]
         resources = []
         for name in sorted(set(capacities) | {lease["resource"] for lease in leases}):
             used = sum(lease["units"] for lease in leases if lease["resource"] == name)
