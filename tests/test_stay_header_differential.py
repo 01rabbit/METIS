@@ -197,6 +197,41 @@ def test_stay_key1_product_lifting_matches_reduced_width_exhaustive_oracle() -> 
     assert _stay_key1_product_interval(addends, inconsistent, carries, bits=bits) is None
 
 
+def test_stay_partial_guess_filter_matches_full_state_forward_oracle() -> None:
+    """The partial 23-bit state and carry guesses predict the exact header differential."""
+    from metis.core.ctf_zipcrypto import (
+        CRCTAB,
+        M32,
+        MULT,
+        _stay_predict_second_byte_difference,
+    )
+
+    rng = random.Random(0x40B17)
+    for _ in range(10_000):
+        initial = tuple(rng.getrandbits(32) for _ in range(3))
+        random_first = rng.randrange(256)
+        key0_crc_low = _crc_update(initial[0], 0) & 0xFF
+        product = initial[1] * MULT & M32
+        key1_product_high = product >> 24
+        key2_crc_bits_2_15 = _crc_update(initial[2], 0) & 0xFFFC
+        first_stream = _stream_byte(initial[2])
+        first_low = _crc_update(initial[0], random_first) & 0xFF
+        second_low = _crc_update(initial[0], random_first ^ first_stream) & 0xFF
+        first_offset = first_low * MULT + 1
+        second_offset = second_low * MULT + 1
+        first_carry = int((product & 0xFFFFFF) + (first_offset & 0xFFFFFF) >= 1 << 24)
+        second_carry = int((product & 0xFFFFFF) + (second_offset & 0xFFFFFF) >= 1 << 24)
+
+        predicted = _stay_predict_second_byte_difference(
+            random_first, first_stream, key0_crc_low, key1_product_high,
+            key2_crc_bits_2_15, first_carry, second_carry)
+        assert predicted == _second_byte_differential(random_first, initial)
+
+    # The CRC table is used by the production recurrence; this independent
+    # check catches a mismatched table index in the partial-state equation.
+    assert all(CRCTAB[value] == _crc_update(0, value) for value in range(256))
+
+
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
     """Check the shared second-byte relation and reject altered PRNG observations."""
     from pathlib import Path

@@ -126,6 +126,38 @@ def _stay_lift_key1_candidates(product_interval: tuple[int, int, int], *, bits: 
         yield ((product_base | low) * multiplier_inverse) & word_mask
 
 
+def _stay_predict_second_byte_difference(random_first: int, first_stream: int,
+                                         key0_crc_low: int, key1_product_high: int,
+                                         key2_crc_bits_2_15: int, first_carry: int,
+                                         second_carry: int) -> int:
+    """Predict the two-pass second-byte stream XOR from Stay's partial guesses."""
+    byte_values = (random_first, first_stream, key0_crc_low, key1_product_high)
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in byte_values):
+        raise ValueError("Stay byte guesses must be bytes")
+    if (type(key2_crc_bits_2_15) is not int or not 0 <= key2_crc_bits_2_15 <= 0xFFFC
+            or key2_crc_bits_2_15 & 0x3):
+        raise ValueError("Stay key2 CRC guess must contain bits 2 through 15")
+    if any(type(carry) is not int or carry not in (0, 1) for carry in (first_carry, second_carry)):
+        raise ValueError("carry guesses must be zero or one")
+
+    first_low = key0_crc_low ^ (CRCTAB[random_first] & 0xFF)
+    second_first_plaintext = random_first ^ first_stream
+    second_low = key0_crc_low ^ (CRCTAB[second_first_plaintext] & 0xFF)
+    first_offset = first_low * MULT + 1
+    second_offset = second_low * MULT + 1
+    first_key1_high = (key1_product_high + (first_offset >> 24) + first_carry) & 0xFF
+    second_key1_high = (key1_product_high + (second_offset >> 24) + second_carry) & 0xFF
+
+    first_key2_low = (key2_crc_bits_2_15 ^ CRCTAB[first_key1_high]) & 0xFFFC
+    second_key2_low = (key2_crc_bits_2_15 ^ CRCTAB[second_key1_high]) & 0xFFFC
+
+    def stream(key2_low: int) -> int:
+        value = (key2_low & 0xFFFF) | 2
+        return (value * (value ^ 1) >> 8) & 0xFF
+
+    return stream(first_key2_low) ^ stream(second_key2_low)
+
+
 def _tables() -> tuple[list[int], list[int]]:
     crc, inv = [0] * 256, [0] * 256
     for byte in range(256):

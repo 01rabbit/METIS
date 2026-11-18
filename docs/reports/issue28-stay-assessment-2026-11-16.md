@@ -183,3 +183,13 @@ full 23-bit/40-bit first stage, its stream-byte and preimage-table candidate
 generation, later stages, full-key CRC/decryption checks, sandbox runtime,
 and target key recovery remain unimplemented or unverified. Issue #28 and
 ksnctf #39 remain open.
+
+The first-stage one-member filter has also been transcribed as
+`_stay_predict_second_byte_difference`. Given guesses for the first stream
+byte, low byte of `CRC(key0_0, 0)`, high byte of the multiplied key1 state,
+bits 2..15 of `CRC(key2_0, 0)`, and the two carry bits, it predicts the XOR of
+the two second-byte stream outputs. A 10,000-state seeded test compares this
+partial-state calculation against the independent full-state forward
+recurrence. This checks the filter equation for planted guesses, but does not
+search those guesses or enumerate the 40-bit stage. The targeted suite now has
+seven passing tests, with Ruff and mypy clean.
