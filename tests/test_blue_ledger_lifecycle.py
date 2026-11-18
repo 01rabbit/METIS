@@ -75,3 +75,20 @@ def _attempt(function, *args):
         return function(*args) if args else function("run", "a")
     except (ValueError, PermissionError) as exc:
         return exc
+
+
+def test_connection_states_only_move_forward(ledger):
+    cid = ledger.begin_connection("run", "a", "vm", "ssh", "identity", False, None)
+    ledger.connection_state(cid, "running", 123)
+    with pytest.raises(ValueError, match="running"):
+        ledger.connection_state(cid, "running")          # duplicate report
+    ledger.connection_state(cid, "stopped")
+    ledger.connection_state(cid, "stopped")              # repeated stop is harmless
+    with pytest.raises(ValueError, match="running from stopped"):
+        ledger.connection_state(cid, "running")          # late report cannot revive it
+    assert ledger.finish_task("run", "a")
+    with pytest.raises(ValueError):
+        ledger.connection_state(cid, "running")
+    with pytest.raises(ValueError, match="unknown"):
+        ledger.connection_state("missing", "stopped")
+    assert [row["state"] for row in ledger.report("run")["connections"]] == ["stopped"]

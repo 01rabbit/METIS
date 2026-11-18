@@ -411,3 +411,12 @@ def test_evidence_readers_are_run_artifact_tools(tmp_path):
     assert report["complete_for_input"] is False and "record-limit-reached" in report["limitations"]
     with pytest.raises(ValueError):
         inspect_bytes(b"{}", "json_records", {"field": 3})
+
+
+def test_email_format_option_fails_closed():
+    from metis.core.ctf_artifacts import inspect_bytes
+
+    message = b"From: a@example.invalid\r\nSubject: x\r\n\r\nbody\r\n"
+    assert inspect_bytes(message, "email", {"email_format": "eml"})["complete_for_input"] is True
+    with pytest.raises(ValueError, match="email_format"):
+        inspect_bytes(message, "email", {"email_format": "mbx"})
