@@ -21,6 +21,7 @@ ORDER_SEED = SEED ^ 0x6A09E667
 ARMS = ("single", "multi_fixed", "multi_borrow")
 FAMILIES = (("base64", "base32"), ("base64", "hex"), ("base64", "base85"))
 OUTPUT = Path("docs/reports/data/issue6-borrow-pilot-2026-11-18.json")
+PARTIAL = OUTPUT.with_suffix(".partial.json")
 
 
 def _dataset(records: list[dict], families: dict[str, list[str]],
@@ -29,9 +30,24 @@ def _dataset(records: list[dict], families: dict[str, list[str]],
                                     study=STUDY, seed=SEED, order_seed=ORDER_SEED)
 
 
+def _write_atomic(path: Path, data: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _finalize(records: list[dict], families: dict[str, list[str]],
+              order: dict[str, list[str]], output: Path) -> None:
+    expected = {(f"{task_id}-rep-0", arm) for task_id in families for arm in ARMS}
+    actual = [(record["case"], record["arm"]) for record in records]
+    if len(expected) != 18 or len(actual) != 18 or set(actual) != expected:
+        raise ValueError("pilot finalization requires 18 unique case-arm records")
+    _write_atomic(output, _dataset(records, families, order))
+
+
 def main() -> None:
-    if OUTPUT.exists():
-        raise SystemExit(f"refusing to overwrite pilot data: {OUTPUT}")
+    if OUTPUT.exists() or PARTIAL.exists():
+        raise SystemExit(f"refusing to overwrite pilot data: {OUTPUT} or {PARTIAL}")
     if (diagnostic.BUDGET != {"turns": 8, "actions": 4, "slots": 2, "wall_seconds": 600}
             or diagnostic.MODEL != "gpt-6.1-sol" or diagnostic.CLI_VERSION != "0.169.0"):
         raise SystemExit("runner settings disagree with preregistration")
@@ -51,7 +67,7 @@ def main() -> None:
     oracle_root = Path(tempfile.mkdtemp(prefix="metis-issue6-borrow-oracle-"))
     try:
         rng = random.Random(SEED)
-        cases = []
+        cases: list[tuple[str, tuple[bytes, bytes], tuple[str, str]]] = []
         answers: dict[str, str] = {}
         task_families: dict[str, list[str]] = {}
         for index, family in enumerate(family for pair in FAMILIES for family in (pair, pair)):
@@ -59,12 +75,12 @@ def main() -> None:
             assigned = list(family)
             if rng.randrange(2):
                 assigned.reverse()
-            components = tuple(bytes(rng.choice(diagnostic.COMPONENT_ALPHABET) for _ in range(12))
-                               for _ in range(2))
+            components = (bytes(rng.choice(diagnostic.COMPONENT_ALPHABET) for _ in range(12)),
+                          bytes(rng.choice(diagnostic.COMPONENT_ALPHABET) for _ in range(12)))
             case_id = f"{task_id}-rep-0"
             task_families[task_id] = assigned
             answers[case_id] = hashlib.sha256(components[0] + b"\0" + components[1]).hexdigest()
-            cases.append((case_id, components, tuple(assigned)))
+            cases.append((case_id, components, (assigned[0], assigned[1])))
         oracle_file = oracle_root / "answers.json"
         descriptor = os.open(oracle_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -85,17 +101,14 @@ def main() -> None:
                 record = diagnostic.run_arm(session, scheduler, runner, root, case_id,
                                             components, family, arm, oracle_file=oracle_file)
                 records.append(record)
-                temporary = OUTPUT.with_suffix(".tmp")
-                temporary.write_text(json.dumps(_dataset(records, task_families, trial_order),
-                                                separators=(",", ":")), encoding="utf-8")
-                temporary.replace(OUTPUT)
+                _write_atomic(PARTIAL, _dataset(records, task_families, trial_order))
                 print(json.dumps({"case": case_id, "arm": arm,
                                   "verified": record["oracle_verified"],
                                   "completed_records": len(records),
                                   "elapsed_seconds": record["elapsed_seconds"],
                                   "calls": record["calls_observed"]}, separators=(",", ":")), flush=True)
-        OUTPUT.write_text(json.dumps(_dataset(records, task_families, trial_order),
-                                     sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        _finalize(records, task_families, trial_order, OUTPUT)
+        PARTIAL.unlink()
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(oracle_root, ignore_errors=True)

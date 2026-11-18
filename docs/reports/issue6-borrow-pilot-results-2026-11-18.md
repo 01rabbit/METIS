@@ -37,3 +37,9 @@ contain no component, candidate, digest, oracle value or raw model output.
 A recursive key audit found only task identifiers, states, counts, times and
 usage fields; a 64-hex scan and private-path scan found none. Temporary
 artifacts and oracle data were removed on normal exit.
+
+After the run and review, the runner was changed to checkpoint interrupted
+work in a separate `.partial.json` file, require all 18 distinct case-arm
+records before finalization, and publish the final file atomically. This
+change did not govern the executed trial; its retained final dataset is
+checked against the committed analysis by an automated test.
