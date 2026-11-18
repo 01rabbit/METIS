@@ -15,6 +15,7 @@ from PIL import ImageGrab
 
 from metis.blue.connections import ConnectionSession, execute
 from metis.blue.ledger import ConnectionLedger
+from metis.core.resources import init_owner_key, read_owner_key
 
 LAB = Path("/lab")
 os.umask(0o077)
@@ -27,7 +28,9 @@ else:
     raise RuntimeError("Disposable servers did not become ready")
 store = ConnectionLedger(LAB / "state.sqlite3")
 run = "disposable-protocol-lab"
-store.broker.configure("lab-session", 1)
+init_owner_key(LAB / "state.sqlite3")
+OWNER_KEY = read_owner_key(LAB / "state.sqlite3")
+store.broker.configure("lab-session", 1, owner_key=OWNER_KEY)
 rows = []
 
 
@@ -66,7 +69,7 @@ def task(name):
 
 def grant(name, action):
     return store.permits.issue(
-        run, name, "lab-session", action, "User requested self-hosted connection tests"
+        run, name, "lab-session", action, "User requested self-hosted connection tests", owner_key=OWNER_KEY
     )["permit_id"]
 
 

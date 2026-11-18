@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from metis.blue import siem
 from metis.blue.ledger import ConnectionLedger
+from metis.core.resources import init_owner_key, read_owner_key
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -101,7 +102,9 @@ class SIEMTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.store = ConnectionLedger(Path(self.tmp.name) / 'private/runtime.sqlite3')
         self.run = 'run-siem'
-        self.store.broker.configure('siem', 1)
+        database = Path(self.tmp.name) / 'private/runtime.sqlite3'
+        init_owner_key(database)
+        self.store.broker.configure('siem', 1, owner_key=read_owner_key(database))
         self.store.lease_task(self.run, 'a', {'siem': 1})
         self.server = LocalServer(('127.0.0.1', 0), Handler)
         self.server.scenario = {'requests': [], 'rows': [{'_time': str(n), 'host': 'asset-7'} for n in range(3)]}

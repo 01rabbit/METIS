@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from metis.blue.connections import ConnectionSession, build, execute, validate_vpn
 from metis.blue.ledger import ConnectionLedger
+from metis.core.resources import init_owner_key, read_owner_key
 
 
 class ConnectionTests(unittest.TestCase):
@@ -17,7 +18,8 @@ class ConnectionTests(unittest.TestCase):
         self.path = Path(self.tmp.name)
         self.store = ConnectionLedger(self.path / "db")
         self.run = "connection-test"
-        self.store.broker.configure("vm", 1)
+        init_owner_key(self.path / "db")
+        self.store.broker.configure("vm", 1, owner_key=read_owner_key(self.path / "db"))
         self.store.lease_task(self.run, "a", {"vm": 1})
         self.config = {"protocol": "ssh", "host": "example.invalid", "resource": "vm"}
 
@@ -98,6 +100,8 @@ class WritePermitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = ConnectionLedger(Path(tmp) / "db")
             run = "permit-test"
+            init_owner_key(Path(tmp) / "db")
+            key = read_owner_key(Path(tmp) / "db")
             store.lease_task(run, "a", {"vm": 1})
             config = {"protocol": "vnc", "host": "example.invalid", "resource": "vm"}
             spec = build(config, "control")
@@ -105,10 +109,14 @@ class WritePermitTests(unittest.TestCase):
             with patch("metis.blue.connections.build", return_value=spec):
                 with self.assertRaises(PermissionError):
                     execute(store, run, "a", config, "control")
-                wrong = store.permits.issue(run, "a", "vm", "view", "user asked to watch")["permit_id"]
+                wrong = store.permits.issue(run, "a", "vm", "view", "user asked to watch", owner_key=key)[
+                    "permit_id"
+                ]
                 with self.assertRaises(PermissionError):
                     execute(store, run, "a", config, "control", wrong)
-                permit = store.permits.issue(run, "a", "vm", "control", "user asked to operate the desktop")[
+                permit = store.permits.issue(
+                    run, "a", "vm", "control", "user asked to operate the desktop", owner_key=key
+                )[
                     "permit_id"
                 ]
                 self.assertEqual(
