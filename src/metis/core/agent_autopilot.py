@@ -45,6 +45,19 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
         tokens[key] = (sum(value for value in values if isinstance(value, int) and not isinstance(value, bool))
                        if values and all(isinstance(value, int) and not isinstance(value, bool)
                                         for value in values) else "unknown")
+    reserved_turns: int | None = None
+    with sqlite3.connect(scheduler.database) as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_turn_reservations'").fetchone():
+            assignment_ids = sorted({job["assignment_id"] for job in jobs})
+            if assignment_ids:
+                placeholders = ",".join("?" for _ in assignment_ids)
+                reserved_turns = db.execute(
+                    f"SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=? "
+                    f"AND assignment_id IN ({placeholders}) AND reserved>=? AND reserved<=?",
+                    (run_id, *assignment_ids, started, finished),
+                ).fetchone()[0]
+            else:
+                reserved_turns = 0
     stop = result["stop"] or "unspecified"
     handoff_stops = {"candidate_for_daybreak", "sequential_work_for_daybreak", "other_wave_needs_reconciliation",
                      "existing_attempt_needs_reconciliation", "slots_unavailable_or_spawn_failed",
@@ -55,8 +68,9 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
                "elapsed_seconds": round(max(0.0, finished - started), 3), "max_waves": max_waves,
                "waves_inspected": len(result["waves"]), "stop_reason": stop,
                "daybreak_handoffs": int(stop in handoff_stops), "operations": result.get("operations", {}),
-               "specialist_turns": sum(job["usage"].get("turns", job["turns_used"]) for job in jobs
-                                        if isinstance(job["usage"].get("turns", job["turns_used"]), int)),
+               "specialist_turns": (reserved_turns if reserved_turns is not None else
+                                    sum(job["usage"].get("turns", job["turns_used"]) for job in jobs
+                                        if isinstance(job["usage"].get("turns", job["turns_used"]), int))),
                "tokens": tokens, "cost": "unknown"}
     with sqlite3.connect(scheduler.database) as db:
         db.execute("""CREATE TABLE IF NOT EXISTS agent_autopilot_runs (

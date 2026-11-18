@@ -68,6 +68,7 @@ def test_driver_exception_persists_handoff_and_preserves_attempts_for_reconcilia
     result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=crash)
     assert result["stop"] == "specialist_driver_exception"
     assert result["metrics"]["daybreak_handoffs"] == 1
+    assert result["metrics"]["specialist_turns"] == 0
     assert "private worker output" not in str(result)
     jobs = scheduler.jobs(run)
     assert jobs and any(job["state"] in {"running", "unknown"} for job in jobs)
@@ -81,6 +82,42 @@ def test_driver_exception_persists_handoff_and_preserves_attempts_for_reconcilia
     assert resumed["stop"] == "existing_attempt_needs_reconciliation"
     assert [job["assignment_id"] for job in scheduler.jobs(run) if job["state"] in {"running", "unknown"}] \
         == [job["assignment_id"] for job in jobs if job["state"] in {"running", "unknown"}]
+    assert all(job["attempt_no"] <= 1 for job in scheduler.jobs(run))
+
+
+def test_mixed_completed_and_crashed_batch_keeps_spent_turn_and_reconciliation_state(tmp_path):
+    scheduler, run = setup_run(tmp_path)
+
+    def mixed_drive(scheduler, run_id, assignment, attempt, runner):
+        if assignment.endswith(":1"):
+            return _complete_synthetic_report(scheduler, run_id, assignment, attempt)
+        if assignment.endswith(":2"):
+            reservation = scheduler.reserve_model_turn(run_id, assignment, attempt)
+            assert reservation == {"turn": 1, "limit": 24, "remaining": 23}
+            raise RuntimeError("private interrupted specialist output")
+        pytest.fail("first batch should contain only two assignments")
+
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=mixed_drive)
+    assert result["stop"] == "specialist_driver_exception"
+    assert result["metrics"]["daybreak_handoffs"] == 1
+    assert result["metrics"]["specialist_turns"] == 1
+    assert "private interrupted specialist output" not in str(result)
+    jobs = scheduler.jobs(run)
+    assert sum(job["state"] == "completed" for job in jobs) == 1
+    assert sum(job["state"] == "running" for job in jobs) == 1
+    assert sum(job["state"] == "queued" for job in jobs) == 2
+    assert scheduler.model_turn_budget(run) == {"limit": 24, "reserved": 1, "remaining": 23}
+    with sqlite3.connect(scheduler.database) as db:
+        reservations = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?", (run,)).fetchone()[0]
+        persisted = db.execute("SELECT stop_reason,daybreak_handoffs,specialist_turns FROM agent_autopilot_runs "
+                               "WHERE invocation_id=?",
+                               (result["metrics"]["invocation_id"],)).fetchone()
+    assert reservations == 1
+    assert persisted == ("specialist_driver_exception", 1, 1)
+
+    resumed = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=mixed_drive)
+    assert resumed["stop"] == "existing_attempt_needs_reconciliation"
+    assert scheduler.model_turn_budget(run) == {"limit": 24, "reserved": 1, "remaining": 23}
     assert all(job["attempt_no"] <= 1 for job in scheduler.jobs(run))
 
 

@@ -600,7 +600,11 @@ in their existing running/unknown/queued states because an exception does not
 prove that an external worker stopped; a resumed autopilot refuses to dispatch
 the queued remainder while a prior attempt needs reconciliation. Synthetic
 fault-injection verifies persisted handoff metrics and no redrive. This does
-not establish worker liveness or automatic recovery. See
+not establish worker liveness or automatic recovery. A mixed completed/crashed
+batch regression also verifies that a reserved model call remains charged and
+is included in invocation `specialist_turns` using run, assignment, and time
+window evidence. The reservation schema does not uniquely attribute concurrent
+manual activity on the same assignment. See
 `docs/reports/phase4-driver-exception-handoff-2026-11-18.md`.
 
 The Stay forward-relation tests now include a seven-member Info-ZIP fixture
