@@ -208,3 +208,11 @@ first carry, `CRC(key2_0, 0)` bits 10..15 and 2..9, and the second carry. A
 100-state encode/filter regression confirms the planted full-state fields
 survive the decoded guess. This prepares the search domain; it does not iterate
 the domain. The focused suite now has nine passing tests.
+
+`_stay_first_stage_scan_chunk` adds a half-open range, candidate-count cap,
+wall-time check, hit-count cap, and `next_index` cursor for resumable bounded
+scans. A split-range regression confirms the next chunk finds a planted
+candidate at the boundary. This is a Python reference scanner for correctness
+and small chunks; no throughput benchmark was run, and it is not yet suitable
+for scanning the complete 2^40 space or exposed as a METIS artifact tool. The
+focused suite now has ten passing tests.

@@ -339,6 +339,48 @@ def test_stay_first_stage_packed_guess_retains_full_state() -> None:
         _stay_first_stage_candidate(1 << 40, (0, 1, 2, 3, 4), (0, 1, 2, 3, 4))
 
 
+def test_stay_first_stage_scan_chunk_resumes_without_skipping_candidate() -> None:
+    """Adjacent bounded ranges resume at the cursor and retain the planted guess."""
+    from metis.core.ctf_zipcrypto import (
+        M32,
+        MULT,
+        _stay_first_stage_scan_chunk,
+    )
+
+    rng = random.Random(0x5CA1)
+    initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+    first_stream = _stream_byte(initial[2])
+    key0_crc_low = _crc_update(initial[0], 0) & 0xFF
+    product = initial[1] * MULT & M32
+    key2_crc = _crc_update(initial[2], 0) & 0xFFFC
+    random_firsts = tuple(rng.randrange(256) for _ in range(5))
+    random_seconds = tuple(rng.randrange(256) for _ in range(5))
+    observed = tuple(
+        _encrypt(_encrypt(bytes((first, second)), initial), initial)[1] ^ second
+        for first, second in zip(random_firsts, random_seconds, strict=True)
+    )
+    low_first = _crc_update(initial[0], random_firsts[0]) & 0xFF
+    low_second = _crc_update(initial[0], random_firsts[0] ^ first_stream) & 0xFF
+    carry_first = int((product & 0xFFFFFF) + (low_first * MULT + 1 & 0xFFFFFF) >= 1 << 24)
+    carry_second = int((product & 0xFFFFFF) + (low_second * MULT + 1 & 0xFFFFFF) >= 1 << 24)
+    index = (
+        first_stream | key0_crc_low << 8 | (product >> 24) << 16
+        | carry_first << 24 | (key2_crc >> 10) << 25
+        | (key2_crc >> 2 & 0xFF) << 31 | carry_second << 39
+    )
+    assert index > 0
+
+    first = _stay_first_stage_scan_chunk(
+        random_firsts, observed, index - 1, index + 1, max_candidates=1)
+    assert first["next_index"] == index
+    assert first["complete"] is False
+    second = _stay_first_stage_scan_chunk(
+        random_firsts, observed, first["next_index"], index + 1, max_candidates=1)
+    assert second["next_index"] == index + 1
+    assert second["complete"] is True
+    assert second["hits"] and second["hits"][0][0] == index
+
+
 def test_stay_infozip_fixture_second_byte_relation_and_mutated_seed_negative() -> None:
     """Check the shared second-byte relation and reject altered PRNG observations."""
     from pathlib import Path

@@ -216,6 +216,38 @@ def _stay_first_stage_candidate(index: int, random_firsts: tuple[int, ...],
         key1_product_high, key2_crc_bits_2_15, first_carry, second_carry)
 
 
+def _stay_first_stage_scan_chunk(random_firsts: tuple[int, ...],
+                                 observed_differences: tuple[int, ...], start: int, stop: int,
+                                 *, max_candidates: int = 100_000,
+                                 seconds: float = 30.0, max_hits: int = 4096
+                                 ) -> dict[str, Any]:
+    """Scan a bounded half-open candidate range and return a resumable cursor."""
+    if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 40):
+        raise ValueError("Stay scan range must be within the 40-bit candidate space")
+    if type(max_candidates) is not int or not 1 <= max_candidates <= 1 << 20:
+        raise ValueError("Stay scan candidate bound must be between 1 and 2^20")
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not 0 < seconds <= 300):
+        raise ValueError("Stay scan deadline must be between zero and 300 seconds")
+    if type(max_hits) is not int or not 1 <= max_hits <= 4096:
+        raise ValueError("Stay scan hit bound must be between 1 and 4096")
+    bounded_stop = min(stop, start + max_candidates)
+    deadline = time.monotonic() + seconds
+    hits: list[tuple[int, tuple[int, ...]]] = []
+    cursor = start
+    while cursor < bounded_stop:
+        if cursor & 0xFF == 0 and time.monotonic() >= deadline:
+            break
+        masks = _stay_first_stage_candidate(cursor, random_firsts, observed_differences)
+        cursor += 1
+        if masks is not None:
+            hits.append((cursor - 1, masks))
+            if len(hits) >= max_hits:
+                break
+    return {"next_index": cursor, "complete": cursor >= stop,
+            "scanned": cursor - start, "hits": tuple(hits)}
+
+
 def _tables() -> tuple[list[int], list[int]]:
     crc, inv = [0] * 256, [0] * 256
     for byte in range(256):
