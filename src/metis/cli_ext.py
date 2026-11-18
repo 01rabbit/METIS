@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from metis.blue import journal
+from metis.blue import evidence, journal
 from metis.core.resources import ResourceBroker, ScopedPermits
 
 DEFAULT_DATABASE = Path(".metis-state/metis.sqlite")
@@ -53,6 +53,9 @@ def register(sub: Any) -> None:
                                 "$METIS_JOURNAL_ROOT)")
     journal.add_commands(journal_parser.add_subparsers(dest="journal_command", required=True),
                          journal.JournalArgumentParser)
+    evidence_parser = sub.add_parser("evidence", help="bounded offline evidence reader for a local file "
+                                     "(email, browser, json, cloudtrail, evtx-xml)")
+    evidence.add_arguments(evidence_parser)
 
 
 def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | None:
@@ -90,4 +93,6 @@ def handle(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int | N
         values = {key: value for key, value in vars(args).items() if key not in {"command", "root"}}
         values["command"] = values.pop("journal_command")
         return journal.run(argparse.Namespace(**values), journal.journal_root(args.root))
+    if args.command == "evidence":
+        return int(evidence.run(args))
     return None

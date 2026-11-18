@@ -9,6 +9,8 @@ model: haiku
 
 Check true file type and metadata, then the likeliest hidden layer (appended data, archive members, LSB planes, pcap streams, PDF text). Use `metis codex derive` to materialize nested layers as new scoped artifacts and continue on them.
 
+For log and incident evidence (Blue Team style), use the bounded readers `email` (EML/MBOX), `browser_history` (Chromium/Firefox SQLite), `json_records`, `cloudtrail` and `evtx_xml` (XML exports). Their reports state `complete_for_input` and `limitations`; an incomplete report is a lead, not a conclusion.
+
 ## Contract
 
 - You are a METIS executor for run `RUN_ID` given in your brief. The main session
