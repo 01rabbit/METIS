@@ -310,10 +310,12 @@ exhaustive small-word oracle compares 500 deterministic intervals against
 direct multiplication, and the planted full-state carry-interval test verifies
 that the correct q8 and all per-header second-update carries are retained.
 
-The single-candidate Stage 2 predicate now combines these q8/carry masks with
-the multi-member third-byte differential. Ten deterministic planted seven-file
-states passed; the same candidates rejected modified third-byte differentials.
-This is one-candidate validation, not enumeration of the 28-bit Stage 2 space.
+The single-candidate Stage 2 necessary filter now combines these q8/carry masks
+with the multi-member third-byte differential. Ten deterministic planted
+seven-file states passed; the same candidates rejected modified third-byte
+differentials. Carries are checked independently per member, so survivors may
+be false positives if those carries do not share one product value. This is
+one-candidate validation, not enumeration of the 28-bit Stage 2 space.
 It does not reconstruct full keys, check all member CRCs, or submit a candidate.
 No official archive candidate was tested by this predicate. Issue #28 remains
 open.

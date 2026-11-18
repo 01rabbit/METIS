@@ -653,9 +653,10 @@ byte difference; exact-head checks and METIS validation passed at `7921f7f`.
 Exact modular floor-sum helpers now compute the `q8` values and second-update
 carry bits consistent with each Stage 1 interval without enumerating its 24-bit
 range; 500 exhaustive small-word cases and planted interval states verify the
-projection. A single-candidate predicate combines those masks with the multi-member
-third-byte filter; ten planted seven-file states pass and modified observations
-fail. The 28-bit Stage 2 space is not enumerated. Full key recovery, member CRC checks with
+projection. A single-candidate necessary filter combines those masks with the multi-member
+third-byte check; ten planted seven-file states pass and modified observations
+fail. Per-member carry feasibility can admit false positives because joint
+product consistency is not checked. The 28-bit Stage 2 space is not enumerated. Full key recovery, member CRC checks with
 recovered keys, and an official #39 verdict have not occurred. Issue #28
 remains open. Details are in
 `docs/reports/issue28-stay-assessment-2026-11-16.md`.

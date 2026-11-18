@@ -447,17 +447,19 @@ def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
     yield from visit(0)
 
 
-def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
-                                   random_firsts: tuple[int, ...],
-                                   random_seconds: tuple[int, ...],
-                                   observed_third_differences: tuple[int, ...],
-                                   key0_crc_bits_8_15: int,
-                                   key2_crc_bits_16_23_and_0_1: int, q8: int) -> bool:
-    """Test one Stage 2 partial guess against all members and shared intervals.
+def _stay_stage2_candidate_may_match(index: int, carry_masks: tuple[int, ...],
+                                     random_firsts: tuple[int, ...],
+                                     random_seconds: tuple[int, ...],
+                                     observed_third_differences: tuple[int, ...],
+                                     key0_crc_bits_8_15: int,
+                                     key2_crc_bits_16_23_and_0_1: int, q8: int) -> bool:
+    """Apply a necessary Stage 2 partial-guess filter across all members.
 
-    This is a bounded candidate predicate, not a keyspace enumerator. It
-    enforces the interval-derived q8/carry masks before checking each observed
-    third-byte differential with the forward predictor.
+    This is a bounded filter, not a keyspace enumerator or an exact state
+    consistency test. It rejects a guess when no interval-derived q8/carry
+    possibility explains the observed third-byte differentials. Per-member
+    carry possibilities are checked independently, so a survivor may still be
+    a false positive when those carries do not share one product value.
     """
     if type(index) is not int or not 0 <= index < 1 << 40:
         raise ValueError("Stay first-stage candidate index must be a 40-bit integer")

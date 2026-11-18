@@ -492,12 +492,12 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
         assert planted_state_retained
 
 
-def test_stay_stage2_candidate_filter_retains_planted_shared_state() -> None:
+def test_stay_stage2_necessary_filter_retains_planted_shared_state() -> None:
     from metis.core.ctf_zipcrypto import (
         M32,
         MULT,
         _stay_first_stage_candidate,
-        _stay_stage2_candidate_matches,
+        _stay_stage2_candidate_may_match,
     )
 
     rng = random.Random(0x51A7E)
@@ -533,10 +533,10 @@ def test_stay_stage2_candidate_filter_retains_planted_shared_state() -> None:
         q8 = ((product * MULT) & M32) >> 24
         key2_stage2 = ((key2_crc24 >> 16) << 2) | (key2_crc24 & 0x3)
 
-        assert _stay_stage2_candidate_matches(
+        assert _stay_stage2_candidate_may_match(
             index, carry_masks, random_firsts, random_seconds, observed_third,
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
-        assert not _stay_stage2_candidate_matches(
+        assert not _stay_stage2_candidate_may_match(
             index, carry_masks, random_firsts, random_seconds,
             tuple(value ^ 0x5A for value in observed_third),
             (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
