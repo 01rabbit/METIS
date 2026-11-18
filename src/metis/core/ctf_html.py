@@ -42,12 +42,17 @@ class Page(HTMLParser):
                                             "type": (values.get("type") or tag).lower(),
                                             "value": (values.get("value") or "")[:8192]})
         if tag == "a" and values.get("href") and len(self.links) < 256:
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(values["href"]).query)
-            for declared in query.get("q", []):
-                match = re.fullmatch(r"category:(web|crypto|rev|pwn|forensics|misc)", declared, re.IGNORECASE)
-                if match:
-                    self.categories.append(match.group(1).lower())
-            self._link = {"url": urllib.parse.urljoin(self.url, values["href"]), "text": "",
+            link_url = urllib.parse.urljoin(self.url, values["href"])
+            source = urllib.parse.urlsplit(self.url)
+            target = urllib.parse.urlsplit(link_url)
+            if (target.scheme, target.netloc, target.path) == (source.scheme, source.netloc, "/challenges"):
+                query = urllib.parse.parse_qs(target.query)
+                for declared in query.get("q", []):
+                    match = re.fullmatch(r"category:(web|crypto|rev|pwn|forensics|misc)", declared,
+                                         re.IGNORECASE)
+                    if match:
+                        self.categories.append(match.group(1).lower())
+            self._link = {"url": link_url, "text": "",
                           "download": "download" in values}
             self.links.append(self._link)
         node = None

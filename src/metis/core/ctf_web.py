@@ -176,7 +176,9 @@ class WebWorkflow:
                 state[self._AUTH_GENERATION_STATE_KEY] = generation
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed
-        return {"origin": key, "credential_removed": removed}
+        return {"origin": key, "credential_removed": removed,
+                "limit": ("Local stored credentials only; environment variables and provider credentials "
+                          "are unchanged, and an in-flight request may already have sent authentication")}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:
@@ -433,9 +435,11 @@ class WebWorkflow:
         else:
             page = Page(body, response.url)
             title, description = page.title or "CTF web problem", page.text
-            # Platform metadata is authoritative; generic text keyword triage remains
-            # available downstream only when a page declares no supported category.
-            categories = page.categories[:1]
+            # Only the known AlpacaHack archive layout supplies this hint. A
+            # conflicting set of page links is ambiguous, not authoritative.
+            host = urllib.parse.urlsplit(response.url).hostname
+            declared = set(page.categories)
+            categories = list(declared) if host == "alpacahack.com" and len(declared) == 1 else []
             files = [link["url"] for link in page.links if is_distribution(link, url, adapter, challenge_id)]
         links = list(page.links)
         for file_url in files:

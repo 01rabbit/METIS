@@ -28,6 +28,9 @@ metis = "metis.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/metis"]
 
+[tool.hatch.build.targets.sdist]
+only-include = ["src/metis", "pyproject.toml", "README.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

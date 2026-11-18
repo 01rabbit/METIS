@@ -217,7 +217,7 @@ def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_p
     from metis.core.ctf_http import HTTPResult
     body = (b'<a href="/challenges?q=category%3AWeb">Web</a>'
             b'<title>Call me crypto</title><p>analyzing syscalls</p>')
-    response = HTTPResult(url=base + "/problem", status=200,
+    response = HTTPResult(url="https://alpacahack.com/challenges/example", status=200,
                           headers={"content-type": "text/html"}, body=body,
                           size=len(body), sha256="0" * 64)
     workflow._client = lambda config, state: type("Client", (), {
@@ -227,6 +227,28 @@ def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_p
     })()
     result = workflow.open(base + "/problem")
     assert result["context"]["challenge"]["categories"] == ["web"]
+
+
+@pytest.mark.parametrize("alpacahack", [False, True])
+def test_generic_html_and_ambiguous_alpacahack_links_do_not_claim_category(site, tmp_path,
+                                                                            alpacahack):
+    from metis.core.ctf_http import HTTPResult
+
+    base, _ = site
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    body = (b'<a href="/challenges?q=category%3AWeb">Web</a>'
+            b'<a href="/challenges?q=category%3ACrypto">Crypto</a>')
+    response_url = "https://alpacahack.com/challenges/example" if alpacahack else base + "/problem"
+    response = HTTPResult(url=response_url, status=200,
+                          headers={"content-type": "text/html"}, body=body,
+                          size=len(body), sha256="0" * 64)
+    workflow._client = lambda config, state: type("Client", (), {
+        "request": lambda self, *args, **kwargs: response,
+        "export_state": lambda self: {"cookies": {}},
+        "auth_generation": 0,
+    })()
+    result = workflow.open(base + "/problem")
+    assert result["context"]["challenge"]["categories"] == []
 
 
 def test_network_scope_redirects_and_download_limits(site):

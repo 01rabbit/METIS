@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -28,6 +30,19 @@ def write_distributions(root: Path, *, wheel_version: str = "0.5.0",
 def test_release_validation_accepts_matching_wheel_sdist_and_tag(tmp_path):
     artifacts = validate_release(write_distributions(tmp_path), "v0.5.0", "metis-ctf", "0.5.0")
     assert [path.suffix for path in artifacts] == [".whl", ".gz"]
+
+
+def test_release_workflow_uses_installed_module_cli(tmp_path):
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
+    assert ".venv/bin/python -m metis.release_artifacts" in workflow
+    assert "scripts/validate_release_artifacts.py" not in workflow
+    result = subprocess.run(
+        [sys.executable, "-m", "metis.release_artifacts", "--dist-dir",
+         str(write_distributions(tmp_path)), "--tag", "v0.5.0",
+         "--project-name", "metis-ctf", "--project-version", "0.5.0"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),

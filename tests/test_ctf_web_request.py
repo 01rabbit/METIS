@@ -154,7 +154,8 @@ def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatc
 
     assert main() == 0
     output = json.loads(capsys.readouterr().out)
-    assert output == {"origin": platform_url, "credential_removed": True}
+    assert output["origin"] == platform_url and output["credential_removed"] is True
+    assert "in-flight request" in output["limit"]
     assert "platform-secret-token" not in json.dumps(output)
 
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])

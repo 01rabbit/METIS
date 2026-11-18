@@ -73,6 +73,19 @@ def test_unverified_candidate_is_not_a_solve_or_leaked_to_events(local_fixture):
     assert private_candidate not in store.export_jsonl(run_id)
 
 
+def test_model_rationale_is_not_persisted_in_event_chain(local_fixture):
+    from metis.core.runtime import ToolRequest
+
+    manifest, oracle, store = local_fixture
+    private_rationale = "METIS{private-model-rationale}"
+    provider = ConstantProvider(Decision(
+        kind="tool", tool=ToolRequest(tool="hex_decode", data="!"),
+        rationale=private_rationale))
+    run_id = Runner(store, provider, FailedRuntime(), oracle, RunBudget(max_actions=2)).run(manifest)
+    assert private_rationale not in store.export_jsonl(run_id)
+    assert all("rationale" not in event.detail for event in store.read(run_id))
+
+
 def test_repeated_action_is_stopped(local_fixture):
     manifest, oracle, store = local_fixture
     from metis.core.runtime import ToolRequest
@@ -450,7 +463,7 @@ def test_evidence_conditioned_fallback_paired_seeded_ablation(tmp_path):
                                         if event.status == RunStatus.EXECUTING
                                         and event.detail.get("tool") == alternate_tool)
                 assert failed_observation < alternate_action
-                assert "parser rejection supports testing" in events[alternate_action].detail["rationale"]
+                assert "rationale" not in events[alternate_action].detail
         assert arm_actions[0] == (2 if first_tool != f"{encoding}_decode" else 1)
         assert arm_actions[1] == 1
         deltas.append(int(arm_success[0]) - int(arm_success[1]))

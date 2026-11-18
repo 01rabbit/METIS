@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
@@ -628,7 +629,15 @@ class Sandbox:
                 with run_lock(self.session.database, run_id):
                     cleanup = _remove_container(self.engine, name)
                     if cleanup["status"] != "confirmed":
-                        raise RuntimeError("sandbox cleanup could not be confirmed")
+                        # Preserve the prior exception when one is propagating;
+                        # never include untrusted workload output in this error.
+                        prior = sys.exception()
+                        status = ("workload_completed" if result.get("ok") else
+                                  "workload_timed_out" if result.get("engine_timed_out") else
+                                  "workload_memory_limit" if result.get("memory_limit_exceeded") else
+                                  "workload_failed") if "result" in locals() else "workload_unknown"
+                        raise RuntimeError(
+                            f"sandbox cleanup could not be confirmed ({status})") from prior
                     with sqlite3.connect(self.session.database) as db:
                         db.execute("DELETE FROM sandbox_workers WHERE run_id=? AND container_name=?",
                                    (run_id, name))

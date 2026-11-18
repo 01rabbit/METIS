@@ -357,8 +357,9 @@ def test_sandbox_cleanup_failure_keeps_worker_registered_until_recovery(tmp_path
     monkeypatch.setattr(ctf_sandbox, "_remove_container",
                         lambda *_: {"status": "unknown", "reason": "engine did not confirm absence"})
 
-    with pytest.raises(RuntimeError, match="cleanup could not be confirmed"):
+    with pytest.raises(RuntimeError, match="cleanup could not be confirmed") as failure:
         Sandbox(database).execute(run_id, SandboxRequest(target=target))
+    assert "workload_" in str(failure.value)
     assert session.context(run_id)["status"] == "executing"
     with sqlite3.connect(database) as db:
         row = db.execute("SELECT engine, container_name FROM sandbox_workers WHERE run_id=?",

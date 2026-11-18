@@ -106,7 +106,7 @@ class Runner:
                     break
                 seen.add(identity)
                 emit(RunStatus.EXECUTING, operation="isolated_fixture_tool", tool=decision.tool.tool,
-                     action_identity=identity, rationale=decision.rationale or "")
+                     action_identity=identity)
                 check()
                 started = time.monotonic()
                 observation = self.runtime.execute(decision.tool, timeout_seconds=min(
@@ -123,7 +123,7 @@ class Runner:
                 })
                 emit(RunStatus.OBSERVING, tool_ok=str(observation.ok).lower(), tool=decision.tool.tool,
                      failure_kind=observation.failure_kind or "none")
-                emit(RunStatus.REPLANNING, reason=decision.rationale or "observation_recorded")
+                emit(RunStatus.REPLANNING, reason="observation_recorded")
         except (Cancelled, KeyboardInterrupt):
             emit(RunStatus.CANCELLED)
         except BudgetExhausted:
