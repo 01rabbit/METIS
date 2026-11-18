@@ -29,6 +29,13 @@ earlier negative result.
 
 ## Classification correction and data handling
 
+The model calls ran from runner commit `8e260db` after preregistration commit
+`f0c6f72`. Result commit `2f22eaf` later changed the committed runner:
+it set the pilot wrapper's `EVALUATION_SPLIT` to `unlisted` and added the
+pilot identity/seed/task-family checks to `analyze()`. Those post-run changes
+were not part of the executed script and cannot be treated as preregistered
+controls. The retained output and the analysis produced from it are unchanged.
+
 The running pilot inherited `evaluation_split="heldout"` in its temporary
 METIS session metadata from the diagnostic runner. That was a labeling error:
 the preregistered six-cluster work is a feasibility pilot, **not** a held-out
