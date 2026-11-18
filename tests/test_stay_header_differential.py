@@ -492,6 +492,56 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
         assert planted_state_retained
 
 
+def test_stay_stage2_candidate_filter_retains_planted_shared_state() -> None:
+    from metis.core.ctf_zipcrypto import (
+        M32,
+        MULT,
+        _stay_first_stage_candidate,
+        _stay_stage2_candidate_matches,
+    )
+
+    rng = random.Random(0x51A7E)
+    for _ in range(10):
+        initial = (rng.getrandbits(32), rng.getrandbits(32), rng.getrandbits(32))
+        first_stream = _stream_byte(initial[2])
+        product = initial[1] * MULT & M32
+        key0_crc16 = _crc_update(initial[0], 0) & 0xFFFF
+        key2_crc24 = _crc_update(initial[2], 0) & 0xFFFFFF
+        random_headers = tuple(bytes(rng.getrandbits(8) for _ in range(3)) for _ in range(7))
+        first_passes = tuple(_encrypt(header, initial) for header in random_headers)
+        stored_headers = tuple(_encrypt(first_pass, initial) for first_pass in first_passes)
+        random_firsts = tuple(header[0] for header in random_headers)
+        random_seconds = tuple(header[1] for header in random_headers)
+        observed_second = tuple(
+            stored[1] ^ header[1] for stored, header in zip(stored_headers, random_headers, strict=True))
+        observed_third = tuple(
+            stored[2] ^ header[2] for stored, header in zip(stored_headers, random_headers, strict=True))
+
+        first_low = _crc_update(initial[0], random_firsts[0]) & 0xFF
+        second_pass_first = random_firsts[0] ^ first_stream
+        second_low = _crc_update(initial[0], second_pass_first) & 0xFF
+        first_carry = int((product & 0xFFFFFF) + ((first_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+        second_carry = int((product & 0xFFFFFF) + ((second_low * MULT + 1) & 0xFFFFFF) >= 1 << 24)
+        key2_crc_bits_2_15 = key2_crc24 & 0xFFFC
+        index = (
+            first_stream | (key0_crc16 & 0xFF) << 8 | (product >> 24) << 16
+            | first_carry << 24 | (key2_crc_bits_2_15 >> 10) << 25
+            | ((key2_crc_bits_2_15 >> 2) & 0xFF) << 31 | second_carry << 39
+        )
+        carry_masks = _stay_first_stage_candidate(index, random_firsts, observed_second)
+        assert carry_masks is not None
+        q8 = ((product * MULT) & M32) >> 24
+        key2_stage2 = ((key2_crc24 >> 16) << 2) | (key2_crc24 & 0x3)
+
+        assert _stay_stage2_candidate_matches(
+            index, carry_masks, random_firsts, random_seconds, observed_third,
+            (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
+        assert not _stay_stage2_candidate_matches(
+            index, carry_masks, random_firsts, random_seconds,
+            tuple(value ^ 0x5A for value in observed_third),
+            (key0_crc16 >> 8) & 0xFF, key2_stage2, q8)
+
+
 def test_stay_stage2_two_update_key1_formula_matches_full_recurrence() -> None:
     """The proposed Stage 2 key1 high-byte decomposition matches the cipher."""
     from metis.core.ctf_zipcrypto import MULT

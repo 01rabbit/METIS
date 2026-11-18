@@ -286,9 +286,8 @@ Issue #28 remain open.
 
 An independent follow-up inspected only the Stage 1 shard schema and the
 bounded CLI boundary. Private shards contain candidate IDs and carry masks;
-they do not store the 88 interval records or a `q8` projection. The current
-tool exposes Stage 1 scanning only. No persisted interval consumer or Stage 2
-enumerator is available.
+they do not store the 88 interval records or a `q8` projection. At that point,
+the tool exposed Stage 1 scanning only and no Stage 2 computation had been run.
 
 Projecting `q8 = MSB(P * MULT mod 2^32)` over the recorded interval widths would
 require about 98,222,960 simple value checks before deduplication (about
@@ -297,8 +296,9 @@ runtime. Enumerating the full 28-bit Stage 2 tuple for each of the 360 first
 stage hits would be about 96.6 billion base tuples before per-file carry
 filtering. That is outside a bounded same-window completion path without a
 different algorithm and a resumable, resource-accounted interface. No saved
-challenge shard contents were inspected to produce this estimate, and no Stage
-2 computation was run. Issue #28 and ksnctf #39 remain open.
+challenge shard contents were inspected to produce this estimate. Later work
+added interval projections and a one-candidate predicate, recorded below, but
+has not enumerated the Stage 2 space. Issue #28 and ksnctf #39 remain open.
 
 ## Exact Stage 1 interval to q8 projection (2026-11-18)
 
@@ -310,8 +310,10 @@ exhaustive small-word oracle compares 500 deterministic intervals against
 direct multiplication, and the planted full-state carry-interval test verifies
 that the correct q8 and all per-header second-update carries are retained.
 
-This supplies the interval-consistency primitive missing from the earlier
-Stage 2 review. It does not yet combine the q8/carry masks with the multi-member
-third-byte filter, enumerate Stage 2 key guesses, reconstruct full keys, check
-all member CRCs, or submit a candidate. No official archive candidate was
-inspected or submitted for this helper. Issue #28 remains open.
+The single-candidate Stage 2 predicate now combines these q8/carry masks with
+the multi-member third-byte differential. Ten deterministic planted seven-file
+states passed; the same candidates rejected modified third-byte differentials.
+This is one-candidate validation, not enumeration of the 28-bit Stage 2 space.
+It does not reconstruct full keys, check all member CRCs, or submit a candidate.
+No official archive candidate was tested by this predicate. Issue #28 remains
+open.

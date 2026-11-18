@@ -190,6 +190,41 @@ def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int 
     return sum(1 << q8 for q8 in _stay_q8_carry_masks(product_interval, bits=bits))
 
 
+def _stay_second_update_addends(random_first: int, random_second: int, first_stream: int,
+                                key0_crc_bits_0_15: int, key1_product_high: int,
+                                key2_crc_bits_0_23: int, first_pass_carry1: int
+                                ) -> tuple[int, int]:
+    """Return the low-24-bit Stage 2 offsets for the two encryption passes."""
+    byte_values = (random_first, random_second, first_stream, key1_product_high)
+    if any(type(value) is not int or not 0 <= value <= 0xFF for value in byte_values):
+        raise ValueError("Stay byte guesses must be bytes")
+    if (type(key0_crc_bits_0_15) is not int or not 0 <= key0_crc_bits_0_15 <= 0xFFFF
+            or type(key2_crc_bits_0_23) is not int or not 0 <= key2_crc_bits_0_23 <= 0xFFFFFF
+            or type(first_pass_carry1) is not int or first_pass_carry1 not in (0, 1)):
+        raise ValueError("Stay Stage 2 partial state is invalid")
+
+    def after_two(first_plaintext: int, second_plaintext: int) -> tuple[int, int, int]:
+        key0_after_first = key0_crc_bits_0_15 ^ CRCTAB[first_plaintext]
+        first_addend = key0_after_first & 0xFF
+        key0_after_second = ((key0_after_first >> 8)
+                             ^ CRCTAB[(key0_after_first ^ second_plaintext) & 0xFF]) & 0xFFFF
+        second_addend = key0_after_second & 0xFF
+        offset1 = first_addend * MULT + 1
+        product_high_after_first = (key1_product_high + (offset1 >> 24)
+                                    + first_pass_carry1) & 0xFF
+        key2_after_first = (key2_crc_bits_0_23 ^ CRCTAB[product_high_after_first]) & 0xFFFFFF
+        key2_stream_state = (key2_after_first & 0xFFFF) | 2
+        stream_second = (key2_stream_state * (key2_stream_state ^ 1) >> 8) & 0xFF
+        offset2 = (first_addend * MULT * MULT + MULT
+                   + second_addend * MULT + 1) & 0xFFFFFF
+        return stream_second, offset2, second_addend
+
+    first_stream_second, offset_first, _ = after_two(random_first, random_second)
+    _, offset_second, _ = after_two(random_first ^ first_stream,
+                                    random_second ^ first_stream_second)
+    return offset_first, offset_second
+
+
 def _stay_lift_key1_candidates(product_interval: tuple[int, int, int], *, bits: int = 24
                                ) -> Iterator[int]:
     """Lift a product interval to key1 values using the odd ZipCrypto multiplier."""
@@ -410,6 +445,84 @@ def _stay_first_stage_key1_intervals(index: int, carry_masks: tuple[int, ...],
             yield interval, tuple(choices)
 
     yield from visit(0)
+
+
+def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
+                                   random_firsts: tuple[int, ...],
+                                   random_seconds: tuple[int, ...],
+                                   observed_third_differences: tuple[int, ...],
+                                   key0_crc_bits_8_15: int,
+                                   key2_crc_bits_16_23_and_0_1: int, q8: int) -> bool:
+    """Test one Stage 2 partial guess against all members and shared intervals.
+
+    This is a bounded candidate predicate, not a keyspace enumerator. It
+    enforces the interval-derived q8/carry masks before checking each observed
+    third-byte differential with the forward predictor.
+    """
+    if type(index) is not int or not 0 <= index < 1 << 40:
+        raise ValueError("Stay first-stage candidate index must be a 40-bit integer")
+    count = len(random_firsts)
+    if (count < 5 or len(carry_masks) != count or len(random_seconds) != count
+            or len(observed_third_differences) != count
+            or any(type(value) is not int or not 0 <= value <= 0xFF
+                   for value in (*random_firsts, *random_seconds, *observed_third_differences))
+            or any(type(mask) is not int or not 1 <= mask <= 0xF for mask in carry_masks)):
+        raise ValueError("Stay Stage 2 observations or carry masks are invalid")
+    if (type(key0_crc_bits_8_15) is not int or not 0 <= key0_crc_bits_8_15 <= 0xFF
+            or type(key2_crc_bits_16_23_and_0_1) is not int
+            or not 0 <= key2_crc_bits_16_23_and_0_1 <= 0x3FF
+            or type(q8) is not int or not 0 <= q8 <= 0xFF):
+        raise ValueError("Stay Stage 2 guesses are out of range")
+
+    first_stream = index & 0xFF
+    key0_crc = (index >> 8 & 0xFF) | (key0_crc_bits_8_15 << 8)
+    product_high = index >> 16 & 0xFF
+    key2_crc_low14 = ((index >> 25 & 0x3F) << 10) | ((index >> 31 & 0xFF) << 2)
+    key2_crc = (key2_crc_low14 | (key2_crc_bits_16_23_and_0_1 >> 2) << 16
+                | (key2_crc_bits_16_23_and_0_1 & 0x3))
+
+    for interval, carry_pairs in _stay_first_stage_key1_intervals(
+            index, carry_masks, random_firsts):
+        offsets: list[int] = []
+        for random_first, random_second, pair in zip(
+                random_firsts, random_seconds, carry_pairs, strict=True):
+            offsets.extend(_stay_second_update_addends(
+                random_first, random_second, first_stream, key0_crc,
+                product_high, key2_crc, pair >> 1))
+        projected = _stay_q8_carry_masks(interval, tuple(offsets))
+        second_carries = projected.get(q8)
+        if second_carries is None:
+            continue
+
+        all_members_match = True
+        for member, (random_first, random_second, observed, pair) in enumerate(zip(
+                random_firsts, random_seconds, observed_third_differences,
+                carry_pairs, strict=True)):
+            first_carry1, second_carry1 = pair >> 1, pair & 1
+            first_carry2_mask = second_carries[member * 2]
+            second_carry2_mask = second_carries[member * 2 + 1]
+            member_matches = False
+            for first_carry2 in (0, 1):
+                if not first_carry2_mask & (1 << first_carry2):
+                    continue
+                for second_carry2 in (0, 1):
+                    if not second_carry2_mask & (1 << second_carry2):
+                        continue
+                    predicted = _stay_predict_third_byte_difference(
+                        random_first, random_second, first_stream, key0_crc,
+                        product_high, key2_crc, first_carry1, second_carry1,
+                        q8, first_carry2, second_carry2)
+                    if predicted == observed:
+                        member_matches = True
+                        break
+                if member_matches:
+                    break
+            if not member_matches:
+                all_members_match = False
+                break
+        if all_members_match:
+            return True
+    return False
 
 
 def _stay_predict_second_byte_difference_np(indices: np.ndarray, random_first: int,
