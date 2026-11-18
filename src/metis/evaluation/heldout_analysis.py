@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from metis.core.contracts import RunStatus
 from metis.core.store import RunStore
+from metis.evaluation.verifier_provenance import OFFICIAL_VERIFICATIONS
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.:@+-]{0,127}$")]
 Count = Annotated[int, Field(ge=0, le=1_000_000_000)]
@@ -53,7 +54,7 @@ class Trial(Record):
     arm: Arm
     run_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
     evidence_sequence: Annotated[int, Field(ge=1)]
-    oracle: Literal["official", "protected_fixture", "archive_local", "none"]
+    oracle: Literal["official", "protected_fixture", "browser_observed", "archive_local", "none"]
     oracle_verified: bool
     workflow_complete: bool
     failure: Literal["none", "incorrect", "incomplete", "timeout", "budget", "policy",
@@ -262,7 +263,7 @@ def reconcile_evidence(study: Study, database: Path) -> dict[str, int]:
             if event.status != RunStatus.SOLVED:
                 raise ValueError("verified trial does not reference a SOLVED event")
             if trial.oracle == "official":
-                if verification not in {"official_ctfd", "official_rctf", "official_ksnctf", "official_html"}:
+                if verification not in OFFICIAL_VERIFICATIONS:
                     raise ValueError("official trial lacks an official verifier event")
                 official_verified += 1
             elif trial.oracle == "protected_fixture":

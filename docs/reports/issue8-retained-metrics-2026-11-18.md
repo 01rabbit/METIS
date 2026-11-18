@@ -153,3 +153,10 @@ an unhandled error. The exporter now checks the count before reading the chain,
 requires timezone-aware endpoints, and returns a generic CLI rejection for
 malformed input. Focused regressions and Ruff/mypy passed. These protections do
 not make the snapshot a complete trial exporter.
+
+Review follow-up: `official_browser_observed` is exported as the separate
+`browser_observed` provenance with `oracle_verified=false`. It is an observed
+platform state, not an API verifier verdict eligible for the study's score.
+The official-verifier labels are now shared with the analyzer. If first-to-last
+event time exceeds 24 hours, only `event_span_seconds` becomes `null`; the
+validated chain and remaining fields are retained.

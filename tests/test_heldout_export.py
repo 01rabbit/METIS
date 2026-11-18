@@ -57,6 +57,32 @@ def test_snapshot_does_not_infer_a_solve_or_missing_counters(tmp_path):
     assert result["successful_mediated_actions"] is None
 
 
+def test_browser_observation_keeps_distinct_provenance(tmp_path):
+    database = tmp_path / "state.sqlite"
+    run_id = "9" * 32
+    _run(database, run_id, verification="official_browser_observed")
+    result = snapshot_run(database, run_id)
+    assert result["oracle"] == "browser_observed"
+    assert result["oracle_verified"] is False
+
+
+def test_long_idle_span_keeps_other_evidence(tmp_path):
+    database = tmp_path / "state.sqlite"
+    run_id = "8" * 32
+    _run(database, run_id, verification="official_ksnctf")
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        row = db.execute("SELECT payload,previous_hash FROM events WHERE run_id=? AND sequence=7",
+                         (run_id,)).fetchone()
+        timestamp = "2099-11-18T00:00:00+00:00"
+        digest = RunStore._digest(row[0], timestamp, row[1])
+        db.execute("UPDATE events SET timestamp=?,digest=? WHERE run_id=? AND sequence=7",
+                   (timestamp, digest, run_id))
+    result = snapshot_run(database, run_id)
+    assert result["event_span_seconds"] is None
+    assert result["oracle"] == "official"
+
+
 def test_snapshot_rejects_corrupt_chain_and_unknown_run(tmp_path):
     database = tmp_path / "state.sqlite"
     run_id = "c" * 32

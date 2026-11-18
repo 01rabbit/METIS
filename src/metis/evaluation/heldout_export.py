@@ -16,9 +16,12 @@ from pathlib import Path
 
 from metis.core.contracts import RunStatus
 from metis.core.store import RunStore
+from metis.evaluation.verifier_provenance import (
+    BROWSER_OBSERVED_VERIFICATION,
+    OFFICIAL_VERIFICATIONS,
+)
 
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
-OFFICIAL = {"official_ctfd", "official_rctf", "official_ksnctf", "official_html"}
 MAX_EVENTS = 100_000
 
 
@@ -48,13 +51,15 @@ def snapshot_run(database: Path, run_id: str) -> dict[str, object]:
         if start.utcoffset() is None or end.utcoffset() is None:
             raise ValueError("benchmark timestamps must include a timezone")
         elapsed = (end - start).total_seconds()
-        if elapsed < 0 or elapsed > 86_400:
+        if elapsed < 0:
             raise ValueError("benchmark elapsed time is out of range")
+        span = elapsed if elapsed <= 86_400 else None
         terminal = events[-1]
         verification = terminal.detail.get("verification") if terminal.status == RunStatus.SOLVED else None
-        oracle = ("official" if verification in OFFICIAL else
+        oracle = ("official" if verification in OFFICIAL_VERIFICATIONS else
+                  "browser_observed" if verification == BROWSER_OBSERVED_VERIFICATION else
                   "protected_fixture" if verification == "local_fixture_oracle" else "none")
-        verified = oracle != "none" and terminal.status == RunStatus.SOLVED
+        verified = oracle in {"official", "protected_fixture"}
         tables = {row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
             "('agent_turn_reservations','agent_actions')")}
@@ -68,7 +73,7 @@ def snapshot_run(database: Path, run_id: str) -> dict[str, object]:
             "run_id": run_id, "evidence_sequence": terminal.sequence,
             "terminal_status": terminal.status.value,
             "oracle": oracle, "oracle_verified": verified,
-            "event_span_seconds": elapsed,
+            "event_span_seconds": span,
             "executing_events": sum(event.status == RunStatus.EXECUTING for event in events),
             "reserved_model_calls": model_calls, "successful_mediated_actions": mediated_actions,
             "tokens": None, "cost_usd": None,
