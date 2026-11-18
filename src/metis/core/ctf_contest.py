@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from metis.core.codex_session import CodexSession
+from metis.core.resources import dependency_report
 
 FORMATS = {"jeopardy", "attack-defense"}
 # handoff: the worker found the solution path but the last step needs the operator's signed-in
@@ -229,6 +230,11 @@ class ContestBoard:
             rows.append((contest_id, challenge_id, title, category, points, solves, estimate,
                          confidence, "queued", None, json.dumps(prerequisites), "unknown",
                          "unpatched", 0, time.time(), url, adapter))
+        graph = {item["challenge_id"]: item["prerequisites"] for item in self._challenges(contest_id)}
+        graph.update({row[1]: json.loads(row[10]) for row in rows})
+        cycles = dependency_report(graph, {})["cycles"]
+        if cycles:
+            raise ValueError("prerequisites form a cycle: " + ", ".join(cycles[:10]))
         with sqlite3.connect(self.database) as db:
             db.executemany("""INSERT INTO ctf_contest_challenges (contest_id, challenge_id, title, category,
                 points, solves, estimated_minutes, confidence, state, run_id, prerequisites, service_health,
@@ -422,6 +428,7 @@ class ContestBoard:
         work = active + [{**item, "state": "investigating"} for item in selected]
         return {"contest_id": contest_id, "format": contest["format"],
                 "active": [self._work_packet(contest, item) for item in work],
+                "blocked_by_prerequisites": self._dependencies(challenges)["blocked"],
                 "slots_remaining": max(0, contest["max_parallel"] - len(work)),
                 "queue_remaining": len(eligible) - len(selected), "timebox_expired": expired}
 
@@ -530,7 +537,21 @@ class ContestBoard:
         challenges = self._challenges(contest_id)
         counts = {state: sum(item["state"] == state for item in challenges) for state in STATES}
         score = sum(item["points"] for item in challenges if item["state"] == "solved")
-        return {**contest, "score": score, "counts": counts, "challenges": challenges}
+        dependencies = self._dependencies(challenges)
+        return {**contest, "score": score, "counts": counts, "challenges": challenges,
+                "blocked_by_prerequisites": dependencies["blocked"],
+                "unknown_prerequisites": dependencies["unknown"]}
+
+    @staticmethod
+    def _dependencies(challenges: list[dict[str, Any]]) -> dict[str, Any]:
+        """Queued work whose prerequisite was abandoned (directly or upstream) can never become
+        eligible; report it instead of letting it wait silently."""
+        report = dependency_report({item["challenge_id"]: item["prerequisites"] for item in challenges},
+                                   {item["challenge_id"]: item["state"] for item in challenges},
+                                   success=frozenset({"solved"}), failures=frozenset({"abandoned"}))
+        queued = {item["challenge_id"] for item in challenges if item["state"] == "queued"}
+        report["blocked"] = {key: value for key, value in report["blocked"].items() if key in queued}
+        return report
 
     @staticmethod
     def _priority(contest: dict[str, Any], item: dict[str, Any]) -> float:

@@ -27,6 +27,7 @@ from metis.core.ctf_html import Page, display_url
 from metis.core.ctf_http import SafeHTTP, clean_url, origin
 from metis.core.ctf_knowledge import KnowledgeBase
 from metis.core.ctf_ksnctf import KsnctfVerdict, is_official_problem, problem_id
+from metis.core.resources import ResourceBroker
 from metis.core.run_lock import locked
 
 NETWORK_ERRORS = (OSError, ValueError, KeyError, TypeError, RuntimeError, http.client.HTTPException)
@@ -385,9 +386,12 @@ class WebWorkflow:
             browser_cookies = [{"name": item["name"], "value": item["value"] or "", "domain": host,
                                 "path": item["path"] or "/", "secure": bool(item["secure"])}
                                for item in jar_cookies]
-            final_url, html, blocked = (renderer or ctf_browser.render)(
-                response.url, allowed, cookies=browser_cookies,
-                auth_origin=config["auth_origin"], auth_generation_check=auth_generation_check)
+            # A configured `browser` capacity is shared by every METIS process on this state file.
+            with ResourceBroker(self.database).lease("web-render", {"browser": 1}, ttl=600, wait=120,
+                                                     purpose="headless render"):
+                final_url, html, blocked = (renderer or ctf_browser.render)(
+                    response.url, allowed, cookies=browser_cookies,
+                    auth_origin=config["auth_origin"], auth_generation_check=auth_generation_check)
             if not auth_generation_check():
                 raise ValueError("authentication has been forgotten for this origin")
             if origin(final_url) not in allowed:

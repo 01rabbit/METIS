@@ -36,6 +36,7 @@ from pydantic import Field, field_validator
 from metis.core.artifacts import artifact_stream
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import Contract, RunStatus
+from metis.core.resources import ResourceBroker
 from metis.core.run_lock import operation_lock, run_lock
 
 MODES = ("run", "strace", "ltrace", "gdb", "script")
@@ -486,7 +487,10 @@ class Sandbox:
                 _profile: str = "standard", _operation_id: str | None = None) -> dict[str, Any]:
         # Recovery can interrupt this lock, but another sandbox/artifact call
         # waits until the old caller observes its revoked operation identity.
-        with operation_lock(self.session.database, run_id):
+        # A configured `sandbox` capacity bounds containers across runs and swarm workers.
+        with ResourceBroker(self.session.database).lease(
+                "sandbox-" + run_id[:64], {"sandbox": 1}, ttl=max(900, request.timeout + 300), wait=300,
+                purpose="sandbox " + request.mode), operation_lock(self.session.database, run_id):
             operation_id = _operation_id
             if not _reserved:
                 operation_id = uuid4().hex

@@ -38,6 +38,8 @@ DEFAULTS: dict[str, dict[str, int | str]] = {
     "zlib": {"max_bytes": 65_536}, "bzip2": {"max_bytes": 65_536}, "xz": {"max_bytes": 65_536},
     "image_lsb": {"bit": 0, "max_bytes": 4096}, "wav_lsb": {"channel": 0, "bit": 0, "max_bytes": 4096},
     "pdf_text": {"pages": 5}, "sqlite": {"limit": 20},
+    "email": {"email_format": "auto", "max_records": 200}, "browser_history": {"max_records": 200},
+    "json_records": {"max_records": 200}, "cloudtrail": {"max_records": 200}, "evtx_xml": {"max_records": 200},
     "x509": {"limit": 8}, "tls_certificates": {"packets": 1024, "connections": 16, "limit": 4},
     "tls_decrypt": {"packets": 1024, "connections": 16, "preview": 600},
     "tls_http_body": {"packets": 1024, "connections": 16, "connection": 0, "side": "server", "message": 0,

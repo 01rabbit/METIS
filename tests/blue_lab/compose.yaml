@@ -1,0 +1,36 @@
+services:
+  desktop:
+    image: metis-connection-lab:local
+    hostname: desktop
+    init: true
+    environment:
+      METIS_LAB_ROLE: desktop
+    volumes:
+      - lab-state:/lab
+    networks: [lab]
+  vpn:
+    image: metis-connection-lab:local
+    hostname: vpn
+    init: true
+    environment:
+      METIS_LAB_ROLE: vpn
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun:/dev/net/tun]
+    volumes:
+      - lab-state:/lab
+    networks: [lab]
+  client:
+    image: metis-connection-lab:local
+    hostname: client
+    init: true
+    command: ["python3", "tests/blue_lab/client_tests.py"]
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun:/dev/net/tun]
+    volumes:
+      - lab-state:/lab
+    networks: [lab]
+networks:
+  lab:
+    internal: true
+volumes:
+  lab-state:

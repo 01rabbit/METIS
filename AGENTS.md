@@ -57,6 +57,9 @@ tool use goes through `metis agent intent`, and reports through
 Daybreak owns the run state, scope, budgets, credential handling, official
 submissions, verdict interpretation, and final synthesis. Subagents may propose
 candidates but must not race submissions or independently broaden network scope.
+Daybreak alone leases shared resources to tasks (`metis lease`), issues scoped
+permits for state-changing actions (`metis permit`), and launches connection
+profiles (`metis connect --execute`, `metis siem`); see docs/BLUE_TEAM.md.
 Batch independent reads and tool work, then reconcile evidence before the next
 round. Unless the user requests exhaustive exploration, optimize for verified
 progress per token and end parallel branches that no longer affect the answer.

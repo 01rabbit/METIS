@@ -112,6 +112,38 @@ running の peer がまだ呼び出しを始めていない場合にも直ちに
 model-turn budgetは同コマンドの `--specialist-turn-budget` でrun開始前に指定できる（既定24、範囲1–256）。
 runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設定変更は既存runへ適用しない。
 
+
+### 共有リソースとスコープ付き許可
+
+- 名前付きリソース（`sandbox`、`browser` など）の容量を `metis resource configure NAME --capacity N`
+  で設定すると、同じ状態ファイルを使う全プロセス（並列の専門家、スウォーム、別の run）で共有される。
+  要求する枠の組は1トランザクションで全部取るか何も取らない。容量を設定していないリソースは制限しない。
+  - `metis sandbox run` は `sandbox` を1枠、`web open --render` は `browser` を1枠借りる（待機の上限はそれぞれ300秒と120秒）。
+  - `with` で借りた lease はプロセス ID とホスト名を記録し、実行中はハートビートで期限を延ばす。固定の期限より
+    長い処理でも枠を失わない。
+  - `metis resource reap` は、期限切れで、かつ記録したプロセスがこのホストで終了していると確かめられた lease だけを
+    解放する。保持者が生きている、別ホスト、記録が無い（タスクに貸した lease）ものは `kept` として残し、
+    時間の経過だけでは解放しない。他者の lease の解放（`metis resource release --reason ...`）は所有者の操作。
+    プロセス ID の再利用に備え、lease を取ったプロセスの起動時刻の目印も記録し、一致しなければ別のプロセスとみなす。
+- 所有者鍵: `metis permit init` を Daybreak が一度だけ実行すると、`<状態ディレクトリ>/private/owner.key`
+  （0600、ディレクトリは 0700）を作り、データベースにはその SHA-256 だけを記録する。許可の発行、容量の変更、
+  他者の lease の解放は、この鍵を示さないと拒否する（`--owner-key-file` または `METIS_OWNER_KEY`）。
+  初期化は1トランザクションで直列化し、鍵ファイルは一時名で書いてから置く。途中で止まって鍵ファイルだけが
+  残った場合は、次の `metis permit init` がそのファイルを採用して復旧する。採用するのは、シンボリックリンクを
+  たどらずに開け、自分が所有する、リンク数1・0600 の通常ファイルで、置き場所が自分の 0700 ディレクトリの
+  場合だけ。それ以外は拒否する。鍵が登録済みなのにファイルが無い、一致しない、権限が広い場合もエラーにする。
+- 接続の状態は `starting → running → stopped` の順にしか進まない。停止済みの接続や終了したタスクの接続を、
+  遅れて届いた報告で `running` に戻すことはできない。
+- `metis permit issue RUN TASK RESOURCE ACTION --reason ... [--ttl 300] [--uses 1]` は、外部の状態を変える
+  操作（attack-defense のパッチ投入など）に対する、完全一致・期限付き・回数付きの許可を出す。
+  ワイルドカードは拒否する。消費（`ScopedPermits.consume`）は原子的で、最後の1回を二重に使えない。
+- 信頼境界: 所有者鍵が守れるのは、状態ディレクトリを読めない主体に対してである。Codex 専門家のターンは
+  OS のサンドボックスでホームディレクトリ（チェックアウトと `.metis-state` を含む）への読み書きを拒否されるため、
+  鍵を読めず、データベースにも書けない。一方、Daybreak と同じ OS ユーザーで制限なく動くエージェント
+  （Claude Code のサブエージェントなど）は、鍵ファイルを読むことも、データベースへ直接書くこともできる。
+  そうしたエージェントに対しては、この仕組みは記録と誤操作防止にとどまり、強制には OS レベルの分離
+  （別ユーザーやサンドボックス）が要る。
+
 ### モデル
 
 `metis agent slots --catalog-file models.json --current-model ID` で、ホストがその場で示したモデル一覧
@@ -142,6 +174,8 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
 - `contest dispatch` は `timebox_until`（最大30分）を記録し、次回の dispatch（または
   `ContestBoard.enforce_timebox`）で期限切れの問題を `blocked`＋メモにする。再 queue / abandon は明示的に行う。
 - スウォーム（`metis swarm`）の lease とは別の仕組みで、互いに干渉しない。
+- 前提問題（`prerequisites`）が循環する追加は拒否する。前提が `abandoned` になった（上流を含む）queued の問題は
+  `board` と `dispatch` の `blocked_by_prerequisites` に原因と共に出す。黙って待たせ続けない。
 
 ## 5. 受け入れ条件との対応（仕様10章）
 
@@ -208,6 +242,7 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
 - `metis agent codex-probe --ping` は、隔離のセルフテスト、実ターン 1 回、spawn カナリア 1 回を実行し、
   `ready` を返す。
 - usage（トークン数）は Codex の報告値を `agent_jobs.usage` に記録する。費用は `unknown`。
+  1 ターンでも報告の無い項目は 0 で補わず `null` とし、`unknown_fields` に名前を残す。報告された分だけの和は `known_subtotals` に置く。
 - モデルは `metis agent slots` に登録した active catalog の ID だけを使う。
 
 確認済みの制約（Codex CLI 0.166.0 と 0.169.0、2026-11-16〜17）。サブエージェント起動の制限は、この版の挙動に依存する:

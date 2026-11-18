@@ -1,0 +1,7 @@
+{
+  "tasks": [
+    {"id":"endpoint", "skill":"soc-host-forensics", "prompt":"Analyze the synthetic endpoint evidence in examples/alert.json. Cite event IDs, distinguish observations from hypotheses, and recommend next collection.", "resources":{}},
+    {"id":"identity", "skill":"soc-cloud-identity-forensics", "prompt":"Analyze the synthetic identity evidence in examples/alert.json. Determine observed access and coverage limitations.", "resources":{}},
+    {"id":"report", "skill":"soc-incident-report", "prompt":"Reconcile endpoint and identity findings into a Tier 1 handoff with evidence, confidence, scope and recommended next steps.", "depends_on":["endpoint","identity"], "resources":{}}
+  ]
+}
