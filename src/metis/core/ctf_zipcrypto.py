@@ -110,6 +110,64 @@ def _stay_key1_product_interval(addends: tuple[int, ...], top_bytes: tuple[int, 
     return product_high, interval[0], interval[1]
 
 
+def _stay_floor_sum(count: int, modulus: int, multiplier: int, offset: int) -> int:
+    """Return ``sum((multiplier*i + offset) // modulus for i in range(count))``."""
+    total = 0
+    while True:
+        if multiplier >= modulus:
+            total += (count - 1) * count * (multiplier // modulus) // 2
+            multiplier %= modulus
+        if offset >= modulus:
+            total += count * (offset // modulus)
+            offset %= modulus
+        maximum = multiplier * count + offset
+        if maximum < modulus:
+            return total
+        count, offset = divmod(maximum, modulus)
+        modulus, multiplier = multiplier, modulus
+
+
+def _stay_q8_interval_mask(product_interval: tuple[int, int, int], *, bits: int = 24) -> int:
+    """Return the q8 values consistent with at least one product in a Stage 1 interval.
+
+    For ``P = product_high || low``, Stage 2 requires
+    ``q8 = MSB(P * MULT mod 2**(bits + 8))``. A modular floor-sum counts
+    which high-byte buckets intersect the inclusive low-word interval without
+    enumerating every value in it.
+    """
+    if (type(bits) is not int or not 1 <= bits <= 24
+            or len(product_interval) != 3
+            or any(type(value) is not int for value in product_interval)):
+        raise ValueError("Stay product interval or word width is invalid")
+    product_high, lower, upper = product_interval
+    low_limit = 1 << bits
+    modulus = low_limit << 8
+    if not 0 <= product_high <= 0xFF or not 0 <= lower <= upper < low_limit:
+        raise ValueError("Stay product interval is out of range")
+
+    count = upper - lower + 1
+    start = ((product_high << bits) | lower) * MULT % modulus
+
+    def residues_below(boundary: int) -> int:
+        if boundary <= 0:
+            return 0
+        if boundary >= modulus:
+            return count
+        at_or_above = (
+            _stay_floor_sum(count, modulus, MULT, start + modulus - boundary)
+            - _stay_floor_sum(count, modulus, MULT, start)
+        )
+        return count - at_or_above
+
+    mask = 0
+    for q8 in range(256):
+        low_count = residues_below(q8 << bits)
+        high_count = residues_below((q8 + 1) << bits)
+        if high_count > low_count:
+            mask |= 1 << q8
+    return mask
+
+
 def _stay_lift_key1_candidates(product_interval: tuple[int, int, int], *, bits: int = 24
                                ) -> Iterator[int]:
     """Lift a product interval to key1 values using the odd ZipCrypto multiplier."""

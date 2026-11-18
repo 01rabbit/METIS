@@ -650,7 +650,10 @@ registered artifact tool. Issue #28 and ksnctf #39 remain open. Full details:
 The Stage 2 partial-state byte-three predictor is implemented and independently
 reviewed. A 10,000-case planted full-state oracle test checks its predicted
 byte difference; exact-head checks and METIS validation passed at `7921f7f`.
-The caller still must enforce `q8` consistency with each Stage 1 interval.
+An exact modular floor-sum helper now computes the `q8` values consistent with
+each Stage 1 interval without enumerating its 24-bit range; 500 exhaustive
+small-word cases and planted interval states verify the projection. The caller
+still must combine that mask with the multi-member third-byte filter.
 Stage 2 candidate enumeration, full key recovery, member CRC checks with
 recovered keys, and an official #39 verdict have not occurred. Issue #28
 remains open. Details are in
@@ -659,11 +662,12 @@ remains open. Details are in
 Issue #9's local `metis web forget URL` path now clears persisted authentication-
 origin cookies and fences stale clients from sending or restoring them. State
 and generation load share a SQLite snapshot, and initial intake checks the
-generation before saving fetched cookies. Synthetic tests cover stale client
-construction and the initial-save interleaving; the web workflow/request suites,
-Ruff, and mypy passed locally. CI caught an older test double missing the new
-client generation field; the fixture was corrected, and exact-head CI at
-`0212645` passed the full suite, static checks, build, sandbox, and ARM64 job.
+generation before saving fetched cookies. Credential read/modify/write is
+serialized, and browser rendering checks the generation before installing
+cookies, on authorized-origin requests, and after rendering. Synthetic tests
+cover stale client construction, initial-save interleaving, and forgetting
+during rendering; the full local suite, Ruff, and mypy passed at `1f2288f`.
+Exact-head CI passed the full suite, static checks, build, sandbox, and ARM64 job.
 Real Docker library and CLI cancel rehearsals also passed on the Colima Linux
 ARM64 VM. The CLI run confirmed teardown, retained the action charge, and
 recorded no solve. This does not establish host reboot recovery.

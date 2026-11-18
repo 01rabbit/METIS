@@ -127,6 +127,25 @@ def test_stay_stage2_third_byte_predictor_matches_planted_full_states() -> None:
     assert wrong_q8_changed and wrong_carry_changed
 
 
+def test_stay_q8_interval_mask_matches_exhaustive_small_word_oracle() -> None:
+    from metis.core.ctf_zipcrypto import MULT, _stay_q8_interval_mask
+
+    rng = random.Random(20261120)
+    bits = 5
+    low_limit = 1 << bits
+    for _ in range(500):
+        product_high = rng.randrange(256)
+        lower = rng.randrange(low_limit)
+        upper = rng.randrange(lower, low_limit)
+        actual = _stay_q8_interval_mask((product_high, lower, upper), bits=bits)
+        expected = 0
+        for low in range(lower, upper + 1):
+            product = (product_high << bits) | low
+            q8 = ((product * MULT) & ((1 << (bits + 8)) - 1)) >> bits
+            expected |= 1 << q8
+        assert actual == expected
+
+
 def test_stay_reduced_subspace_filter_matches_exhaustive_forward_oracle() -> None:
     """A small candidate filter must retain exactly the direct-oracle survivors."""
     rng = random.Random(98_765)
@@ -401,6 +420,7 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
         MULT,
         _stay_first_stage_candidate,
         _stay_first_stage_key1_intervals,
+        _stay_q8_interval_mask,
     )
 
     rng = random.Random(0x11F7)
@@ -438,6 +458,10 @@ def test_stay_first_stage_shared_carry_intervals_retain_planted_key1() -> None:
         assert any(pairs == tuple(true_pairs)
                    and interval[0] == (product >> 24)
                    and interval[1] <= (product & 0xFFFFFF) <= interval[2]
+                   for interval, pairs in intervals)
+        true_q8 = ((product * MULT) & M32) >> 24
+        assert any(pairs == tuple(true_pairs)
+                   and _stay_q8_interval_mask(interval) & (1 << true_q8)
                    for interval, pairs in intervals)
 
 
