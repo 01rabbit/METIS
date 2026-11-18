@@ -70,6 +70,10 @@ class ConnectionLedger:
                 id TEXT PRIMARY KEY, run TEXT NOT NULL, task TEXT NOT NULL, resource TEXT NOT NULL,
                 protocol TEXT NOT NULL, action TEXT NOT NULL, state TEXT NOT NULL, pid INTEGER,
                 started REAL NOT NULL, finished REAL)""")
+            # Task lifecycle fence: finishing and starting connections are serialized on it.
+            db.execute("""CREATE TABLE IF NOT EXISTS blue_task_state (
+                run TEXT NOT NULL, task TEXT NOT NULL, state TEXT NOT NULL, updated REAL NOT NULL,
+                PRIMARY KEY(run, task))""")
             db.execute("""CREATE TABLE IF NOT EXISTS blue_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, run TEXT NOT NULL, task TEXT, sender TEXT NOT NULL,
                 recipient TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, created REAL NOT NULL)""")
@@ -96,24 +100,54 @@ class ConnectionLedger:
 
     # -- Daybreak (owner) operations --------------------------------------------------------
     def lease_task(self, run: str, task: str, resources: dict[str, int], *, ttl: int = 3600) -> str:
+        """Lease resources to a task. A finished task is not reopened; use a new task id."""
+        with self.connect() as db:
+            row = db.execute("SELECT state FROM blue_task_state WHERE run=? AND task=?", (run, task)).fetchone()
+        if row is not None and row[0] == "finished":
+            raise PermissionError("task is finished; lease resources to a new task id")
         lease = self.broker.try_acquire(holder(run, task), resources, ttl=ttl, purpose="task lease")
         if lease is None:
             raise PermissionError("resource busy; lease it when another task finishes")
+        finished = False
+        with self.transaction() as db:
+            state = db.execute("SELECT state FROM blue_task_state WHERE run=? AND task=?", (run, task)).fetchone()
+            finished = state is not None and state[0] == "finished"
+            if finished:
+                # finished between the check and the lease: undo the lease, keep the fence
+                db.execute("DELETE FROM resource_leases WHERE lease_id=?", (lease,))
+            else:
+                db.execute("INSERT INTO blue_task_state VALUES (?,?,?,?) ON CONFLICT(run, task) DO UPDATE SET "
+                           "state=excluded.state, updated=excluded.updated", (run, task, "leased", time.time()))
+        if finished:
+            raise PermissionError("task is finished; lease resources to a new task id")
         self.message(run, task, "owner", task, "lease", json.dumps({"lease_id": lease, "resources": resources}))
         return lease
 
     def finish_task(self, run: str, task: str) -> list[str]:
-        """Release the task's leases. Refused while a connection is not confirmed stopped."""
-        with self.connect() as db:
+        """Fence the task, then release its leases, in one ``BEGIN IMMEDIATE`` transaction.
+
+        Refused while a connection is not confirmed stopped. ``begin_connection`` checks the fence
+        and the lease in its own immediate transaction, so a start either commits before this
+        check (and makes it refuse) or runs after it and finds the task finished.
+        """
+        with self.transaction() as db:
+            self._hook("finish_locked")
             active = db.execute("SELECT id FROM blue_connections WHERE run=? AND task=? AND state!='stopped'",
                                 (run, task)).fetchall()
+            if active:
+                raise ValueError("stop or reconcile active connections before finishing this task")
             leases = sorted({row[0] for row in db.execute(
                 "SELECT lease_id FROM resource_leases WHERE holder=?", (holder(run, task),))})
-        if active:
-            raise ValueError("stop or reconcile active connections before finishing this task")
-        for lease in leases:
-            self.broker.release(lease, reason="task finished")
+            db.execute("INSERT INTO blue_task_state VALUES (?,?,?,?) ON CONFLICT(run, task) DO UPDATE SET "
+                       "state=excluded.state, updated=excluded.updated", (run, task, "finished", time.time()))
+            for lease in leases:
+                db.execute("DELETE FROM resource_leases WHERE lease_id=?", (lease,))
+                ResourceBroker._event(db, lease, None, "released", {"reason": "task finished"})
         return leases
+
+    @staticmethod
+    def _hook(point: str) -> None:
+        """Test seam: called inside the lifecycle transactions (no-op in production)."""
 
     # -- consumer operations ---------------------------------------------------------------
     def begin_connection(self, run: str, task: str, resource: str, protocol: str, action: str, write: bool,
@@ -122,6 +156,10 @@ class ConnectionLedger:
         cid = uuid.uuid4().hex
         now = time.time()
         with self.transaction() as db:
+            self._hook("begin_locked")
+            fence = db.execute("SELECT state FROM blue_task_state WHERE run=? AND task=?", (run, task)).fetchone()
+            if fence is not None and fence[0] == "finished":
+                raise PermissionError("task is finished; no new connection may start")
             units = db.execute("SELECT COALESCE(SUM(units),0) FROM resource_leases WHERE holder=? AND name=?",
                                (holder(run, task), resource)).fetchone()[0]
             if not units:
