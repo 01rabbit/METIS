@@ -296,7 +296,7 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
         pytest.skip("set METIS_TEST_SANDBOX_IMAGE to a numpy-enabled sandbox image")
     from metis.core.codex_session import CodexSession
     from metis.core.ctf_sandbox import configure
-    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_scan, run_zipcrypto_stay_stage2
 
     data = FIXTURE.read_bytes()
     seed = zc.infozip_seed(data, seconds=120)
@@ -337,6 +337,99 @@ def test_stay_native_scan_recovers_planted_candidate_in_sandbox(tmp_path):
     assert result["hits_count"] == 1, result
     shard = database.parent / result["candidate_shard"]
     assert json.loads(shard.read_text())["hits"] == [[index, list(expected_masks)]]
+
+    key0_crc = zc.crc32(state.x, 0)
+    key2_crc_full = zc.crc32(state.z, 0)
+    q8 = ((product * zc.MULT) & zc.M32) >> 24
+    key2_stage2 = ((key2_crc_full >> 16) << 2 & 0x3FC) | (key2_crc_full & 0x3)
+    guess = ((key0_crc >> 8) & 0xFF) | (key2_stage2 << 8) | (q8 << 18)
+    stage2 = run_zipcrypto_stay_stage2(database, run_id, artifact, {
+        "random_header_bytes_hex": b"".join(headers).hex(),
+        "stage1_shard": result["candidate_shard"], "hit_index": 0,
+        "start": guess, "stop": guess + 1, "max_candidates": 1,
+        "seconds": 30, "max_hits": 1,
+    })
+    assert stage2["hits_count"] == 1, stage2
+    assert stage2["next_index"] == guess + 1 and stage2["complete"]
+    stage2_shard = database.parent / stage2["candidate_shard"]
+    assert stage2_shard.stat().st_mode & 0o777 == 0o600
+    stage2_hits = json.loads(stage2_shard.read_text())["hits"]
+    assert stage2_hits[0][0] == guess
+    assert stage2_hits[0][1] >> 24 == product >> 24
+    if os.environ.get("METIS_TEST_STAY_STAGE2_PROBE") == "1":
+        for count in (1_000, 10_000):
+            probe = run_zipcrypto_stay_stage2(database, run_id, artifact, {
+                "random_header_bytes_hex": b"".join(headers).hex(),
+                "stage1_shard": result["candidate_shard"], "hit_index": 0,
+                "start": 0, "stop": count, "max_candidates": count,
+                "seconds": 300, "max_hits": 1,
+            })
+            print("Stage 2 probe:", {key: probe.get(key) for key in (
+                "reason", "scanned", "next_index", "complete", "seconds", "hits_count")})
+            assert probe.get("next_index") is not None, probe.get("reason")
+
+
+def test_stay_stage2_runner_keeps_witness_private(tmp_path, monkeypatch):
+    from metis.core.ctf_sandbox import Sandbox
+    from metis.core.ctf_zipcrypto_worker import run_zipcrypto_stay_stage2
+
+    database = tmp_path / "state" / "metis.sqlite"
+    root = database.parent / "private-stay" / ("a" * 32)
+    root.mkdir(parents=True, mode=0o700)
+    root.parent.chmod(0o700)
+    shard_id = "b" * 32 + ".json"
+    shard = root / shard_id
+    shard.write_text(json.dumps({"hits": [[17, [1] * 7]]}))
+    shard.chmod(0o600)
+
+    def fake_execute(self, *args, **kwargs):
+        payload = {"result": {"next_index": 4, "reason": "hit_limit", "scanned": 4,
+                              "complete": False, "seconds": 0.1, "hits": [[3, 12345]]}}
+        return {"ok": True, "stdout": {"text": json.dumps(payload)}}
+
+    monkeypatch.setattr(Sandbox, "__init__", lambda self, _database: None)
+    monkeypatch.setattr(Sandbox, "execute", fake_execute)
+    result = run_zipcrypto_stay_stage2(database, "a" * 32, "fixture.zip", {
+        "random_header_bytes_hex": "00" * 70,
+        "stage1_shard": f"private-stay/{'a' * 32}/{shard_id}",
+        "hit_index": 0, "start": 0, "stop": 10, "max_candidates": 10,
+        "max_hits": 1, "seconds": 10,
+    })
+    assert result["hits_count"] == 1 and "hits" not in result
+    output = database.parent / result["candidate_shard"]
+    assert output.name.startswith("s2-")
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert json.loads(output.read_text())["hits"] == [[3, 12345]]
+    rejected = run_zipcrypto_stay_stage2(database, "a" * 32, "fixture.zip", {
+        "stage1_shard": result["candidate_shard"],
+    })
+    assert rejected == {"reason": "private_state_unavailable", "stage": "candidate-shard"}
+    cross_run = run_zipcrypto_stay_stage2(database, "c" * 32, "fixture.zip", {
+        "stage1_shard": f"private-stay/{'a' * 32}/{shard_id}",
+    })
+    assert cross_run == {"reason": "private_state_unavailable", "stage": "candidate-shard"}
+
+
+def test_stay_stage2_controller_bounds_options():
+    from metis.core.ctf_artifacts import inspect_bytes
+
+    seen = []
+    def runner(data, settings):
+        seen.append(settings)
+        return {"next_index": settings["start"], "hits_count": 0}
+
+    options = {"random_header_bytes_hex": "00" * 70,
+               "stage1_shard": f"private-stay/{'a' * 32}/{'b' * 32}.json", "hit_index": 0,
+               "start": 5, "stop": 8, "max_candidates": 2, "seconds": 10, "max_hits": 1}
+    inspect_bytes(b"archive", "zipcrypto_stay_stage2", options, zipcrypto_runner=runner)
+    assert seen[0]["start"] == 5 and seen[0]["stop"] == 8
+    assert seen[0]["stage1_shard"] == options["stage1_shard"]
+    with pytest.raises(ValueError):
+        inspect_bytes(b"archive", "zipcrypto_stay_stage2", {**options, "stop": 4},
+                      zipcrypto_runner=runner)
+    with pytest.raises(ValueError):
+        inspect_bytes(b"archive", "zipcrypto_stay_stage2", {**options, "stage1_shard": "../bad"},
+                      zipcrypto_runner=runner)
 
 
 def test_zipcrypto_worker_maps_container_memory_kill(tmp_path, monkeypatch):

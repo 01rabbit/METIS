@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,7 +12,27 @@ from metis.core.ctf_sandbox import Sandbox, SandboxRequest
 
 MEMORY_LIMIT = 512 * 1024 * 1024
 
-_WORKER = r'''
+_CGROUP_GUARD = r'''
+def cgroup_limits_ok():
+    from pathlib import Path
+    try:
+        memory_max = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        swap_max = Path("/sys/fs/cgroup/memory.swap.max").read_text().strip()
+        cpu_max = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        pids_max = Path("/sys/fs/cgroup/pids.max").read_text().strip()
+        memory_events = dict(line.split() for line in Path("/sys/fs/cgroup/memory.events").read_text().splitlines())
+        return (memory_max.isdigit() and int(memory_max) <= 2147483648
+                and swap_max.isdigit() and int(swap_max) <= 2147483648
+                and len(cpu_max) == 2 and all(value.isdigit() for value in cpu_max)
+                and int(cpu_max[0]) > 0 and int(cpu_max[1]) > 0
+                and int(cpu_max[0]) <= 4 * int(cpu_max[1])
+                and pids_max.isdigit() and int(pids_max) <= 128
+                and "oom_kill" in memory_events)
+    except (OSError, ValueError):
+        return False
+'''
+
+_WORKER = _CGROUP_GUARD + r'''
 if __name__ == "__main__":
     import json, os, sys
     from pathlib import Path
@@ -30,22 +51,7 @@ if __name__ == "__main__":
             or type(request.get("seconds")) is not int or not 1 <= request["seconds"] <= 300):
         print(json.dumps({"reason": "invalid_input"}))
         raise SystemExit(0)
-    try:
-        memory_max = Path("/sys/fs/cgroup/memory.max").read_text().strip()
-        swap_max = Path("/sys/fs/cgroup/memory.swap.max").read_text().strip()
-        cpu_max = Path("/sys/fs/cgroup/cpu.max").read_text().split()
-        pids_max = Path("/sys/fs/cgroup/pids.max").read_text().strip()
-        memory_events = dict(line.split() for line in Path("/sys/fs/cgroup/memory.events").read_text().splitlines())
-        limits_ok = (memory_max.isdigit() and int(memory_max) <= 2147483648
-                     and swap_max.isdigit() and int(swap_max) <= 2147483648
-                     and len(cpu_max) == 2 and all(value.isdigit() for value in cpu_max)
-                     and int(cpu_max[0]) > 0 and int(cpu_max[1]) > 0
-                     and int(cpu_max[0]) <= 4 * int(cpu_max[1])
-                     and pids_max.isdigit() and int(pids_max) <= 128
-                     and "oom_kill" in memory_events)
-    except (OSError, ValueError):
-        limits_ok = False
-    if not limits_ok:
+    if not cgroup_limits_ok():
         print(json.dumps({"reason": "isolation_unavailable"}))
         raise SystemExit(0)
     mark_phase("archive-parsing")
@@ -179,7 +185,7 @@ int main(int argc, char **argv) {
 '''
 
 
-_STAY_SCAN_WORKER = r'''
+_STAY_SCAN_WORKER = _CGROUP_GUARD + r'''
 if __name__ == "__main__":
     import json, os, subprocess, sys, time
     from pathlib import Path
@@ -199,22 +205,7 @@ if __name__ == "__main__":
             or type(request.get("max_hits")) is not int or not 1 <= request["max_hits"] <= 4096):
         print(json.dumps({"reason": "invalid_input"}))
         raise SystemExit(0)
-    try:
-        memory_max = Path("/sys/fs/cgroup/memory.max").read_text().strip()
-        swap_max = Path("/sys/fs/cgroup/memory.swap.max").read_text().strip()
-        cpu_max = Path("/sys/fs/cgroup/cpu.max").read_text().split()
-        pids_max = Path("/sys/fs/cgroup/pids.max").read_text().strip()
-        memory_events = dict(line.split() for line in Path("/sys/fs/cgroup/memory.events").read_text().splitlines())
-        limits_ok = (memory_max.isdigit() and int(memory_max) <= 2147483648
-                     and swap_max.isdigit() and int(swap_max) <= 2147483648
-                     and len(cpu_max) == 2 and all(value.isdigit() for value in cpu_max)
-                     and int(cpu_max[0]) > 0 and int(cpu_max[1]) > 0
-                     and int(cpu_max[0]) <= 4 * int(cpu_max[1])
-                     and pids_max.isdigit() and int(pids_max) <= 128
-                     and "oom_kill" in memory_events)
-    except (OSError, ValueError):
-        limits_ok = False
-    if not limits_ok:
+    if not cgroup_limits_ok():
         print(json.dumps({"reason": "isolation_unavailable"}))
         raise SystemExit(0)
     mark_phase("archive-parsing")
@@ -262,6 +253,51 @@ if __name__ == "__main__":
     scan = json.loads(result.stdout)
     scan["complete"] = scan["next_index"] >= request["stop"]
     print(json.dumps({"result": scan}, separators=(",", ":")))
+'''
+
+
+_STAY_STAGE2_WORKER = _CGROUP_GUARD + r'''
+if __name__ == "__main__":
+    import json, os, time
+    from pathlib import Path
+    print("METIS_PHASE:stay-second-stage-scan", flush=True)
+    request = json.loads(Path(os.environ["METIS_STDIN"]).read_text())
+    if not cgroup_limits_ok():
+        print(json.dumps({"reason": "isolation_unavailable"}))
+        raise SystemExit(0)
+    archive = Path(os.environ["METIS_TARGET"]).read_bytes()
+    entries = [entry for entry in members(archive) if entry["encrypted"]]
+    headers = bytes.fromhex(request["random_header_bytes_hex"])
+    if len(entries) < 5 or len(entries) > 64 or len(headers) != 10 * len(entries):
+        print(json.dumps({"reason": "observation_count_mismatch"}))
+        raise SystemExit(0)
+    firsts, seconds, third = [], [], []
+    for member, entry in enumerate(entries):
+        expected = headers[10 * member:10 * member + 10]
+        stored = member_bytes(archive, entry)[:12]
+        if len(stored) != 12 or stored[0] != expected[0]:
+            print(json.dumps({"reason": "header_observation_mismatch"}))
+            raise SystemExit(0)
+        firsts.append(expected[0])
+        seconds.append(expected[1])
+        third.append(stored[2] ^ expected[2])
+    observed_second = tuple(member_bytes(archive, entry)[1] ^ headers[10 * member + 1]
+                            for member, entry in enumerate(entries))
+    index = request["candidate_index"]
+    masks = _stay_first_stage_candidate(index, tuple(firsts), observed_second)
+    if masks is None or list(masks) != request["carry_masks"]:
+        print(json.dumps({"reason": "stage1_observation_mismatch"}))
+        raise SystemExit(0)
+    started = time.monotonic()
+    chunk = _stay_stage2_scan_chunk(index, masks, tuple(firsts), tuple(seconds), tuple(third),
+                                    start=request["start"], stop=request["stop"],
+                                    max_candidates=request["max_candidates"],
+                                    max_hits=request["max_hits"], seconds=max(1, request["seconds"] - 2))
+    print(json.dumps({"result": {"next_index": chunk.next_index, "reason": chunk.reason,
+                                  "scanned": chunk.next_index - request["start"],
+                                  "complete": chunk.next_index >= request["stop"],
+                                  "seconds": round(time.monotonic() - started, 3),
+                                  "hits": chunk.hits}}, separators=(",", ":")))
 '''
 
 
@@ -377,6 +413,94 @@ def run_zipcrypto_stay_scan(database: Path, run_id: str, artifact: str, options:
             raise
         shard_ref = str(shard.relative_to(database.parent))
     return {**scan, "hits_count": len(hits), "candidate_shard": shard_ref}
+
+
+def run_zipcrypto_stay_stage2(database: Path, run_id: str, artifact: str, options: dict[str, Any],
+                              *, _profile: str = "zipcrypto",
+                              _operation_id: str | None = None) -> dict[str, Any]:
+    """Scan one Stage 1 hit within a bounded isolated Stage 2 chunk."""
+    if _profile != "zipcrypto":
+        return {"reason": "isolation_unavailable", "stage": "sandbox-profile"}
+    shard_ref = options.get("stage1_shard")
+    if not isinstance(shard_ref, str) or not re.fullmatch(
+            rf"private-stay/{re.escape(run_id)}/[0-9a-f]{{32}}\.json", shard_ref):
+        return {"reason": "private_state_unavailable", "stage": "candidate-shard"}
+    shard_root = database.parent / "private-stay" / run_id
+    shard = database.parent / shard_ref
+    if (shard_root.parent.is_symlink() or shard_root.is_symlink()
+            or not shard_root.is_dir() or shard_root.stat().st_mode & 0o077
+            or shard_root.parent.stat().st_mode & 0o077
+            or shard.is_symlink() or not shard.is_file()
+            or shard.stat().st_mode & 0o077 or shard.stat().st_size > 262_144):
+        return {"reason": "private_state_unavailable", "stage": "candidate-shard"}
+    try:
+        hits = json.loads(shard.read_text(encoding="utf-8"))["hits"]
+        index, masks = hits[options["hit_index"]]
+        count = len(bytes.fromhex(options["random_header_bytes_hex"])) // 10
+        if (type(index) is not int or not 0 <= index < 1 << 40
+                or not isinstance(masks, list) or len(masks) != count
+                or any(type(mask) is not int or not 1 <= mask <= 15 for mask in masks)):
+            raise ValueError("invalid Stage 1 shard")
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
+        return {"reason": "private_state_unavailable", "stage": "candidate-shard"}
+    source = Path(__file__).with_name("ctf_zipcrypto.py").read_text(encoding="utf-8")
+    script = ("import sys\nprint('METIS_PHASE:worker-imports', flush=True)\n"
+              f"exec(compile({source!r}, '<metis-zipcrypto>', 'exec'), globals())\n"
+              + _STAY_STAGE2_WORKER)
+    if len(script.encode()) > 262_144:
+        return {"reason": "isolation_unavailable", "stage": "worker-package"}
+    seconds = options["seconds"]
+    request = {key: options[key] for key in (
+        "random_header_bytes_hex", "start", "stop", "max_candidates", "seconds", "max_hits")}
+    request.update(candidate_index=index, carry_masks=masks)
+    try:
+        result = Sandbox(database).execute(run_id, SandboxRequest(
+            target=artifact, mode="script", script=script, stdin=json.dumps(request).encode(),
+            timeout=seconds), _reserved=_operation_id is not None, _profile=_profile,
+            _operation_id=_operation_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"reason": "isolation_unavailable", "stage": "sandbox",
+                "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    failure = _sandbox_failure(result)
+    if failure is not None:
+        return failure
+    try:
+        lines = result["stdout"]["text"].splitlines()
+        payload = json.loads(next(line for line in reversed(lines)
+                                  if line and not line.startswith("METIS_PHASE:")))
+        if payload.get("reason"):
+            return {"reason": payload["reason"], "stage": "input-validation"}
+        scan = payload["result"]
+        candidate_hits = scan.pop("hits")
+        if (not isinstance(candidate_hits, list) or len(candidate_hits) > options["max_hits"]
+                or type(scan.get("next_index")) is not int
+                or not options["start"] <= scan["next_index"] <= options["stop"]
+                or any(not isinstance(hit, list) or len(hit) != 2
+                       or type(hit[0]) is not int or not 0 <= hit[0] < 1 << 26
+                       or type(hit[1]) is not int or not 0 <= hit[1] <= 0xFFFFFFFF
+                       for hit in candidate_hits)):
+            raise ValueError("invalid worker output")
+    except (KeyError, TypeError, ValueError, StopIteration):
+        return {"reason": "worker_failed", "stage": "worker-output"}
+    shard_ref = None
+    if candidate_hits:
+        output = shard_root / f"s2-{uuid4().hex}.json"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(output, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({"stage1_shard": options["stage1_shard"], "hit_index": options["hit_index"],
+                           "start": options["start"], "next_index": scan["next_index"],
+                           "hits": candidate_hits}, stream, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
+        shard_ref = str(output.relative_to(database.parent))
+    return {**scan, "hits_count": len(candidate_hits), "candidate_shard": shard_ref}
 
 
 def _sandbox_failure(result: dict[str, Any]) -> dict[str, Any] | None:

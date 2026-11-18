@@ -639,6 +639,85 @@ def _stay_stage2_candidate_matches(index: int, carry_masks: tuple[int, ...],
     return False
 
 
+def _stay_stage2_first_member_preimages(index: int, random_first: int, random_second: int,
+                                         observed_third: int, key0_crc_bits_8_15: int,
+                                         q8: int) -> tuple[tuple[int, int, int], ...]:
+    """Lift first-member third-byte matches to key2 bits and second-update carries.
+
+    Each row is (key2 Stage 2 bits, first-pass carry, second-pass carry).
+    This is an exact local preimage list; shared product intervals and other
+    members still need to be checked. Its 4,096 predictor calls are bounded.
+    This is a research primitive; the production Stage 2 worker does not use it.
+    """
+    if (type(index) is not int or not 0 <= index < 1 << 40
+            or any(type(value) is not int or not 0 <= value <= 255
+                   for value in (random_first, random_second, observed_third,
+                                 key0_crc_bits_8_15, q8))):
+        raise ValueError("invalid Stay Stage 2 first-member input")
+    first_stream = index & 0xFF
+    key0_crc = (index >> 8 & 0xFF) | key0_crc_bits_8_15 << 8
+    product_high = index >> 16 & 0xFF
+    key2_crc_low14 = ((index >> 25 & 0x3F) << 10) | ((index >> 31 & 0xFF) << 2)
+    first_carry1, second_carry1 = index >> 24 & 1, index >> 39 & 1
+    matches: list[tuple[int, int, int]] = []
+    for key2_bits in range(1 << 10):
+        key2_crc = (key2_crc_low14 | (key2_bits >> 2) << 16 | (key2_bits & 3))
+        for first_carry2 in (0, 1):
+            for second_carry2 in (0, 1):
+                if _stay_predict_third_byte_difference(
+                        random_first, random_second, first_stream, key0_crc,
+                        product_high, key2_crc, first_carry1, second_carry1,
+                        q8, first_carry2, second_carry2) == observed_third:
+                    matches.append((key2_bits, first_carry2, second_carry2))
+    return tuple(matches)
+
+
+@dataclass(frozen=True)
+class StayStage2Chunk:
+    next_index: int
+    hits: tuple[tuple[int, int], ...]  # packed guess, compatible key1 product
+    reason: str
+
+
+def _stay_stage2_scan_chunk(index: int, carry_masks: tuple[int, ...],
+                            random_firsts: tuple[int, ...], random_seconds: tuple[int, ...],
+                            observed_third_differences: tuple[int, ...], *,
+                            start: int, stop: int, max_candidates: int,
+                            max_hits: int, seconds: float) -> StayStage2Chunk:
+    """Scan a half-open 26-bit guess range with explicit resumable limits.
+
+    Guess layout: key0 CRC bits 8..15, key2 CRC bits 16..23 and 0..1,
+    then q8. Hits remain in caller memory; this helper performs no I/O.
+    """
+    if (type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= 1 << 26
+            or type(max_candidates) is not int or max_candidates < 1
+            or type(max_hits) is not int or max_hits < 1
+            or not 0 < seconds <= 300):
+        raise ValueError("invalid Stay Stage 2 scan bounds")
+    deadline = time.monotonic() + seconds
+    hits: list[tuple[int, int]] = []
+    cursor = start
+    visited = 0
+    while cursor < stop:
+        if visited >= max_candidates:
+            return StayStage2Chunk(cursor, tuple(hits), "candidate_limit")
+        if time.monotonic() >= deadline:
+            return StayStage2Chunk(cursor, tuple(hits), "time_limit")
+        guess = cursor
+        witness: list[int] = []
+        if _stay_stage2_candidate_matches(
+                index, carry_masks, random_firsts, random_seconds,
+                observed_third_differences, guess & 0xFF,
+                (guess >> 8) & 0x3FF, (guess >> 18) & 0xFF,
+                product_witness=witness):
+            hits.append((guess, witness[0]))
+        cursor += 1
+        visited += 1
+        if len(hits) >= max_hits:
+            return StayStage2Chunk(cursor, tuple(hits), "hit_limit")
+    return StayStage2Chunk(cursor, tuple(hits), "complete")
+
+
 def _stay_predict_second_byte_difference_np(indices: np.ndarray, random_first: int,
                                              first_stream: np.ndarray, key0_crc_low: np.ndarray,
                                              key1_product_high: np.ndarray,

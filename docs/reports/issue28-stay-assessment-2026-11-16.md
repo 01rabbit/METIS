@@ -388,3 +388,49 @@ seven-member planted Stage 2 cases also passed. The focused Stay suite passed
 product witness for later recovery; it does not establish that missing key0/key2
 bits are consistent, recover a full key, enumerate Stage 2, decrypt #39, or
 obtain an official verdict.
+
+## Bounded synthetic Stage 2 sandbox probe (2026-11-18)
+
+The opt-in seven-member synthetic test used the fixed networkless ZipCrypto
+container profile (2 GiB, four CPUs). It first checked one planted Stage 1 hit
+and one planted Stage 2 guess. Additional Stage 2 chunks scanned `[0, 1000)`
+and `[0, 10000)` for that vector. Both completed with zero hits and cursors
+1000 and 10000; worker-reported scan times were 0.022 and 0.203 seconds.
+These are short zero-hit synthetic measurements, not target throughput.
+
+The estimated 5,905,580,032 interval/guess pairs require at least 5,632
+actions at the Stage 2 tool's 1,048,576-candidate action cap, even if each
+action finishes instantly. This exceeds the controller's 1,000-action ceiling
+and ordinary 40-action run budget. Division by the observed 10,000-guess rate
+gives roughly 33 hours as a scale check only; target branching and hit density
+are unmeasured. The current worker scans one Stage 1 hit per call and recomputes
+its interval branches, so this estimate is optimistic for that interface. A
+stronger reduction or batching strategy is needed before a complete Stage 2
+attempt. No official archive Stage 2 scan or submission occurred.
+
+## First-member Stage 2 preimage lifting (2026-11-18)
+
+Rechecking [Stay's section 4.1](https://math.ucr.edu/~mike/zipattacks.pdf)
+suggested generating the Stage 2 key2/carry guesses that match the first
+member's third-byte differential before invoking the shared product-interval
+predicate. `_stay_stage2_first_member_preimages` now enumerates the bounded
+1,024 key2 partial guesses and four second-update carry pairs for fixed
+key0-high and q8 guesses, returning only exact local matches. A separately
+generated full-state seven-member vector retained its planted key2/carry tuple;
+altering the observed third-byte differential excluded that tuple. This is
+local candidate lifting, not a complete reduction of the 5.9-billion-pair
+domain: creating every preimage list would still visit the same raw guesses,
+and the current Stage 2 worker does not use this primitive. A native batched
+generator plus measured sandbox throughput and shared-interval filtering
+would be needed to establish a route within the existing action budget.
+
+## Review follow-up: shard contract and cgroup check
+
+Stage 1 returns `candidate_shard` as `private-stay/<run-id>/<uuid>.json`.
+Stage 2 now accepts that exact reference as `stage1_shard`, checks the run ID
+against the active run, and rejects path traversal and another run's shard.
+Stage 2 writes `private-stay/<run-id>/s2-<uuid>.json`, which cannot be passed
+back as a Stage 1 shard. The three isolated workers use one injected cgroup
+limit check, so their memory, swap, CPU and PID policy stays identical.
+The planted seven-member Stage 1 → Stage 2 sandbox test passed with this
+contract. These interface changes do not make the full attack feasible.
