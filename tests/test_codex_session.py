@@ -68,6 +68,39 @@ def test_native_invalid_inputs_cannot_be_executed():
     ).hexdigest()
 
 
+@pytest.mark.parametrize(("tool", "result", "expected", "forbidden"), [
+    ("infozip_seed", {
+        "found": True, "generator": "glibc", "salt": "pid", "seed": 987654321,
+        "members": 7, "matched_leaked_bytes": 7, "tried_seeds": 10,
+        "seconds": 0.9, "random_header_bytes": ["deadbeef"], "next": "private detail",
+    }, {"found": "True", "generator": "glibc", "salt": "pid", "members": "7",
+        "matched_leaked_bytes": "7"}, ("987654321", "deadbeef", "private detail")),
+    ("zipcrypto_decrypt", {
+        "name": "secret-name", "size": 12, "crc_ok": True,
+        "plaintext": b"private-plaintext", "base64": "private-base64",
+    }, {"crc_ok": "True", "plaintext_bytes": "12"},
+     ("secret-name", "private-plaintext", "private-base64")),
+    ("text", {"text": "arbitrary-private-output"}, {}, ("arbitrary-private-output",)),
+])
+def test_artifact_evidence_records_safe_facts_only(tmp_path, monkeypatch, tool, result, expected, forbidden):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"fixture")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="privacy", description="fixture", paths=[source])["run_id"]
+
+    monkeypatch.setattr("metis.core.codex_session.inspect_file", lambda *args, **kwargs: result)
+    observed = session.artifact(run_id, "00-source.bin", tool)
+    assert observed["ok"] is True
+    event = session.store.read(run_id)[observed["_evidence_sequence"]]
+    assert event.detail["tool_ok"] == "true"
+    assert event.detail["artifact_tool"] == tool
+    for key, value in expected.items():
+        assert event.detail[key] == value
+    serialized = session.store.export_jsonl(run_id) + session.database.read_bytes().decode("latin1")
+    for secret in forbidden:
+        assert secret not in serialized
+
+
 def test_purge_derived_keeps_original_and_user_added_artifacts(tmp_path):
     database = tmp_path / "sessions.sqlite"
     original = tmp_path / "original.txt"

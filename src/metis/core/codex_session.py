@@ -34,6 +34,45 @@ from metis.core.store import RunStore
 NATIVE_TOOLS = DATA_TOOLS
 
 
+def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
+    """Project sensitive artifact results into small, domain-level audit facts."""
+    detail = {"tool_ok": str(output.get("ok") is True).lower(), "artifact_tool": tool}
+    result = output.get("result")
+    if not isinstance(result, dict):
+        return detail
+
+    def add(key: str, value: object) -> None:
+        if isinstance(value, (str, int, float, bool)):
+            detail[key] = str(value)[:80]
+
+    if tool == "infozip_seed":
+        add("found", result.get("found"))
+        if result.get("reason") in {"too_few_members", "no_time_hint", "work_exceeds_budget", "no_seed_in_range"}:
+            add("reason", result["reason"])
+        if result.get("generator") in {"glibc", "msvc"}:
+            add("generator", result["generator"])
+        if result.get("salt") in {"pid", "pi"}:
+            add("salt", result["salt"])
+        for key in ("members", "matched_leaked_bytes", "tried_seeds", "seconds"):
+            add(key, result.get(key))
+    elif tool == "zipcrypto_attack":
+        add("found", result.get("found"))
+        if result.get("reason") in {"not_enough_plaintext", "plaintext_outside_ciphertext", "work_exceeds_budget", "no_solution"}:
+            add("reason", result["reason"])
+        if result.get("stage") in {"z-reduction", "key-search"}:
+            add("stage", result["stage"])
+        for key in ("tried", "workers", "seconds"):
+            add(key, result.get(key))
+    elif tool == "zipcrypto_decrypt":
+        add("crc_ok", result.get("crc_ok"))
+        add("plaintext_bytes", result.get("size"))
+    elif tool == "zipcrypto_info":
+        members = result.get("members")
+        add("member_count", len(members) if isinstance(members, list) else None)
+        add("encrypted_members", result.get("encrypted_members"))
+    return detail
+
+
 class CodexSession:
     def __init__(self, database: Path):
         database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -264,10 +303,10 @@ class CodexSession:
                     zipcrypto_runner = lambda data, settings: run_zipcrypto_attack(
                         self.database, run_id, name, settings, _operation_id=operation_id)
                 result = inspect_file(root, name, tool, options, zipcrypto_runner=zipcrypto_runner)
-                output = {"run_id": run_id, "ok": True, "result": result}
+                output = {"run_id": run_id, "ok": True, "result": result, "_tool": tool}
             except ARTIFACT_ERRORS as exc:
                 output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",
-                          "error_type": type(exc).__name__}
+                          "error_type": type(exc).__name__, "_tool": tool}
                 if type(exc) in (ValueError, TypeError):
                     output["detail"] = str(exc).splitlines()[0][:200] if str(exc) else ""
             except BaseException:
@@ -292,10 +331,12 @@ class CodexSession:
                     self._emit(run_id, RunStatus.PLANNING)
                 return {"run_id": run_id, "ok": False, "cancelled": True,
                         "error": "artifact result discarded after cancellation or recovery"}
-            evidence_sequence = self._emit(run_id, RunStatus.OBSERVING, tool_ok=str(output["ok"]).lower())
+            evidence_sequence = self._emit(run_id, RunStatus.OBSERVING,
+                                           **_artifact_evidence(output.get("_tool", "unknown"), output))
             self._emit(run_id, RunStatus.REPLANNING)
             self._emit(run_id, RunStatus.PLANNING)
-            return {**output, "_evidence_sequence": evidence_sequence}
+            return {key: value for key, value in output.items() if key != "_tool"} | {
+                "_evidence_sequence": evidence_sequence}
 
     def cancel_active_operation(self, run_id: str, assignment_id: str, attempt_id: str) -> dict:
         """Request cancellation of this assignment's active artifact operation."""
