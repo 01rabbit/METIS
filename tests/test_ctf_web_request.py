@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import threading
 import urllib.parse
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -10,6 +11,95 @@ import pytest
 from metis.cli import main
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_web import WebRequest, WebWorkflow
+
+
+def test_precreated_public_database_never_gets_a_local_credential(tmp_path):
+    database = tmp_path / "precreated.sqlite"
+    with closing(sqlite3.connect(database)) as db:
+        db.execute("CREATE TABLE unrelated (value TEXT)")
+    database.chmod(0o644)
+    with pytest.raises(ValueError, match="database must be private and owned"):
+        WebWorkflow(database).auth("https://fixture.invalid", kind="token", value="synthetic-only")
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (0,)
+
+
+def test_local_auth_requires_current_owner(tmp_path, monkeypatch):
+    database = tmp_path / "state.sqlite"
+    web = WebWorkflow(database)
+    different_owner = database.stat().st_uid + 1
+    monkeypatch.setattr("metis.core.ctf_web.os.geteuid", lambda: different_owner)
+    with pytest.raises(ValueError, match="database must be private and owned"):
+        web.auth("https://fixture.invalid", kind="token", value="synthetic-only")
+
+
+def test_restored_database_refuses_local_auth_and_allows_forgetting(tmp_path, monkeypatch):
+    database = tmp_path / "restored.sqlite"
+    web = WebWorkflow(database)
+    auth_origin = "https://fixture.invalid"
+    config = {"origins": [auth_origin], "auth_origin": auth_origin}
+    assert database.stat().st_mode & 0o777 == 0o600
+    web.auth(auth_origin, kind="token", value="synthetic-before-restore")
+    database.chmod(0o644)
+    web = WebWorkflow(database)
+
+    def no_request(*_args, **_kwargs):
+        pytest.fail("unsafe local authentication reached a request")
+
+    monkeypatch.setattr("metis.core.ctf_web.SafeHTTP.request", no_request)
+    with pytest.raises(ValueError, match="database must be private and owned"):
+        web.auth(auth_origin, kind="token", value="synthetic-after-restore")
+    with pytest.raises(ValueError, match="database must be private and owned"):
+        web._client(config, {})
+    with pytest.raises(ValueError, match="database must be private and owned"):
+        web.rctf_login(auth_origin, "synthetic-team-token")
+    with closing(sqlite3.connect(database)) as db:
+        assert json.loads(db.execute("SELECT payload FROM web_credentials").fetchone()[0])["token"] == (
+            "synthetic-before-restore"
+        )
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
+    monkeypatch.setenv("METIS_SYNTHETIC_TOKEN", "synthetic-environment-token")
+    assert web._client(config | {"token_env": "METIS_SYNTHETIC_TOKEN"}, {}).secret_values() == [
+        "synthetic-environment-token"
+    ]
+    assert web.forget_auth(auth_origin)["credential_removed"] is True
+    assert web.forget_all_auth(apply=True)["stored_credentials"] == 0
+
+
+@pytest.mark.parametrize(("suffix", "label"), [("-wal", "WAL"), ("-shm", "SHM")])
+def test_local_auth_refuses_unsafe_sqlite_sidecar(tmp_path, suffix, label):
+    database = tmp_path / "state.sqlite"
+    web = WebWorkflow(database)
+    with closing(sqlite3.connect(database)) as db:
+        db.execute("SELECT * FROM web_credentials").fetchall()
+        sidecar = database.with_name(database.name + suffix)
+        sidecar.chmod(0o644)
+        with pytest.raises(ValueError, match=f"{label} must be private and owned"):
+            web.auth("https://fixture.invalid", kind="token", value="synthetic-only")
+
+
+@pytest.mark.parametrize(("suffix", "label"), [("", "database"), ("-wal", "WAL"), ("-shm", "SHM")])
+def test_web_workflow_rejects_symlinked_sqlite_files_before_open(tmp_path, suffix, label):
+    database = tmp_path / "state.sqlite"
+    target = tmp_path / "untouched"
+    target.write_bytes(b"keep")
+    database.with_name(database.name + suffix).symlink_to(target)
+    with pytest.raises(ValueError, match=f"{label} must be a regular file"):
+        WebWorkflow(database)
+    assert target.read_bytes() == b"keep"
+
+
+def test_local_client_cannot_load_save_or_use_auth_after_storage_mode_change(tmp_path):
+    database = tmp_path / "state.sqlite"
+    web = WebWorkflow(database)
+    auth_origin = "https://fixture.invalid"
+    config = {"origins": [auth_origin], "auth_origin": auth_origin}
+    client = web._client(config, {})
+    database.chmod(0o644)
+    for operation in (lambda: web._load("fixture-run"), lambda: web._save_client("fixture-run", client),
+                      lambda: client.auth_generation_check(client.auth_generation)):
+        with pytest.raises(ValueError, match="database must be private and owned"):
+            operation()
 
 
 def _server(handler_class):

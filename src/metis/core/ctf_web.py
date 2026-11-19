@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import tempfile
 import time
 import urllib.error
@@ -130,8 +131,9 @@ class WebWorkflow:
         return mode == "environment"
 
     def __init__(self, database: Path):
-        self.session = CodexSession(database)
         self.database = database
+        self._check_auth_storage(private=False, allow_missing=True)
+        self.session = CodexSession(database)
         self.knowledge = KnowledgeBase(database)
         with sqlite3.connect(database) as db:
             db.execute("""CREATE TABLE IF NOT EXISTS web_runs (
@@ -147,9 +149,27 @@ class WebWorkflow:
             db.execute("CREATE TABLE IF NOT EXISTS web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS web_auth_generations (origin TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
 
+    def _check_auth_storage(self, *, private: bool, allow_missing: bool = False) -> None:
+        for suffix, label in (("", "database"), ("-wal", "WAL"), ("-shm", "SHM")):
+            try:
+                info = self.database.with_name(self.database.name + suffix).lstat()
+            except FileNotFoundError:
+                if suffix or allow_missing:
+                    continue
+                raise ValueError("web authentication state database is missing") from None
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"web authentication state {label} must be a regular file")
+            if private and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
+                raise ValueError(f"web authentication state {label} must be private and owned by the current user")
+
+    def _require_local_auth_storage(self) -> None:
+        if not self._environment_auth_only():
+            self._check_auth_storage(private=True)
+
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
         if self._environment_auth_only():
             raise ValueError("stored web authentication is disabled; use --token-env or --cookie-env")
+        self._check_auth_storage(private=True)
         key = origin(url)
         if kind not in {"token", "cookie"} or not value or len(value) > 16384 or any(char in value for char in "\r\n"):
             raise ValueError("invalid private CTF credential")
@@ -250,6 +270,7 @@ class WebWorkflow:
                           "SQLite WAL, snapshots and backups may retain prior values")}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
+        self._require_local_auth_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
@@ -273,6 +294,8 @@ class WebWorkflow:
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
         environment_only = self._environment_auth_only()
+        if not environment_only:
+            self._check_auth_storage(private=True)
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = None if environment_only else db.execute(
@@ -296,12 +319,14 @@ class WebWorkflow:
         return client
 
     def _auth_generation_matches(self, auth_origin: str, expected: int) -> bool:
+        self._require_local_auth_storage()
         with sqlite3.connect(self.database) as db:
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                              (auth_origin,)).fetchone()
         return (row[0] if row else 0) == expected
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
+        self._require_local_auth_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             config_row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -325,6 +350,7 @@ class WebWorkflow:
         """Exchange an rCTF team token for an auth token and store it privately as Bearer."""
         if self._environment_auth_only():
             raise ValueError("stored web authentication is disabled; use --token-env")
+        self._check_auth_storage(private=True)
         if not team_token or len(team_token) > 4096 or any(char in team_token for char in "\r\n"):
             raise ValueError("invalid rCTF team token")
         key = origin(url)
@@ -588,6 +614,7 @@ class WebWorkflow:
                                            categories=categories, max_actions=120, wall_seconds=7200,
                                            evaluation_split=evaluation["split"])
         run_id = context["run_id"]
+        self._require_local_auth_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",

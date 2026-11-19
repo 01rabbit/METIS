@@ -23,3 +23,19 @@ unlink likewise makes no secure-erasure promise.
 
 This increment does not close Issue #9. Its broader retention, secret storage,
 provider revocation, P7, reboot, and release gates require separate evidence.
+
+## Permissions on restored or precreated state
+
+Local web authentication now requires a regular SQLite database owned by the
+current user with no group or other permissions. The same checks apply to
+existing WAL and SHM files. METIS refuses symbolic links and other nonregular
+state files before opening the web workflow. A database restored with broader
+permissions needs operator review before local credentials can be used or
+stored again. The checks do not change existing file modes.
+
+Environment-only authentication and explicit local forgetting still work with
+regular files whose permissions are broader. The check inspects POSIX mode
+bits and file ownership. ACLs, concurrent path replacement, existing copies,
+and encryption at rest are outside its scope. Treat a credential already
+stored with broader permissions as potentially exposed and rotate it with the
+provider.
