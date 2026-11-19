@@ -625,7 +625,7 @@ def main() -> int:
     audit = sub.add_parser("audit", help="show a safe read-only lifecycle summary for one run")
     audit.add_argument("run_id")
     audit.add_argument("--database", type=Path, required=True)
-    operator = sub.add_parser("operator", help="serve a local read-only operator audit view")
+    operator = sub.add_parser("operator", help="serve an authenticated local operator audit and cancel view")
     operator.add_argument("--database", type=Path, required=True)
     operator.add_argument("--port", type=int, default=0)
     generate = sub.add_parser("generate-fixtures", help="generate two synthetic local puzzles")
@@ -1258,7 +1258,10 @@ def main() -> int:
     if args.command == "operator":
         token = os.environ.get("METIS_OPERATOR_TOKEN", "")
         try:
-            server = create_server(args.database, port=args.port, token=token)
+            if args.database.is_symlink() or not args.database.is_file():
+                raise ValueError("operator database unavailable")
+            server = create_server(args.database, port=args.port, token=token,
+                                   cancel_run=lambda run_id: CodexSession(args.database).cancel(run_id))
         except (OSError, ValueError):
             parser.exit(2, "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n")
         print(f"METIS operator view: http://127.0.0.1:{server.server_port}/", flush=True)
