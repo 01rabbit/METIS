@@ -183,7 +183,11 @@ class PinnedOllama:
         valid = (type(actual_input) is int and type(actual_output) is int and
                  actual_input == input_count and 0 <= actual_output <= output_cap and
                  result.get("done") is True and isinstance(result.get("response"), str))
-        budget.settle(reservation, actual_input + actual_output if valid else None, valid=valid,
+        measured: int | None = None
+        if valid:
+            assert isinstance(actual_input, int) and isinstance(actual_output, int)
+            measured = actual_input + actual_output
+        budget.settle(reservation, measured, valid=valid,
                       reported_input=actual_input, reported_output=actual_output)
         if not valid:
             raise ValueError("Ollama usage differs from pinned token admission")
