@@ -13,7 +13,7 @@ Validation on the PR branch:
 
 ```text
 PYTHONPATH=src:. /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest -q tests/test_llama_server_backend.py tests/test_llama_specialist.py
-50 passed
+54 passed
 ruff check src tests scripts
 All checks passed
 mypy src
@@ -24,10 +24,12 @@ git diff --check
 passed
 ```
 
-The fake server fixture delays startup to verify cancellation and deadline
-cleanup without model inference or network access. This does not demonstrate a
-real model hard token cap, provider billing limits, or held-out benchmark
-improvement. `LlamaSpecialist.hard_token_budget_enforced` remains false and
-Issue #8 remains open.
+The fake server fixture delays startup and trickles health-response bytes to
+verify cancellation and deadline cleanup without model inference or network
+access. Additional tests ensure an already-cancelled or expired call does not
+hash or launch the server. This does not demonstrate a real model hard token
+cap, provider billing limits, or held-out benchmark improvement.
+`LlamaSpecialist.hard_token_budget_enforced` remains false and Issue #8 remains
+open.
 
 The test interpreter was Python 3.12.13 on the local Apple Silicon macOS host.

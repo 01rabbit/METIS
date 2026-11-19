@@ -21,6 +21,19 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _make_health_trickle(backend_files) -> None:
+    binary = backend_files["binary"]
+    source = binary.read_text()
+    ordinary = '''self.send_response(200); self.end_headers(); self.wfile.write(b'{"status":"ok"}')'''
+    trickle = ("self.send_response(200); self.send_header('Content-Length','15'); self.end_headers(); "
+               "[ (self.wfile.write(bytes([byte])), self.wfile.flush(), __import__('time').sleep(.05)) "
+               "for byte in b'{\"status\":\"ok\"}' ]")
+    assert ordinary in source
+    binary.write_text(source.replace(ordinary, trickle))
+    binary.chmod(0o700)
+    backend_files["binary_sha256"] = _hash(binary)
+
+
 @pytest.fixture
 def backend_files(tmp_path):
     binary = tmp_path / "fake-server"
@@ -156,6 +169,36 @@ def test_startup_cancellation_stops_server_before_health(backend_files):
     assert not backend_files["database"].exists()
 
 
+def test_startup_deadline_after_artifact_hash_prevents_process_launch(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    real_hash = module._sha256
+    deadline = time.monotonic() + .05
+
+    def slow_hash(path, *, abort_check=None):
+        time.sleep(.1)
+        return real_hash(path)
+
+    monkeypatch.setattr(module, "_sha256", slow_hash)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("expired call must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_deadline=deadline)
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+
+
+def test_startup_cancellation_before_artifact_hash_prevents_process_launch(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    monkeypatch.setattr(module, "_sha256",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled call must not hash artifacts"))
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled call must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=lambda: True)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+
+
 def test_startup_is_bounded_by_call_deadline(backend_files):
     source = backend_files["binary"].read_text()
     backend_files["binary"].write_text(
@@ -171,6 +214,29 @@ def test_startup_is_bounded_by_call_deadline(backend_files):
     assert time.monotonic() - started < 1
     assert backend._process is None and backend._private is None
     assert not backend_files["database"].exists()
+
+
+def test_startup_health_trickle_obeys_call_deadline(backend_files):
+    _make_health_trickle(backend_files)
+    backend = LlamaServerBackend(**backend_files, startup_seconds=5,
+                                 startup_deadline=time.monotonic() + .3)
+    started = time.monotonic()
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+    assert time.monotonic() - started < 1.5
+    assert backend._process is None and backend._private is None
+
+
+def test_startup_health_trickle_obeys_cancellation(backend_files):
+    _make_health_trickle(backend_files)
+    cancel_at = time.monotonic() + .3
+    backend = LlamaServerBackend(**backend_files, startup_seconds=5,
+                                 startup_should_stop=lambda: time.monotonic() >= cancel_at)
+    started = time.monotonic()
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert time.monotonic() - started < 1.5
+    assert backend._process is None and backend._private is None
 
 
 def test_shared_concurrent_reservation(backend_files):
