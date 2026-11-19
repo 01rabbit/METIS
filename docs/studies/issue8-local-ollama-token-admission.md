@@ -41,6 +41,12 @@ tag and local files can be changed by another process between verification
 and use. The cap assumes a trusted local Ollama installation and stable pinned
 files during each request. A model swap or server behavior change after the
 pre-check can only be detected by the post-call count, after tokens are spent.
+On this Ollama 0.40.16 installation, `/api/generate` did not accept a manifest
+digest as `model`: a bare digest and `sha256:` prefix returned HTTP 404, while
+`gemma4:12b@sha256:<digest>` returned HTTP 400. The request must use a mutable
+tag. Thus this is **not** a hard cap against a concurrent local process that
+changes the tag, files, or Ollama server. Its hard-cap claim is limited to the
+trusted, stable local runtime and the pinned raw-text model path tested here.
 Independent review and CI are required before this route can be considered for
 a newly preregistered comparison. A subsequent study must still establish the
 actual arm, oracle, runtime, and model-quality requirements separately.
