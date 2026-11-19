@@ -363,7 +363,7 @@ class StudyTokenAdmission:
                 "FROM study_token_launches l "
                 "JOIN study_token_attempts a ON a.run_id=l.run_id "
                 "AND a.turn_reservation_id=l.turn_reservation_id "
-                "JOIN study_token_slots s ON s.run_id=a.run_id "
+                "JOIN study_token_slots s ON s.run_id=a.run_id AND s.study_id=a.study_id "
                 "JOIN study_token_pins p ON p.study_id=s.study_id "
                 "WHERE l.nonce=?",
                 (receipt.nonce,),
@@ -384,8 +384,7 @@ class StudyTokenAdmission:
             if changed.rowcount != 1:
                 raise ValueError("native launch claim is invalid or already consumed")
 
-    @staticmethod
-    def _require_current_scheduler_turn(db: sqlite3.Connection,
+    def _require_current_scheduler_turn(self, db: sqlite3.Connection,
                                         receipt: TokenAdmissionReceipt) -> None:
         slot, attempt = receipt.slot, receipt.attempt
         job = db.execute(
@@ -394,6 +393,12 @@ class StudyTokenAdmission:
         ).fetchone()
         if job != (slot.run_id, "running", attempt.attempt_id):
             raise ValueError("scheduler job is no longer the claimed running attempt")
+        from metis.core.contracts import RunStatus
+        from metis.core.store import RunStore
+
+        events = RunStore(self.database, read_only=True).read(slot.run_id, connection=db)
+        if not events or events[-1].status == RunStatus.CANCELLED:
+            raise ValueError("scheduler run is missing or cancelled")
         reservation = db.execute(
             "SELECT run_id,assignment_id,attempt_id FROM agent_turn_reservations WHERE id=?",
             (attempt.turn_reservation_id,),

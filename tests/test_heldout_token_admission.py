@@ -336,6 +336,66 @@ def test_scheduler_claim_refuses_consumption_after_attempt_stops(tmp_path):
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
 
 
+def test_scheduler_claim_refuses_consumption_after_run_cancellation(tmp_path):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id,
+            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+        ))
+
+    scheduler.reserve_model_turn(
+        run_id, job["assignment_id"], job["attempt_id"], persist_receipt=persist,
+    )
+    claim = claims[0]
+    CodexSession(database).cancel(run_id)
+    with pytest.raises(ValueError, match="run is missing or cancelled"):
+        admission.consume_scheduler_launch_claim(claim)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
+
+
+def test_scheduler_claim_rejects_slot_with_mismatched_study_id(tmp_path):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id,
+            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+        ))
+
+    scheduler.reserve_model_turn(
+        run_id, job["assignment_id"], job["attempt_id"], persist_receipt=persist,
+    )
+    claim = claims[0]
+    other_study = "forged-study"
+    alternate_protocol = hashlib.sha256(b"other study protocol").hexdigest()
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA foreign_keys=OFF")
+        pin = db.execute(
+            "SELECT runtime_sha256,model_sha256,token_limit,native_manifest_sha256 "
+            "FROM study_token_pins WHERE study_id=?", (claim.receipt.study.study_id,),
+        ).fetchone()
+        db.execute(
+            "INSERT INTO study_token_pins(study_id,protocol_sha256,runtime_sha256,model_sha256,"
+            "token_limit,native_manifest_sha256) VALUES(?,?,?,?,?,?)",
+            (other_study, alternate_protocol, *pin),
+        )
+        db.execute("UPDATE study_token_slots SET study_id=? WHERE run_id=?", (other_study, run_id))
+    with pytest.raises(ValueError, match="invalid or already consumed"):
+        admission.consume_scheduler_launch_claim(claim)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+
+
 @pytest.mark.parametrize("defect", ["assignment", "attempt", "reservation", "prompt"])
 def test_forged_scheduler_admission_rejected_inside_reservation_transaction(tmp_path, defect):
     database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
