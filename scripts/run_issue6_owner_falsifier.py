@@ -21,7 +21,10 @@ from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexCLI, run_assignment
 from metis.core.ctf_orchestration import AgentLedger
 from metis.evaluation.issue6_owner_falsifier import (
-    Counterexample, Reconstruction, make_task, validate_counterexample,
+    Counterexample,
+    Reconstruction,
+    make_task,
+    validate_counterexample,
 )
 
 STUDY = "issue6-owner-falsifier-2026-11-19"

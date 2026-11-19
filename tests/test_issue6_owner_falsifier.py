@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from metis.evaluation.issue6_owner_falsifier import (
-    Counterexample, analyze_paired, first_counterexample, make_task, validate_counterexample,
+    Counterexample,
+    analyze_paired,
+    first_counterexample,
+    make_task,
+    validate_counterexample,
 )
 
 
