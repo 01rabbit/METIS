@@ -748,3 +748,16 @@ def test_export_rejects_ambiguous_or_oversized_telemetry(tmp_path: Path, bad_usa
         db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id='assignment-0'", (bad_usage,))
     trial = export(manifest, database).trials[0]
     assert trial.model_calls == 1 and trial.tokens is None
+
+
+@pytest.mark.parametrize("extra_identity", [1, 999])
+def test_export_rejects_hidden_other_attempt_turn_alongside_full_current_coverage(
+    tmp_path: Path, extra_identity: int,
+) -> None:
+    database, manifest = fixture(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO agent_job_log(assignment_id,event,detail,attempt_id) VALUES (?,?,?,?)",
+                   ("assignment-0", "codex_turn", json.dumps({"reservation_id": extra_identity}),
+                    "ffffffffffffffff"))
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None

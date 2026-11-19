@@ -149,10 +149,12 @@ def _covered_tokens(db: sqlite3.Connection, run_id: str,
                 or type(output_tokens) is not int or input_tokens <= 0 or output_tokens <= 0):
             return None
         observed = set()
-        for (detail,) in db.execute(
-            "SELECT detail FROM agent_job_log WHERE assignment_id=? AND attempt_id=? AND event='codex_turn' LIMIT ?",
-            (assignment_id, attempt_id, len(charges) + 1),
+        for logged_attempt, detail in db.execute(
+            "SELECT attempt_id, detail FROM agent_job_log WHERE assignment_id=? AND event='codex_turn' LIMIT ?",
+            (assignment_id, len(charges) + 1),
         ):
+            if logged_attempt != attempt_id:
+                return None
             record = _metric_record(detail)
             identity = record.get("reservation_id") if record is not None else None
             if type(identity) is not int or identity in observed:
