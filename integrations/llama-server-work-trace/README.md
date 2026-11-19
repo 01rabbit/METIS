@@ -48,11 +48,15 @@ Supply the file locally; the trace runner does not download models.
 
 ## Run
 
-The runner checks the model and binary digests against the manifest, starts a private Unix-socket server
+The runner checks the binary digest against the build manifest and the model
+digest against the public fixture pin. It starts a private Unix-socket server
 with a minimal environment and no warmup/context shift, limits the server log
 file to 4 MiB at the OS level, makes one fixed, answer-free completion request,
 then stops the server and validates its single aggregate record. It accepts no
-arbitrary prompt argument.
+arbitrary prompt argument. Hashing and later execution/model loading use paths,
+so a concurrent same-user replacement between those steps is outside this
+probe's protection. The build disables llama.cpp subprocess support; shutdown
+waits for the server process group and reaps the server process.
 
 ```sh
 scripts/run_llama_work_trace.py \
