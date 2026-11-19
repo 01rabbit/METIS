@@ -252,7 +252,7 @@ class WebWorkflow:
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
             generation = row[0] if row else 0
             state = client.export_state()
-            if self._environment_auth_only() or client._metis_environment_only:
+            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
                 state.get("cookies", {}).pop(auth_origin, None)
                 state.pop("cookie_fingerprint", None)
             if generation != client.auth_generation:
@@ -535,7 +535,7 @@ class WebWorkflow:
                                         (config["auth_origin"],)).fetchone()
             generation = generation_row[0] if generation_row else 0
             initial_state = client.export_state()
-            if self._environment_auth_only() or client._metis_environment_only:
+            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
                 initial_state.get("cookies", {}).pop(config["auth_origin"], None)
                 initial_state.pop("cookie_fingerprint", None)
             if generation != client.auth_generation:
