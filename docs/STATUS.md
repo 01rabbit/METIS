@@ -367,6 +367,14 @@ still require independent review. A fresh held-out experiment remains
 necessary; Issue #8 stays open.
 See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
 
+On 2026-11-19, three separate AlpacaHack Daily tasks (two Easy, one Medium)
+gained private local controls and human-observed official browser solves. Two
+answer-free MUNIN cards from distinct synthetic practice runs passed a later
+synthetic freeze/retrieval provenance check. No MUNIN-on/off model comparison
+was run; these answer-exposed tasks are not fresh held-out trials. Issue #8
+remains open. See
+[`issue8-official-control-preparation-2026-11-19.md`](reports/issue8-official-control-preparation-2026-11-19.md).
+
 For Issue #8, AlpacaHack Daily Misc task `Not so Pyf**k` was first exercised
 from its official archive in the no-network, no-host-mount sandbox. The
 archive-derived candidate matched the bundled value locally but was rejected
