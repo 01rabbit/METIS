@@ -32,8 +32,8 @@ jobs:
           project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
           .venv/bin/python -m metis.release_artifacts \
             --dist-dir dist --tag "v$project_version" \
-            --project-name "$project_name" --project-version "$project_version"
-          sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
+            --project-name "$project_name" --project-version "$project_version" \
+            --write-checksums
       - name: Install wheel with locked dependencies and smoke test
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt \
