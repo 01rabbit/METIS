@@ -28,8 +28,10 @@ def _stop(lease: int, parent: int, cutoff: float, wall: float, *, wait: float = 
     if remaining <= 0:
         return "deadline"
     ready, _, _ = select.select([lease], [], [], min(wait, remaining))
-    if os.getppid() != parent or (ready and not os.read(lease, 1)):
+    if os.getppid() != parent:
         return "lease_closed"
+    if ready:
+        return "cancelled" if os.read(lease, 1) else "lease_closed"
     return None
 
 

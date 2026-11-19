@@ -102,7 +102,7 @@ def test_worker_exit_and_deadline_are_reaped_and_scrubbed(tmp_path, behavior, se
     assert list(workspace.iterdir()) == []
 
 
-def _controller_to_kill(root, fork_writer):
+def _forking_controller(root, fork_writer, cancel):
     _, workspace, admission, args = prepare(root)
     with start_canary(admission, workspace, *args, behavior="wait_for_stop", seconds=4) as canary:
         if fork_writer and os.fork() == 0:
@@ -110,16 +110,27 @@ def _controller_to_kill(root, fork_writer):
             time.sleep(2.5)
             (root / "fork-done").touch()
             os._exit(0)
-        canary.wait()
+        if cancel:
+            eventually(lambda: (root / "cancel").exists())
+            canary.cancel()
+            assert canary.wait() == 0
+            eventually(lambda: (root / "fork-done").exists())
+        else:
+            canary.wait()
+
+
+def launch_controller(root, *, fork_writer, cancel=False):
+    command = (
+        "import sys, runpy; from pathlib import Path; "
+        "runpy.run_path(sys.argv[1])['_forking_controller']"
+        "(Path(sys.argv[2]), sys.argv[3] == 'True', sys.argv[4] == 'True')"
+    )
+    return subprocess.Popen([sys.executable, "-c", command, __file__, str(root), str(fork_writer), str(cancel)])
 
 
 @pytest.mark.parametrize("fork_writer", [False, True])
 def test_controller_death_stops_guardian_even_if_fork_retains_lease(tmp_path, fork_writer):
-    command = (
-        "import sys, runpy; from pathlib import Path; "
-        "runpy.run_path(sys.argv[1])['_controller_to_kill'](Path(sys.argv[2]), sys.argv[3] == 'True')"
-    )
-    process = subprocess.Popen([sys.executable, "-c", command, __file__, str(tmp_path), str(fork_writer)])
+    process = launch_controller(tmp_path, fork_writer=fork_writer)
     try:
         workspace = tmp_path / "workspace"
         eventually(lambda: live_marker(workspace))
@@ -133,6 +144,26 @@ def test_controller_death_stops_guardian_even_if_fork_retains_lease(tmp_path, fo
         if fork_writer:
             assert not (tmp_path / "fork-done").exists()
             eventually(lambda: (tmp_path / "fork-done").exists())
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+
+def test_explicit_cancel_stops_worker_while_controller_and_fork_holder_live(tmp_path):
+    process = launch_controller(tmp_path, fork_writer=True, cancel=True)
+    try:
+        workspace = tmp_path / "workspace"
+        database = tmp_path / "ledger.sqlite"
+        eventually(lambda: live_marker(workspace))
+        eventually(lambda: (tmp_path / "fork-ready").exists())
+        (tmp_path / "cancel").touch()
+        eventually(lambda: (row := state(database)) and row[1:] == ("reaped", "cancelled"))
+        assert list(workspace.iterdir()) == []
+        assert process.poll() is None
+        assert not (tmp_path / "fork-done").exists()
+        assert process.wait(timeout=5) == 0
     finally:
         if process.poll() is None:
             process.kill()

@@ -27,7 +27,7 @@ _CANARY_TABLE = """CREATE TABLE IF NOT EXISTS issue6_canaries (
 
 
 class Canary:
-    """A controller-owned writer lease. Closing it requests unconditional stop."""
+    """Controller lease with an explicit stop signal and EOF on abandonment."""
 
     def __init__(self, process: subprocess.Popen[bytes], lease: int):
         self._process = process
@@ -39,8 +39,14 @@ class Canary:
 
     def cancel(self) -> None:
         if self._lease >= 0:
-            os.close(self._lease)
-            self._lease = -1
+            lease, self._lease = self._lease, -1
+            try:
+                os.write(lease, b"C")
+            except (BlockingIOError, BrokenPipeError):
+                # A queued signal already wakes the guardian, or the guardian exited.
+                pass
+            finally:
+                os.close(lease)
 
     def wait(self, *, timeout: float = 8) -> int:
         try:
@@ -73,6 +79,7 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
         raise ValueError("canary deadline reached before reservation")
     nonce = secrets.token_hex(16)
     scratch = workspace / ("canary-" + nonce)
+
     def persist_pending(db: sqlite3.Connection, reservation: int) -> None:
         db.execute(_CANARY_TABLE)
         db.execute("INSERT INTO issue6_canaries VALUES (?, ?, ?, 'pending', NULL, ?, ?)",
@@ -81,6 +88,7 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
     reservation = admission.reserve_phase(run_id, assignment_id, attempt_id, receipt, persist_pending=persist_pending)
     reader, writer = os.pipe()
     try:
+        os.set_blocking(writer, False)
         process = subprocess.Popen(
             [sys.executable, "-I", "-S", str(_HELPER), "guardian", str(reader), str(os.getpid()),
              str(window.database),
