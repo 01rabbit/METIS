@@ -5,6 +5,7 @@ This adapter is experimental and is never advertised as hard-token-capable.
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -40,7 +41,8 @@ class LlamaSpecialist:
                      "binary_sha256": self.backend_config["binary_sha256"],
                      "hard_cap_capable": False}
         if model != self.model_id or images:
-            raise ValueError("specialist model pin or tool-free input mismatch")
+            return CodexTurn(returncode=1, message=None,
+                             stderr_tail="local model selection or input refused", isolation=isolation)
         if should_stop is not None and should_stop():
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         if timeout <= 0:
@@ -73,3 +75,6 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None,
                              timed_out="deadline" in str(exc),
                              stderr_tail="local model call failed", isolation=isolation)
+        except (ValueError, TypeError, OSError, sqlite3.Error):
+            return CodexTurn(returncode=1, message=None,
+                             stderr_tail="local model input or storage refused", isolation=isolation)

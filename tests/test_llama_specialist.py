@@ -39,10 +39,10 @@ def test_adapter_records_usage_isolation_and_tool_free_prompt(tmp_path, monkeypa
 
 def test_model_pin_and_images_rejected_before_backend(tmp_path):
     runner = _runner(tmp_path)
-    with pytest.raises(ValueError, match="pin"):
-        runner.run("prompt", model="other", timeout=5)
-    with pytest.raises(ValueError, match="tool-free"):
-        runner.run("prompt", model="pinned-shisa", timeout=5, images=[(".png", b"x")])
+    mismatch = runner.run("prompt", model="other", timeout=5)
+    image = runner.run("prompt", model="pinned-shisa", timeout=5, images=[(".png", b"x")])
+    assert mismatch.returncode == image.returncode == 1
+    assert mismatch.message is image.message is None
 
 
 def test_cancel_before_and_during_call(tmp_path, monkeypatch):
@@ -143,3 +143,46 @@ def test_real_heldout_binding_rejects_adapter_before_reservation(tmp_path, monke
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
                        _runner(tmp_path))
     assert scheduler.model_turn_budget(run_id)["reserved"] == 0
+
+
+@pytest.mark.parametrize("failure", ["model_mismatch", "oversized_prompt"])
+def test_expected_adapter_refusals_fail_assignment_without_driver_exception(tmp_path, monkeypatch, failure):
+    from metis.core.agent_host import BridgeHost
+    from metis.core.agent_scheduler import AgentScheduler
+    from metis.core.codex_session import CodexSession
+    from metis.core.codex_specialist import run_assignment
+    from metis.core.ctf_orchestration import AgentLedger
+
+    db = tmp_path / "refusal.sqlite"
+    files = []
+    for number in range(2):
+        path = tmp_path / f"part{number}.txt"
+        path.write_text("sample")
+        files.append(path)
+    run_id = CodexSession(db).intake(title="Synthetic", description="Inspect samples.",
+                                         paths=files, categories=["crypto", "forensics"],
+                                         max_actions=80)["run_id"]
+    wave = AgentLedger(db).create_wave(run_id)
+    scheduler = AgentScheduler(db, BridgeHost())
+    scheduler.configure(per_run_slots=2, catalog=[{"id": "pinned-shisa", "tier": "standard"}],
+                        current_model="pinned-shisa")
+    scheduler.enqueue(run_id, wave["wave_id"])
+    job = scheduler.dispatch(run_id)["started"][0]
+    runner = _runner(tmp_path)
+    if failure == "model_mismatch":
+        runner.model_id = "other-pin"
+    else:
+        class BoundaryBackend:
+            def __init__(self, **_): pass
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def complete(self, prompt, **_kwargs):
+                assert len(prompt) > 65_536
+                raise ValueError("private prompt bytes exceeded input boundary")
+        monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", BoundaryBackend)
+        monkeypatch.setattr("metis.core.codex_specialist.render_prompt",
+                            lambda *_args: "x" * 65_537)
+    outcome = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
+    assert outcome["job_state"] == "failed"
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+    assert "private prompt bytes" not in json.dumps(outcome)
