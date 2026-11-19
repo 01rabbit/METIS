@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 
-from metis.core.artifacts import artifact_stream
+from metis.core.artifacts import artifact_digest, read_artifact
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import Contract
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS
@@ -31,6 +31,7 @@ WorkflowTool = Literal["base32_decode", "base64_decode", "hex_decode", "rot13_de
 BASE_WORKFLOW_TOOLS = frozenset({"base32_decode", "base64_decode", "hex_decode"})
 WORKFLOW_TOOLS = BASE_WORKFLOW_TOOLS | {"rot13_decode"}
 MAX_WORKFLOW_STEPS = 4
+MAX_WORKFLOW_INPUT = 65_536
 MAX_WORKFLOW_OUTPUT = 16_384
 ROT13_IMPLEMENTATION = (
     'value = value.translate(bytes.maketrans('
@@ -275,8 +276,7 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     root = session.artifact_root(run_id)
     if root is None:
         raise ValueError("workflow run has no artifact directory")
-    with artifact_stream(root, workflow_artifact, max_bytes=65_536) as stream:
-        workflow_bytes = stream.read(65_537)
+    workflow_bytes = read_artifact(root, workflow_artifact, max_bytes=MAX_WORKFLOW_INPUT)
     target_visible = _visible_artifact_name(target)
     workflow_visible = _visible_artifact_name(workflow_artifact)
     if target_visible == workflow_visible or target_visible.startswith(".metis") \
@@ -285,7 +285,8 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     approved_tools = WorkflowCapabilityApprovals(database).approved_tools(run_id)
     workflow = validate_workflow(workflow_bytes, input_artifact=target_visible,
                                  approved_tools=approved_tools)
-    workflow_sha256 = hashlib.sha256(workflow_bytes).hexdigest()
+    workflow_sha256 = artifact_digest(workflow_bytes)
+    input_sha256 = artifact_digest(read_artifact(root, target, max_bytes=MAX_WORKFLOW_INPUT))
     result = Sandbox(database).execute(
         run_id,
         SandboxRequest(target=target, mode="script", extra=[workflow_artifact],
@@ -308,9 +309,11 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
         observed, output = _validate_workflow_output(stdout, expected_steps=len(workflow.steps))
     except ValueError as exc:
         return {"ok": False, "reason": str(exc), "sandbox": result}
+    if observed["input_sha256"] != input_sha256:
+        return {"ok": False, "reason": "sandbox workflow input digest mismatch"}
     output_digest = hashlib.sha256(output).hexdigest()
     output_artifact = session.store_artifact(run_id, output, directory_name=".metis-derived", suffix=".bin")
-    return {"ok": True, "workflow_sha256": workflow_sha256, "input_sha256": observed["input_sha256"],
+    return {"ok": True, "workflow_sha256": workflow_sha256, "input_sha256": input_sha256,
             "steps": observed["steps"], "output_bytes": observed["output_bytes"],
             "output_sha256": output_digest, "output_artifact": output_artifact,
             "output_is_untrusted": True,

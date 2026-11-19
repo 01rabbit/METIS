@@ -212,6 +212,16 @@ def test_corrupt_sandbox_output_is_not_registered_as_a_derived_artifact(tmp_path
     assert unisolated["ok"] is False and "isolation" in unisolated["reason"]
     assert session.context(created["run_id"])["challenge"]["artifacts"] == artifacts_before
 
+    wrong_input = {**json.loads(valid_worker_output), "input_sha256": "0" * 64}
+    monkeypatch.setattr(Sandbox, "execute", lambda *args, **kwargs: {
+        "ok": True, "stdout": {"text": json.dumps(wrong_input)},
+        "isolation": {"engine": "docker", "image": "sha256:" + "a" * 64,
+                      "network": "none", "host_mounts": False}})
+    mismatched = run_workflow_in_sandbox(database, created["run_id"], target=artifacts_before[0],
+                                         workflow_artifact=artifacts_before[1])
+    assert mismatched == {"ok": False, "reason": "sandbox workflow input digest mismatch"}
+    assert session.context(created["run_id"])["challenge"]["artifacts"] == artifacts_before
+
 
 def test_external_digest_verifier_accepts_only_successful_matching_result():
     trial = generate_seeded_workflow(secrets.randbits(32))
