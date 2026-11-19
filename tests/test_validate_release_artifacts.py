@@ -68,10 +68,11 @@ def test_release_workflow_uses_installed_module_cli(tmp_path):
 def test_release_workflow_verifies_staged_bundle_before_attestation_and_publication():
     workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
     checksum = workflow.index("--write-checksums")
+    smoke = workflow.index("- name: Install the built wheel with locked dependencies and smoke test")
     verify = workflow.index("--verify-checksums")
     attest = workflow.index("uses: actions/attest@")
     publish = workflow.index("gh release create ")
-    assert checksum < verify < attest < publish
+    assert checksum < smoke < verify < attest < publish
 
     step_start = workflow.rindex("      - name: ", 0, verify)
     step_end = workflow.find("      - name: ", verify)
@@ -79,6 +80,8 @@ def test_release_workflow_verifies_staged_bundle_before_attestation_and_publicat
     assert "- name: Verify exact staged release bundle" in verify_step
     assert "--dist-dir dist --tag \"$RELEASE_TAG\"" in verify_step
     assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
+    assert "if:" not in verify_step
+    assert "continue-on-error:" not in verify_step
 
 
 def test_attestation_drill_is_main_only_and_cannot_publish():
