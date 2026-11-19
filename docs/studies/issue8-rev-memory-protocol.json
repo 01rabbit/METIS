@@ -38,7 +38,7 @@
   "memory_card_digests": [
     "835c160eaeea4845143a21958b78a6f74057fd6d0ac3b643cb8f8a05d474633e"
   ],
-  "model_pin": "gpt-6.1-sol",
+  "model_pin": "gpt-6.2-sol",
   "repetitions": 2,
   "runtime_pin": "bridge",
   "schema_version": 1,

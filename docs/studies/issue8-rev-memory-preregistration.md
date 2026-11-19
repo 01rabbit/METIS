@@ -1,8 +1,11 @@
 # Issue #8 AlpacaHack Rev memory comparison preregistration
 
-This answer-free record precedes every held-out model call. The validated
+This answer-free record precedes every held-out model call. The earlier
+`gpt-6.1-sol` protocol hash in commit `3b229f9` is superseded because its
+Codex CLI ping failed. The new model passed the isolated ping; no held-out
+model call occurred under the superseded hash. The validated
 protocol is `issue8-rev-memory-protocol.json`, SHA-256
-`ea0a4d48eba17b1f0faac2eda86d5debdc33a5703f006eccbf52efa57f22a7a6`.
+`2204980da039f6716451a59817069ffeb743977e293e40811a8cd455426bc5bb`.
 `python -m metis.evaluation.heldout_protocol prepare` prints its fixed eight-slot
 schedule. Any task, arm, prompt, model or budget change requires a new protocol
 hash and a new record before model execution.
@@ -30,7 +33,7 @@ hash and a new record before model execution.
   card: the `full` arm receives prior practice card SHA-256
   `835c160eaeea4845143a21958b78a6f74057fd6d0ac3b643cb8f8a05d474633e`;
   `without_memory` receives none.
-- Model/runtime: `gpt-6.1-sol` through Codex CLI `0.169.0`, METIS code
+- Model/runtime: `gpt-6.2-sol` through Codex CLI `0.169.0`, METIS code
   `1dab7405bec87b84d85374c21ff838a10b21c176`, scheduler host `bridge`.
   The pinned sandbox image is
   `sha256:6c21b45c2c80dd4422b464b4b666f3c7912a19205f80eb0c2a59c17bf088c36b`
