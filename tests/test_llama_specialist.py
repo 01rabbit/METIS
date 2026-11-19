@@ -16,6 +16,35 @@ def _runner(tmp_path: Path) -> LlamaSpecialist:
                            budget_key="shared-run", token_limit=1000, max_output_tokens=16)
 
 
+def _pin(runner: LlamaSpecialist) -> dict:
+    config = runner.backend_config
+    return {"binary_sha256": config["binary_sha256"],
+            "model_sha256": config["model_sha256"],
+            "database_path": str(config["database"].resolve()),
+            "budget_key": config["budget_key"], "token_limit": config["token_limit"],
+            "max_output_tokens": config["max_output_tokens"],
+            "context_reservation": config["context_reservation"]}
+
+
+@pytest.mark.parametrize("changed", ["binary_sha256", "model_sha256", "database_path",
+                                     "budget_key", "token_limit", "max_output_tokens",
+                                     "context_reservation"])
+def test_heldout_llama_pin_rejects_each_mismatch(tmp_path, changed):
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+                             binary_sha256="a" * 64, model_path=tmp_path / "model.gguf",
+                             model_sha256="b" * 64, database=tmp_path / "state.db",
+                             budget_key="study-budget", token_limit=10000,
+                             max_output_tokens=16, context_reservation=True)
+    pin = _pin(runner)
+    runner.assert_heldout_binding({"llama_backend": pin}, tmp_path / "state.db", "pinned-shisa")
+    wrong = dict(pin)
+    wrong[changed] = not pin[changed] if changed == "context_reservation" else "wrong"
+    with pytest.raises(ValueError, match="preregistered pin"):
+        runner.assert_heldout_binding({"llama_backend": wrong}, tmp_path / "state.db", "pinned-shisa")
+    with pytest.raises(ValueError, match="preregistered pin"):
+        runner.assert_heldout_binding({"llama_backend": pin}, tmp_path / "other.db", "pinned-shisa")
+
+
 def test_adapter_records_usage_isolation_and_tool_free_prompt(tmp_path, monkeypatch):
     seen = []
     class FakeBackend:
@@ -115,7 +144,8 @@ def test_run_assignment_records_local_usage_and_shared_turn_budget(tmp_path, mon
     assert scheduler.model_turn_budget(run_id)["reserved"] == 1
 
 
-def test_real_heldout_binding_rejects_adapter_before_reservation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("pin_state", ["missing", "mismatched", "matched"])
+def test_real_heldout_binding_rejects_adapter_before_reservation(tmp_path, monkeypatch, pin_state):
     from metis.core.agent_host import BridgeHost
     from metis.core.agent_scheduler import AgentScheduler
     from metis.core.codex_session import CodexSession
@@ -137,11 +167,22 @@ def test_real_heldout_binding_rejects_adapter_before_reservation(tmp_path, monke
                         current_model="pinned-shisa")
     scheduler.enqueue(run_id, wave["wave_id"])
     job = scheduler.dispatch(run_id)["started"][0]
-    monkeypatch.setattr("metis.evaluation.heldout_arm.binding",
-                        lambda _db, _run: {"model_pin": "pinned-shisa", "prompt_text": "pinned"})
-    with pytest.raises(ValueError, match="token cap is not enforceable"):
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+                             binary_sha256="a" * 64, model_path=tmp_path / "model.gguf",
+                             model_sha256="b" * 64, database=db, budget_key="study-budget",
+                             token_limit=10000, max_output_tokens=16,
+                             context_reservation=True)
+    bound = {"model_pin": "pinned-shisa", "prompt_text": "pinned"}
+    if pin_state != "missing":
+        bound["llama_backend"] = _pin(runner)
+        if pin_state == "mismatched":
+            bound["llama_backend"]["budget_key"] = "other-study"
+    monkeypatch.setattr("metis.evaluation.heldout_arm.binding", lambda _db, _run: bound)
+    expected = {"missing": "backend pin missing", "mismatched": "preregistered pin",
+                "matched": "token cap is not enforceable"}[pin_state]
+    with pytest.raises(ValueError, match=expected):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
-                       _runner(tmp_path))
+                       runner)
     assert scheduler.model_turn_budget(run_id)["reserved"] == 0
 
 

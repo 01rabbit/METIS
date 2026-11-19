@@ -321,6 +321,25 @@ def test_real_model_rejects_missing_or_changed_arm_dispatch(tmp_path: Path) -> N
         finalize(real, bound, database, expected_sha256=digest(real))
 
 
+def test_llama_backend_pin_is_committed_and_bounded_by_study(tmp_path: Path) -> None:
+    database, original, _ = _protocol_fixture(tmp_path)
+    source = real_prompt_config({**original.model_dump(), "measurement": "real_model"})
+    for budget in source["budgets"].values():
+        budget["tokens"] = 1000
+    pin = {"binary_sha256": "a" * 64, "model_sha256": "b" * 64,
+           "database_path": str(database.resolve()), "budget_key": "shared-study",
+           "token_limit": 4098, "max_output_tokens": 2,
+           "context_reservation": True}
+    source["llama_backend"] = pin
+    protocol = Protocol.model_validate(source)
+    changed = protocol.model_dump()
+    changed["llama_backend"]["budget_key"] = "other-study"
+    assert digest(Protocol.model_validate(changed)) != digest(protocol)
+    changed["llama_backend"]["token_limit"] = 10000
+    with pytest.raises(ValueError, match="exceeds declared study"):
+        Protocol.model_validate(changed)
+
+
 def test_real_model_rejects_arm_evidence_from_other_attempt(tmp_path: Path) -> None:
     database, original, bindings = _protocol_fixture(tmp_path)
     real = Protocol.model_validate(real_prompt_config({**original.model_dump(), "measurement": "real_model"}))

@@ -22,10 +22,14 @@ def binding(database: Path, run_id: str) -> dict[str, Any] | None:
 def bind(database: Path, run_id: str, payload: dict[str, Any]) -> None:
     """Bind a validated protocol slot before any run work or agent scheduling."""
     from metis.evaluation.heldout_analysis import Budget
-    from metis.evaluation.heldout_protocol import ArmConfig
+    from metis.evaluation.heldout_protocol import ArmConfig, LlamaBackendPin
 
     config = ArmConfig.model_validate(payload["arm_config"])
     budget = Budget.model_validate(payload["budget"])
+    llama_pin = (LlamaBackendPin.model_validate(payload["llama_backend"])
+                 if payload.get("llama_backend") is not None else None)
+    if llama_pin is not None and llama_pin.database_path != str(database.resolve()):
+        raise ValueError("llama budget database does not match held-out state")
     prompt_text = payload.get("prompt_text")
     if payload.get("measurement") == "real_model":
         if (not isinstance(prompt_text, str) or not prompt_text.strip()
@@ -61,5 +65,7 @@ def bind(database: Path, run_id: str, payload: dict[str, Any]) -> None:
                       "arm_config": config.model_dump(mode="json"), "model_pin": payload["model_pin"],
                       "runtime_pin": payload["runtime_pin"], "budget": budget.model_dump(mode="json"),
                       "prompt_text": prompt_text}
+            if llama_pin is not None:
+                stored["llama_backend"] = llama_pin.model_dump(mode="json")
             db.execute("INSERT INTO heldout_arm_bindings VALUES (?,?)",
                        (run_id, json.dumps(stored, sort_keys=True)))

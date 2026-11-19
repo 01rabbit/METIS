@@ -566,6 +566,12 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     heldout = binding(scheduler.database, run_id)
     if heldout is not None and (selected != heldout["model_pin"] or note is not None):
         raise ValueError("held-out specialist model or prompt override conflicts with protocol")
+    if heldout is not None:
+        from metis.core.llama_specialist import LlamaSpecialist
+        if isinstance(runner, LlamaSpecialist):
+            runner.assert_heldout_binding(heldout, scheduler.database, selected)
+        elif heldout.get("llama_backend") is not None:
+            raise ValueError("held-out llama backend requires pinned llama specialist")
     if (heldout is not None and heldout.get("prompt_text") is not None
             and not getattr(runner, "hard_token_budget_enforced", False)):
         raise ValueError("real-model held-out token cap is not enforceable by this runner")

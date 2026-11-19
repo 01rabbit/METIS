@@ -49,13 +49,16 @@ input tokens and two output tokens against a pre-call reservation of 4098.
 No CTF or held-out task was involved.
 
 The held-out protocol currently binds string `model_pin` and `runtime_pin`.
-The specialist accepts a matching model ID, while its binary and model SHA-256
-values and SQLite `budget_key`/`token_limit` are independent constructor
-arguments. The real-model gate checks only the runner's Boolean capability.
-Before enabling it, bind a verified runtime and model digest, shared budget
-key, token ceiling, and exact database to the committed study and reject
-every mismatch before a model turn is reserved. Ensure the runner identity
-cannot be asserted merely by a subclass or mutable attribute.
+It now also accepts an optional committed `llama_backend` pin: binary and model
+SHA-256, canonical state database path, shared budget key and ceiling, maximum
+output, and conservative reservation mode. `bind_run` carries that pin into the
+run binding. `run_assignment` compares it with the concrete `LlamaSpecialist`
+configuration before reserving any model turn, and rejects every field mismatch.
+Tests exercise the mismatches and confirm no turn reservation. This is a
+preparatory binding, not a capability grant: the separate Boolean gate still
+refuses real-model held-out calls. Before enabling that gate, verify the
+runtime's actual token accounting and ensure capability cannot be asserted by
+an arbitrary runner or mutable attribute.
 
 Keep `LlamaServerBackend.hard_cap_capable` and
 `LlamaSpecialist.hard_token_budget_enforced` false. The preregistered

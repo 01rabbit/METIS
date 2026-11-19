@@ -41,12 +41,30 @@ class ArmConfig(Record):
     prompt_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
+class LlamaBackendPin(Record):
+    binary_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    model_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    database_path: str
+    budget_key: Identifier
+    token_limit: Annotated[int, Field(ge=1, le=10_000_000)]
+    max_output_tokens: Annotated[int, Field(ge=1, le=4096)]
+    context_reservation: Literal[True]
+
+    @model_validator(mode="after")
+    def valid_database(self) -> LlamaBackendPin:
+        path = Path(self.database_path)
+        if not path.is_absolute() or str(path.resolve()) != self.database_path:
+            raise ValueError("llama database path must be canonical and absolute")
+        return self
+
+
 class Protocol(Record):
     schema_version: int = Field(ge=1, le=1)
     study_id: Identifier
     measurement: Literal["synthetic_fixture", "real_model"]
     model_pin: Identifier
     runtime_pin: Identifier
+    llama_backend: LlamaBackendPin | None = None
     seed: Annotated[int, Field(ge=0, le=2**32 - 1)]
     repetitions: Annotated[int, Field(ge=2, le=20)]
     arms: Annotated[list[Arm], Field(min_length=2, max_length=4)]
@@ -86,6 +104,11 @@ class Protocol(Record):
         slots = len(self.tasks) * self.repetitions * len(self.arms)
         if slots > MAX_SLOTS:
             raise ValueError("benchmark schedule exceeds slot limit")
+        if self.llama_backend is not None and (
+            self.measurement != "real_model" or self.llama_backend.token_limit >
+            slots * self.budgets[self.baseline].tokens
+        ):
+            raise ValueError("llama shared cap exceeds declared study token budget")
         if self.measurement == "real_model":
             budget = self.budgets[self.baseline]
             if slots * budget.model_calls > 50 or slots * budget.seconds > 7_200:
@@ -131,6 +154,8 @@ def bind_run(protocol: Protocol, database: Path, run_id: str, *, task_id: str,
     bind(database, run_id, {"protocol_sha256": expected_sha256, **slot,
                             "arm_config": protocol.arm_config[arm].model_dump(mode="json"),
                             "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
+                            "llama_backend": (protocol.llama_backend.model_dump(mode="json")
+                                              if protocol.llama_backend is not None else None),
                             "budget": protocol.budgets[arm].model_dump(mode="json"),
                             "measurement": protocol.measurement, "prompt_text": prompt_text})
 
@@ -181,13 +206,16 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
             if not isinstance(prompt_text, str) or hashlib.sha256(prompt_text.encode()).hexdigest() != (
                     protocol.arm_config[assignment.arm].prompt_sha256):
                 raise ValueError("held-out prompt binding mismatch")
-            if {key: value for key, value in recorded.items() if key != "prompt_text"} != {
+            expected_binding = {
                 "protocol_sha256": expected_digest, "task_id": assignment.task_id,
                 "repetition": assignment.repetition, "arm": assignment.arm,
                 "arm_config": protocol.arm_config[assignment.arm].model_dump(mode="json"),
                 "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
                 "budget": protocol.budgets[assignment.arm].model_dump(mode="json"),
-            }:
+            }
+            if protocol.llama_backend is not None:
+                expected_binding["llama_backend"] = protocol.llama_backend.model_dump(mode="json")
+            if {key: value for key, value in recorded.items() if key != "prompt_text"} != expected_binding:
                 raise ValueError("held-out arm binding mismatch")
             jobs = db.execute("SELECT assignment_id,state FROM agent_jobs WHERE run_id=?",
                               (assignment.run_id,)).fetchall()
@@ -266,6 +294,7 @@ def finalize(protocol: Protocol, bindings: Bindings, database: Path,
     data = protocol.model_dump()
     data.pop("arm_config")
     data.pop("memory_card_digests")
+    data.pop("llama_backend")
     data["tasks"] = [task.model_dump(exclude={"source_id", "distribution_sha256"})
                      for task in protocol.tasks]
     data["runs"] = [run.model_dump() for run in bindings.runs]
