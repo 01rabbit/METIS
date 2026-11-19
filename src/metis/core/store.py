@@ -180,6 +180,7 @@ class RunStore:
                 "active_operations": {"available": False},
                 "registered_sandbox_workers": {"available": False},
                 "pending_candidates": {"available": False},
+                "model_usage": {"available": False},
             }
             if "agent_jobs" in tables:
                 known_states = ("queued", "running", "unknown", "completed", "failed",
@@ -198,6 +199,28 @@ class RunStore:
                 operational["agent_job_states"] = {
                     "available": True, "counts": counts, "other": _AuditCount(count=other).count,
                 }
+                columns = {row[1] for row in db.execute("PRAGMA table_info(agent_jobs)")}
+                if "usage" in columns:
+                    known_input = known_output = unknown_jobs = 0
+                    jobs = db.execute("SELECT usage FROM agent_jobs WHERE run_id=?", (run_id,)).fetchall()
+                    for (raw,) in jobs:
+                        try:
+                            usage = json.loads(raw) if raw is not None else None
+                        except (TypeError, json.JSONDecodeError):
+                            usage = None
+                        if (not isinstance(usage, dict)
+                                or any(type(usage.get(key)) is not int or usage[key] < 0
+                                       for key in ("input_tokens", "output_tokens"))):
+                            unknown_jobs += 1
+                            continue
+                        known_input += usage["input_tokens"]
+                        known_output += usage["output_tokens"]
+                    operational["model_usage"] = {
+                        "available": True, "jobs": len(jobs), "unknown_jobs": unknown_jobs,
+                        "known_input_tokens": known_input, "known_output_tokens": known_output,
+                        "total_tokens": known_input + known_output if unknown_jobs == 0 else None,
+                        "cost_usd": None,
+                    }
             if "agent_action_reservations" in tables:
                 count = db.execute("SELECT COUNT(*) FROM agent_action_reservations WHERE run_id=?",
                                    (run_id,)).fetchone()[0]
