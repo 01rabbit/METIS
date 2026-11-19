@@ -143,6 +143,7 @@ def test_external_trial_snapshots_inputs_and_projects_only_safe_results(
     ("linked oracle", "private file"),
     ("oracle in checkout", "outside Git checkouts"),
     ("public oracle directory", "owner-only directory"),
+    ("invalid platform", "unsupported platform"),
     ("oracle as fixture", "exposes the oracle"),
     ("plaintext as fixture", "exposes the oracle"),
     ("invalid image", "immutable SHA-256"),
@@ -150,6 +151,7 @@ def test_external_trial_snapshots_inputs_and_projects_only_safe_results(
 def test_external_trial_fails_closed_before_proposer(tmp_path, external_fixture, invalid, message):
     challenge, oracle, trial = external_fixture
     image = "sha256:" + "a" * 64
+    platform = None
     if invalid == "oversize":
         challenge.write_bytes(b"A" * (MAX_WORKFLOW_INPUT + 1))
     elif invalid == "invalid alphabet":
@@ -175,6 +177,8 @@ def test_external_trial_fails_closed_before_proposer(tmp_path, external_fixture,
     elif invalid == "plaintext as fixture":
         challenge.write_bytes(b"Example")
         oracle.write_text(hashlib.sha256(b"Example").hexdigest())
+    elif invalid == "invalid platform":
+        platform = "not-a-platform"
     elif invalid == "invalid image":
         image = "sha256:" + "x" * 64
 
@@ -182,7 +186,7 @@ def test_external_trial_fails_closed_before_proposer(tmp_path, external_fixture,
         pytest.fail("invalid intake reached the proposer")
 
     with pytest.raises(ValueError, match=message) as error:
-        run_external_fixture_trial(tmp_path / "new-run" / "state.sqlite", image=image, platform=None,
+        run_external_fixture_trial(tmp_path / "new-run" / "state.sqlite", image=image, platform=platform,
                                    fixture=challenge, oracle=oracle, proposer=unexpected_proposal)
     assert trial.oracle_sha256 not in str(error.value)
     assert not (tmp_path / "new-run").exists()
@@ -289,3 +293,46 @@ def test_oracle_directory_is_denied_by_applied_seatbelt_profile(tmp_path, extern
                                  capture_output=True, timeout=5, check=False)
     assert read_oracle.returncode != 0
     assert not read_oracle.stdout
+
+
+@pytest.mark.parametrize("untrusted_path", ["oracle", "run"])
+def test_external_trial_rejects_nonsticky_writable_ancestor(
+    tmp_path, external_fixture, untrusted_path,
+):
+    fixture, oracle, _ = external_fixture
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    private = shared / "private"
+    private.mkdir(mode=0o700)
+    workspace_parent = tmp_path
+    if untrusted_path == "oracle":
+        oracle = oracle.rename(private / oracle.name)
+    else:
+        workspace_parent = private
+    workspace = workspace_parent / "run-workspace"
+    with pytest.raises(ValueError, match="trusted directory ancestry"):
+        run_external_fixture_trial(workspace / "state.sqlite", image="sha256:" + "a" * 64,
+                                   platform=None, fixture=fixture, oracle=oracle,
+                                   proposer=lambda _: pytest.fail("unsafe path reached proposer"))
+    assert not workspace.exists()
+
+
+def test_external_trial_accepts_sticky_shared_path_with_trusted_owners(
+    tmp_path, external_fixture,
+):
+    fixture, oracle, _ = external_fixture
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o1777)
+    private = shared / "private"
+    private.mkdir(mode=0o700)
+    oracle = oracle.rename(private / oracle.name)
+
+    def propose(_):
+        raise RuntimeError("stop before replay")
+
+    with pytest.raises(RuntimeError, match="stop before replay"):
+        run_external_fixture_trial(private / "run-workspace" / "state.sqlite",
+                                   image="sha256:" + "a" * 64, platform=None,
+                                   fixture=fixture, oracle=oracle, proposer=propose)

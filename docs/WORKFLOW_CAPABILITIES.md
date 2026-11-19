@@ -77,6 +77,8 @@ an owner-only regular file in an owner-only directory outside Git checkouts.
 For `--database`, use a file path inside a new directory whose parent already
 exists outside Git. METIS creates the run directory with mode `0700`, and
 rejects an existing directory to avoid overwriting local state or input files.
+The two directory paths must resolve through directories owned by root or the
+operator. Shared writable ancestors must have the sticky bit set.
 
 The intake snapshots both inputs in memory before calling the proposer. The
 proposer receives only the encoded token. The Seatbelt profile protects the

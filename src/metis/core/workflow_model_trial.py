@@ -29,7 +29,7 @@ from metis.core.codex_isolation import (
 )
 from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexCLI
-from metis.core.ctf_sandbox import configure
+from metis.core.ctf_sandbox import PLATFORM_PATTERN, configure
 from metis.core.ctf_workflow import (
     BASE_WORKFLOW_TOOLS,
     MAX_WORKFLOW_INPUT,
@@ -177,9 +177,14 @@ def _read_trial_file(path: Path, *, limit: int, private: bool = False) -> bytes:
 def _directory_outside_checkout(path: Path, *, label: str) -> Path:
     try:
         directory = path.resolve(strict=True)
-        if not directory.is_dir():
-            raise ValueError(f"{label} must be a directory")
-        for parent in (directory, *directory.parents):
+        trusted_uids = {0, os.getuid()}
+        # Validate root first. A sticky shared directory protects a child name only
+        # when the directory and the child both have trusted owners.
+        for parent in (*reversed(directory.parents), directory):
+            info = parent.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in trusted_uids
+                    or info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
+                raise ValueError(f"{label} must have trusted directory ancestry")
             if os.path.lexists(parent / ".git"):
                 raise ValueError(f"{label} must be outside Git checkouts")
     except (OSError, RuntimeError):
@@ -234,6 +239,8 @@ def run_external_fixture_trial(database: Path, *, image: str, platform: str | No
     """Run one operator-authorized encoding fixture with an independent local commitment."""
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
         raise ValueError("sandbox image must be an immutable SHA-256 digest")
+    if platform is not None and not PLATFORM_PATTERN.fullmatch(platform):
+        raise ValueError("unsupported platform")
     oracle_parent = _directory_outside_checkout(oracle.parent, label="private oracle directory")
     oracle_info = oracle_parent.stat()
     if oracle_info.st_uid != os.getuid() or oracle_info.st_mode & 0o077:
