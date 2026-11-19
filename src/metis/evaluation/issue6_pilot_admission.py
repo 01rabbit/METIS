@@ -176,7 +176,7 @@ class DryRunAdmission:
         if self._scheduler.database.resolve(strict=True) != self._database:
             raise ValueError("scheduler database differs from the dry-run ledger")
 
-        def persist(db: sqlite3.Connection, reservation: int) -> None:
+        def validate(db: sqlite3.Connection) -> None:
             main_path = next(path for _, name, path in db.execute("PRAGMA database_list") if name == "main")
             if Path(main_path) != self._database:
                 raise ValueError("reservation database differs from the dry-run ledger")
@@ -186,12 +186,16 @@ class DryRunAdmission:
             ).fetchone()
             if claimed != (approval.model_dump_json(), 1):
                 raise ValueError("claimed approval does not match in the reservation database")
+
+        def persist(db: sqlite3.Connection, reservation: int) -> None:
             now = self._clock()
             if not math.isfinite(now) or now >= cutoff:
                 raise ValueError("dry-run phase deadline reached")
             self._append(db, approval, case_index, receipt, reservation, run_id, assignment_id)
 
-        reserved = self._scheduler.reserve_model_turn(run_id, assignment_id, attempt_id, persist_receipt=persist)
+        reserved = self._scheduler.reserve_model_turn(
+            run_id, assignment_id, attempt_id, validate_reservation=validate, persist_receipt=persist,
+        )
         if reserved is None:
             raise ValueError("scheduler model-turn budget exhausted")
         return reserved["reservation_id"]

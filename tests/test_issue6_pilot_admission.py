@@ -220,7 +220,10 @@ def test_symlink_redirect_is_rejected_before_reservation(dry_run, tmp_path):
     assert other.model_turn_budget(job[0])["reserved"] == 0
 
 
-def test_redirect_after_path_check_rolls_back_other_database(dry_run, tmp_path, monkeypatch):
+@pytest.mark.parametrize("other_state", ["ready", "exhausted", "expired", "cancelled"])
+def test_redirect_after_path_check_does_not_mutate_other_database(
+    dry_run, tmp_path, monkeypatch, other_state,
+):
     scheduler, workspace, approval, _, admission = dry_run
     admission.claim(approval, workspace)
     admission.open_phase("case-0", 1)
@@ -231,10 +234,25 @@ def test_redirect_after_path_check_rolls_back_other_database(dry_run, tmp_path, 
     alternate_admission = DryRunAdmission(other, wall_clock=lambda: 1_000)
     alternate_admission.register(approval)
     alternate_admission.claim(approval, workspace)
+    with closing(sqlite3.connect(other.database)) as db, db:
+        if other_state == "exhausted":
+            db.execute("UPDATE agent_run_turn_budgets SET turns_reserved=turn_limit")
+        if other_state == "expired":
+            db.execute("UPDATE agent_jobs SET deadline=1")
+    if other_state == "cancelled":
+        other.session.cancel(job[0])
+    with closing(sqlite3.connect(other.database)) as db:
+        before = {
+            table: db.execute(f"SELECT * FROM {table}").fetchall()
+            for table in ("agent_jobs", "agent_job_log", "agent_run_turn_budgets",
+                          "agent_turn_reservations", "issue6_dry_reservations")
+        }
     monkeypatch.setattr(scheduler, "reserve_model_turn", other.reserve_model_turn)
     with pytest.raises(ValueError, match="reservation database differs"):
         admission.reserve_phase(*job, phase())
-    assert other.model_turn_budget(job[0])["reserved"] == 0
+    with closing(sqlite3.connect(other.database)) as db:
+        for table, rows in before.items():
+            assert db.execute(f"SELECT * FROM {table}").fetchall() == rows
 
 
 @pytest.mark.parametrize("edit", ["claimed = 0", "binding = '{}'"])
