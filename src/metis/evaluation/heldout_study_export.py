@@ -6,11 +6,13 @@ and verifier provenance come from the controller database, never the manifest.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -23,6 +25,8 @@ from metis.evaluation.verifier_provenance import (
 )
 
 MAX_EVENTS = 100_000
+_MAX_EXPORTED_TOKENS = 1_000_000_000  # heldout_analysis.Trial.tokens limit
+_ATTEMPT_ID = re.compile(r"[0-9a-f]{16}")
 
 
 def _job_model(value: str | None) -> str | None:
@@ -80,8 +84,92 @@ class ExportManifest(Record):
         return self
 
 
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("ambiguous telemetry")
+        result[key] = value
+    return result
+
+
+def _metric_record(raw: str | None) -> dict[str, object] | None:
+    if not isinstance(raw, str) or len(raw) > 16_384:
+        return None
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_keys)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _coverage_available(db: sqlite3.Connection) -> bool:
+    required = {
+        "agent_jobs": {"attempt_id", "attempt_no"},
+        "agent_turn_reservations": {"id", "attempt_id"},
+        "agent_job_log": {"assignment_id", "attempt_id", "event", "detail"},
+    }
+    return all(columns.issubset({row[1] for row in db.execute(f"PRAGMA table_info({table})")})
+               for table, columns in required.items())
+
+
+def _covered_tokens(db: sqlite3.Connection, run_id: str,
+                    job_rows: list[tuple[str, str, str | None, str | None, int]],
+                    reserved: int) -> int | None:
+    """Return observed CLI totals only when all charged attempts have coverage."""
+    if not 0 < reserved <= MAX_EVENTS:
+        return None
+    by_job: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for reservation_id, assignment_id, attempt_id in db.execute(
+        "SELECT id, assignment_id, attempt_id FROM agent_turn_reservations WHERE run_id=?",
+        (run_id,),
+    ):
+        by_job[assignment_id].append((reservation_id, attempt_id))
+    total = 0
+    for assignment_id, _, raw, attempt_id, attempt_no in job_rows:
+        charges = by_job.pop(assignment_id, [])
+        if not charges:
+            if raw is not None or db.execute(
+                "SELECT 1 FROM agent_job_log WHERE assignment_id=? AND event='codex_turn' LIMIT 1",
+                (assignment_id,),
+            ).fetchone():
+                return None
+            continue
+        # The aggregate belongs to the mutable job row and carries no attempt ID.
+        # Even a later attempt with complete-looking metadata cannot disprove stale usage.
+        if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id) or attempt_no != 1 or any(
+            charged_attempt != attempt_id for _, charged_attempt in charges
+        ):
+            return None
+        usage = _metric_record(raw)
+        if usage is None or usage.get("host") != "codex-exec":
+            return None
+        turns, input_tokens, output_tokens = (usage.get(key) for key in ("turns", "input_tokens", "output_tokens"))
+        if (type(turns) is not int or turns != len(charges) or type(input_tokens) is not int
+                or type(output_tokens) is not int or input_tokens <= 0 or output_tokens <= 0):
+            return None
+        observed = set()
+        for logged_attempt, detail in db.execute(
+            "SELECT attempt_id, detail FROM agent_job_log WHERE assignment_id=? AND event='codex_turn' LIMIT ?",
+            (assignment_id, len(charges) + 1),
+        ):
+            if logged_attempt != attempt_id:
+                return None
+            record = _metric_record(detail)
+            identity = record.get("reservation_id") if record is not None else None
+            if type(identity) is not int or identity in observed:
+                return None
+            observed.add(identity)
+        if observed != {reservation_id for reservation_id, _ in charges}:
+            return None
+        total += input_tokens + output_tokens
+        if total > _MAX_EXPORTED_TOKENS:
+            return None
+    return total if not by_job else None
+
+
 def _trial(db: sqlite3.Connection, store: RunStore, assignment: RunAssignment,
-           task: Task) -> Trial:
+           task: Task, *, token_coverage: bool) -> Trial:
     count = db.execute("SELECT COUNT(*) FROM events WHERE run_id=?", (assignment.run_id,)).fetchone()[0]
     if count > MAX_EVENTS:
         raise ValueError("run event limit exceeded")
@@ -105,22 +193,16 @@ def _trial(db: sqlite3.Connection, store: RunStore, assignment: RunAssignment,
     else:
         oracle = "none"
     verified = oracle in {"official", "protected_fixture"}
-    job_rows = db.execute("SELECT assignment_id,state,usage,model FROM agent_jobs WHERE run_id=?",
+    attempts = "attempt_id, attempt_no" if token_coverage else "NULL, 0"
+    job_rows = db.execute(f"SELECT assignment_id,state,usage,{attempts} FROM agent_jobs WHERE run_id=?",
                           (assignment.run_id,)).fetchall()
     reports = {row[0] for row in db.execute(
         "SELECT assignment_id FROM ctf_agent_reports WHERE run_id=?", (assignment.run_id,))}
     complete = bool(job_rows) and all(state == "completed" and assignment_id in reports
-                                      for assignment_id, state, _, _ in job_rows)
+                                      for assignment_id, state, _, _, _ in job_rows)
     reserved = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?",
                           (assignment.run_id,)).fetchone()[0]
-    tokens = None
-    if job_rows:
-        usage = [json.loads(raw) if raw else None for _, _, raw, _ in job_rows]
-        if all(isinstance(item, dict) and
-               all(type(item.get(key)) is int and item[key] >= 0
-                   for key in ("input_tokens", "output_tokens")) for item in usage):
-            tokens = sum(cast(dict[str, int], item)["input_tokens"]
-                         + cast(dict[str, int], item)["output_tokens"] for item in usage)
+    tokens = _covered_tokens(db, assignment.run_id, job_rows, reserved) if token_coverage else None
     times = db.execute("SELECT MIN(timestamp),MAX(timestamp) FROM events WHERE run_id=?",
                        (assignment.run_id,)).fetchone()
     started, ended = datetime.fromisoformat(times[0]), datetime.fromisoformat(times[1])
@@ -156,7 +238,8 @@ def export(manifest: ExportManifest, database: Path) -> Study:
     tasks = {task.task_id: task for task in manifest.tasks}
     with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
         db.execute("BEGIN")
-        trials = [_trial(db, store, assignment, tasks[assignment.task_id])
+        token_coverage = _coverage_available(db)
+        trials = [_trial(db, store, assignment, tasks[assignment.task_id], token_coverage=token_coverage)
                   for assignment in manifest.runs]
         if manifest.measurement == "real_model":
             for assignment in manifest.runs:
