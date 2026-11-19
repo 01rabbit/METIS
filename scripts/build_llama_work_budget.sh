@@ -12,6 +12,14 @@ if ! command -v python3 >/dev/null 2>&1 \
     exit 2
 fi
 
+case "$(uname -s):$(uname -m)" in
+    Linux:aarch64|Linux:x86_64) ;;
+    *)
+        echo "Native dependency closure verification supports Linux aarch64 and x86_64 only." >&2
+        exit 2
+        ;;
+esac
+
 metis_repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 metis_source_pin=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 mkdir -- "$1"
