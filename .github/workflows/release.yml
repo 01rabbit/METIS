@@ -61,6 +61,16 @@ jobs:
             --dist-dir dist --tag "$RELEASE_TAG" \
             --project-name "$project_name" --project-version "$project_version" \
             --write-checksums
+      - name: Verify exact staged release bundle
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          project_name=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["name"])')
+          project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          .venv/bin/python -m metis.release_artifacts \
+            --dist-dir dist --tag "$RELEASE_TAG" \
+            --project-name "$project_name" --project-version "$project_version" \
+            --verify-checksums
       - name: Install the built wheel with locked dependencies and smoke test
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt \

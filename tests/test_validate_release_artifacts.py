@@ -53,6 +53,7 @@ def test_release_workflow_uses_installed_module_cli(tmp_path):
     assert ".venv/bin/python -m metis.release_artifacts" in workflow
     assert "scripts/validate_release_artifacts.py" not in workflow
     assert "--write-checksums" in workflow
+    assert "--verify-checksums" in workflow
     dist = write_distributions(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "metis.release_artifacts", "--dist-dir",
@@ -62,6 +63,22 @@ def test_release_workflow_uses_installed_module_cli(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert (dist / "SHA256SUMS").is_file()
+
+
+def test_release_workflow_verifies_staged_bundle_before_attestation_and_publication():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
+    checksum = workflow.index("--write-checksums")
+    verify = workflow.index("--verify-checksums")
+    attest = workflow.index("uses: actions/attest@")
+    publish = workflow.index("gh release create ")
+    assert checksum < verify < attest < publish
+
+    step_start = workflow.rindex("      - name: ", 0, verify)
+    step_end = workflow.find("      - name: ", verify)
+    verify_step = workflow[step_start:step_end]
+    assert "- name: Verify exact staged release bundle" in verify_step
+    assert "--dist-dir dist --tag \"$RELEASE_TAG\"" in verify_step
+    assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
 
 
 def test_attestation_drill_is_main_only_and_cannot_publish():
@@ -80,11 +97,17 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
 
 def test_release_and_drill_share_checksum_generation_path():
     workflows = Path(__file__).parents[1] / ".github/workflows"
-    for name in ("release.yml", "release-attestation-drill.yml"):
-        workflow = (workflows / name).read_text()
-        assert workflow.count(".venv/bin/python -m metis.release_artifacts") == 1
-        assert workflow.count("--write-checksums") == 1
-        assert "sha256sum dist/" not in workflow
+    release = (workflows / "release.yml").read_text()
+    assert release.count(".venv/bin/python -m metis.release_artifacts") == 2
+    assert release.count("--write-checksums") == 1
+    assert release.count("--verify-checksums") == 1
+    assert "sha256sum dist/" not in release
+
+    drill = (workflows / "release-attestation-drill.yml").read_text()
+    assert drill.count(".venv/bin/python -m metis.release_artifacts") == 1
+    assert drill.count("--write-checksums") == 1
+    assert "--verify-checksums" not in drill
+    assert "sha256sum dist/" not in drill
 
 
 @pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),
