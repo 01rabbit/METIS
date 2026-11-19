@@ -4,10 +4,11 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 
 import pytest
 
-from metis.core.codex_session import CodexSession, transform
+from metis.core.codex_session import MAX_DERIVED_ARTIFACTS_PER_RUN, CodexSession, transform
 from metis.core.contracts import ChallengeManifest, RunStatus
 from metis.core.runtime import ToolRequest
 
@@ -238,6 +239,43 @@ def test_purge_derived_rejects_unregistered_directory_entries(tmp_path):
         session.purge_derived(run_id, apply=True)
     assert registered.read_bytes() == b"registered"
     assert unexpected.read_text() == "leave untouched"
+
+
+def test_purge_derived_bounds_directory_scan_before_unlink(tmp_path, monkeypatch):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="overfull", description="fixture", paths=[source])["run_id"]
+    registered = [session.store_artifact(run_id, b"generated")
+                  for _ in range(MAX_DERIVED_ARTIFACTS_PER_RUN)]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    derived_dir = root / ".metis-derived"
+    for index in range(MAX_DERIVED_ARTIFACTS_PER_RUN + 1):
+        (derived_dir / f"unregistered-{index:03d}.bin").write_bytes(b"leave")
+
+    original_scandir = os.scandir
+    examined = 0
+
+    @contextmanager
+    def counted_scandir(directory):
+        with original_scandir(directory) as entries:
+            def observed_entries():
+                nonlocal examined
+                for entry in entries:
+                    examined += 1
+                    yield entry
+            yield observed_entries()
+
+    monkeypatch.setattr(os, "scandir", counted_scandir)
+    with pytest.raises(ValueError, match="derived directory"):
+        session.purge_derived(run_id, apply=True)
+
+    assert 1 <= examined <= MAX_DERIVED_ARTIFACTS_PER_RUN + 1
+    assert all((root / path).is_file() for path in registered)
+    assert len(list(derived_dir.glob("unregistered-*.bin"))) == MAX_DERIVED_ARTIFACTS_PER_RUN + 1
 
 
 def test_codex_cli_across_processes(tmp_path):

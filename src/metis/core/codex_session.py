@@ -588,9 +588,14 @@ class CodexSession:
                     ]
                     derived_exists = False
                 else:
-                    names = set(os.listdir(derived_fd))
-                    if names - expected_names:
-                        raise ValueError("derived directory contains unregistered entries")
+                    seen_entries = 0
+                    with os.scandir(derived_fd) as directory_entries:
+                        for directory_entry in directory_entries:
+                            seen_entries += 1
+                            if seen_entries > MAX_DERIVED_ARTIFACTS_PER_RUN:
+                                raise ValueError("derived directory exceeds per-run artifact limit")
+                            if directory_entry.name not in expected_names:
+                                raise ValueError("derived directory contains unregistered entries")
                     entries = []
                     for path in derived_paths:
                         name = path.removeprefix(".metis-derived/")

@@ -813,8 +813,12 @@ generated-artifact purge and reports blocked resumable runs. Only terminal
 `planning` and extendable `exhausted` runs are preserved. Each run is capped at
 100 registered derived artifacts; apply preflights the whole bounded batch under
 all selected run locks and skips deletion if any run exceeds the cap. Overflow
-reports counts and limits without artifact paths. This is a manual local
-retention control, not secure erasure or a complete P8 release gate. See
+reports counts and limits without artifact paths; directory enumeration stops
+at the per-run bound. Apply derives lock capacity from `RLIMIT_NOFILE`, open
+FDs, a 16-FD reserve, and two FDs per run, and returns before locking if the
+batch exceeds capacity. It filters resumable runs before lock acquisition and
+uses a 15-second batch lock deadline. This is a manual local retention control,
+not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
 
 ## Held-out protocol preparation (2026-11-19)
