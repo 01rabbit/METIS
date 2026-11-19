@@ -14,6 +14,25 @@ eligible runs, and an apply with any blocked run exits nonzero. The operation
 is retryable: already removed derived files are reconciled with the manifest.
 Original inputs and user-added artifacts are excluded.
 
+Each run is capped at 100 registered derived artifacts. The run-locked
+`store_artifact` path refuses entry 101 before creating a file, and concurrent
+writers serialize against that count. Other `.metis-*` directories are outside
+the cap. Preview reports the
+per-run limit and marks an over-limit run `overflow` with its count and limit,
+without listing its file paths. Apply holds the selected runs' operation and
+state locks, checks the entire bounded batch before deletion, and skips all
+runs if any has overflowed; the per-run purge also checks its cap before
+filesystem inspection and unlinking. It enumerates the derived directory with a
+bounded `scandir` loop and stops after 101 entries or at the first unregistered
+name. Before taking batch locks, apply filters nonterminal runs and calculates
+capacity from the soft `RLIMIT_NOFILE`, current open descriptors, a 16-FD
+reserve, and two lock descriptors per run. The batch limit is at most 100; a
+selection above measured capacity or an unavailable capacity report returns
+without acquiring locks or deleting files. Lock acquisition has a 15-second
+batch deadline and reports contention as blocked. SQLite connections opened by
+retention selection, run lookups, artifact-root lookup and purge checks/manifest
+updates are explicitly closed so the batch does not accumulate database FDs.
+
 Review follow-up: terminal eligibility is now an explicit allowlist of
 `solved`, `cancelled`, `error`, and `policy_denied`, checked under both run locks
 before unlinking. `planning` remains actionable, and `exhausted` can be
@@ -27,11 +46,13 @@ Local validation (Python 3.12 virtual environment, synthetic local fixtures):
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -q tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
-38 passed
+47 passed
 /Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
 All checks passed!
 /Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py
 Success: no issues found in 3 source files
+PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -ra
+1532 passed, 37 skipped, 45 subtests passed in 212.86s
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python scripts/check_repo.py
 {"status": "passed", "findings": 0}
 git diff --check
@@ -40,6 +61,9 @@ passed
 
 These tests covered preview, age selection, explicit apply, resumable-run
 refusal, original-input preservation, idempotent retry, invalid ages,
-oversized-selection rejection, and the existing purge regressions. This does not securely erase filesystem snapshots,
+oversized-selection rejection, the 100-artifact boundary, overflow reporting,
+whole-batch no-unlink behavior on overflow, low-FD capacity rejection before
+locking, a 100-run batch under a simulated 256-FD limit, unavailable-capacity
+reporting, bounded directory enumeration, and the existing purge regressions. This does not securely erase filesystem snapshots,
 SQLite WAL pages or backups, enforce credential retention, or complete Issue
 #9's P7 dependency, host-reboot and signed-release evidence gates.
