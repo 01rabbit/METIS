@@ -85,6 +85,7 @@ class SafeHTTP:
         self.timeout = timeout
         self.credentials = credentials or {}
         self._metis_environment_only = False
+        self._metis_cookie_epoch = 0
         state = state or {}
         self.pins: dict[str, list[str]] = state.get("pins", {})
         self.jars: dict[str, http.cookiejar.CookieJar] = {}

@@ -100,11 +100,7 @@ def test_remediation_and_environment_mode_recheck_paths_after_open(tmp_path, mon
     monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
     client = web._client(config, {})
     target = tmp_path / "untouched"
-    if suffix:
-        target.write_bytes(b"keep")
-    else:
-        database.rename(target)
-    original = target.read_bytes()
+    target.write_bytes(b"keep")
     replacement = tmp_path / "replacement"
     replacement.symlink_to(target)
     replacement.replace(database.with_name(database.name + suffix))
@@ -114,7 +110,7 @@ def test_remediation_and_environment_mode_recheck_paths_after_open(tmp_path, mon
                       lambda: web.forget_all_auth(apply=True)):
         with pytest.raises(ValueError, match=f"{label} must be a regular file"):
             operation()
-    assert target.read_bytes() == original
+    assert target.read_bytes() == b"keep"
 
 
 def test_local_client_cannot_load_save_or_use_auth_after_storage_mode_change(tmp_path):
@@ -159,6 +155,106 @@ def test_environment_mode_persists_alternate_origin_cookie_only_in_private_state
     client.jars.update(cookie_client.jars)
     web._save_client(run_id, client)
     assert (secret in stored_state()) == (database_mode == 0o600)
+
+
+@pytest.fixture
+def saved_run_cookies(tmp_path):
+    web = WebWorkflow(tmp_path / "state.sqlite")
+    platform = "https://platform.invalid"
+    alternate = "https://alternate.invalid"
+    config = {"origins": [platform, alternate], "auth_origin": platform}
+    web.auth(platform, kind="token", value="synthetic-platform-token")
+    client = web._client(config, {})
+    for site, value in ((platform, "synthetic-platform-cookie"), (alternate, "synthetic-alternate-cookie")):
+        issuer = SafeHTTP([site], auth_origin=site, credentials={"cookie": f"session={value}"})
+        client.jars.update(issuer.jars)
+    with closing(sqlite3.connect(web.database)) as db, db:
+        db.execute("INSERT INTO web_runs (run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
+                   ("synthetic-run", json.dumps(config), json.dumps(client.export_state()), "[]", "[]", ""))
+    return web, client
+
+
+def test_cli_opt_in_previews_cookie_jars_and_retires_them_on_broad_database(saved_run_cookies, monkeypatch, capsys):
+    web, _ = saved_run_cookies
+    web.database.chmod(0o644)
+    command = ["metis", "web", "--database", str(web.database), "forget-all", "--include-run-cookies"]
+    monkeypatch.setattr(sys, "argv", command)
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert json.loads(output)["run_cookie_jars"] == 2
+    assert "synthetic-" not in output and ".invalid" not in output
+    with closing(sqlite3.connect(web.database)) as db:
+        assert web._cookie_epoch(db) == 0
+        assert "synthetic-alternate-cookie" in db.execute("SELECT state FROM web_runs").fetchone()[0]
+
+    result = web.forget_all_auth(apply=True)
+    assert "run_cookie_jars" not in result
+    with closing(sqlite3.connect(web.database)) as db:
+        assert web._cookie_epoch(db) == 0
+        assert "synthetic-alternate-cookie" in db.execute("SELECT state FROM web_runs").fetchone()[0]
+
+    monkeypatch.setattr(sys, "argv", [*command, "--apply"])
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert json.loads(output)["run_cookie_jars"] == 1
+    assert "synthetic-" not in output and ".invalid" not in output
+    with closing(sqlite3.connect(web.database)) as db:
+        assert web._cookie_epoch(db) == 1
+        assert "cookies" not in json.loads(db.execute("SELECT state FROM web_runs").fetchone()[0])
+
+
+def test_cookie_epoch_rejects_late_load_and_save_without_overwriting_fresh_cookies(saved_run_cookies):
+    web, stale = saved_run_cookies
+    config, before, *_ = web._load("synthetic-run")
+    web.forget_all_auth(apply=True, include_run_cookies=True)
+    late = web._client(config, before)
+    assert "synthetic-alternate-cookie" not in late.secret_values()
+    web._save_client("synthetic-run", stale)
+    _, state, *_ = web._load("synthetic-run")
+    assert not state.get("cookies")
+
+    origin = "https://alternate.invalid"
+    issuer = SafeHTTP([origin], auth_origin=origin, credentials={"cookie": "session=synthetic-fresh-cookie"})
+    fresh = web._client(config, state)
+    fresh.jars.update(issuer.jars)
+    web._save_client("synthetic-run", fresh)
+    web._save_client("synthetic-run", stale)
+    _, state, *_ = web._load("synthetic-run")
+    assert "synthetic-fresh-cookie" in json.dumps(state)
+    assert "synthetic-alternate-cookie" not in json.dumps(state)
+
+
+def test_opt_in_rolls_back_auth_and_cookie_epoch_on_failed_write(saved_run_cookies):
+    web, _ = saved_run_cookies
+    with closing(sqlite3.connect(web.database)) as db, db:
+        db.execute("""CREATE TRIGGER deny_cookie_update BEFORE UPDATE ON web_runs
+            BEGIN SELECT RAISE(ABORT, 'injected failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="injected failure"):
+        web.forget_all_auth(apply=True, include_run_cookies=True)
+    with closing(sqlite3.connect(web.database)) as db:
+        assert web._cookie_epoch(db) == 0
+        assert db.execute("SELECT generation FROM web_auth_generations").fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (1,)
+        assert "synthetic-alternate-cookie" in db.execute("SELECT state FROM web_runs").fetchone()[0]
+
+
+def test_cookie_epoch_fences_intake_started_before_retirement_with_no_saved_runs(tmp_path, monkeypatch):
+    web = WebWorkflow(tmp_path / "state.sqlite")
+    platform = "https://platform.invalid"
+    alternate = "https://alternate.invalid"
+    issuer = SafeHTTP([alternate], auth_origin=alternate, credentials={"cookie": "session=synthetic-inflight"})
+
+    def fake_request(client, url, **_kwargs):
+        assert web.forget_all_auth(apply=True, include_run_cookies=True)["selected_runs"] == 0
+        client.jars.update(issuer.jars)
+        body = b"<title>Storage fixture</title>"
+        return HTTPResult(url, 200, {}, body, len(body), "a" * 64)
+
+    monkeypatch.setattr(SafeHTTP, "request", fake_request)
+    web.open(platform, allowed_origins=[alternate], download=False)
+    with closing(sqlite3.connect(web.database)) as db:
+        assert web._cookie_epoch(db) == 1
+        assert "cookies" not in json.loads(db.execute("SELECT state FROM web_runs").fetchone()[0])
 
 
 def _server(handler_class):

@@ -37,10 +37,11 @@ file modes.
 Environment-only authentication and explicit local forgetting still work with
 regular files whose permissions are broader. On such files, environment-only
 mode discards cookies from every origin when loading or saving run state.
-`forget` and `forget-all` remove authentication-origin cookies. Existing
-alternate-origin cookies can remain in plaintext on a broadly accessible
-database until the run state is saved again in environment-only mode. That
-save cannot undo prior exposure.
+`forget` and the default `forget-all` remove authentication-origin cookies.
+Existing alternate-origin cookies can remain in plaintext on a broadly
+accessible database until run state is saved again in environment-only mode
+or the operator explicitly retires all run cookies. Neither can undo prior
+exposure.
 Browser routing checks the stored generation, so a mode switch does not
 guarantee cancellation of an already prepared or in-flight browser request.
 
@@ -49,3 +50,20 @@ It does not validate ancestor-directory symlinks or ACLs, pin a path between
 inspection and opening, erase existing copies, or encrypt files. Treat a
 credential already stored with broader permissions as potentially exposed and
 rotate it with the provider.
+
+## Retiring all saved run cookies
+
+`metis web --database STATE.sqlite forget-all --include-run-cookies` previews
+the number of cookie jars across the selected runs alongside the existing
+authentication counts. Add `--apply` to retire saved platform authentication
+and all run cookies in one transaction. This retains the existing 100-origin
+and 1,000-run limits. The output includes counts and omits origin names and
+credential values. The command accepts regular restored SQLite files even when
+their permissions are broader than those allowed for local authentication.
+
+The transaction advances a database-wide epoch. An older client cannot
+overwrite saved state, and an intake already underway cannot persist its
+cookies. Retiring saved cookies does not cancel in-flight requests, revoke
+provider credentials, or modify environment variables. The command performs
+no WAL checkpoint, and prior values may remain in SQLite WAL, snapshots,
+or backups.
