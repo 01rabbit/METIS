@@ -185,6 +185,35 @@ def test_heldout_snapshot_is_fixed_before_work(tmp_path: Path):
         knowledge.search_for_run(run_id, "alphabetic", category="crypto")
 
 
+@pytest.mark.parametrize("source_split", [None, "unlisted", "competition", "heldout"])
+def test_heldout_snapshot_rejects_uncorroborated_prior_source(tmp_path: Path, source_split: str | None):
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    knowledge = KnowledgeBase(session.database)
+    source = session.start(ChallengeManifest.model_validate(_manifest(
+        "legacy-source", "Source", "A source problem.")), evaluation_split="practice")
+    card = knowledge.remember(TechniqueCard(
+        title="Prior decoding method", category="crypto",
+        summary="Inspect the alphabet before using a bounded decoder.",
+        conditions="An encoded message is present.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    target = session.start(ChallengeManifest.model_validate(_manifest(
+        "legacy-target", "Target", "A held-out problem.")), evaluation_split="heldout")
+    knowledge.freeze_for_heldout(target["run_id"], [card["id"]])
+    new_target = session.start(ChallengeManifest.model_validate(_manifest(
+        "new-target", "Target", "Another held-out problem.")), evaluation_split="heldout")
+    with sqlite3.connect(session.database) as db:
+        if source_split is None:
+            db.execute("DELETE FROM codex_sessions WHERE run_id=?", (source["run_id"],))
+        else:
+            db.execute("UPDATE codex_sessions SET evaluation_split=? WHERE run_id=?",
+                       (source_split, source["run_id"]))
+    with pytest.raises(ValueError, match="lacks prior source"):
+        knowledge.freeze_for_heldout(new_target["run_id"], [card["id"]])
+    assert knowledge.search_for_run(new_target["run_id"], "alphabetic", category="crypto") == []
+    with pytest.raises(ValueError, match="lacks prior source"):
+        knowledge.search_for_run(target["run_id"], "alphabetic", category="crypto")
+
+
 def test_heldout_snapshot_rejects_worked_or_nonheldout_run(tmp_path: Path):
     session = CodexSession(tmp_path / "state" / "metis.sqlite")
     knowledge = KnowledgeBase(session.database)
