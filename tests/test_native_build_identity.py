@@ -150,3 +150,20 @@ def test_observation_does_not_write_a_manifest_for_an_unexpected_build(
     with pytest.raises(ValueError):
         identity.write_native_build_manifest(build, source_commit=identity._SOURCE_COMMIT, patch=patch, output=output)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("python_present", [False, True])
+def test_builder_checks_python_before_starting_a_build(tmp_path, python_present):
+    if python_present:
+        old_python = tmp_path / "python3"
+        old_python.write_text("#!/bin/sh\nexit 1\n")
+        old_python.chmod(0o700)
+    build_script = Path(__file__).resolve().parents[1] / "scripts" / "build_llama_work_budget.sh"
+    destination = tmp_path / "new-build"
+    result = subprocess.run(
+        ["/bin/sh", str(build_script), str(destination)], env={"PATH": str(tmp_path)},
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert result.returncode == 2
+    assert "Python 3.12 or newer" in result.stderr
+    assert not destination.exists()

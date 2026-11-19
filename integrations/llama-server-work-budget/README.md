@@ -11,6 +11,9 @@ from system configuration, user configuration, and the environment. The
 launcher rejects runtime environment overrides. The launch profile disables
 warmup, context shift, multimodal loading, speculation, and the web UI.
 
+The build requires Git, CMake, a native C/C++ toolchain, and Python 3.12 or
+newer. The script checks Python before fetching or compiling.
+
 ```sh
 scripts/build_llama_work_budget.sh /tmp/metis-llama-guard-build
 ```

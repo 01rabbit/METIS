@@ -6,6 +6,12 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 
+if ! command -v python3 >/dev/null 2>&1 \
+    || ! python3 -I -c 'import sys; raise SystemExit(sys.version_info < (3, 12))'; then
+    echo "Python 3.12 or newer is required to record the build identity." >&2
+    exit 2
+fi
+
 metis_repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 metis_source_pin=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 mkdir -- "$1"
