@@ -13,6 +13,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -96,6 +97,13 @@ _SCHEMA = (
 )
 
 
+@dataclass(frozen=True)
+class CanaryWindow:
+    database: Path
+    monotonic_cutoff: float
+    wall_cutoff: float
+
+
 class DryRunAdmission:
     """Bind each approval to the canonical scheduler database for this study."""
 
@@ -150,6 +158,17 @@ class DryRunAdmission:
         if not math.isfinite(now) or now >= self._cutoff:
             raise ValueError("dry-run cohort deadline reached")
         self._phase_cutoffs.setdefault((case_id, phase), min(self._cutoff, now + PHASE_SECONDS))
+
+    def canary_window(self, workspace: Path, receipt: DryRunPhase) -> CanaryWindow:
+        """Return the frozen process-time bounds for the open dry-run phase."""
+        receipt = DryRunPhase.model_validate(receipt)
+        approval = self._approval
+        if approval is None or workspace_binding(workspace) != approval.workspace_sha256:
+            raise ValueError("canary workspace does not match the claimed dry-run approval")
+        cutoff = self._phase_cutoffs.get((receipt.case_id, receipt.phase))
+        if cutoff is None:
+            raise ValueError("dry-run phase was not opened")
+        return CanaryWindow(self._database, cutoff, approval.expires_at)
 
     def _case_index(self, case_id: str) -> int:
         if self._approval is not None:
