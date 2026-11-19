@@ -13,6 +13,7 @@ import stat
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -125,6 +126,25 @@ _SCHEMA = (
 )
 
 
+_fixture_fd_guard = Lock()
+_fixture_lock_fds: set[int] = set()
+
+
+def _after_fixture_fork() -> None:
+    for fd in _fixture_lock_fds:
+        os.close(fd)
+    _fixture_lock_fds.clear()
+    _fixture_fd_guard.release()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_fixture_fd_guard.acquire,
+        after_in_parent=_fixture_fd_guard.release,
+        after_in_child=_after_fixture_fork,
+    )
+
+
 class FixtureClaimBusy(ValueError):
     """A fixture controller or reconciler still holds the claim lock."""
 
@@ -233,6 +253,10 @@ class StudyTokenAdmission:
         ):
             raise ValueError("token receipt does not match committed reservation")
 
+    def _preflight_fixture_receipt(self, receipt: TokenAdmissionReceipt) -> None:
+        with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
+            self._require_committed_receipt(db, receipt)
+
     @contextmanager
     def _fixture_lock(self, receipt: TokenAdmissionReceipt) -> Iterator[None]:
         # The generic ledger remains usable on platforms without POSIX flock.
@@ -247,10 +271,13 @@ class StudyTokenAdmission:
                 raise ValueError("fixture claims require a private operator-owned lock directory")
             key = f"{receipt.slot.run_id}:{receipt.attempt.turn_reservation_id}".encode("ascii")
             name = hashlib.sha256(key).hexdigest() + ".lock"
-            fd = os.open(
-                name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                0o600, dir_fd=directory_fd,
-            )
+            with _fixture_fd_guard:
+                fd = os.open(
+                    name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                    0o600, dir_fd=directory_fd,
+                )
+                _fixture_lock_fds.add(fd)
+            owner_pid = os.getpid()
             try:
                 attributes = os.fstat(fd)
                 if (not stat.S_ISREG(attributes.st_mode) or attributes.st_uid != os.geteuid()
@@ -262,8 +289,12 @@ class StudyTokenAdmission:
                     raise FixtureClaimBusy("fixture claim already has an active owner") from None
                 yield
             finally:
-                # Keep the path in place so later owners always lock the same inode.
-                os.close(fd)
+                # A raw fork child has already closed its inherited copy.
+                if os.getpid() == owner_pid:
+                    with _fixture_fd_guard:
+                        _fixture_lock_fds.remove(fd)
+                        # Keep the path so later owners lock the same inode.
+                        os.close(fd)
         finally:
             os.close(directory_fd)
 
@@ -275,6 +306,7 @@ class StudyTokenAdmission:
     def claim_fixture_launch(self, receipt: TokenAdmissionReceipt) -> Iterator[TokenLaunchClaim]:
         """Hold exclusive fixture ownership until terminal recording or controller exit."""
         receipt = TokenAdmissionReceipt.model_validate(receipt)
+        self._preflight_fixture_receipt(receipt)
         with self._fixture_lock(receipt):
             yield self._claim_for_launch(receipt, fixture_owned=True)
 
@@ -297,6 +329,7 @@ class StudyTokenAdmission:
     def reconcile_lost_fixture_claim(self, receipt: TokenAdmissionReceipt) -> TokenLaunchOutcome:
         """Record a lost controller outcome without implying the worker stopped."""
         receipt = TokenAdmissionReceipt.model_validate(receipt)
+        self._preflight_fixture_receipt(receipt)
         with self._fixture_lock(receipt):
             with self._transaction() as db:
                 self._require_committed_receipt(db, receipt)

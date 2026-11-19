@@ -139,7 +139,10 @@ graph positions. The controller also checks that graph work plus sampled
 outputs fit the original admission. An EOS or stop match can reduce the
 observed output while the full requested headroom stays reserved.
 All outcomes retain the entire admission charge. The controller holds a
-non-inherited claim lock through the terminal write. After that lock releases,
+claim lock through the terminal write. The lock closes on exec and in a raw
+Python fork child. The controller compares the supplied receipt to the ledger
+read-only before creating lock paths and rechecks it in the claim transaction.
+After that lock releases,
 `StudyTokenAdmission.reconcile_lost_fixture_claim(receipt)` can close a matching
 pending fixture claim once as `lost`. A live owner, an earlier terminal record,
 or a claim created without fixture locking blocks reconciliation. The

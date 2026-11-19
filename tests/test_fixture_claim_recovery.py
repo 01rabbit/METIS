@@ -62,6 +62,18 @@ def _crash_after_claim(database: Path, receipt: TokenAdmissionReceipt, scratch: 
         os._exit(91)
 
 
+def _crash_after_raw_fork(database: Path, receipt: TokenAdmissionReceipt, scratch: Path) -> None:
+    with StudyTokenAdmission(database).claim_fixture_launch(receipt):
+        ready, release, exited = (scratch / marker for marker in ("ready", "release", "exited"))
+        if os.fork() == 0:
+            ready.touch()
+            _wait_for(release)
+            exited.touch()
+            os._exit(0)
+        _wait_for(ready)
+        os._exit(91)
+
+
 def _finish_with_lock(database: Path, receipt: TokenAdmissionReceipt, ready, release) -> None:
     admission = StudyTokenAdmission(database)
     with admission.claim_fixture_launch(receipt) as claim:
@@ -173,3 +185,44 @@ def test_recovery_refuses_a_symlinked_lock_directory(reserved, tmp_path):
     with pytest.raises(OSError):
         admission.reconcile_lost_fixture_claim(receipt)
     assert list(foreign.iterdir()) == []
+
+
+def test_raw_fork_child_does_not_keep_controller_lock_alive(reserved, tmp_path):
+    admission, receipt = reserved
+    worker = """
+import runpy
+import sys
+from pathlib import Path
+
+from metis.core.study_token_admission import TokenAdmissionReceipt
+
+function = runpy.run_path(sys.argv[1])["_crash_after_raw_fork"]
+function(Path(sys.argv[2]), TokenAdmissionReceipt.model_validate_json(sys.argv[3]), Path(sys.argv[4]))
+"""
+    # Popen waits directly on the controller. multiprocessing's join sentinel
+    # would also be inherited by the raw child and confound the fault injection.
+    with subprocess.Popen(
+        [sys.executable, "-c", worker, __file__, str(admission.database), receipt.model_dump_json(), str(tmp_path)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ) as process:
+        try:
+            assert process.wait(timeout=8) == 91
+            assert (tmp_path / "ready").exists() and not (tmp_path / "exited").exists()
+            assert admission.reconcile_lost_fixture_claim(receipt).status == "lost"
+            assert not (tmp_path / "exited").exists()
+        finally:
+            (tmp_path / "release").touch()
+    _wait_for(tmp_path / "exited")
+
+
+def test_forged_receipts_leave_no_persistent_lock_paths(reserved, tmp_path):
+    admission, receipt = reserved
+    for number in (2, 3, 4):
+        forged = receipt.model_copy(update={
+            "attempt": receipt.attempt.model_copy(update={"turn_reservation_id": number}),
+        })
+        with pytest.raises(ValueError, match="committed reservation"), admission.claim_fixture_launch(forged):
+            pytest.fail("forged receipt was given a launch claim")
+        with pytest.raises(ValueError, match="committed reservation"):
+            admission.reconcile_lost_fixture_claim(forged)
+    assert not (tmp_path / ".state.sqlite.fixture-locks").exists()
