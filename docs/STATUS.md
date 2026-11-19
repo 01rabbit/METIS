@@ -349,7 +349,11 @@ checks every run/sequence reference against the validated event chain and
 requires exact successful-verdict provenance tags; browser-attested and local
 commitment events do not count as official API verdicts. Its retained 24-row
 dataset is invented test data, not a model benchmark or verified solve
-evidence. A full controller exporter and fresh held-out experiment remain
+evidence. A read-only exporter now derives verdict provenance, completion,
+action counts, model-call reservations, observed tokens and duration from the
+controller ledger for a complete task/arm/repetition manifest. Missing cost
+remains unknown; the manifest's exposure, solvability and runtime declarations
+still require independent review. A fresh held-out experiment remains
 necessary; Issue #8 stays open.
 See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
 
