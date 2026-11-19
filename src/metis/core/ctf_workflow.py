@@ -206,7 +206,8 @@ def validate_workflow(raw: bytes | str, *, input_artifact: str,
     return workflow
 
 
-def sandbox_runner_script(*, approved_tools: frozenset[str] = BASE_WORKFLOW_TOOLS) -> str:
+def sandbox_runner_script(*, approved_tools: frozenset[str] = BASE_WORKFLOW_TOOLS,
+                          digest_only: bool = False) -> str:
     """Return the fixed interpreter used inside METIS's isolated container."""
     if not approved_tools <= WORKFLOW_TOOLS or not BASE_WORKFLOW_TOOLS <= approved_tools:
         raise ValueError("sandbox workflow tools are not an approved fixed capability set")
@@ -253,18 +254,21 @@ for step in steps:
         raise SystemExit("workflow step is not allowlisted")
     if len(value) > MAX_OUTPUT_BYTES:
         raise SystemExit("workflow output exceeds limits")
-print(json.dumps({"schema_version": 1, "steps": len(steps), "output_bytes": len(value),
-                  "input_sha256": input_sha256,
-                  "sha256": hashlib.sha256(value).hexdigest(),
-                  "output_b64": base64.b64encode(value).decode("ascii")}, sort_keys=True))
+result = {"schema_version": 1, "steps": len(steps), "output_bytes": len(value),
+          "input_sha256": input_sha256, "sha256": hashlib.sha256(value).hexdigest()}
+if not __DIGEST_ONLY__:
+    result["output_b64"] = base64.b64encode(value).decode("ascii")
+print(json.dumps(result, sort_keys=True))
 '''
     allowed = json.dumps(sorted(approved_tools), separators=(",", ":"))
     return (script.replace("__ALLOWED_TOOLS__", f"set({allowed})")
+            .replace("__DIGEST_ONLY__", "True" if digest_only else "False")
             .replace("__ROT13_IMPLEMENTATION__", ROT13_IMPLEMENTATION))
 
 
 def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
-                            workflow_artifact: str, timeout: int = 20) -> dict[str, Any]:
+                            workflow_artifact: str, timeout: int = 20,
+                            digest_only: bool = False) -> dict[str, Any]:
     """Run a validated plan and register its bounded, untrusted output as a derived artifact."""
     if not 1 <= timeout <= 300:
         raise ValueError("workflow timeout must be 1..300 seconds")
@@ -291,7 +295,8 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
         run_id,
         SandboxRequest(target=target, mode="script", extra=[workflow_artifact],
                        args=[workflow_visible, workflow_sha256],
-                       script=sandbox_runner_script(approved_tools=approved_tools),
+                       script=sandbox_runner_script(approved_tools=approved_tools,
+                                                    digest_only=digest_only),
                        interpreter="python3", timeout=timeout, emulate="off"),
     )
     if not result.get("ok"):
@@ -306,11 +311,24 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     if not isinstance(stdout, str):
         return {"ok": False, "reason": "sandbox workflow output was not text", "sandbox": result}
     try:
-        observed, output = _validate_workflow_output(stdout, expected_steps=len(workflow.steps))
+        if digest_only:
+            observed = _validate_digest_only_output(stdout, expected_steps=len(workflow.steps))
+            output = None
+        else:
+            observed, output = _validate_workflow_output(stdout, expected_steps=len(workflow.steps))
     except ValueError as exc:
         return {"ok": False, "reason": str(exc), "sandbox": result}
     if observed["input_sha256"] != input_sha256:
         return {"ok": False, "reason": "sandbox workflow input digest mismatch"}
+    if digest_only:
+        return {"ok": True, "workflow_sha256": workflow_sha256,
+                "input_sha256": input_sha256, "steps": observed["steps"],
+                "output_bytes": observed["output_bytes"],
+                "output_sha256": observed["sha256"], "digest_only": True,
+                "sandbox": {"engine": isolation["engine"], "image": isolation["image"],
+                            "platform": isolation.get("platform"), "network": isolation["network"],
+                            "host_mounts": isolation["host_mounts"]}}
+    assert output is not None
     output_digest = hashlib.sha256(output).hexdigest()
     output_artifact = session.store_artifact(run_id, output, directory_name=".metis-derived", suffix=".bin")
     return {"ok": True, "workflow_sha256": workflow_sha256, "input_sha256": input_sha256,
@@ -356,6 +374,26 @@ def _validate_workflow_output(stdout: str, *, expected_steps: int) -> tuple[dict
     return observed, output
 
 
+def _validate_digest_only_output(stdout: str, *, expected_steps: int) -> dict[str, Any]:
+    """Reject answer-bearing or malformed worker output in private-oracle mode."""
+    try:
+        observed = json.loads(stdout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sandbox digest output was not valid JSON") from exc
+    if (not isinstance(observed, dict)
+            or set(observed) != {"schema_version", "steps", "output_bytes", "input_sha256", "sha256"}
+            or type(observed["schema_version"]) is not int or observed["schema_version"] != 1
+            or type(observed["steps"]) is not int or observed["steps"] != expected_steps
+            or type(observed["output_bytes"]) is not int
+            or not 0 <= observed["output_bytes"] <= MAX_WORKFLOW_OUTPUT
+            or not isinstance(observed["input_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", observed["input_sha256"])
+            or not isinstance(observed["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", observed["sha256"])):
+        raise ValueError("sandbox digest result failed schema validation")
+    return observed
+
+
 def verify_workflow_digest(result: Mapping[str, Any], oracle_sha256: str) -> bool:
     """Compare a sandbox digest with a host-only commitment; never reveal the answer."""
     if not re.fullmatch(r"[0-9a-f]{64}", oracle_sha256):
@@ -368,7 +406,8 @@ def verify_workflow_digest(result: Mapping[str, Any], oracle_sha256: str) -> boo
 
 def replay_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
                                workflow_artifact: str, timeout: int = 20,
-                               oracle_sha256: str | None = None) -> dict[str, Any]:
+                               oracle_sha256: str | None = None,
+                               digest_only: bool = False) -> dict[str, Any]:
     """Run one declared workflow twice and compare bounded, isolated results.
 
     Both outputs remain registered as untrusted run-derived artifacts. Neither
@@ -376,19 +415,25 @@ def replay_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     """
     if oracle_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", oracle_sha256):
         raise ValueError("oracle commitment must be a lowercase SHA-256 digest")
+    if digest_only and oracle_sha256 is None:
+        raise ValueError("digest-only replay requires a private oracle")
+    options = {"digest_only": True} if digest_only else {}
     first = run_workflow_in_sandbox(database, run_id, target=target,
-                                    workflow_artifact=workflow_artifact, timeout=timeout)
+                                    workflow_artifact=workflow_artifact, timeout=timeout, **options)
     if first.get("ok") is not True:
         return {"ok": False, "reproducible": False, "reason": "first sandbox run failed"}
     second = run_workflow_in_sandbox(database, run_id, target=target,
-                                     workflow_artifact=workflow_artifact, timeout=timeout)
+                                     workflow_artifact=workflow_artifact, timeout=timeout, **options)
     if second.get("ok") is not True:
         return {"ok": False, "reproducible": False, "reason": "second sandbox run failed"}
     comparable = ("workflow_sha256", "input_sha256", "steps", "output_bytes", "output_sha256", "sandbox")
     reproducible = all(first.get(key) == second.get(key) for key in comparable)
     oracle_match = (None if oracle_sha256 is None else
-                    reproducible and verify_workflow_digest(first, oracle_sha256)
-                    and verify_workflow_digest(second, oracle_sha256))
+                    reproducible and (secrets.compare_digest(first["output_sha256"], oracle_sha256)
+                                      and secrets.compare_digest(second["output_sha256"], oracle_sha256)
+                                      if digest_only else
+                                      verify_workflow_digest(first, oracle_sha256)
+                                      and verify_workflow_digest(second, oracle_sha256)))
     return {"ok": reproducible and oracle_match is not False,
             "reproducible": reproducible,
             "oracle_match": oracle_match, "steps": first.get("steps") if reproducible else None,
