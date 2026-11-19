@@ -34,6 +34,7 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -58,6 +59,7 @@ from metis.core.codex_isolation import (
     wrap,
 )
 from metis.core.ctf_artifacts import ALLOWED_OPTIONS
+from metis.core.study_token_admission import StudyTokenAdmission, TokenLaunchClaim
 
 # Features turned off for every specialist turn when the installed CLI knows them. Some
 # collaboration tool names can remain visible; the configured host refusal is tested below.
@@ -574,7 +576,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                    final_handoff_call_limit: int | None = None,
                    specialist_call_limit: int | None = None,
                    fresh_context: bool = False,
-                   run_candidate_limit: int | None = None) -> dict[str, Any]:
+                   run_candidate_limit: int | None = None,
+                   study_token_admission: StudyTokenAdmission | None = None) -> dict[str, Any]:
     """Drive one running attempt to a report, a failure or a stop. Returns a summary.
 
     ``note`` is Daybreak's focus for this attempt (a hypothesis to test, a step to take). It is
@@ -600,13 +603,24 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         raise ValueError("held-out specialist model or prompt override conflicts with protocol")
     if heldout is not None:
         from metis.core.llama_specialist import LlamaSpecialist
-        if isinstance(runner, LlamaSpecialist):
+        if heldout.get("llama_backend") is not None:
+            if not isinstance(runner, LlamaSpecialist):
+                raise ValueError("held-out llama backend requires the pinned LlamaSpecialist")
+            LlamaSpecialist.assert_heldout_binding(runner, heldout, scheduler.database, selected)
+            if (study_token_admission is None
+                    or not callable(getattr(runner, "run_admitted", None))):
+                raise ValueError("held-out llama backend requires a token-admitted runner")
+        elif isinstance(runner, LlamaSpecialist):
             runner.assert_heldout_binding(heldout, scheduler.database, selected)
-        elif heldout.get("llama_backend") is not None:
-            raise ValueError("held-out llama backend requires pinned llama specialist")
     if (heldout is not None and heldout.get("prompt_text") is not None
             and not getattr(runner, "hard_token_budget_enforced", False)):
         raise ValueError("real-model held-out token cap is not enforceable by this runner")
+    admitted_native = heldout is not None and heldout.get("llama_backend") is not None
+    if study_token_admission is not None:
+        if not admitted_native or study_token_admission.database != scheduler.database.resolve():
+            raise ValueError("held-out token admission must use this run's native study ledger")
+        if not callable(getattr(runner, "run_admitted", None)):
+            raise ValueError("held-out native runner does not accept one-time launch claims")
     def bound_prompt() -> str:
         rendered = render_prompt(brief, transcript, note)
         if heldout is None:
@@ -640,14 +654,25 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         _log(scheduler, assignment_id, attempt_id, "codex_turn", json.dumps(summary))
         _usage(scheduler, assignment_id, turns, selected)
 
-    def invoke(reservation: dict[str, Any], timeout: float) -> CodexTurn:
+    def prepare_prompt() -> str:
         prompt = bound_prompt()
-        reservation_id = reservation["reservation_id"]
         final_call = final_handoff_call_limit is not None and len(turns) + 1 >= final_handoff_call_limit
         if final_call:
-            prompt = ("FINAL SPECIALIST CALL: return candidate_report if you have a candidate, "
-                      "otherwise report or fail. No intent or candidate-only action is available.\n\n" + prompt)
-        if heldout is not None:
+            handoff = ("FINAL SPECIALIST CALL: return candidate_report if you have a candidate, "
+                       "otherwise report or fail. No intent or candidate-only action is available.")
+            prefix = heldout.get("prompt_text") if heldout is not None else None
+            boundary = f"{prefix}\n\n" if isinstance(prefix, str) else None
+            if boundary is not None and prompt.startswith(boundary):
+                prompt = boundary + handoff + "\n\n" + prompt[len(boundary):]
+            else:
+                prompt = handoff + "\n\n" + prompt
+        return prompt
+
+    def invoke(reservation: dict[str, Any], timeout: float, prompt: str,
+               token_claim: TokenLaunchClaim | None = None) -> CodexTurn:
+        reservation_id = reservation["reservation_id"]
+        final_call = final_handoff_call_limit is not None and len(turns) + 1 >= final_handoff_call_limit
+        if heldout is not None and token_claim is None:
             detail = {"reservation_id": reservation_id, "prefix_sha256":
                       hashlib.sha256(heldout["prompt_text"].encode()).hexdigest(),
                       "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
@@ -656,8 +681,14 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         kwargs: dict[str, Any] = {}
         if final_handoff_call_limit is not None:
             kwargs["output_schema"] = final_handoff_schema() if final_call else DECISION_SCHEMA
-        turn = runner.run(prompt, model=selected, timeout=timeout,
-                          should_stop=stopped, images=list(attached.values()) or None, **kwargs)
+        if token_claim is not None:
+            turn = runner.run_admitted(  # type: ignore[attr-defined]
+                prompt, model=selected, timeout=timeout, should_stop=stopped,
+                images=list(attached.values()) or None, token_claim=token_claim, **kwargs,
+            )
+        else:
+            turn = runner.run(prompt, model=selected, timeout=timeout,
+                              should_stop=stopped, images=list(attached.values()) or None, **kwargs)
         record_turn(turn, reservation_id)
         return turn
 
@@ -667,13 +698,35 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         state = latest["state"] if latest["state"] != "running" else "stopped"
         return {"state": state, "reason": reason[:200]}
 
-    def reserve_turn() -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    def reserve_turn(prompt: str) -> tuple[dict[str, Any] | None, dict[str, str] | None,
+                                           TokenLaunchClaim | None]:
         try:
-            return scheduler.reserve_model_turn(run_id, assignment_id, attempt_id), None
+            if study_token_admission is None:
+                return scheduler.reserve_model_turn(run_id, assignment_id, attempt_id), None, None
+            claims: list[TokenLaunchClaim] = []
+
+            def persist_claim(db: sqlite3.Connection, reservation_id: int) -> None:
+                assert study_token_admission is not None
+                claims.append(study_token_admission.reserve_and_claim_scheduler_turn(
+                    db, run_id=run_id, assignment_id=assignment_id, attempt_id=attempt_id,
+                    reservation_id=reservation_id, prompt=prompt,
+                ))
+
+            reservation = scheduler.reserve_model_turn(
+                run_id, assignment_id, attempt_id, persist_receipt=persist_claim,
+            )
+            if reservation is None:
+                if claims:
+                    raise ValueError("scheduler declined a turn after creating a held-out launch claim")
+                return None, None, None
+            if len(claims) != 1:
+                raise ValueError("scheduler did not commit exactly one held-out launch claim")
+            claim = claims[0]
+            return reservation, None, claim
         except ValueError as exc:
             latest = _job(scheduler, assignment_id)
             if latest["attempt_id"] != attempt_id or latest["state"] != "running":
-                return None, stop_outcome(str(exc))
+                return None, stop_outcome(str(exc)), None
             raise
 
     budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
@@ -700,7 +753,12 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             return (scheduler.run_cancelled(run_id)
                     or latest["attempt_id"] != attempt_id or latest["state"] != "running")
 
-        reservation, stopped_result = reserve_turn()
+        prompt = prepare_prompt()
+        if admitted_native and attached:
+            outcome = scheduler.fail(assignment_id, attempt_id,
+                                     "native token admission does not cover image inputs")
+            break
+        reservation, stopped_result, token_claim = reserve_turn(prompt)
         if stopped_result is not None:
             outcome = stopped_result
             break
@@ -713,7 +771,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                  json.dumps({"reservation_id": reservation["reservation_id"]}))
             outcome = stop_outcome("run or attempt stopped before provider call")
             break
-        turn = invoke(reservation, min(turn_timeout, remaining))
+        turn = invoke(reservation, min(turn_timeout, remaining), prompt, token_claim)
         if scheduler.run_cancelled(run_id):
             outcome = stop_outcome("run cancelled during a Codex turn; result discarded")
             break
@@ -734,7 +792,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 scheduler.tick()
                 outcome = stop_outcome("deadline exceeded before transient retry")
                 break
-            retry_reservation, stopped_result = reserve_turn()
+            retry_prompt = prepare_prompt()
+            retry_reservation, stopped_result, retry_claim = reserve_turn(retry_prompt)
             if stopped_result is not None:
                 outcome = stopped_result
                 break
@@ -747,7 +806,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                      json.dumps({"reservation_id": retry_reservation["reservation_id"]}))
                 outcome = stop_outcome("run or attempt stopped before transient retry")
                 break
-            turn = invoke(retry_reservation, min(turn_timeout, retry_remaining))
+            turn = invoke(retry_reservation, min(turn_timeout, retry_remaining), retry_prompt, retry_claim)
             if scheduler.run_cancelled(run_id):
                 outcome = stop_outcome("run cancelled during retry; result discarded")
                 break

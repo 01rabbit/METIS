@@ -101,12 +101,18 @@ def attest_fixture(database: Path, protocol: Protocol, bindings: Bindings) -> No
         db.execute("CREATE TABLE heldout_arm_bindings (run_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         for run in bindings.runs:
             config = protocol.arm_config[run.arm]
-            record = {"protocol_sha256": digest(protocol), "task_id": run.task_id,
+            record = {"protocol_sha256": digest(protocol), "study_id": protocol.study_id,
+                      "measurement": protocol.measurement, "task_id": run.task_id,
                       "repetition": run.repetition, "arm": run.arm,
                       "arm_config": config.model_dump(mode="json"),
+                      "memory_card_digests": protocol.memory_card_digests,
                       "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
                       "budget": protocol.budgets[run.arm].model_dump(mode="json"),
                       "prompt_text": REAL_PROMPT}
+            if protocol.llama_backend is not None:
+                record["llama_backend"] = protocol.llama_backend.model_dump(
+                    mode="json", exclude_none=True,
+                )
             db.execute("INSERT INTO heldout_arm_bindings VALUES (?,?)",
                        (run.run_id, json.dumps(record, sort_keys=True)))
             applied = {"protocol_sha256": digest(protocol), "arm": run.arm,

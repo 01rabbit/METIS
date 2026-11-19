@@ -45,6 +45,7 @@ class ArmConfig(Record):
 class LlamaBackendPin(Record):
     binary_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     model_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    native_manifest_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     database_path: str
     budget_key: Identifier
     token_limit: Annotated[int, Field(ge=1, le=10_000_000)]
@@ -125,7 +126,12 @@ class Bindings(Record):
 def digest(protocol: Protocol) -> str:
     """Hash the fully validated, canonical design without run IDs or answers."""
     protocol = Protocol.model_validate(protocol.model_dump())
-    canonical = json.dumps(protocol.model_dump(mode="json"), sort_keys=True,
+    payload = protocol.model_dump(mode="json")
+    # Preserve the v1 digest for existing llama pins that predate the optional
+    # native manifest field. A present manifest is included in the commitment.
+    if protocol.llama_backend is not None and protocol.llama_backend.native_manifest_sha256 is None:
+        payload["llama_backend"].pop("native_manifest_sha256", None)
+    canonical = json.dumps(payload, sort_keys=True,
                            separators=(",", ":"), ensure_ascii=True).encode("ascii")
     return hashlib.sha256(canonical).hexdigest()
 
@@ -153,12 +159,15 @@ def bind_run(protocol: Protocol, database: Path, run_id: str, *, task_id: str,
     if slot not in schedule(protocol):
         raise ValueError("run is outside held-out schedule")
     bind(database, run_id, {"protocol_sha256": expected_sha256, **slot,
+                            "study_id": protocol.study_id,
+                            "measurement": protocol.measurement,
                             "arm_config": protocol.arm_config[arm].model_dump(mode="json"),
+                            "memory_card_digests": protocol.memory_card_digests,
                             "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
-                            "llama_backend": (protocol.llama_backend.model_dump(mode="json")
+                            "llama_backend": (protocol.llama_backend.model_dump(mode="json", exclude_none=True)
                                               if protocol.llama_backend is not None else None),
                             "budget": protocol.budgets[arm].model_dump(mode="json"),
-                            "measurement": protocol.measurement, "prompt_text": prompt_text})
+                            "prompt_text": prompt_text})
 
 
 def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database: Path) -> None:
@@ -200,14 +209,18 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                     protocol.arm_config[assignment.arm].prompt_sha256):
                 raise ValueError("held-out prompt binding mismatch")
             expected_binding = {
-                "protocol_sha256": expected_digest, "task_id": assignment.task_id,
+                "protocol_sha256": expected_digest, "study_id": protocol.study_id,
+                "measurement": protocol.measurement, "task_id": assignment.task_id,
                 "repetition": assignment.repetition, "arm": assignment.arm,
                 "arm_config": protocol.arm_config[assignment.arm].model_dump(mode="json"),
+                "memory_card_digests": protocol.memory_card_digests,
                 "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
                 "budget": protocol.budgets[assignment.arm].model_dump(mode="json"),
             }
             if protocol.llama_backend is not None:
-                expected_binding["llama_backend"] = protocol.llama_backend.model_dump(mode="json")
+                expected_binding["llama_backend"] = protocol.llama_backend.model_dump(
+                    mode="json", exclude_none=True,
+                )
             if {key: value for key, value in recorded.items() if key != "prompt_text"} != expected_binding:
                 raise ValueError("held-out arm binding mismatch")
             jobs = db.execute("SELECT assignment_id,state FROM agent_jobs WHERE run_id=?",

@@ -60,12 +60,14 @@ def bind(database: Path, run_id: str, payload: dict[str, Any]) -> None:
                        "(run_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             if db.execute("SELECT 1 FROM heldout_arm_bindings WHERE run_id=?", (run_id,)).fetchone():
                 raise ValueError("held-out arm is already bound")
-            stored = {"protocol_sha256": payload["protocol_sha256"], "task_id": payload["task_id"],
+            stored = {"protocol_sha256": payload["protocol_sha256"], "study_id": payload["study_id"],
+                      "measurement": payload["measurement"], "task_id": payload["task_id"],
                       "repetition": payload["repetition"], "arm": payload["arm"],
                       "arm_config": config.model_dump(mode="json"), "model_pin": payload["model_pin"],
                       "runtime_pin": payload["runtime_pin"], "budget": budget.model_dump(mode="json"),
-                      "prompt_text": prompt_text}
+                      "prompt_text": prompt_text,
+                      "memory_card_digests": payload.get("memory_card_digests", [])}
             if llama_pin is not None:
-                stored["llama_backend"] = llama_pin.model_dump(mode="json")
+                stored["llama_backend"] = llama_pin.model_dump(mode="json", exclude_none=True)
             db.execute("INSERT INTO heldout_arm_bindings VALUES (?,?)",
                        (run_id, json.dumps(stored, sort_keys=True)))
