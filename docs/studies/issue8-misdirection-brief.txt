@@ -1,0 +1,5 @@
+Source: https://alpacahack.com/daily/challenges/misdirection
+Title: misdirection
+Category: Rev
+Official statement: 逆コンパイラがフラグを表示してくれます……あれ？
+Distribution: misdirection (provided as the other scoped artifact in this run)

@@ -767,3 +767,67 @@ generated-artifact purge and reports blocked resumable runs. Only terminal
 `planning` and extendable `exhausted` runs are preserved. This is a manual
 local retention control, not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
+
+## Held-out protocol preparation (2026-11-19)
+
+`metis.evaluation.heldout_protocol` now freezes an answer-free benchmark
+design into a SHA-256 and deterministic slot schedule, then accepts only a
+matching run binding matrix for ledger export and analysis. It has synthetic
+tests but no real held-out comparison or independently attested cost/arm
+settings. See `docs/reports/issue8-heldout-protocol-2026-11-19.md`; Issue #8
+remains open.
+
+## Held-out memory protocol binding (2026-11-19)
+
+For a real-model memory ablation, the protocol now commits the selected MUNIN
+card digests. Finalization checks each bound run's frozen snapshot against its
+arm and prior practice/competition source. A generated Rev practice checker
+provided one verified local card, and the `mr-rabbit` account showed two
+candidate AlpacaHack Rev challenges as unsolved. No held-out model run or
+official verdict has been recorded; prior model exposure to the older public
+tasks is unknown. See
+`docs/reports/issue8-memory-protocol-binding-2026-11-19.md`. Issue #8 remains
+open.
+
+## Held-out MUNIN snapshot prerequisite (2026-11-19)
+
+An explicit one-time snapshot can now expose selected pre-existing practice or
+competition technique cards to a held-out run before work starts. With no
+snapshot, held-out retrieval stays empty. This enables a prospective memory
+ablation but provides no benchmark result yet. The selected AlpacaHack Rev
+tasks now have one independently generated practice card in an isolated DB;
+protocol commitment, repeated runs and official verdicts are still required.
+Issue #8 remains open. See
+`docs/reports/issue8-frozen-memory-preflight-2026-11-19.md`.
+
+## Held-out arm dispatch binding (2026-11-19)
+
+A scheduled run can now bind its committed protocol arm before work. The
+specialist scheduler applies the bound memory switch and model-turn cap, checks
+model/runtime pins, and records dispatch treatment. The Codex driver prefixes
+each turn with the SHA-256-fixed common prompt. Real-model finalization
+rejects missing or changed binding/dispatch evidence. This supports a
+prospective two-arm memory comparison, but no real-model study has started and
+provider-side prompt application is not independently attested. See
+`docs/reports/issue8-run-arm-attestation-2026-11-19.md`; Issue #8 remains open.
+
+## Integrated Issue #8 exploratory result and token gate (2026-11-19)
+
+The preregistered AlpacaHack Rev memory comparison ran eight exploratory
+held-out trials after the preparatory entries above. All 24 specialist jobs
+exhausted the six-call run cap; no candidate was produced, and every run
+exceeded its declared 50,000-token budget. Model exposure to these older
+public tasks remains unknown. This result cannot establish MUNIN benefit or
+satisfy Issue #8. The historical runner now validates saved progress against
+controller evidence and refuses new calls under the closed protocol. The
+Codex CLI is also marked as lacking a proven hard input/output token cap, so
+future real-model held-out dispatch fails closed until a capable runner is
+implemented and a new protocol is registered. See
+`docs/studies/issue8-rev-memory-exploratory-result.md` and
+`docs/studies/issue8-token-capability.md`.
+
+Issue #9's read-only run audit additionally reports known model-token
+subtotals and withholds the complete total when job usage is missing. This is
+monitoring, not an enforced token or cost budget. See
+`docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
+remain open pending their separate evidence gates.
