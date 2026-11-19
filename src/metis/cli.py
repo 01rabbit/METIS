@@ -130,6 +130,18 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
                                        cyber_program=args.cyber_access_program),
                               model=args.model, turn_timeout=args.turn_timeout,
                               note=_note(args))
+    if command == "ollama":
+        from metis.core.codex_specialist import run_assignment
+        from metis.core.ollama_token_budget import OllamaSpecialist, PinnedOllama
+
+        engine = PinnedOllama(model=args.model, model_digest=args.model_digest,
+                              manifest=args.manifest,
+                              gguf=args.gguf, gguf_sha256=args.gguf_sha256,
+                              tokenizer=args.tokenizer, tokenizer_sha256=args.tokenizer_sha256,
+                              context_tokens=args.context_tokens)
+        runner = OllamaSpecialist(args.database, args.run_id, engine, args.output_cap)
+        return run_assignment(scheduler, args.run_id, args.assignment_id, args.attempt,
+                              runner, model=args.model, turn_timeout=args.turn_timeout)
     if command == "candidates":
         return {"candidates": scheduler.candidates(args.run_id, purge=args.purge),
                 "submit": "metis web submit RUN_ID --candidate-file <candidate_file> (Daybreak only)"}
@@ -327,6 +339,21 @@ def main() -> int:
                              help="Codex access program the operator is enrolled in (some models require one)")
     agent_codex.add_argument("--allow-untested-codex", action="store_true",
                              help="run a Codex CLI version that is not in the tested list")
+    agent_ollama = agent_commands.add_parser(
+        "ollama", help="run one bound held-out attempt with pinned local Ollama and token admission")
+    agent_ollama.add_argument("run_id")
+    agent_ollama.add_argument("assignment_id")
+    agent_ollama.add_argument("--attempt", required=True)
+    agent_ollama.add_argument("--model", required=True)
+    agent_ollama.add_argument("--model-digest", required=True)
+    agent_ollama.add_argument("--manifest", type=Path, required=True)
+    agent_ollama.add_argument("--gguf", type=Path, required=True)
+    agent_ollama.add_argument("--gguf-sha256", required=True)
+    agent_ollama.add_argument("--tokenizer", type=Path, required=True)
+    agent_ollama.add_argument("--tokenizer-sha256", required=True)
+    agent_ollama.add_argument("--context-tokens", type=int, required=True)
+    agent_ollama.add_argument("--output-cap", type=int, default=1024)
+    agent_ollama.add_argument("--turn-timeout", type=float, default=300.0)
     agent_candidates = agent_commands.add_parser(
         "candidates", help="private candidates handed over by specialists (paths and digests, never values)")
     agent_candidates.add_argument("run_id")
