@@ -13,6 +13,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -96,6 +97,13 @@ _SCHEMA = (
 )
 
 
+@dataclass(frozen=True)
+class CanaryWindow:
+    database: Path
+    monotonic_cutoff: float
+    wall_cutoff: float
+
+
 class DryRunAdmission:
     """Bind each approval to the canonical scheduler database for this study."""
 
@@ -151,6 +159,17 @@ class DryRunAdmission:
             raise ValueError("dry-run cohort deadline reached")
         self._phase_cutoffs.setdefault((case_id, phase), min(self._cutoff, now + PHASE_SECONDS))
 
+    def canary_window(self, workspace: Path, receipt: DryRunPhase) -> CanaryWindow:
+        """Return the frozen process-time bounds for the open dry-run phase."""
+        receipt = DryRunPhase.model_validate(receipt)
+        approval = self._approval
+        if approval is None or workspace_binding(workspace) != approval.workspace_sha256:
+            raise ValueError("canary workspace does not match the claimed dry-run approval")
+        cutoff = self._phase_cutoffs.get((receipt.case_id, receipt.phase))
+        if cutoff is None:
+            raise ValueError("dry-run phase was not opened")
+        return CanaryWindow(self._database, cutoff, approval.expires_at)
+
     def _case_index(self, case_id: str) -> int:
         if self._approval is not None:
             for i, case in enumerate(self._approval.cases):
@@ -159,7 +178,8 @@ class DryRunAdmission:
         raise ValueError("dry-run case does not belong to the claimed cohort")
 
     def reserve_phase(self, run_id: str, assignment_id: str, attempt_id: str,
-                      receipt: DryRunPhase) -> int:
+                      receipt: DryRunPhase, *,
+                      persist_pending: Callable[[sqlite3.Connection, int], None] | None = None) -> int:
         """Commit a scheduler charge and its dry-run receipt as a single write."""
         receipt = DryRunPhase.model_validate(receipt)
         case_index = self._case_index(receipt.case_id)
@@ -199,6 +219,8 @@ class DryRunAdmission:
             if not math.isfinite(now) or now >= cutoff:
                 raise ValueError("dry-run phase deadline reached")
             self._append(db, approval, case_index, receipt, reservation, run_id, assignment_id)
+            if persist_pending is not None:
+                persist_pending(db, reservation)
 
         reserved = self._scheduler.reserve_model_turn(
             run_id, assignment_id, attempt_id, validate_reservation=validate, persist_receipt=persist,
