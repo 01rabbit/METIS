@@ -81,19 +81,46 @@ def validate_release(dist_dir: Path, tag: str, project_name: str, project_versio
     return inspect_distributions(dist_dir, project_name, tag_version)
 
 
-def write_checksums(artifacts: list[Path]) -> Path:
-    """Write a portable checksum manifest beside the validated archives."""
+def _checksum_manifest(artifacts: list[Path]) -> Path:
     if not artifacts:
         raise ValueError("no release artifacts to checksum")
     manifest = artifacts[0].parent / "SHA256SUMS"
+    if len(set(artifacts)) != len(artifacts):
+        raise ValueError("duplicate release artifact path")
+    for artifact in artifacts:
+        if (artifact.parent != manifest.parent or artifact.name == manifest.name
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,254}", artifact.name) is None):
+            raise ValueError("release artifacts must share a directory and have safe names")
+    return manifest
+
+
+def _checksum_bytes(artifacts: list[Path]) -> bytes:
     lines = []
     for artifact in artifacts:
-        if artifact.parent != manifest.parent or artifact.name in {"SHA256SUMS", ".", ".."}:
-            raise ValueError("release artifacts must share a directory and have safe names")
-        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        with artifact.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
         lines.append(f"{digest}  {artifact.name}\n")
-    manifest.write_text("".join(lines), encoding="ascii")
+    return "".join(lines).encode("ascii")
+
+
+def write_checksums(artifacts: list[Path]) -> Path:
+    """Write a portable checksum manifest beside the validated archives."""
+    manifest = _checksum_manifest(artifacts)
+    manifest.write_bytes(_checksum_bytes(artifacts))
     return manifest
+
+
+def verify_checksums(artifacts: list[Path]) -> None:
+    """Compare a staged manifest with the exact validated archive set."""
+    manifest = _checksum_manifest(artifacts)
+    if manifest.is_symlink() or not manifest.is_file():
+        raise ValueError("regular SHA256SUMS manifest required")
+    expected = _checksum_bytes(artifacts)
+    # Filenames come from the validated bundle. Manifest contents are never
+    # interpreted as paths, and the extra byte detects trailing data.
+    with manifest.open("rb") as stream:
+        if stream.read(len(expected) + 1) != expected:
+            raise ValueError("SHA256SUMS does not match the validated release archives")
 
 
 def main() -> int:
@@ -102,12 +129,16 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--project-version", required=True)
-    parser.add_argument("--write-checksums", action="store_true")
+    checksum_mode = parser.add_mutually_exclusive_group()
+    checksum_mode.add_argument("--write-checksums", action="store_true")
+    checksum_mode.add_argument("--verify-checksums", action="store_true")
     args = parser.parse_args()
     try:
         artifacts = validate_release(args.dist_dir, args.tag, args.project_name, args.project_version)
         if args.write_checksums:
             write_checksums(artifacts)
+        elif args.verify_checksums:
+            verify_checksums(artifacts)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     print("Validated release distributions:")

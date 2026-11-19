@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from metis.release_artifacts import validate_release, write_checksums
+from metis.release_artifacts import validate_release, verify_checksums, write_checksums
 
 
 def write_distributions(root: Path, *, wheel_version: str = "0.5.0",
@@ -102,3 +102,57 @@ def test_release_validation_rejects_extra_artifacts(tmp_path):
     (dist / "untracked.zip").write_bytes(b"unexpected")
     with pytest.raises(ValueError, match="exactly one"):
         validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "duplicate", "traversal", "digest", "trailing", "reordered"])
+def test_offline_verification_rejects_noncanonical_bundle_manifest(tmp_path, change):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    manifest = write_checksums(artifacts)
+    wheel, sdist = manifest.read_bytes().splitlines(keepends=True)
+    changes = {
+        "missing": sdist,
+        "extra": wheel + sdist + b"0" * 64 + b"  untracked.whl\n",
+        "duplicate": wheel + wheel,
+        "traversal": wheel[:66] + b"../" + wheel[66:] + sdist,
+        "digest": b"0" * 64 + wheel[64:] + sdist,
+        "trailing": wheel + sdist + b"\n",
+        "reordered": sdist + wheel,
+    }
+    invalid = changes[change]
+    manifest.write_bytes(invalid)
+    with pytest.raises(ValueError, match="does not match"):
+        verify_checksums(artifacts)
+    assert manifest.read_bytes() == invalid
+
+
+def test_offline_verification_accepts_bundle_then_rejects_archive_substitution(tmp_path):
+    dist = write_distributions(tmp_path)
+    args = ["--dist-dir", str(dist), "--tag", "v0.5.0", "--project-name", "metis-ctf", "--project-version", "0.5.0"]
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    manifest = write_checksums(artifacts)
+    original = manifest.read_bytes()
+    command = [sys.executable, "-m", "metis.release_artifacts", *args, "--verify-checksums"]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+
+    with zipfile.ZipFile(artifacts[0], "a") as archive:
+        archive.writestr("synthetic.py", "# same package metadata, different bytes\n")
+    with pytest.raises(ValueError, match="does not match"):
+        verify_checksums(validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0"))
+    rejected = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert rejected.returncode != 0
+    assert "does not match" in rejected.stderr
+    assert manifest.read_bytes() == original
+
+
+def test_offline_verification_requires_regular_manifest(tmp_path):
+    artifacts = validate_release(write_distributions(tmp_path), "v0.5.0", "metis-ctf", "0.5.0")
+    with pytest.raises(ValueError, match="regular SHA256SUMS"):
+        verify_checksums(artifacts)
+    manifest = write_checksums(artifacts)
+    outside = tmp_path / "external-checksums"
+    manifest.rename(outside)
+    manifest.symlink_to(outside)
+    with pytest.raises(ValueError, match="regular SHA256SUMS"):
+        verify_checksums(artifacts)
