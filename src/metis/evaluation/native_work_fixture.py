@@ -7,9 +7,9 @@ import hashlib
 import json
 import os
 import platform
-import signal
 import stat
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,23 +161,32 @@ async def _complete_once(
         return generated
 
 
-def _signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
-    if process.returncode is not None:
-        return
+def _finish_process(process: subprocess.Popen[bytes], *, command: bytes) -> tuple[bool, int | None]:
+    control, result = process.stdin, process.stdout
+    assert control is not None and result is not None
     try:
-        os.killpg(process.pid, sig)
-    except ProcessLookupError:
-        pass
-
-
-def _finish_process(process: subprocess.Popen[bytes], *, request_completed: bool) -> int:
-    if request_completed and process.poll() is None:
-        _signal_group(process, signal.SIGTERM)
+        if not command:
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                command = b"K"
+        if command and process.poll() is None:
+            try:
+                control.write(command)
+                control.flush()
+            except BrokenPipeError:
+                pass
+    finally:
+        control.close()
     try:
-        return process.wait(timeout=0.5)
-    except subprocess.TimeoutExpired:
-        _signal_group(process, signal.SIGKILL)
-        return process.wait(timeout=2)
+        if process.wait(timeout=3) != 0:
+            return False, None
+        line = result.read(8)
+        return True, int(line) if line else None
+    except (subprocess.TimeoutExpired, ValueError):
+        return False, None
+    finally:
+        result.close()
 
 
 def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -229,9 +238,11 @@ def _run_claim(
     try:
         try:
             process = subprocess.Popen(
-                [str(binary), "--metis-work-budget", str(native_cap), "--model", str(model),
+                [sys.executable, "-I", str(Path(__file__).with_name("_fixture_guardian.py")), str(write_fd),
+                 str(binary), "--metis-work-budget", str(native_cap), "--model", str(model),
                  "--socket", str(socket_path), "--metis-receipt-fd", str(write_fd), "--metis-launch-nonce", claim.nonce],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(write_fd,),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, pass_fds=(write_fd,),
+                bufsize=0,
                 start_new_session=True, env={"PATH": os.defpath, "LANG": "C", "TMPDIR": str(socket_path.parent)},
             )
         except OSError:
@@ -242,7 +253,6 @@ def _run_claim(
         generated = None
         interrupted: Literal["timeout", "cancelled"] | None = None
         mismatch = False
-        status = None
         try:
             generated = asyncio.run(_complete_once(socket_path, process, seconds, request))
         except _FixtureMismatch:
@@ -252,17 +262,16 @@ def _run_claim(
         except KeyboardInterrupt:
             interrupted = "cancelled"
         finally:
-            if interrupted is not None:
-                _signal_group(process, signal.SIGKILL)
-            try:
-                status = _finish_process(process, request_completed=generated is not None)
-            except subprocess.TimeoutExpired:
-                pass
+            finished, status = _finish_process(
+                process, command=b"K" if interrupted else b"T" if generated is not None else b"",
+            )
 
-        if status is None:
+        if not finished:
             return TokenLaunchOutcome(status="lost")
         if interrupted is not None:
             return TokenLaunchOutcome(status=interrupted, exit_status=status)
+        if status is None:
+            return TokenLaunchOutcome(status="launch_failed")
         if mismatch:
             return TokenLaunchOutcome(status="receipt_invalid", exit_status=status)
         return _receipt_outcome(read_fd, claim, status, generated, native_cap)

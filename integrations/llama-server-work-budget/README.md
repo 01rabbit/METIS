@@ -157,7 +157,8 @@ observed output while the full requested headroom stays reserved.
 All outcomes retain the entire admission charge. The controller holds a
 claim lock through the terminal write. The lock closes on exec and in a raw
 Python fork child. The controller compares the supplied receipt to the ledger
-read-only before creating lock paths and rechecks it in the claim transaction.
+read-only before creating fixture lock paths and rechecks it in the claim
+transaction. SQLite may create its own WAL sidecars during read-only preflight.
 After that lock releases,
 `StudyTokenAdmission.reconcile_lost_fixture_claim(receipt)` can close a matching
 pending fixture claim once as `lost` and retain its committed manifest digest.
@@ -167,10 +168,19 @@ trusted, local filesystem and one canonical path for the ledger and its
 lock directory. Hardlinked ledgers are rejected. Keep both paths stable
 for the lifetime of the study.
 
-A lost outcome leaves the child state unknown. An abruptly terminated
-controller may leave an orphaned process, which retains its immutable native
-cap. Reconciliation never signals an identified or suspected process. The
-claim remains spent.
+A separate guardian is the fixture worker's parent. It checks the controller
+pipe before spawning the worker. Controller exit closes the pipe and the
+guardian sends TERM, waits up to half a second, then uses KILL and waits up
+to two seconds to reap the worker. The guardian also starts cleanup after
+35 seconds of supervision if a pipe writer remains open. A worker that
+exits normally is reaped and its signed exit status returned to the
+controller. This assumes a functioning guardian and a trusted worker
+that stays in its process group. An OS-level wait can still time out.
+
+A lost outcome leaves child state unknown in the ledger. Reconciliation
+never signals a PID and cannot recover the guardian's observation after
+controller death. The full claim remains spent and the immutable native
+cap still applies if the worker survives.
 
 Run the optional real integration fixture against a build from the native patch.
 

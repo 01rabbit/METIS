@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import hashlib
 import json
@@ -283,6 +284,24 @@ def test_one_process_can_launch_for_racing_controllers(tmp_path, monkeypatch):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = [pool.submit(run) for _ in range(2)]
         assert sorted(result.result(timeout=10) for result in results) == ["completed", "denied"]
+
+
+def test_cancelled_fixture_preserves_reaped_worker_status(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "trickle")
+
+    async def cancel_after_readiness(path, process, seconds, request):
+        async with asyncio.timeout(seconds):
+            while not path.exists():
+                await asyncio.sleep(0.01)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fixture, "_complete_once", cancel_after_readiness)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+    assert (outcome.status, outcome.exit_status, outcome.observed_work) == ("cancelled", -9, None)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT status, exit_status FROM study_token_outcomes").fetchall() == [("cancelled", -9)]
+    with pytest.raises(ValueError, match="already claimed"):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
 
 def test_failed_spawn_keeps_claim_and_records_terminal_failure(tmp_path, monkeypatch):
