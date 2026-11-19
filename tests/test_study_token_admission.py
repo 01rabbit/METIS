@@ -1,4 +1,7 @@
+import os
+import sqlite3
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import closing
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -9,7 +12,10 @@ from metis.core.study_token_admission import (
     SlotTokenPin,
     StudyTokenAdmission,
     StudyTokenPin,
+    TokenAdmissionReceipt,
     TokenAttempt,
+    TokenLaunchClaim,
+    TokenLaunchOutcome,
 )
 
 STUDY = StudyTokenPin(study_id="issue8", protocol_sha256="a" * 64, runtime_sha256="b" * 64,
@@ -106,3 +112,184 @@ def test_invalid_amount_cannot_bypass_validation(tmp_path, tokens):
     admission = StudyTokenAdmission(tmp_path / "state.sqlite")
     with pytest.raises(ValidationError):
         admission.reserve(STUDY, SLOT, ATTEMPT.model_copy(update={"tokens": tokens}))
+
+def _concurrent_claim(database: Path, receipt: TokenAdmissionReceipt, barrier) -> str:
+    barrier.wait(timeout=10)
+    try:
+        StudyTokenAdmission(database).claim_for_launch(receipt)
+    except ValueError as exc:
+        return str(exc)
+    return "claimed"
+
+
+def _claim_then_crash(database: Path, receipt: TokenAdmissionReceipt) -> None:
+    StudyTokenAdmission(database).claim_for_launch(receipt)
+    os._exit(91)
+
+
+def test_only_one_parallel_controller_claims_an_admission(tmp_path):
+    database = tmp_path / "state.sqlite"
+    receipt = StudyTokenAdmission(database).reserve(STUDY, SLOT, ATTEMPT)
+    context = get_context("spawn")
+    with context.Manager() as manager, ProcessPoolExecutor(max_workers=2, mp_context=context) as pool:
+        barrier = manager.Barrier(2)
+        requests = [pool.submit(_concurrent_claim, database, receipt, barrier) for _ in range(2)]
+        assert sorted(request.result(timeout=15) for request in requests) == [
+            "claimed", "token launch already claimed or nonce unavailable",
+        ]
+
+
+def test_controller_crash_after_claim_rejects_relaunch_and_retains_charge(tmp_path):
+    database = tmp_path / "state.sqlite"
+    receipt = StudyTokenAdmission(database).reserve(STUDY, SLOT, ATTEMPT)
+    process = get_context("spawn").Process(target=_claim_then_crash, args=(database, receipt))
+    process.start()
+    try:
+        process.join(timeout=15)
+        assert process.exitcode == 91
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        process.close()
+
+    restarted = StudyTokenAdmission(database)
+    with pytest.raises(ValueError, match="already claimed"):
+        restarted.claim_for_launch(receipt)
+    next_attempt = ATTEMPT.model_copy(update={"turn_reservation_id": 2, "tokens": 11})
+    with pytest.raises(ValueError, match="run token budget exhausted"):
+        restarted.reserve(STUDY, SLOT, next_attempt)
+
+
+@pytest.mark.parametrize(("record", "field", "value"), [
+    ("study", "protocol_sha256", "e" * 64),
+    ("study", "runtime_sha256", "e" * 64),
+    ("study", "model_sha256", "e" * 64),
+    ("slot", "run_id", "different-run"),
+    ("slot", "task_id", "different-task"),
+    ("slot", "repetition", 1),
+    ("slot", "arm", "other"),
+    ("attempt", "assignment_id", "different-assignment"),
+    ("attempt", "attempt_id", "different-attempt"),
+    ("attempt", "turn_reservation_id", 2),
+    ("attempt", "prompt_sha256", "e" * 64),
+    ("attempt", "tokens", 1),
+])
+def test_claim_requires_exact_committed_receipt(tmp_path, record, field, value):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    receipt = admission.reserve(STUDY, SLOT, ATTEMPT)
+    changed = getattr(receipt, record).model_copy(update={field: value})
+    with pytest.raises(ValueError, match="match committed reservation"):
+        admission.claim_for_launch(receipt.model_copy(update={record: changed}))
+    assert admission.claim_for_launch(receipt).receipt == receipt
+
+
+def test_no_claim_for_uncommitted_admission(tmp_path):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    invented = TokenAdmissionReceipt(study=STUDY, slot=SLOT, attempt=ATTEMPT)
+    with pytest.raises(ValueError, match="match committed reservation"):
+        admission.claim_for_launch(invented)
+
+
+def test_nonce_cannot_bind_multiple_launches(tmp_path, monkeypatch):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    monkeypatch.setattr("metis.core.study_token_admission.secrets.token_hex", lambda _: "2" * 32)
+    first = admission.reserve(STUDY, SLOT, ATTEMPT)
+    second = admission.reserve(STUDY, SLOT, ATTEMPT.model_copy(
+        update={"turn_reservation_id": 2, "tokens": 10},
+    ))
+    assert admission.claim_for_launch(first).nonce == "2" * 32
+    with pytest.raises(ValueError, match="nonce unavailable"):
+        admission.claim_for_launch(second)
+
+
+def test_outcome_requires_exact_nonce_and_receipt_and_can_only_be_written_once(tmp_path):
+    database = tmp_path / "state.sqlite"
+    admission = StudyTokenAdmission(database)
+    receipt = admission.reserve(STUDY, SLOT, ATTEMPT)
+    outcome = TokenLaunchOutcome(status="completed", exit_status=0, observed_work=2)
+    invented = TokenLaunchClaim(receipt=receipt, nonce="0" * 32)
+    with pytest.raises(ValueError, match="match committed nonce"):
+        admission.record_outcome(invented, outcome)
+
+    claim = admission.claim_for_launch(receipt)
+    wrong_nonce = "1" * 32 if claim.nonce == "0" * 32 else "0" * 32
+    with pytest.raises(ValueError, match="match committed nonce"):
+        admission.record_outcome(claim.model_copy(update={"nonce": wrong_nonce}), outcome)
+    other_attempt = ATTEMPT.model_copy(update={"attempt_id": "other"})
+    other_receipt = receipt.model_copy(update={"attempt": other_attempt})
+    with pytest.raises(ValueError, match="match committed reservation"):
+        admission.record_outcome(claim.model_copy(update={"receipt": other_receipt}), outcome)
+
+    with pytest.raises(ValueError, match="exceeds admitted token"):
+        admission.record_outcome(claim, outcome.model_copy(update={"observed_work": ATTEMPT.tokens + 1}))
+    admission.record_outcome(claim, outcome)
+    with pytest.raises(ValueError, match="already recorded"):
+        StudyTokenAdmission(database).record_outcome(claim, outcome)
+    with pytest.raises(ValueError, match="already claimed"):
+        admission.claim_for_launch(receipt)
+    with pytest.raises(ValueError, match="run token budget exhausted"):
+        admission.reserve(STUDY, SLOT, ATTEMPT.model_copy(
+            update={"turn_reservation_id": 2, "tokens": 11},
+        ))
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute(
+            "SELECT nonce, status, exit_status, observed_work FROM study_token_outcomes"
+        ).fetchall() == [(claim.nonce, "completed", 0, 2)]
+
+
+@pytest.mark.parametrize(("status", "exit_status", "work"), [
+    ("unknown", 0, 0), ("completed", 1, 0), ("completed", 0, None),
+    ("cap_denied", 0, 0), ("unsupported_graph", 75, None),
+    ("server_error", 74, 0), ("timeout", -9, 1), ("cancelled", -9, 1),
+    ("launch_failed", -9, None), ("lost", -9, None), ("completed", False, 0),
+])
+def test_invalid_terminal_observations_are_rejected(status, exit_status, work):
+    with pytest.raises(ValidationError):
+        TokenLaunchOutcome(status=status, exit_status=exit_status, observed_work=work)
+
+
+def _concurrent_outcome(database: Path, claim: TokenLaunchClaim, outcome: TokenLaunchOutcome, barrier) -> str:
+    barrier.wait(timeout=10)
+    try:
+        StudyTokenAdmission(database).record_outcome(claim, outcome)
+    except ValueError as exc:
+        return str(exc)
+    return "recorded"
+
+
+def test_only_one_parallel_controller_records_an_outcome(tmp_path):
+    database = tmp_path / "state.sqlite"
+    admission = StudyTokenAdmission(database)
+    claim = admission.claim_for_launch(admission.reserve(STUDY, SLOT, ATTEMPT))
+    outcome = TokenLaunchOutcome(status="timeout", exit_status=-9)
+
+    context = get_context("spawn")
+    with context.Manager() as manager, ProcessPoolExecutor(max_workers=2, mp_context=context) as pool:
+        barrier = manager.Barrier(2)
+        requests = [pool.submit(_concurrent_outcome, database, claim, outcome, barrier) for _ in range(2)]
+        assert sorted(request.result(timeout=15) for request in requests) == [
+            "recorded", "token launch outcome already recorded",
+        ]
+
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute(
+            "SELECT nonce, status, exit_status, observed_work FROM study_token_outcomes"
+        ).fetchall() == [(claim.nonce, "timeout", -9, None)]
+    with pytest.raises(ValueError, match="already claimed"):
+        admission.claim_for_launch(claim.receipt)
+    with pytest.raises(ValueError, match="run token budget exhausted"):
+        admission.reserve(STUDY, SLOT, ATTEMPT.model_copy(
+            update={"turn_reservation_id": 2, "tokens": 11},
+        ))
+
+
+def test_admission_from_prior_schema_can_be_claimed(tmp_path):
+    database = tmp_path / "state.sqlite"
+    admission = StudyTokenAdmission(database)
+    receipt = admission.reserve(STUDY, SLOT, ATTEMPT)
+    # Model a persisted #86 database without the two new tables.
+    with closing(sqlite3.connect(database)) as db, db:
+        db.execute("DROP TABLE study_token_outcomes")
+        db.execute("DROP TABLE study_token_launches")
+    assert admission.claim_for_launch(receipt).receipt == receipt
