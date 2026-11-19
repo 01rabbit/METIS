@@ -188,3 +188,63 @@ def test_receipt_rejects_artifact_or_schema_drift_before_charging(dry_run):
     with pytest.raises(ValueError, match="schema receipt"):
         admission.reserve_phase(*job, phase().model_copy(update={"schema_sha256": "b" * 64}))
     assert scheduler.model_turn_budget(job[0])["reserved"] == 0
+
+
+@pytest.mark.parametrize("invalid", [True, False, 1.0, 2.0, "1", "2"])
+def test_receipt_phase_requires_an_exact_integer(invalid):
+    with pytest.raises(ValueError, match="phase must be an integer"):
+        phase(number=invalid)
+    with pytest.raises(ValueError, match="phase must be an integer"):
+        DryRunPhase.model_validate(phase().model_copy(update={"phase": invalid}))
+
+
+def test_symlink_redirect_is_rejected_before_reservation(dry_run, tmp_path):
+    scheduler, workspace, approval, clock, _ = dry_run
+    original = scheduler.database
+    alias = tmp_path / "db-link"
+    alias.symlink_to(original)
+    scheduler.database = alias
+    admission = DryRunAdmission(scheduler, clock=lambda: clock[0], wall_clock=lambda: 1_000)
+    admission.claim(approval, workspace)
+    admission.open_phase("case-0", 1)
+    alternate = tmp_path / "alternate.sqlite"
+    other = AgentScheduler(alternate, BridgeHost())
+    other.configure(global_slots=1, specialist_turn_budget=2,
+                    catalog=[{"id": "scripted", "tier": "standard"}], current_model="scripted")
+    job = start(other)
+    DryRunAdmission(other)
+    alias.unlink()
+    alias.symlink_to(alternate)
+    with pytest.raises(ValueError, match="scheduler database differs"):
+        admission.reserve_phase(*job, phase())
+    assert other.model_turn_budget(job[0])["reserved"] == 0
+
+
+def test_redirect_after_path_check_rolls_back_other_database(dry_run, tmp_path, monkeypatch):
+    scheduler, workspace, approval, _, admission = dry_run
+    admission.claim(approval, workspace)
+    admission.open_phase("case-0", 1)
+    other = AgentScheduler(tmp_path / "alternate.sqlite", BridgeHost())
+    other.configure(global_slots=1, specialist_turn_budget=2,
+                    catalog=[{"id": "scripted", "tier": "standard"}], current_model="scripted")
+    job = start(other)
+    alternate_admission = DryRunAdmission(other, wall_clock=lambda: 1_000)
+    alternate_admission.register(approval)
+    alternate_admission.claim(approval, workspace)
+    monkeypatch.setattr(scheduler, "reserve_model_turn", other.reserve_model_turn)
+    with pytest.raises(ValueError, match="reservation database differs"):
+        admission.reserve_phase(*job, phase())
+    assert other.model_turn_budget(job[0])["reserved"] == 0
+
+
+@pytest.mark.parametrize("edit", ["claimed = 0", "binding = '{}'"])
+def test_reservation_rechecks_claim_and_binding_in_transaction(dry_run, edit):
+    scheduler, workspace, approval, _, admission = dry_run
+    admission.claim(approval, workspace)
+    admission.open_phase("case-0", 1)
+    job = start(scheduler)
+    with closing(sqlite3.connect(scheduler.database)) as db, db:
+        db.execute(f"UPDATE issue6_dry_approvals SET {edit}")
+    with pytest.raises(ValueError, match="claimed approval does not match"):
+        admission.reserve_phase(*job, phase())
+    assert scheduler.model_turn_budget(job[0])["reserved"] == 0

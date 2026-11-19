@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from metis.core.agent_scheduler import AgentScheduler
 
@@ -66,6 +66,13 @@ class DryRunPhase(_Record):
     artifact_hmac: Digest
     prompt_hmac: Digest
     schema_sha256: Digest
+
+    @field_validator("phase", mode="before")
+    @classmethod
+    def require_exact_integer(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("phase must be an integer")
+        return value
 
 
 def workspace_binding(workspace: Path) -> str:
@@ -166,7 +173,19 @@ class DryRunAdmission:
         if cutoff is None:
             raise ValueError("dry-run phase was not opened")
 
+        if self._scheduler.database.resolve(strict=True) != self._database:
+            raise ValueError("scheduler database differs from the dry-run ledger")
+
         def persist(db: sqlite3.Connection, reservation: int) -> None:
+            main_path = next(path for _, name, path in db.execute("PRAGMA database_list") if name == "main")
+            if Path(main_path) != self._database:
+                raise ValueError("reservation database differs from the dry-run ledger")
+            claimed = db.execute(
+                "SELECT binding, claimed FROM issue6_dry_approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if claimed != (approval.model_dump_json(), 1):
+                raise ValueError("claimed approval does not match in the reservation database")
             now = self._clock()
             if not math.isfinite(now) or now >= cutoff:
                 raise ValueError("dry-run phase deadline reached")
