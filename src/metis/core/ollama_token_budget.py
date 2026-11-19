@@ -134,6 +134,17 @@ class PinnedOllama:
         if len(matches) != 1 or matches[0].get("digest") != self.model_digest:
             raise ValueError("Ollama model tag differs from pinned manifest")
 
+    def runtime_profile(self, output_cap: int) -> dict[str, Any]:
+        with urllib.request.urlopen(self.endpoint + "/api/version", timeout=10) as reply:
+            version = json.load(reply).get("version")
+        if not isinstance(version, str) or not version:
+            raise ValueError("Ollama version is unavailable")
+        return {"engine": "ollama-raw-text", "ollama_version": version,
+                "model": self.model, "manifest_sha256": self.model_digest,
+                "gguf_sha256": self.gguf_sha256, "tokenizer_sha256": self.tokenizer_sha256,
+                "context_tokens": self.context_tokens, "output_cap": output_cap,
+                "temperature": 0, "seed": 0}
+
     def count(self, prompt: str) -> int:
         encoded = prompt.encode("utf-8")
         if not encoded or len(encoded) > 64_000:
@@ -160,7 +171,8 @@ class PinnedOllama:
             # No chat endpoint, template, images, tools, context reuse, or stream.
             payload: dict[str, Any] = {"model": self.model, "prompt": prompt, "raw": True,
                                        "stream": False, "options": {"num_predict": output_cap,
-                                                                       "num_ctx": self.context_tokens}}
+                                                                       "num_ctx": self.context_tokens,
+                                                                       "temperature": 0, "seed": 0}}
             if response_schema is not None:
                 payload["format"] = response_schema
             request = urllib.request.Request(self.endpoint + "/api/generate",
