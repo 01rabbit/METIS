@@ -951,7 +951,7 @@ class AgentScheduler:
 
     @locked
     def candidate(self, run_id: str, assignment_id: str, attempt_id: str, value: str,
-                  basis: list[int]) -> dict[str, Any]:
+                  basis: list[int], *, run_candidate_limit: int | None = None) -> dict[str, Any]:
         """Store a specialist's candidate privately (0600 file, digest in the DB, nothing in logs)."""
         job = self._running(assignment_id, attempt_id)
         if job["run_id"] != run_id:
@@ -962,9 +962,16 @@ class AgentScheduler:
         if not basis or not set(basis) <= known or len(basis) > 20:
             raise ValueError("a candidate must cite the run events that produce it")
         with self._db() as db:
-            count = db.execute("SELECT COUNT(*) FROM agent_candidates WHERE attempt_id=?", (attempt_id,)).fetchone()[0]
-            if count >= MAX_CANDIDATES:
-                raise ValueError("candidate limit for this attempt reached")
+            if run_candidate_limit is None:
+                count = db.execute("SELECT COUNT(*) FROM agent_candidates WHERE attempt_id=?",
+                                   (attempt_id,)).fetchone()[0]
+                if count >= MAX_CANDIDATES:
+                    raise ValueError("candidate limit for this attempt reached")
+            else:
+                count = db.execute("SELECT COUNT(*) FROM agent_candidates WHERE run_id=?",
+                                   (run_id,)).fetchone()[0]
+                if count >= run_candidate_limit:
+                    raise ValueError("candidate limit for this run reached")
             salt = db.execute("SELECT value FROM agent_config WHERE key='candidate_salt'").fetchone()
             if salt is None:
                 salt_value = json.dumps(uuid4().hex + uuid4().hex)

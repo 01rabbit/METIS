@@ -19,7 +19,13 @@ from pydantic import ValidationError
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
-from metis.core.codex_specialist import CodexCLI, CodexRunner, CodexTurn, run_assignment
+from metis.core.codex_specialist import (
+    CodexCLI,
+    CodexIsolationError,
+    CodexRunner,
+    CodexTurn,
+    run_assignment,
+)
 from metis.core.ctf_orchestration import AgentLedger, WaveBudgetExhausted
 from metis.evaluation.issue6_owner_falsifier import (
     Counterexample,
@@ -35,6 +41,7 @@ CLI = "0.169.0"
 ARMS = ("single", "owner_falsifier")
 CALLS = 14
 ACTIONS = 9
+CANDIDATES = 9
 WALL_SECONDS = 600
 OUTPUT = Path(__file__).resolve().parents[1] / "docs/reports/data/issue6-owner-falsifier-2026-11-19.json"
 STATE = Path.home() / ".local/state/metis/issue6-owner-falsifier-2026-11-19"
@@ -107,12 +114,17 @@ def _wave(ledger: AgentLedger, run_id: str, artifact: str, max_turns: int,
     return ledger.create_wave(run_id, mode="delegated", reason=reason, plan_policy=study_plan)
 
 
-def _candidate(scheduler: AgentScheduler, run_id: str, assignment_id: str) -> str | None:
+def _candidate(scheduler: AgentScheduler, run_id: str, assignment_id: str,
+               selected_id: str | None) -> str | None:
     for row in reversed(scheduler.candidates(run_id)):
+        if selected_id is not None and row["candidate_id"] != selected_id:
+            continue
         if row["assignment_id"] == assignment_id and row["state"] == "pending":
             if not row["candidate_file"]:
                 raise ArmIntegrityError("pending candidate has no private file")
             return Path(row["candidate_file"]).read_text(encoding="utf-8").strip()
+    if selected_id is not None:
+        raise ArmIntegrityError("completed handoff references an unavailable private candidate")
     return None
 
 
@@ -122,13 +134,20 @@ def _run_wave(scheduler: AgentScheduler, runner: DeadlineRunner, run_id: str,
     if time.monotonic() >= runner.deadline:
         raise ArmDeadline()
     jobs = scheduler.dispatch(run_id)["started"]
+    if not jobs and (time.monotonic() >= runner.deadline
+                     or not scheduler.session.context(run_id)["seconds_remaining"]):
+        raise ArmDeadline()
     if len(jobs) != 1 or jobs[0]["assignment_id"] != plan["assignments"][0]["assignment_id"]:
         raise ArmIntegrityError("scheduler did not start precisely the assigned study job")
     job = jobs[0]
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
-                            runner, model=MODEL, turn_timeout=180, note=note)
+                            runner, model=MODEL, turn_timeout=180, note=note, fresh_context=True,
+                            run_candidate_limit=CANDIDATES)
     synthesis = scheduler.ledger.synthesize(run_id, plan["wave_id"])
-    return result, _candidate(scheduler, run_id, job["assignment_id"]), bool(synthesis["complete"])
+    selected_id = result.get("outcome", {}).get("candidate_id")
+    candidate = (_candidate(scheduler, run_id, job["assignment_id"], selected_id)
+                 if result.get("job_state") == "completed" else None)
+    return result, candidate, bool(synthesis["complete"])
 
 
 def _parse_order(raw: str | None, task: Reconstruction) -> tuple[str, ...] | None:
@@ -223,7 +242,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: CodexRunne
                         if (repaired is not None and repair_complete
                                 and repair_result.get("job_state") == "completed"):
                             proposal = repaired
-    except (ArmIntegrityError, OSError, sqlite3.Error, KeyError, ValueError):
+    except (ArmIntegrityError, CodexIsolationError, OSError, sqlite3.Error, KeyError, ValueError):
         raise
     except Exception as exc:  # noqa: BLE001 -- score ordinary arm failures, subject to durable audit
         failure = "deadline" if isinstance(exc, ArmDeadline) else "workflow_exception"

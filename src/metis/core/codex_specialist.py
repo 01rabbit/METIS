@@ -218,6 +218,10 @@ def known_features(executable: str) -> set[str]:
     return {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
 
 
+class CodexIsolationError(RuntimeError):
+    """Required operating-system isolation failed before model launch."""
+
+
 class CodexCLI:
     """One stateless, tool-restricted ``codex exec`` turn per call.
 
@@ -330,19 +334,22 @@ class CodexCLI:
             home: TurnHome | None = None
             proxy: AllowlistProxy | None = None
             if self.isolation == "required":
-                backend = isolation_backend()
-                if backend is None:
-                    raise RuntimeError("OS isolation became unavailable; refusing to run")
-                binary, package = native_codex(self.executable)
-                home = TurnHome(base, default_codex_home() / "auth.json")
-                proxy = stack.enter_context(AllowlistProxy(self.hosts, upstream=upstream_proxy()))
-                for key in [key for key in env if key.lower().endswith("_proxy")]:
-                    env.pop(key)
-                env.update(CODEX_HOME=str(home.path), TMPDIR=str(base) + "/")
-                command, env = wrap(backend, turn_dir=base, argv=[binary, *command[1:]], env=env, proxy=proxy,
-                                    readable=[package], protected=self.protected_roots(base.parent),
-                                    workdir=workdir, executable=Path(binary))
-                isolation = {"mode": backend, "proxy_hosts": sorted(self.hosts)}
+                try:
+                    backend = isolation_backend()
+                    if backend is None:
+                        raise RuntimeError("OS isolation became unavailable; refusing to run")
+                    binary, package = native_codex(self.executable)
+                    home = TurnHome(base, default_codex_home() / "auth.json")
+                    proxy = stack.enter_context(AllowlistProxy(self.hosts, upstream=upstream_proxy()))
+                    for key in [key for key in env if key.lower().endswith("_proxy")]:
+                        env.pop(key)
+                    env.update(CODEX_HOME=str(home.path), TMPDIR=str(base) + "/")
+                    command, env = wrap(backend, turn_dir=base, argv=[binary, *command[1:]], env=env, proxy=proxy,
+                                        readable=[package], protected=self.protected_roots(base.parent),
+                                        workdir=workdir, executable=Path(binary))
+                    isolation = {"mode": backend, "proxy_hosts": sorted(self.hosts)}
+                except RuntimeError as exc:
+                    raise CodexIsolationError(str(exc)) from exc
             if time.monotonic() >= deadline or (should_stop is not None and should_stop()):
                 return CodexTurn(returncode=-1, message=None, stopped=True, isolation=isolation)
             process = subprocess.Popen(command, stdin=subprocess.PIPE,
@@ -508,12 +515,12 @@ def _candidate_in_report(candidate: str, report: dict[str, Any]) -> bool:
     return bool(value) and any(value in item.casefold() for item in _report_strings(report))
 
 
-def _pending_assignment_candidates(scheduler: AgentScheduler, run_id: str, assignment_id: str) -> list[str]:
+def _pending_assignment_candidates(scheduler: AgentScheduler, run_id: str, assignment_id: str) -> dict[str, str]:
     candidates = scheduler.candidates(run_id)
-    values: list[str] = []
+    values: dict[str, str] = {}
     for item in candidates:
         if item["assignment_id"] == assignment_id and item["state"] == "pending" and item["candidate_file"]:
-            values.append(Path(item["candidate_file"]).read_text(encoding="utf-8"))
+            values[item["candidate_id"]] = Path(item["candidate_file"]).read_text(encoding="utf-8")
     return values
 
 
@@ -565,7 +572,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                    clock: Callable[[], float] = time.time, note: str | None = None,
                    allow_candidate_report: bool = True,
                    final_handoff_call_limit: int | None = None,
-                   specialist_call_limit: int | None = None) -> dict[str, Any]:
+                   specialist_call_limit: int | None = None,
+                   fresh_context: bool = False,
+                   run_candidate_limit: int | None = None) -> dict[str, Any]:
     """Drive one running attempt to a report, a failure or a stop. Returns a summary.
 
     ``note`` is Daybreak's focus for this attempt (a hypothesis to test, a step to take). It is
@@ -603,6 +612,10 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     plan = scheduler.ledger._plan(run_id, job["wave_id"])
     assignment = next(item for item in plan["assignments"] if item["assignment_id"] == assignment_id)
     brief = scheduler.brief(run_id, assignment, attempt_id)
+    if fresh_context:
+        for field in ("evidence_refs", "hypotheses", "rejected_actions", "prior_reports", "prior_knowledge"):
+            brief[field] = []
+    candidate_scope = {} if run_candidate_limit is None else {"run_candidate_limit": run_candidate_limit}
     transcript: list[dict[str, Any]] = []
     turns: list[dict[str, Any]] = []
     attached: dict[str, tuple[str, bytes]] = {}
@@ -776,7 +789,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 try:
                     if _any_candidate_in_report(
                             [*private_candidates,
-                             *_pending_assignment_candidates(scheduler, run_id, assignment_id)], report):
+                             *_pending_assignment_candidates(scheduler, run_id, assignment_id).values()], report):
                         raise ValueError("candidate value must not appear in the report")
                     _normalize_report_intent(report)
                 except (TypeError, ValueError) as exc:
@@ -785,26 +798,26 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                                        "how_to_fix": _report_hint(str(exc))})
                     continue
             try:
-                if decision["action"] == "candidate_report":
+                candidate_id = None
+                if report is not None:
                     existing = _pending_assignment_candidates(scheduler, run_id, assignment_id)
-                    if candidate_value in existing:
-                        stored = {"stored": "private"}
-                    else:
-                        stored = scheduler.candidate(run_id, assignment_id, attempt_id, candidate_value,
-                                                     [int(item) for item in proposal.get("basis_events") or []])
-                else:
+                    candidate_id = next((key for key, value in reversed(existing.items())
+                                         if value == candidate_value), None)
+                if candidate_id is None:
                     stored = scheduler.candidate(run_id, assignment_id, attempt_id, candidate_value,
-                                                 [int(item) for item in proposal.get("basis_events") or []])
+                                                 [int(item) for item in proposal.get("basis_events") or []],
+                                                 **candidate_scope)
+                    candidate_id = stored["candidate_id"]
             except (ValueError, TypeError) as exc:
                 transcript.append({"candidate_refused": str(exc)[:200]})
                 continue
             if decision["action"] == "candidate":
-                transcript.append({"candidate": f"stored privately as {stored['candidate_id']}; now send your report"})
+                transcript.append({"candidate": f"stored privately as {candidate_id}; now send your report"})
                 continue
             try:
                 assert report is not None
                 completed = scheduler.complete(run_id, assignment_id, attempt_id, report)
-                outcome = {**completed, "candidate_stored": True}
+                outcome = {**completed, "candidate_stored": True, "candidate_id": candidate_id}
                 break
             except (TypeError, ValueError) as exc:
                 transcript.append({"report_rejected": _report_rejection_reason(str(exc)),
@@ -816,7 +829,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             try:
                 if _any_candidate_in_report(
                         [*private_candidates,
-                         *_pending_assignment_candidates(scheduler, run_id, assignment_id)], report):
+                         *_pending_assignment_candidates(scheduler, run_id, assignment_id).values()], report):
                     raise ValueError("candidate value must not appear in the report")
                 _normalize_report_intent(report)
                 outcome = scheduler.complete(run_id, assignment_id, attempt_id, report)
