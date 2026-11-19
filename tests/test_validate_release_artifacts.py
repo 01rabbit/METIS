@@ -111,6 +111,7 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
     assert '--dist-dir dist --tag "v$project_version"' in verify_step
     assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
     assert "if:" not in verify_step
+    assert workflow[verify_step_end:].startswith("      - name: Attest candidate archives and checksums\n")
     assert "continue-on-error:" not in workflow
 
 
