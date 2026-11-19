@@ -231,7 +231,8 @@ def test_startup_hash_checks_cancellation_between_real_file_chunks(backend_files
     model.write_bytes(b"m" * (2 * 1024 * 1024 + 1))
     backend_files["model_sha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
     real_open = Path.open
-    read_calls = 0
+    read_sizes: list[int] = []
+    read_lengths: list[int] = []
 
     class CountingReader:
         def __init__(self, source):
@@ -244,9 +245,10 @@ def test_startup_hash_checks_cancellation_between_real_file_chunks(backend_files
             self.source.close()
 
         def read(self, size=-1):
-            nonlocal read_calls
-            read_calls += 1
-            return self.source.read(size)
+            read_sizes.append(size)
+            chunk = self.source.read(size)
+            read_lengths.append(len(chunk))
+            return chunk
 
     def track_model_open(path, *args, **kwargs):
         source = real_open(path, *args, **kwargs)
@@ -255,10 +257,12 @@ def test_startup_hash_checks_cancellation_between_real_file_chunks(backend_files
     monkeypatch.setattr(Path, "open", track_model_open)
     monkeypatch.setattr(module.subprocess, "Popen",
                         lambda *_args, **_kwargs: pytest.fail("cancelled hash must not launch server"))
-    backend = LlamaServerBackend(**backend_files, startup_should_stop=lambda: read_calls >= 1)
+    backend = LlamaServerBackend(**backend_files,
+                                 startup_should_stop=lambda: bool(read_lengths))
     with pytest.raises(LlamaBackendStopped, match="cancelled"):
         backend.__enter__()
-    assert read_calls == 1
+    assert read_sizes == [1024 * 1024]
+    assert read_lengths == [1024 * 1024]
 
 
 def test_startup_hash_observes_call_deadline(backend_files, monkeypatch):
