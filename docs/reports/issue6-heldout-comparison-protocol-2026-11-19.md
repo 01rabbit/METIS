@@ -39,3 +39,18 @@ python -m metis.evaluation.issue6_heldout_comparison registration.json outcomes.
 ```
 
 The scoring registration contains `commitment`, `tasks` (`id`, `family`), and `cap`. The outcome export contains the matching `commitment` and `records` (`task`, `arm`, `outcome`, `oracle_verified`, `usage`). Keep the canonical registration manifest and its timestamp evidence separate from this scoring view. The scorer compares the supplied registration commitments and reported counters. Independent audit must establish provenance, exact runtime settings, and actual enforcement. The study still needs a held-out generator, isolated runner, frozen registration, budget attestation, and both real trial bundles.
+
+The separate `issue6_cohort_audit` command wraps these same two schemas and
+requires canonical export serialization in registration task order and the
+scorer's fixed arm order. This checks packet consistency only; it does not
+establish actual execution order. The current registration and outcome
+schemas contain no per-run execution receipts, runtime/configuration digests,
+start/finish/deadline values, or authenticated evidence references. The audit
+therefore marks those evidence classes unavailable and never returns a
+qualified or verified cohort. Caller-added receipt fields are rejected by the
+strict existing trial schema. A `consistency_only` result is not evidence of
+execution, provider-limit enforcement, or measured gain.
+
+```sh
+python -m metis.evaluation.issue6_cohort_audit registration.json outcomes.json
+```
