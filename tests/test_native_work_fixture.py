@@ -34,11 +34,15 @@ import time
 
 flags = dict(zip(sys.argv[1::2], sys.argv[2::2]))
 mode = MODENAME
+limit = PROFILE_LIMIT
+end = PROFILE_END
+expected_cap = EXPECTED_CAP
 cap = int(flags["--metis-work-budget"])
 nonce = flags["--metis-launch-nonce"]
 fd = int(flags["--metis-receipt-fd"])
 socket_path = pathlib.Path(flags["--socket"])
 model = pathlib.Path(flags["--model"])
+assert cap == expected_cap
 assert stat.S_IMODE(model.stat().st_mode) == 0o400
 assert stat.S_IMODE(pathlib.Path(sys.argv[0]).stat().st_mode) == 0o500
 assert stat.S_IMODE(socket_path.parent.stat().st_mode) == 0o700
@@ -48,10 +52,14 @@ if mode == "crash":
 if mode == "timeout":
     time.sleep(20)
     os._exit(0)
+if mode == "startup_retry":
+    value = dict(version=1, nonce=nonce, cap=cap, charged=1, reason="cap_denied")
+    os.write(fd, json.dumps(value).encode() + bytes([10]))
+    os._exit(75)
 
 def finish(*_):
     if mode != "missing":
-        value = dict(version=1, nonce=nonce, cap=cap, charged=22, reason="shutdown")
+        value = dict(version=1, nonce=nonce, cap=cap, charged=21 + (limit if end == "limit" else 1), reason="shutdown")
         if mode == "wrong_nonce":
             value["nonce"] = "0" * 32 if nonce != "0" * 32 else "1" * 32
         if mode == "wrong_cap":
@@ -89,13 +97,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json({"status": "ok"})
 
     def do_POST(self):
+        content = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/tokenize":
+            assert content == {"content": "One day, a rabbit ran down the road.", "add_special": True}
+            tokens = [1, 385, 328, 432, 261, 352, 412, 430, 430, 275, 352, 303, 279, 327, 416, 265, 352, 414, 380, 426]
+            if mode == "bad_prompt_count":
+                tokens.pop()
+            if mode == "bad_prompt_id":
+                tokens[-1] = 1
+            self.send_json({"tokens": tokens})
+            return
         assert self.path == "/completion"
+        assert mode not in ("bad_prompt_count", "bad_prompt_id")
         Handler.calls += 1
         assert Handler.calls == 1
-        content = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        stop = [" He"] if end == "word" else []
+        bias = [[2, 100]] if end == "eos" else []
         assert content == {
             "prompt": "One day, a rabbit ran down the road.",
-            "n_predict": 1, "temperature": 0, "cache_prompt": False,
+            "n_predict": limit, "temperature": 0, "cache_prompt": False,
+            "stream": False, "ignore_eos": False, "stop": stop, "logit_bias": bias,
         }
         if mode == "trickle":
             self.send_response(200)
@@ -104,7 +125,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"{")
             self.wfile.flush()
             time.sleep(20)
-        self.send_json({"tokens_evaluated": 20, "tokens_predicted": 1, "content": " text"})
+        self.send_json({
+            "tokens_evaluated": 21 if mode == "bad_evaluated" else 20,
+            "tokens_predicted": limit + 1 if mode == "bad_generated" else (limit if end == "limit" else 1),
+            "content": " text" if end == "limit" else "",
+            "stop_type": end, "stopping_word": stop[0] if stop else "", "truncated": False,
+            "generation_settings": {
+                "n_predict": limit + 1 if mode == "bad_settings" else limit,
+                "max_tokens": limit, "speculative.types": "draft" if mode == "draft_settings" else "none,none",
+                "backend_sampling": False, "stream": False, "ignore_eos": False, "temperature": 0,
+                "stop": stop, "logit_bias": [{"token": 2, "bias": 100}] if end == "eos" else [],
+            },
+        })
+
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN if mode == "ignore_shutdown" else finish)
 with socketserver.UnixStreamServer(str(socket_path), Handler) as server:
@@ -112,21 +145,23 @@ with socketserver.UnixStreamServer(str(socket_path), Handler) as server:
 """
 
 
-def _setup(tmp_path, monkeypatch, mode):
+def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     binary = tmp_path / "server"
-    binary.write_text(f"#!{sys.executable}\n" + _FAKE_SERVER.replace("MODENAME", repr(mode)))
+    script = (_FAKE_SERVER.replace("MODENAME", repr(mode)).replace("PROFILE_LIMIT", str(n_predict))
+              .replace("PROFILE_END", repr(end)).replace("EXPECTED_CAP", str(cap - n_predict)))
+    binary.write_text(f"#!{sys.executable}\n" + script)
     model = tmp_path / "fixture.gguf"
     model.write_bytes(b"fixture test bytes")
     model_digest = hashlib.sha256(model.read_bytes()).hexdigest()
     monkeypatch.setattr(fixture, "FIXTURE_MODEL_SHA256", model_digest)
     study = StudyTokenPin(
-        study_id="fixture", protocol_sha256="e" * 64,
+        study_id="fixture", protocol_sha256=fixture.fixture_protocol_sha256(n_predict, end=end),
         runtime_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
-        model_sha256=model_digest, token_limit=30,
+        model_sha256=model_digest, token_limit=cap,
     )
-    slot = SlotTokenPin(run_id="run", task_id="fixture", repetition=0, arm="test", token_limit=30)
+    slot = SlotTokenPin(run_id="run", task_id="fixture", repetition=0, arm="test", token_limit=cap)
     attempt = TokenAttempt(assignment_id="assignment", attempt_id="attempt", turn_reservation_id=1,
-                           prompt_sha256=fixture.FIXTURE_PROMPT_SHA256, tokens=30)
+                           prompt_sha256=fixture.FIXTURE_PROMPT_SHA256, tokens=cap)
     admission = StudyTokenAdmission(tmp_path / "ledger.sqlite")
     return admission, admission.reserve(study, slot, attempt), binary, model
 
@@ -139,6 +174,12 @@ def _setup(tmp_path, monkeypatch, mode):
     ("wrong_cap", "receipt_invalid", 0, None),
     ("over_cap", "receipt_invalid", 0, None),
     ("under_work", "receipt_invalid", 0, None),
+    ("bad_prompt_count", "receipt_invalid", -9, None),
+    ("bad_prompt_id", "receipt_invalid", -9, None),
+    ("bad_evaluated", "receipt_invalid", -9, None),
+    ("bad_generated", "receipt_invalid", -9, None),
+    ("bad_settings", "receipt_invalid", -9, None),
+    ("draft_settings", "receipt_invalid", -9, None),
     ("duplicate", "receipt_invalid", 0, None),
     ("duplicate_key", "receipt_invalid", 0, None),
     ("extra_field", "receipt_invalid", 0, None),
@@ -240,21 +281,62 @@ def test_public_native_fixture_cap_matrix(tmp_path):
     binary, model = Path(binary_file), Path(model_file)
     with binary.open("rb") as artifact:
         runtime_sha256 = hashlib.file_digest(artifact, "sha256").hexdigest()
-    admission = StudyTokenAdmission(tmp_path / "ledger.sqlite")
-    study = StudyTokenPin(study_id="native_fixture", protocol_sha256="f" * 64,
-                          runtime_sha256=runtime_sha256, model_sha256=fixture.FIXTURE_MODEL_SHA256,
-                          token_limit=44)
-    slot = SlotTokenPin(run_id="public_fixture", task_id="native_fixture", repetition=0, arm="test", token_limit=44)
-    for turn, (cap, status, work) in enumerate([
-        (1, "cap_denied", 0),
-        (21, "cap_denied", 2),
-        (22, "completed", 22),
+    for turn, (limit, end, cap, status, work) in enumerate([
+        (1, "limit", 2, "cap_denied", 0),
+        (1, "limit", 22, "cap_denied", 2),
+        (1, "limit", 23, "completed", 22),
+        (3, "limit", 26, "cap_denied", 23),
+        (3, "limit", 27, "completed", 24),
+        (3, "word", 24, "cap_denied", 2),
+        (3, "word", 25, "completed", 22),
+        (3, "eos", 24, "cap_denied", 2),
+        (3, "eos", 25, "completed", 22),
     ], 1):
-        attempt = TokenAttempt(assignment_id="fixture", attempt_id=f"attempt{turn}", turn_reservation_id=turn,
+        # Each profile is independently committed. Use a separate ledger for
+        # each cap boundary to keep the test cases independent.
+        admission = StudyTokenAdmission(tmp_path / f"case-{turn}.sqlite")
+        study = StudyTokenPin(
+            study_id="native_fixture", protocol_sha256=fixture.fixture_protocol_sha256(limit, end=end),
+            runtime_sha256=runtime_sha256, model_sha256=fixture.FIXTURE_MODEL_SHA256, token_limit=cap,
+        )
+        slot = SlotTokenPin(run_id="public_fixture", task_id="native_fixture", repetition=0,
+                            arm="test", token_limit=cap)
+        attempt = TokenAttempt(assignment_id="fixture", attempt_id="attempt", turn_reservation_id=1,
                                prompt_sha256=fixture.FIXTURE_PROMPT_SHA256, tokens=cap)
         receipt = admission.reserve(study, slot, attempt)
-        result = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+        result = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model,
+                                               n_predict=limit, end=end)
         assert (result.status, result.observed_work) == (status, work)
+        with closing(sqlite3.connect(admission.database)) as db:
+            assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (cap,)
 
+@pytest.mark.parametrize(("end", "work"), [("limit", 24), ("word", 22), ("eos", 22)])
+def test_three_token_profile_reserves_full_output_headroom(tmp_path, monkeypatch, end, work):
+    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid", n_predict=3, end=end)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model,
+                                           n_predict=3, end=end)
+    assert (outcome.status, outcome.observed_work) == ("completed", work)
+
+
+def test_budget_and_profile_mismatches_do_not_claim_or_spawn(tmp_path, monkeypatch):
+    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid", n_predict=3, cap=3)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("unverified output policy reached Popen")
+
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    for limit, end, message in [(1, "limit", "sampling profile"), (3, "word", "sampling profile"),
+                                (3, "limit", "no positive native cap")]:
+        with pytest.raises(ValueError, match=message):
+            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model,
+                                          n_predict=limit, end=end)
     with closing(sqlite3.connect(admission.database)) as db:
-        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (44,)
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
+
+
+def test_startup_retry_denial_keeps_admission_charged(tmp_path, monkeypatch):
+    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "startup_retry", cap=2)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+    assert (outcome.status, outcome.exit_status, outcome.observed_work) == ("cap_denied", 75, 1)
+    with pytest.raises(ValueError, match="already claimed"):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)

@@ -10,6 +10,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -23,13 +24,40 @@ from metis.core.study_token_admission import (
 FIXTURE_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 FIXTURE_PROMPT = "One day, a rabbit ran down the road."
 FIXTURE_PROMPT_SHA256 = hashlib.sha256(FIXTURE_PROMPT.encode()).hexdigest()
-_COMPLETION = json.dumps({
-    "prompt": FIXTURE_PROMPT, "n_predict": 1, "temperature": 0, "cache_prompt": False,
-}).encode()
-_FIXTURE_PREFILL_TOKENS = 20
+_TOKENIZATION = json.dumps({"content": FIXTURE_PROMPT, "add_special": True}).encode()
+_FIXTURE_TOKEN_IDS = (1, 385, 328, 432, 261, 352, 412, 430, 430, 275, 352, 303, 279, 327, 416, 265, 352, 414, 380, 426)
+_FIXTURE_PREFILL_TOKENS = len(_FIXTURE_TOKEN_IDS)
 _FIXTURE_STARTUP_TOKENS = 2
 _MAX_RESPONSE_BYTES = 65_536
 _MAX_RECEIPT_BYTES = 256
+
+
+@dataclass(frozen=True)
+class _FixtureRequest:
+    n_predict: int
+    end: Literal["limit", "word", "eos"]
+    body: bytes
+    protocol_sha256: str
+
+
+def _fixture_request(n_predict: int, end: Literal["limit", "word", "eos"]) -> _FixtureRequest:
+    if type(n_predict) is not int or n_predict not in (1, 3):
+        raise ValueError("fixture supports output limits 1 and 3")
+    if end not in ("limit", "word", "eos") or (end != "limit" and n_predict != 3):
+        raise ValueError("invalid public fixture stopping profile")
+    body = json.dumps({
+        "prompt": FIXTURE_PROMPT, "n_predict": n_predict, "temperature": 0,
+        "cache_prompt": False, "stream": False, "ignore_eos": False,
+        "stop": [" He"] if end == "word" else [],
+        "logit_bias": [[2, 100]] if end == "eos" else [],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    commitment = hashlib.sha256(b"METIS public fixture sampling v1\n" + body).hexdigest()
+    return _FixtureRequest(n_predict, end, body, commitment)
+
+
+def fixture_protocol_sha256(n_predict: int = 1, *, end: Literal["limit", "word", "eos"] = "limit") -> str:
+    """Commit the exact public fixture request in the admission's study pin."""
+    return _fixture_request(n_predict, end).protocol_sha256
 
 
 def _stage(source: Path, destination: Path, expected: str, *, limit: int, executable: bool = False) -> None:
@@ -80,7 +108,13 @@ async def _exchange(path: Path, route: str, body: bytes = b"") -> tuple[int, dic
         await writer.wait_closed()
 
 
-async def _complete_once(path: Path, process: subprocess.Popen[bytes], seconds: float) -> bool:
+class _FixtureMismatch(ValueError):
+    """HTTP observations disagreed with the committed fixture policy."""
+
+
+async def _complete_once(
+    path: Path, process: subprocess.Popen[bytes], seconds: float, request: _FixtureRequest,
+) -> int | None:
     async with asyncio.timeout(seconds):
         while process.poll() is None:
             try:
@@ -91,16 +125,37 @@ async def _complete_once(path: Path, process: subprocess.Popen[bytes], seconds: 
                 pass
             await asyncio.sleep(0.025)
         else:
-            return False
+            return None
         try:
-            status, result = await _exchange(path, "/completion", _COMPLETION)
-            return (
-                status == 200 and type(result.get("tokens_predicted")) is int and result["tokens_predicted"] == 1
-                and type(result.get("tokens_evaluated")) is int and result["tokens_evaluated"] == _FIXTURE_PREFILL_TOKENS
-                and isinstance(result.get("content"), str)
-            )
+            status, tokenization = await _exchange(path, "/tokenize", _TOKENIZATION)
         except (OSError, TypeError, ValueError, RecursionError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-            return False
+            return None
+        tokens = tokenization.get("tokens")
+        if (status != 200 or not isinstance(tokens, list)
+                or any(type(token) is not int for token in tokens) or tuple(tokens) != _FIXTURE_TOKEN_IDS):
+            raise _FixtureMismatch("fixture tokenization mismatch")
+        try:
+            status, result = await _exchange(path, "/completion", request.body)
+        except (OSError, TypeError, ValueError, RecursionError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            return None
+        generated, evaluated = result.get("tokens_predicted"), result.get("tokens_evaluated")
+        settings = result.get("generation_settings")
+        expected_stop = [" He"] if request.end == "word" else []
+        expected_bias = [{"token": 2, "bias": 100}] if request.end == "eos" else []
+        if (status != 200 or not isinstance(settings, dict) or type(evaluated) is not int
+                or evaluated != _FIXTURE_PREFILL_TOKENS or type(generated) is not int
+                or generated != (request.n_predict if request.end == "limit" else 1)
+                or result.get("stop_type") != request.end
+                or result.get("stopping_word") != (expected_stop[0] if expected_stop else "")
+                or result.get("truncated") is not False or not isinstance(result.get("content"), str)
+                or type(settings.get("n_predict")) is not int or settings["n_predict"] != request.n_predict
+                or type(settings.get("max_tokens")) is not int or settings["max_tokens"] != request.n_predict
+                or settings.get("speculative.types") != "none,none"
+                or settings.get("backend_sampling") is not False or settings.get("stream") is not False
+                or settings.get("ignore_eos") is not False or settings.get("temperature") != 0
+                or settings.get("stop") != expected_stop or settings.get("logit_bias") != expected_bias):
+            raise _FixtureMismatch("fixture completion settings or counters mismatch")
+        return generated
 
 
 def _signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
@@ -129,7 +184,9 @@ def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return fields
 
 
-def _receipt_outcome(fd: int, claim: TokenLaunchClaim, status: int, completed: bool) -> TokenLaunchOutcome:
+def _receipt_outcome(
+    fd: int, claim: TokenLaunchClaim, status: int, generated: int | None, native_cap: int,
+) -> TokenLaunchOutcome:
     invalid = TokenLaunchOutcome(status="receipt_invalid", exit_status=status)
     try:
         os.set_blocking(fd, False)
@@ -141,23 +198,27 @@ def _receipt_outcome(fd: int, claim: TokenLaunchClaim, status: int, completed: b
         return invalid
     if (not isinstance(value, dict) or set(value) != {"version", "nonce", "cap", "charged", "reason"}
             or type(value["version"]) is not int or value["version"] != 1 or value["nonce"] != claim.nonce
-            or type(value["cap"]) is not int or value["cap"] != claim.receipt.attempt.tokens
+            or type(value["cap"]) is not int or value["cap"] != native_cap
             or type(value["charged"]) is not int or not 0 <= value["charged"] <= value["cap"]):
         return invalid
     reason, charged = value["reason"], value["charged"]
-    if (reason == "shutdown" and status == 0 and completed
-            and charged >= _FIXTURE_STARTUP_TOKENS + _FIXTURE_PREFILL_TOKENS):
+    if (reason == "shutdown" and status == 0 and generated is not None
+            and charged >= _FIXTURE_STARTUP_TOKENS + _FIXTURE_PREFILL_TOKENS + generated - 1
+            and charged + generated <= claim.receipt.attempt.tokens):
         return TokenLaunchOutcome(status="completed", exit_status=status, observed_work=charged)
-    if reason == "cap_denied" and status == 75 and not completed:
+    if reason == "cap_denied" and status == 75 and generated is None:
         return TokenLaunchOutcome(status="cap_denied", exit_status=status, observed_work=charged)
-    if reason == "unsupported_graph" and status == 75 and not completed:
+    if reason == "unsupported_graph" and status == 75 and generated is None:
         return TokenLaunchOutcome(status="unsupported_graph", exit_status=status, observed_work=charged)
-    if reason == "server_error" and 1 <= status <= 255 and status not in (74, 75) and not completed:
+    if reason == "server_error" and 1 <= status <= 255 and status not in (74, 75) and generated is None:
         return TokenLaunchOutcome(status="server_error", exit_status=status, observed_work=charged)
     return invalid
 
 
-def _run_claim(claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: Path, seconds: float) -> TokenLaunchOutcome:
+def _run_claim(
+    claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: Path,
+    seconds: float, request: _FixtureRequest, native_cap: int,
+) -> TokenLaunchOutcome:
     try:
         read_fd, write_fd = os.pipe()
     except OSError:
@@ -165,7 +226,7 @@ def _run_claim(claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: 
     try:
         try:
             process = subprocess.Popen(
-                [str(binary), "--metis-work-budget", str(claim.receipt.attempt.tokens), "--model", str(model),
+                [str(binary), "--metis-work-budget", str(native_cap), "--model", str(model),
                  "--socket", str(socket_path), "--metis-receipt-fd", str(write_fd), "--metis-launch-nonce", claim.nonce],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(write_fd,),
                 start_new_session=True, env={"PATH": os.defpath, "LANG": "C", "TMPDIR": str(socket_path.parent)},
@@ -175,11 +236,14 @@ def _run_claim(claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: 
         finally:
             os.close(write_fd)
 
-        completed = False
+        generated = None
         interrupted: Literal["timeout", "cancelled"] | None = None
+        mismatch = False
         status = None
         try:
-            completed = asyncio.run(_complete_once(socket_path, process, seconds))
+            generated = asyncio.run(_complete_once(socket_path, process, seconds, request))
+        except _FixtureMismatch:
+            mismatch = True
         except TimeoutError:
             interrupted = "timeout"
         except KeyboardInterrupt:
@@ -188,7 +252,7 @@ def _run_claim(claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: 
             if interrupted is not None:
                 _signal_group(process, signal.SIGKILL)
             try:
-                status = _finish_process(process, request_completed=completed)
+                status = _finish_process(process, request_completed=generated is not None)
             except subprocess.TimeoutExpired:
                 pass
 
@@ -196,7 +260,9 @@ def _run_claim(claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: 
             return TokenLaunchOutcome(status="lost")
         if interrupted is not None:
             return TokenLaunchOutcome(status=interrupted, exit_status=status)
-        return _receipt_outcome(read_fd, claim, status, completed)
+        if mismatch:
+            return TokenLaunchOutcome(status="receipt_invalid", exit_status=status)
+        return _receipt_outcome(read_fd, claim, status, generated, native_cap)
     finally:
         os.close(read_fd)
 
@@ -204,12 +270,21 @@ def _run_claim(claim: TokenLaunchClaim, binary: Path, model: Path, socket_path: 
 def qualify_native_launch(
     admission: StudyTokenAdmission, receipt: TokenAdmissionReceipt, *,
     binary: Path, model: Path, seconds: float = 10,
+    n_predict: int = 1, end: Literal["limit", "word", "eos"] = "limit",
 ) -> TokenLaunchOutcome:
     """Run one fixed public fixture request. The admission is never refunded."""
     receipt = TokenAdmissionReceipt.model_validate(receipt)
     if (receipt.study.model_sha256 != FIXTURE_MODEL_SHA256
             or receipt.attempt.prompt_sha256 != FIXTURE_PROMPT_SHA256):
         raise ValueError("only the registered single-file public fixture is supported")
+    request = _fixture_request(n_predict, end)
+    if receipt.study.protocol_sha256 != request.protocol_sha256:
+        raise ValueError("public fixture sampling profile does not match admission")
+    # Charge every allowed sampled output separately, including the last
+    # token that can leave the API without entering another model graph.
+    native_cap = receipt.attempt.tokens - request.n_predict
+    if native_cap <= 0:
+        raise ValueError("admission leaves no positive native cap after output headroom")
     if not 0 < seconds <= 30:
         raise ValueError("fixture deadline is outside its bound")
 
@@ -221,6 +296,6 @@ def qualify_native_launch(
         # file layouts, including split GGUFs, cannot reach launch.
         _stage(model, staged_model, FIXTURE_MODEL_SHA256, limit=2 * 1024**2)
         claim = admission.claim_for_launch(receipt)
-        outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds)
+        outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
         admission.record_outcome(claim, outcome)
         return outcome
