@@ -8,7 +8,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from metis.core.codex_specialist import DECISION_SCHEMA, CodexTurn, _decision
 from metis.core.llama_server_backend import (
@@ -27,6 +27,7 @@ class _BackendConfig(TypedDict):
     budget_key: str
     token_limit: int
     max_output_tokens: int
+    context_reservation: bool
 
 
 class LlamaSpecialist:
@@ -35,15 +36,34 @@ class LlamaSpecialist:
 
     def __init__(self, *, model_id: str, binary: Path, binary_sha256: str,
                  model_path: Path, model_sha256: str, database: Path,
-                 budget_key: str, token_limit: int, max_output_tokens: int):
+                 budget_key: str, token_limit: int, max_output_tokens: int,
+                 context_reservation: bool = False):
         if not model_id or len(model_id) > 128:
             raise ValueError("invalid pinned model id")
         self.model_id = model_id
         self.backend_config: _BackendConfig = {"binary": binary, "binary_sha256": binary_sha256,
                                "model": model_path, "model_sha256": model_sha256,
                                "database": database, "budget_key": budget_key,
-                               "token_limit": token_limit, "max_output_tokens": max_output_tokens}
+                               "token_limit": token_limit, "max_output_tokens": max_output_tokens,
+                               "context_reservation": context_reservation}
         self.max_output_tokens = max_output_tokens
+
+    def assert_heldout_binding(self, heldout: dict[str, Any], database: Path,
+                               selected_model: str) -> None:
+        """Refuse a study pin mismatch before reserving any model turn."""
+        pin = heldout.get("llama_backend")
+        if not isinstance(pin, dict) or selected_model != self.model_id:
+            raise ValueError("held-out llama backend pin missing or model mismatch")
+        expected = {"binary_sha256": self.backend_config["binary_sha256"],
+                    "model_sha256": self.backend_config["model_sha256"],
+                    "database_path": str(self.backend_config["database"].resolve()),
+                    "budget_key": self.backend_config["budget_key"],
+                    "token_limit": self.backend_config["token_limit"],
+                    "max_output_tokens": self.backend_config["max_output_tokens"],
+                    "context_reservation": self.backend_config["context_reservation"]}
+        if (pin != expected or self.backend_config["database"].resolve() != database.resolve()
+                or not self.backend_config["context_reservation"]):
+            raise ValueError("held-out llama backend differs from preregistered pin")
 
     def run(self, prompt: str, *, model: str | None, timeout: float,
             should_stop: Callable[[], bool] | None = None,
