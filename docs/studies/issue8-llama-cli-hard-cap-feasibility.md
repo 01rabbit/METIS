@@ -13,7 +13,11 @@ expected four `qwen35.rope.dimension_sections` entries and found three.
 
 The direct CLI route therefore cannot presently establish that the separately
 counted raw prompt is the prompt actually consumed by the model. It also cannot
-reconcile actual usage after the call. The probe fails closed on both conditions.
+reconcile actual usage after the call. The probe's `strict_cap_ready` result is
+always false. `usage_protocol_compatible` only describes whether one output
+record has an expected count shape without the observed chat wrapper; it does
+not establish trustworthy accounting, immutable routing, or token admission.
+The probe fails closed on both observed conditions.
 It hashes the model, CLI and tokenizer, tests one harmless one-token prompt,
 and emits only hashes, counts and capability booleans. It never records a model
 response or challenge data.

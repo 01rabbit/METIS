@@ -34,7 +34,7 @@ def assess_cli_output(stdout: str, stderr: str) -> dict[str, Any]:
     usage = [item for item in records if type(item.get("prompt_tokens")) is int
              and type(item.get("completion_tokens")) is int]
     chat_wrapper = "available commands:" in stdout or bool(re.search(r"(?m)^> ", stdout))
-    return {"strict_cap_ready": len(usage) == 1 and not chat_wrapper,
+    return {"usage_protocol_compatible": len(usage) == 1 and not chat_wrapper,
             "chat_wrapper_observed": chat_wrapper,
             "usage_observed": len(usage) == 1,
             "prompt_tokens": usage[0]["prompt_tokens"] if len(usage) == 1 else None,
@@ -62,6 +62,6 @@ def probe(model: Path, cli: Path, tokenizer: Path, *, timeout: int = 30) -> dict
     return {"model_sha256": sha256(model), "cli_sha256": sha256(cli),
             "tokenizer_sha256": sha256(tokenizer), "precount_tokens": int(match.group(1)),
             "cli_returncode": generated.returncode, **observed,
-            "strict_cap_ready": generated.returncode == 0 and observed["strict_cap_ready"]
-            and observed["prompt_tokens"] == int(match.group(1))
-            and observed["completion_tokens"] <= 1}
+            # A compatible output shape does not prove immutable model routing,
+            # trusted accounting or a shared pre-call reservation boundary.
+            "strict_cap_ready": False}
