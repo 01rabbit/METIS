@@ -93,12 +93,17 @@ class LlamaServerBackend:
             os.chmod(self._private.name, 0o700)
             self._socket = str(Path(self._private.name) / "server.sock")
             self._log = open(os.devnull, "wb")
+            # Never inherit LLAMA_ARG_* (draft model, context shift, warmup,
+            # endpoints, etc.) or proxy/plugin environment from the parent.
+            # The child receives no prompt before complete() reserves tokens.
+            child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
+                         "TMPDIR": self._private.name, "LANG": "C"}
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
                  "--parallel", "1", "--no-webui", "--ctx-size", "4096",
-                 "--no-context-shift"],
+                 "--no-context-shift", "--no-warmup"],
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT,
-                start_new_session=True, close_fds=True,
+                start_new_session=True, close_fds=True, env=child_env,
             )
             deadline = time.monotonic() + self.startup_seconds
             while time.monotonic() < deadline:

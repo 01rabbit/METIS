@@ -34,6 +34,13 @@ counts of 4/2, 11/2, and 14/2. All three calls completed. This checks only
 those short prompt classes and this local binary; it is not a proof of the
 worst-case context accounting semantics.
 
+Startup is now explicitly `--no-warmup`, and the child receives a fixed
+minimal environment instead of inherited `LLAMA_ARG_*`, proxy, or draft-model
+settings. Before `complete()` reserves tokens the only request is `/health`;
+the backend sends neither a prompt nor a completion request. A startup failure
+therefore has no model-token charge. Tests verify injected environment does
+not reach the child and a pre-prompt startup exit creates no reservation.
+
 The held-out protocol currently binds string `model_pin` and `runtime_pin`.
 The specialist accepts a matching model ID, while its binary and model SHA-256
 values and SQLite `budget_key`/`token_limit` are independent constructor
