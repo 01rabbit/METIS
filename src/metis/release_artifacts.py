@@ -11,6 +11,7 @@ import stat
 import tarfile
 import zipfile
 import zlib
+from copy import copy
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -63,7 +64,7 @@ def _distribution_paths(entries: list[Path]) -> tuple[Path, Path]:
 
 def _validate_metadata(wheel: Path | BinaryIO, sdist: Path | BinaryIO,
                        project_name: str, expected_version: str, *, bounded: bool = False) -> None:
-    wheel_metadata = []
+    wheel_metadata: list[tuple[str, str]] = []
     try:
         with zipfile.ZipFile(wheel) as archive:
             if bounded and len(archive.infolist()) > _MAX_MEMBERS:
@@ -71,19 +72,29 @@ def _validate_metadata(wheel: Path | BinaryIO, sdist: Path | BinaryIO,
             for zip_item in archive.infolist():
                 path = PurePosixPath(zip_item.filename)
                 if path.name == "METADATA" and path.parent.name.endswith(".dist-info"):
+                    if bounded and wheel_metadata:
+                        raise ValueError("wheel must contain exactly one dist-info/METADATA")
                     if bounded and zip_item.file_size > _MAX_METADATA_BYTES:
                         raise ValueError("wheel metadata exceeds limit")
                     if bounded and zip_item.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
                         raise ValueError("unsupported wheel metadata compression")
-                    with archive.open(zip_item) as stream:
+                    item = zip_item
+                    if bounded:
+                        # ZipExtFile normally stops at the declared size, so a
+                        # forged small size can hide an expanded suffix.
+                        item = copy(zip_item)
+                        item.file_size = _MAX_METADATA_BYTES + 1
+                    with archive.open(item) as stream:
                         payload = stream.read(_MAX_METADATA_BYTES + 1) if bounded else stream.read()
+                    if bounded and len(payload) != zip_item.file_size:
+                        raise ValueError("wheel metadata size does not match ZIP directory")
                     wheel_metadata.append(metadata_version(payload))
     except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
         raise ValueError("wheel is not a valid ZIP distribution") from exc
     if len(wheel_metadata) != 1:
         raise ValueError("wheel must contain exactly one dist-info/METADATA")
 
-    sdist_metadata = []
+    sdist_metadata: list[tuple[str, str]] = []
     try:
         with (tarfile.open(sdist, mode="r:gz") if isinstance(sdist, Path)
               else tarfile.open(fileobj=sdist, mode="r:")) as archive:
@@ -91,6 +102,8 @@ def _validate_metadata(wheel: Path | BinaryIO, sdist: Path | BinaryIO,
                 if bounded and index > _MAX_MEMBERS:
                     raise ValueError("sdist member count exceeds limit")
                 if PurePosixPath(tar_item.name).name == "PKG-INFO" and tar_item.isfile():
+                    if bounded and sdist_metadata:
+                        raise ValueError("sdist must contain exactly one PKG-INFO")
                     if bounded and tar_item.size > _MAX_METADATA_BYTES:
                         raise ValueError("sdist metadata exceeds limit")
                     metadata_stream = archive.extractfile(tar_item)

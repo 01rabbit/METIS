@@ -4,10 +4,12 @@ import gzip
 import hashlib
 import io
 import os
+import struct
 import subprocess
 import sys
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -254,4 +256,56 @@ def test_offline_verifier_bounds_tar_members_separately(tmp_path, monkeypatch):
     write_checksums(artifacts)
     monkeypatch.setattr(release_artifacts, "_MAX_MEMBERS", 1)
     with pytest.raises(ValueError, match="sdist member count exceeds limit"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+
+def test_offline_verifier_rejects_deflated_metadata_with_forged_small_size(tmp_path):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    wheel = artifacts[0]
+    metadata = b"Metadata-Version: 2.1\nName: metis-ctf\nVersion: 0.5.0\n\n"
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metis_ctf-0.5.0.dist-info/METADATA", metadata + b"x" * (256 * 1024))
+    data = bytearray(wheel.read_bytes())
+    central_entry = data.index(b"PK\x01\x02")
+    struct.pack_into("<I", data, central_entry + 16, zlib.crc32(metadata))
+    struct.pack_into("<I", data, central_entry + 24, len(metadata))
+    wheel.write_bytes(data)
+    write_checksums(artifacts)
+
+    with zipfile.ZipFile(wheel) as archive:
+        assert archive.read(archive.infolist()[0]) == metadata
+    with pytest.raises(ValueError, match="wheel"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+
+@pytest.mark.parametrize("artifact_index", [0, 1])
+def test_offline_verifier_rejects_second_metadata_candidate_before_parsing(tmp_path, monkeypatch, artifact_index):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    if artifact_index == 0:
+        with zipfile.ZipFile(artifacts[0], "a") as archive:
+            archive.writestr("second.dist-info/METADATA", b"must not parse")
+        message = "exactly one dist-info/METADATA"
+    else:
+        with tarfile.open(artifacts[1], mode="w:gz") as archive:
+            for location, data in [
+                ("original/PKG-INFO", b"Name: metis-ctf\nVersion: 0.5.0\n\n"),
+                ("second/PKG-INFO", b"must not parse"),
+            ]:
+                item = tarfile.TarInfo(location)
+                item.size = len(data)
+                archive.addfile(item, io.BytesIO(data))
+        message = "exactly one PKG-INFO"
+    write_checksums(artifacts)
+    parse = release_artifacts.metadata_version
+
+    def reject_unexpected_parse(data):
+        assert data != b"must not parse"
+        return parse(data)
+
+    monkeypatch.setattr(release_artifacts, "metadata_version", reject_unexpected_parse)
+    with pytest.raises(ValueError, match=message):
         verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
