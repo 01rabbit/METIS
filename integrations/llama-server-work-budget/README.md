@@ -111,9 +111,34 @@ cover a literal path containing commas and quotes, stale sockets and
 symlinks, a nonprivate directory, a broken receipt pipe, a timed-out client
 whose server is killed, and ambient config that tries to require an API key.
 
-This stacks on the native gate in METIS PR #87. The Python admission ledger
-still needs to claim each launch exactly once and record the outcome. Enabling
-METIS capability also requires immutable executable and model identity including
-split files, deadlines and cleanup owned by the controller, and qualification
+This builds on the native gate in METIS PR #87. Production qualification still
+requires a trusted scheduler-to-admission binding, model and executable
+registration for supported runtimes, immutable split-file identity, and tests
 for alternate models, platforms, concurrent callers, and injected backend
 failures. Completion usage remains distinct from submitted work.
+
+## Controller qualification with the public fixture
+
+The fixture-only Python boundary binds the existing admission receipt to one
+staged binary and the registered single-file stories260K GGUF. It checks the
+fixed public prompt digest and launches only after committing a unique claim.
+The controller uses the private Unix socket for readiness and one completion
+request. It validates the native terminal receipt against the launch nonce,
+admitted cap, and observed process exit before recording a sanitized outcome.
+All outcomes retain the entire admission charge. An abruptly terminated
+controller may leave an orphaned process or a claim without an outcome. The
+same claim cannot be reused, and the process retains its immutable native cap.
+
+Run the optional real integration fixture against a build from the native patch.
+
+```sh
+METIS_NATIVE_FIXTURE_BINARY=/tmp/metis-llama-guard-build/build/bin/llama-server \
+METIS_NATIVE_FIXTURE_MODEL=/absolute/path/to/stories260K.gguf \
+    .venv/bin/python -m pytest tests/test_native_work_fixture.py -k public_native_fixture
+```
+
+The registered digest identifies the complete single-file fixture. Other GGUF
+files, including split layouts, fail staging before the process starts. The
+controller has no general-purpose model or prompt API. Its deadline covers
+readiness and the sole request, followed by bounded process shutdown and reap.
+A missing or invalid receipt yields a failed observation and zero refund.
