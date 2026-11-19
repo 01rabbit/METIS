@@ -71,7 +71,8 @@ class LlamaServerBackend:
     def __init__(self, *, binary: Path, binary_sha256: str, model: Path,
                  model_sha256: str, database: Path, budget_key: str,
                  token_limit: int, max_output_tokens: int, startup_seconds: float = 30,
-                 context_reservation: bool = False):
+                 context_reservation: bool = False, startup_deadline: float | None = None,
+                 startup_should_stop: Callable[[], bool] | None = None):
         if not budget_key or len(budget_key) > 128 or not 1 <= token_limit <= 10**9:
             raise ValueError("invalid budget configuration")
         if not 1 <= max_output_tokens <= 4096 or not 0 < startup_seconds <= 120:
@@ -81,6 +82,8 @@ class LlamaServerBackend:
         self.budget_key, self.token_limit = budget_key, token_limit
         self.max_output_tokens, self.startup_seconds = max_output_tokens, startup_seconds
         self.context_reservation = context_reservation
+        self.startup_deadline = startup_deadline
+        self.startup_should_stop = startup_should_stop
         self._process: subprocess.Popen[bytes] | None = None
         self._private: tempfile.TemporaryDirectory[str] | None = None
         self._log: Any = None
@@ -104,6 +107,8 @@ class LlamaServerBackend:
             # The child receives no prompt before complete() reserves tokens.
             child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
                          "TMPDIR": self._private.name, "LANG": "C"}
+            if self.startup_should_stop is not None and self.startup_should_stop():
+                raise LlamaBackendStopped("model call cancelled during server startup")
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
                  "--parallel", "1", "--no-webui", "--ctx-size",
@@ -113,16 +118,26 @@ class LlamaServerBackend:
                 start_new_session=True, close_fds=True, env=child_env,
             )
             deadline = time.monotonic() + self.startup_seconds
+            if self.startup_deadline is not None:
+                deadline = min(deadline, self.startup_deadline)
             while time.monotonic() < deadline:
+                if self.startup_should_stop is not None and self.startup_should_stop():
+                    raise LlamaBackendStopped("model call cancelled during server startup")
                 if self._process.poll() is not None:
                     raise LlamaBackendError("server exited during startup")
                 try:
-                    response = self._request("/health", None, timeout=1)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    response = self._request("/health", None, timeout=min(1, remaining))
                     if response.get("status") == "ok":
                         return self
                 except (LlamaBackendError, OSError, TimeoutError):
                     pass
-                time.sleep(.1)
+                time.sleep(min(.1, max(0, deadline - time.monotonic())))
+            if (self.startup_deadline is not None
+                    and time.monotonic() >= self.startup_deadline):
+                raise LlamaBackendError("model call deadline exceeded during server startup")
             raise LlamaBackendError("server startup timed out")
         except BaseException:
             self.close()
@@ -259,7 +274,8 @@ class LlamaServerBackend:
 
     def complete_admitted(self, prompt: str, *, n_predict: int, token_cap: int,
                           timeout_seconds: float,
-                          should_stop: Callable[[], bool] | None = None) -> tuple[str, int, int]:
+                          should_stop: Callable[[], bool] | None = None,
+                          call_deadline: float | None = None) -> tuple[str, int, int]:
         """Run a claim-funded request without the standalone budget ledger.
 
         The caller has already consumed a durable study claim. The entire
@@ -278,6 +294,10 @@ class LlamaServerBackend:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         deadline = time.monotonic() + timeout_seconds
+        if call_deadline is not None:
+            deadline = min(deadline, call_deadline)
+        if deadline <= time.monotonic():
+            raise LlamaBackendError("model call deadline exceeded")
         try:
             tokenized = self._request_before("/tokenize", {"content": prompt, "add_special": True},
                                              deadline=deadline, should_stop=should_stop)

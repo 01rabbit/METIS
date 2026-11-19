@@ -8,6 +8,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -196,12 +197,17 @@ class LlamaSpecialist:
                 consumed = False
                 raise ValueError("native launch claim was already started")
             launch_owned = True
-            with LlamaServerBackend(**self.backend_config) as backend:
+            call_deadline = time.monotonic() + min(timeout, 120)
+            with LlamaServerBackend(**self.backend_config, startup_deadline=call_deadline,
+                                    startup_should_stop=should_stop) as backend:
                 backend_entered = True
+                remaining = call_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LlamaBackendError("model call deadline exceeded during server startup")
                 content, input_tokens, output_tokens = backend.complete_admitted(
                     prompt, n_predict=self.max_output_tokens,
-                    token_cap=receipt.attempt.tokens, timeout_seconds=min(timeout, 120),
-                    should_stop=should_stop)
+                    token_cap=receipt.attempt.tokens, timeout_seconds=remaining,
+                    should_stop=should_stop, call_deadline=call_deadline)
             outcome = TokenLaunchOutcome(status="completed", exit_status=0,
                                         observed_work=input_tokens + output_tokens,
                                         native_manifest_sha256=outcome_manifest)

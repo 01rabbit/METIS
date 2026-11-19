@@ -140,6 +140,39 @@ def test_startup_failure_before_any_prompt_has_no_reservation(backend_files):
     assert not backend_files["database"].exists()
 
 
+def test_startup_cancellation_stops_server_before_health(backend_files):
+    source = backend_files["binary"].read_text()
+    backend_files["binary"].write_text(
+        source.replace("UnixStreamServer(sock,Handler).serve_forever()",
+                       "__import__('time').sleep(5)\nUnixStreamServer(sock,Handler).serve_forever()")
+    )
+    backend_files["binary"].chmod(0o700)
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    cancel_at = time.monotonic() + .2
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=lambda: time.monotonic() >= cancel_at)
+    with pytest.raises(LlamaBackendStopped, match="startup"):
+        backend.__enter__()
+    assert backend._process is None and backend._private is None
+    assert not backend_files["database"].exists()
+
+
+def test_startup_is_bounded_by_call_deadline(backend_files):
+    source = backend_files["binary"].read_text()
+    backend_files["binary"].write_text(
+        source.replace("UnixStreamServer(sock,Handler).serve_forever()",
+                       "__import__('time').sleep(5)\nUnixStreamServer(sock,Handler).serve_forever()")
+    )
+    backend_files["binary"].chmod(0o700)
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    backend = LlamaServerBackend(**backend_files, startup_deadline=time.monotonic() + .2)
+    started = time.monotonic()
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+    assert time.monotonic() - started < 1
+    assert backend._process is None and backend._private is None
+    assert not backend_files["database"].exists()
+
+
 def test_shared_concurrent_reservation(backend_files):
     backend_files["token_limit"] = 6
     results = []
