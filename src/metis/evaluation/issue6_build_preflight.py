@@ -1,10 +1,7 @@
 """Offline checks for the pinned Issue #6 CodexCLI runtime."""
 
 import argparse
-import hashlib
 import json
-import os
-import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -20,9 +17,8 @@ from metis.core.codex_isolation import (
 )
 from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI, CodexTurn
 
-VERSION = "0.169.0"
-NATIVE_SIZE = 280_704_736
-NATIVE_SHA256 = "739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002"
+from ._issue6_canary_process import NATIVE_SHA256, NATIVE_SIZE, stage_native
+from ._issue6_canary_process import NATIVE_VERSION as VERSION
 
 
 class PilotCodex(CodexCLI):
@@ -47,24 +43,7 @@ class PilotCodex(CodexCLI):
 
 def _stage_pinned_native(executable: Path, destination: Path) -> None:
     resolved, _ = native_codex(str(executable))
-    descriptor = os.open(Path(resolved).resolve(strict=True), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    checksum = hashlib.sha256()
-    with os.fdopen(descriptor, "rb") as source:
-        metadata = os.fstat(source.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != NATIVE_SIZE:
-            raise RuntimeError("Issue #6 requires the pinned native Codex binary")
-        with destination.open("xb") as staged:
-            remaining = NATIVE_SIZE
-            while remaining:
-                block = source.read(min(remaining, 1024 * 1024))
-                if not block:
-                    raise RuntimeError("native Codex changed while being staged")
-                staged.write(block)
-                checksum.update(block)
-                remaining -= len(block)
-            if source.read(1) or checksum.hexdigest() != NATIVE_SHA256:
-                raise RuntimeError("Issue #6 requires the pinned native Codex binary")
-    destination.chmod(0o500)
+    stage_native(Path(resolved), destination, size=NATIVE_SIZE, digest=NATIVE_SHA256)
 
 
 def _probe(binary: Path, turn: Path, proxy: AllowlistProxy, protected: list[Path], *args: str) -> str:

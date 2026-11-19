@@ -15,6 +15,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Literal, Self
 
+from metis.core.codex_isolation import native_codex
+
 from .issue6_pilot_admission import DryRunAdmission, DryRunPhase
 
 _HELPER = Path(__file__).with_name("_issue6_canary_process.py")
@@ -70,8 +72,28 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
                  behavior: Literal["complete", "wait_for_stop"] = "complete",
                  seconds: float = _MAX_SECONDS) -> Canary:
     """Atomically charge the phase and record intent before starting the fixed worker."""
-    if behavior not in {"complete", "wait_for_stop"} or not math.isfinite(seconds) or not 0 < seconds <= _MAX_SECONDS:
-        raise ValueError("unsupported canary behavior or deadline")
+    if behavior not in {"complete", "wait_for_stop"}:
+        raise ValueError("unsupported fixed worker behavior")
+    return _start_guardian(admission, workspace, run_id, assignment_id, attempt_id, receipt,
+                           "guardian", behavior, seconds)
+
+
+def start_offline_runtime_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assignment_id: str,
+                                 attempt_id: str, receipt: DryRunPhase, executable: Path, *,
+                                 seconds: float = _MAX_SECONDS) -> Canary:
+    """Run a pin-verified Codex --version command with all network and file writes denied."""
+    if sys.platform != "darwin" or not os.access("/usr/bin/sandbox-exec", os.X_OK):
+        raise RuntimeError("offline Codex runtime requires macOS Seatbelt")
+    source, _ = native_codex(str(executable))
+    return _start_guardian(admission, workspace, run_id, assignment_id, attempt_id, receipt,
+                           "runtime_guardian", source, seconds)
+
+
+def _start_guardian(admission: DryRunAdmission, workspace: Path, run_id: str, assignment_id: str,
+                    attempt_id: str, receipt: DryRunPhase, role: Literal["guardian", "runtime_guardian"],
+                    argument: str, seconds: float) -> Canary:
+    if not math.isfinite(seconds) or not 0 < seconds <= _MAX_SECONDS:
+        raise ValueError("unsupported canary deadline")
     workspace = workspace.resolve(strict=True)
     info = workspace.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -94,9 +116,9 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
         writer.setblocking(False)
         reader_fd = reader.fileno()
         process = subprocess.Popen(
-            [sys.executable, "-I", "-S", str(_HELPER), "guardian", str(reader_fd), str(os.getpid()),
+            [sys.executable, "-I", "-S", str(_HELPER), role, str(reader_fd), str(os.getpid()),
              str(window.database),
-             str(reservation), nonce, str(scratch), str(cutoff), str(window.wall_cutoff), behavior],
+             str(reservation), nonce, str(scratch), str(cutoff), str(window.wall_cutoff), argument],
             env=_ENV, pass_fds=(reader_fd,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
