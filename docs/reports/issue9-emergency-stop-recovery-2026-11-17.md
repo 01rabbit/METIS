@@ -320,3 +320,20 @@ the focused real-container test passed (`1 passed`); Ruff and mypy passed.
 This closes the live CLI cancellation-path evidence gap, but does not meet the
 P7 benchmark, host-reboot, signed-release, monitoring, or retention gates.
 Issue #9 remains open.
+
+## 2026-11-19 terminal state across controller processes
+
+The local emergency-stop regression now runs `metis codex cancel` in one
+process and `metis codex recover` twice in separate processes. All three use the
+same disposable SQLite database. A synthetic run with one reserved action
+stays `cancelled`, retains 39 available actions, reports `not_running` for
+worker teardown, and has identical event history after each recovery. The
+fixture has no sandbox worker. It makes no network requests and submits no
+candidate.
+
+On macOS arm64 with Python 3.12, the session tests passed with an empty
+environment except `PATH=/usr/bin:/bin` and `PYTHONPATH` set to the checkout's
+`src` directory. Ruff passed for `tests/test_codex_session.py`.
+
+Issue #9 still requires evidence across a real macOS host reboot. This check
+covers separate CLI processes reading the same database while the host stays up.

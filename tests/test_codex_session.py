@@ -275,6 +275,7 @@ def test_emergency_stop_survives_controller_restart_without_resuming_work(tmp_pa
     database = tmp_path / "session.sqlite"
     controller = CodexSession(database)
     run_id = controller.demo()[0]["run_id"]
+    command = [sys.executable, "-m", "metis.cli", "codex", "--database", str(database)]
 
     # Model an operation reserved by the controller when the operator stops it.
     controller._reserve(run_id, "native_data_transform")
@@ -282,16 +283,21 @@ def test_emergency_stop_survives_controller_restart_without_resuming_work(tmp_pa
     assert before_stop["status"] == "executing"
     assert before_stop["actions_remaining"] == 39
 
-    stopped = controller.cancel(run_id)
+    stopped = json.loads(subprocess.run(
+        [*command, "cancel", run_id], capture_output=True, text=True, check=True, timeout=15,
+    ).stdout)
     assert stopped["status"] == "cancelled"
+    stopped_events = controller.store.read(run_id)
+    assert not any(event.status == RunStatus.SOLVED for event in stopped_events)
 
-    # A newly constructed controller represents a process restart over the same DB.
-    restarted = CodexSession(database)
-    recovered = restarted.recover(run_id)
-    assert recovered["status"] == "cancelled"
-    assert recovered["actions_remaining"] == 39
-    assert not any(event.status == RunStatus.SOLVED for event in restarted.store.read(run_id))
-    assert restarted.recover(run_id)["status"] == "cancelled"
+    for _ in range(2):
+        recovered = json.loads(subprocess.run(
+            [*command, "recover", run_id], capture_output=True, text=True, check=True, timeout=15,
+        ).stdout)
+        assert recovered["status"] == "cancelled"
+        assert recovered["actions_remaining"] == 39
+        assert recovered["worker_teardown"]["status"] == "not_running"
+        assert controller.store.read(run_id) == stopped_events
 
 
 def test_recovery_refuses_to_resume_when_sandbox_teardown_is_unknown(tmp_path, monkeypatch):
