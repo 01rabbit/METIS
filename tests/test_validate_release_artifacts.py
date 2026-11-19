@@ -320,5 +320,43 @@ def test_offline_verifier_rejects_recursive_tar_extensions(tmp_path):
     raw_tar = extension.tobuf() * (sys.getrecursionlimit() + 200) + b"\0" * 1024
     artifacts[1].write_bytes(gzip.compress(raw_tar))
     write_checksums(artifacts)
-    with pytest.raises(ValueError, match="valid gzip tar"):
+    with pytest.raises(ValueError, match="tar extension chain"):
         verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+
+def test_offline_verifier_rejects_pax_dictionary_amplification_before_tarfile(tmp_path, monkeypatch):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    global_pax = tarfile.TarInfo.create_pax_global_header({f"x{i:05}": "v" for i in range(40_000)})
+    local = tarfile.TarInfo("local")
+    local.type = tarfile.XHDTYPE
+    with tarfile.open(artifacts[1], "r:gz") as original:
+        assert original.getmember("metis_ctf-0.5.0/PKG-INFO")
+    tail = gzip.decompress(artifacts[1].read_bytes())
+    artifacts[1].write_bytes(gzip.compress(global_pax + local.tobuf() * 200 + tail))
+    write_checksums(artifacts)
+
+    def must_not_normalize(*args, **kwargs):
+        pytest.fail("oversized PAX dictionary reached tarfile normalization")
+
+    monkeypatch.setattr(release_artifacts, "_validate_metadata", must_not_normalize)
+    with pytest.raises(ValueError, match="tar extension chain or payload exceeds limit"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+def test_offline_verifier_accepts_setuptools_style_pax_sdist(tmp_path):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    with tarfile.open(artifacts[1], "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        directory = tarfile.TarInfo("metis_ctf-0.5.0")
+        directory.type = tarfile.DIRTYPE
+        directory.mtime = 1_700_000_000.125
+        archive.addfile(directory)
+        data = b"Name: metis-ctf\nVersion: 0.5.0\n\n"
+        package = tarfile.TarInfo("metis_ctf-0.5.0/PKG-INFO")
+        package.mtime = directory.mtime
+        package.size = len(data)
+        archive.addfile(package, io.BytesIO(data))
+    write_checksums(artifacts)
+    assert verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0") == artifacts

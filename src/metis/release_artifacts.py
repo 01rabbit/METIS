@@ -23,6 +23,12 @@ _MAX_ARCHIVE_BYTES = 16 * 1024**2
 _MAX_TAR_BYTES = 32 * 1024**2
 _MAX_METADATA_BYTES = 128 * 1024
 _MAX_MEMBERS = 4096
+_MAX_RAW_TAR_HEADERS = 8192
+_MAX_TAR_EXTENSION_CHAIN = 8
+_MAX_TAR_EXTENSION_BYTES = 256 * 1024
+_MAX_PAX_RECORDS = 64
+_PAX_TYPES = frozenset((tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE))
+_TAR_EXTENSION_TYPES = _PAX_TYPES | {tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK}
 _MAX_MANIFEST_BYTES = 2 * (64 + 2 + 255 + 1)
 
 
@@ -191,6 +197,70 @@ def _bundle_entries(dist_dir: Path, directory_fd: int) -> list[Path]:
     return paths
 
 
+def _pax_record_count(payload: bytes) -> int:
+    offset = count = 0
+    while offset < len(payload):
+        split = payload.find(b" ", offset, offset + 8)
+        if split == -1 or not payload[offset:split].isdigit():
+            raise ValueError("invalid PAX record length")
+        length = int(payload[offset:split])
+        end = offset + length
+        if end > len(payload) or end <= split + 3 or payload[end - 1] != 10:
+            raise ValueError("invalid PAX record framing")
+        key, equals, _ = payload[split + 1:end - 1].partition(b"=")
+        if not key or not equals:
+            raise ValueError("invalid PAX record key")
+        if key == b"size" or key.startswith(b"GNU.sparse."):
+            raise ValueError("PAX size overrides and sparse tar encodings are unsupported")
+        count += 1
+        if count > _MAX_PAX_RECORDS:
+            raise ValueError("PAX record count exceeds limit")
+        offset = end
+    return count
+
+
+def _check_raw_tar(data: bytes) -> None:
+    # Walk physical headers before tarfile can resolve extension chains or
+    # recursively copy inherited global PAX dictionaries.
+    offset = headers = chain = extension_bytes = global_records = 0
+    block = tarfile.BLOCKSIZE
+    while offset + block <= len(data):
+        header = data[offset:offset + block]
+        if header == bytes(block):
+            if chain:
+                raise ValueError("tar extension chain has no member")
+            return
+        headers += 1
+        if headers > _MAX_RAW_TAR_HEADERS:
+            raise ValueError("raw tar header count exceeds limit")
+        try:
+            member = tarfile.TarInfo.frombuf(header, "utf-8", "surrogateescape")
+        except tarfile.HeaderError as exc:
+            raise ValueError("invalid tar header") from exc
+        if member.size < 0 or member.type == tarfile.GNUTYPE_SPARSE:
+            raise ValueError("negative size or sparse tar encodings are unsupported")
+        payload_start = offset + block
+        offset = payload_start + ((member.size + block - 1) // block) * block
+        if offset > len(data):
+            raise ValueError("truncated tar member")
+        if member.type in _TAR_EXTENSION_TYPES:
+            chain += 1
+            extension_bytes += member.size
+            if chain > _MAX_TAR_EXTENSION_CHAIN or extension_bytes > _MAX_TAR_EXTENSION_BYTES:
+                raise ValueError("tar extension chain or payload exceeds limit")
+            if member.type in _PAX_TYPES:
+                records = _pax_record_count(data[payload_start:payload_start + member.size])
+                if member.type == tarfile.XGLTYPE:
+                    global_records += records
+                    if global_records > _MAX_PAX_RECORDS:
+                        raise ValueError("global PAX record count exceeds limit")
+        else:
+            if member.size and not member.isreg() and member.type in tarfile.SUPPORTED_TYPES:
+                raise ValueError("tar member type has unexpected payload")
+            chain = 0
+    raise ValueError("missing tar end marker")
+
+
 def verify_release_bundle(dist_dir: Path, tag: str, project_name: str, project_version: str) -> list[Path]:
     """Verify bounded, immutable copies of the exact staged bundle members."""
     expected_version = _release_version(tag, project_version)
@@ -215,6 +285,7 @@ def verify_release_bundle(dist_dir: Path, tag: str, project_name: str, project_v
             raise ValueError("sdist is not a valid gzip distribution") from exc
         if len(tar) > _MAX_TAR_BYTES:
             raise ValueError("sdist decompression exceeds limit")
+        _check_raw_tar(tar)
         _validate_metadata(io.BytesIO(wheel), io.BytesIO(tar), project_name, expected_version, bounded=True)
 
         for path, info in zip([*artifacts, manifest], (wheel_info, sdist_info, manifest_info), strict=True):
