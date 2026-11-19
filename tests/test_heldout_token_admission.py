@@ -148,6 +148,7 @@ def test_run_assignment_claims_actual_reservation_and_hashes_exact_prompt(tmp_pa
         ).fetchone()[0])
         assert detail["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
         assert db.execute("SELECT COUNT(*) FROM study_token_launches").fetchone()[0] == 1
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
         stored_text = " ".join(str(value) for row in db.execute(
             "SELECT payload FROM heldout_arm_bindings UNION ALL "
@@ -263,6 +264,72 @@ def test_scheduler_claim_is_single_use_under_replay_and_concurrent_claims(tmp_pa
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT COUNT(*) FROM study_token_attempts").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM study_token_launches").fetchone()[0] == 1
+
+
+def test_launch_claim_consumption_is_atomic_and_single_use(tmp_path):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id,
+            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+        ))
+
+    scheduler.reserve_model_turn(
+        run_id, job["assignment_id"], job["attempt_id"], persist_receipt=persist,
+    )
+    claim = claims[0]
+    forged_attempt = claim.receipt.attempt.model_copy(update={"tokens": claim.receipt.attempt.tokens + 1})
+    forged_receipt = claim.receipt.model_copy(update={"attempt": forged_attempt})
+    with pytest.raises(ValueError, match="invalid or already consumed"):
+        admission.consume_scheduler_launch_claim(claim.model_copy(update={"receipt": forged_receipt}))
+    barrier = Barrier(2)
+
+    def consume_once() -> bool:
+        barrier.wait(timeout=5)
+        try:
+            admission.consume_scheduler_launch_claim(claim)
+            return True
+        except ValueError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        consumed = [future.result(timeout=10) for future in
+                    [pool.submit(consume_once), pool.submit(consume_once)]]
+    assert consumed.count(True) == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
+    with pytest.raises(ValueError, match="already consumed"):
+        admission.consume_scheduler_launch_claim(claim)
+
+
+def test_scheduler_claim_refuses_consumption_after_attempt_stops(tmp_path):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id,
+            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+        ))
+
+    scheduler.reserve_model_turn(
+        run_id, job["assignment_id"], job["attempt_id"], persist_receipt=persist,
+    )
+    claim = claims[0]
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET state='failed' WHERE assignment_id=?",
+                   (job["assignment_id"],))
+    with pytest.raises(ValueError, match="no longer the claimed running attempt"):
+        admission.consume_scheduler_launch_claim(claim)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
 
 
 @pytest.mark.parametrize("defect", ["assignment", "attempt", "reservation", "prompt"])

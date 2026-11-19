@@ -682,6 +682,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if final_handoff_call_limit is not None:
             kwargs["output_schema"] = final_handoff_schema() if final_call else DECISION_SCHEMA
         if token_claim is not None:
+            if study_token_admission is None:
+                raise ValueError("native launch claim has no admission controller")
+            study_token_admission.consume_scheduler_launch_claim(token_claim)
             turn = runner.run_admitted(  # type: ignore[attr-defined]
                 prompt, model=selected, timeout=timeout, should_stop=stopped,
                 images=list(attached.values()) or None, token_claim=token_claim, **kwargs,

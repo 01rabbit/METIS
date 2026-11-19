@@ -218,6 +218,7 @@ def test_private_launch_verifies_terminal_receipt_and_keeps_full_charge(tmp_path
     )
     assert (outcome.status, outcome.exit_status, outcome.observed_work) == (status, exit_status, work)
     with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchall() == [(1,)]
         assert db.execute(
             "SELECT status, exit_status, observed_work, native_manifest_sha256 FROM study_token_outcomes"
         ).fetchall() == [
@@ -293,6 +294,8 @@ def test_failed_spawn_keeps_claim_and_records_terminal_failure(tmp_path, monkeyp
     monkeypatch.setattr(fixture.subprocess, "Popen", fail)
     outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     assert outcome.status == "launch_failed"
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
     with pytest.raises(ValueError, match="already claimed"):
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 

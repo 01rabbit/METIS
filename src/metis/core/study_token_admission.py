@@ -114,6 +114,7 @@ _SCHEMA = (
     """CREATE INDEX IF NOT EXISTS study_token_attempts_by_study ON study_token_attempts(study_id)""",
     """CREATE TABLE IF NOT EXISTS study_token_launches (
         run_id TEXT NOT NULL, turn_reservation_id INTEGER NOT NULL, nonce TEXT NOT NULL UNIQUE,
+        consumed INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),
         PRIMARY KEY (run_id, turn_reservation_id),
         FOREIGN KEY (run_id, turn_reservation_id)
             REFERENCES study_token_attempts(run_id, turn_reservation_id)
@@ -127,9 +128,14 @@ _SCHEMA = (
 )
 
 
-_MANIFEST_MIGRATIONS = (
-    ("study_token_pins", "ALTER TABLE study_token_pins ADD COLUMN native_manifest_sha256 TEXT"),
-    ("study_token_outcomes", "ALTER TABLE study_token_outcomes ADD COLUMN native_manifest_sha256 TEXT"),
+_COLUMN_MIGRATIONS = (
+    ("study_token_pins", "native_manifest_sha256",
+     "ALTER TABLE study_token_pins ADD COLUMN native_manifest_sha256 TEXT"),
+    ("study_token_outcomes", "native_manifest_sha256",
+     "ALTER TABLE study_token_outcomes ADD COLUMN native_manifest_sha256 TEXT"),
+    ("study_token_launches", "consumed",
+     ("ALTER TABLE study_token_launches ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0 "
+      "CHECK (consumed IN (0, 1))")),
 )
 
 
@@ -137,12 +143,15 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     for statement in _SCHEMA:
         db.execute(statement)
     # Legacy reservations stay charged and unpinned; this migration cannot
-    # promote them into a held-out native launch.
-    for table, statement in _MANIFEST_MIGRATIONS:
+    # promote them into a held-out native launch. Existing launch claims are
+    # marked consumed so migration cannot make an old claim launchable again.
+    for table, column, statement in _COLUMN_MIGRATIONS:
         if db.execute(
-            "SELECT 1 FROM pragma_table_info(?) WHERE name='native_manifest_sha256'", (table,),
+            "SELECT 1 FROM pragma_table_info(?) WHERE name=?", (table, column),
         ).fetchone() is None:
             db.execute(statement)
+            if table == "study_token_launches":
+                db.execute("UPDATE study_token_launches SET consumed=1")
 
 
 class StudyTokenAdmission:
@@ -328,6 +337,70 @@ class StudyTokenAdmission:
         )
         return claim
 
+    def consume_launch_claim(self, claim: TokenLaunchClaim) -> None:
+        """Atomically validate the persisted receipt and consume its claim once.
+
+        The native fixture controller calls this after staging and preflight.
+        A copied or replayed claim cannot start a second admitted invocation.
+        """
+        self._consume_launch_claim(claim, scheduler_bound=False)
+
+    def consume_scheduler_launch_claim(self, claim: TokenLaunchClaim) -> None:
+        """Consume a scheduler-bound claim only while its job and reservation remain live."""
+        self._consume_launch_claim(claim, scheduler_bound=True)
+
+    def _consume_launch_claim(self, claim: TokenLaunchClaim, *, scheduler_bound: bool) -> None:
+        receipt = TokenLaunchClaim.model_validate(claim)
+        study, slot, attempt = receipt.receipt.study, receipt.receipt.slot, receipt.receipt.attempt
+        with self._transaction() as db:
+            if scheduler_bound:
+                self._require_current_scheduler_turn(db, receipt.receipt)
+            row = db.execute(
+                "SELECT p.protocol_sha256,p.runtime_sha256,p.model_sha256,p.token_limit,"
+                "p.native_manifest_sha256,s.task_id,s.repetition,s.arm,s.token_limit,"
+                "a.assignment_id,a.attempt_id,a.prompt_sha256,a.tokens,"
+                "l.run_id,l.turn_reservation_id,l.nonce,l.consumed "
+                "FROM study_token_launches l "
+                "JOIN study_token_attempts a ON a.run_id=l.run_id "
+                "AND a.turn_reservation_id=l.turn_reservation_id "
+                "JOIN study_token_slots s ON s.run_id=a.run_id "
+                "JOIN study_token_pins p ON p.study_id=s.study_id "
+                "WHERE l.nonce=?",
+                (receipt.nonce,),
+            ).fetchone()
+            expected = (
+                study.protocol_sha256, study.runtime_sha256, study.model_sha256, study.token_limit,
+                study.native_manifest_sha256, slot.task_id, slot.repetition, slot.arm, slot.token_limit,
+                attempt.assignment_id, attempt.attempt_id, attempt.prompt_sha256, attempt.tokens,
+                slot.run_id, attempt.turn_reservation_id, receipt.nonce,
+            )
+            if row is None or row[:16] != expected or row[16] != 0:
+                raise ValueError("native launch claim is invalid or already consumed")
+            changed = db.execute(
+                "UPDATE study_token_launches SET consumed=1 WHERE run_id=? AND turn_reservation_id=? "
+                "AND nonce=? AND consumed=0",
+                (slot.run_id, attempt.turn_reservation_id, receipt.nonce),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("native launch claim is invalid or already consumed")
+
+    @staticmethod
+    def _require_current_scheduler_turn(db: sqlite3.Connection,
+                                        receipt: TokenAdmissionReceipt) -> None:
+        slot, attempt = receipt.slot, receipt.attempt
+        job = db.execute(
+            "SELECT run_id,state,attempt_id FROM agent_jobs WHERE assignment_id=?",
+            (attempt.assignment_id,),
+        ).fetchone()
+        if job != (slot.run_id, "running", attempt.attempt_id):
+            raise ValueError("scheduler job is no longer the claimed running attempt")
+        reservation = db.execute(
+            "SELECT run_id,assignment_id,attempt_id FROM agent_turn_reservations WHERE id=?",
+            (attempt.turn_reservation_id,),
+        ).fetchone()
+        if reservation != (slot.run_id, attempt.assignment_id, attempt.attempt_id):
+            raise ValueError("scheduler turn reservation no longer matches the claim")
+
     def reserve(
         self, study: StudyTokenPin, slot: SlotTokenPin, attempt: TokenAttempt,
     ) -> TokenAdmissionReceipt:
@@ -439,11 +512,13 @@ class StudyTokenAdmission:
         with self._transaction() as db:
             self._require_committed_receipt(db, receipt)
             stored = db.execute(
-                "SELECT nonce FROM study_token_launches WHERE run_id = ? AND turn_reservation_id = ?",
+                "SELECT nonce,consumed FROM study_token_launches WHERE run_id = ? AND turn_reservation_id = ?",
                 (receipt.slot.run_id, receipt.attempt.turn_reservation_id),
             ).fetchone()
-            if stored != (claim.nonce,):
+            if stored is None or stored[0] != claim.nonce:
                 raise ValueError("token launch claim does not match committed nonce")
+            if stored[1] != 1:
+                raise ValueError("token launch claim has not been consumed")
 
             inserted = db.execute(
                 """INSERT INTO study_token_outcomes (nonce, status, exit_status, observed_work, native_manifest_sha256)

@@ -33,8 +33,13 @@ reads the held-out binding, current running job, exact `agent_turn_reservations`
 row, model/runtime selection, run budget and applied-arm event. It derives the
 study/slot pins from those records and stores only the SHA-256 of the exact
 rendered prompt. A mismatch rolls back the scheduler turn and token receipt
-before any runner call. Replays cannot charge or claim the same reservation
-twice. A timeout or failed admitted runner leaves both charges intact.
+before any runner call. Immediately before `run_admitted`, the controller
+revalidates the full receipt, confirms the scheduler job and reservation remain
+current, and atomically marks the claim consumed; replay and concurrent
+consumers fail. A timeout or failed admitted runner leaves both charges intact.
+The future runner hook will receive a controller-consumed claim and must only be
+reachable through this controller; direct or replayed invocation is outside the
+supported path.
 
 The protocol may include an approved `native_manifest_sha256`; the native
 admission path refuses to reserve a turn when it is absent. The bookkeeping
@@ -46,4 +51,5 @@ measured token usage and not proof of a provider hard cap. The successful fake-r
 only controller plumbing. No production runner currently implements
 `run_admitted`, `LlamaSpecialist.hard_token_budget_enforced` remains false, and
 no model was launched. Real-model held-out execution remains refused until a
-reviewed runner consumes the claim and establishes its own pre-dispatch bound.
+reviewed runner accepts only a controller-consumed claim and establishes its
+own pre-dispatch token bound.
