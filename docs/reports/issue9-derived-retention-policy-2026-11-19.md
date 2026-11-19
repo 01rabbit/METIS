@@ -39,6 +39,8 @@ PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -q t
 All checks passed!
 /Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py
 Success: no issues found in 3 source files
+PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -ra
+1525 passed, 37 skipped, 45 subtests passed in 206.81s
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python scripts/check_repo.py
 {"status": "passed", "findings": 0}
 git diff --check
