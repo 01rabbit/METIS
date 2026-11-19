@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -9,7 +10,12 @@ import pytest
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
 from metis.core.runtime import ToolRequest
-from metis.core.store import RunStore
+from metis.core.store import (
+    MAX_AUDIT_ARTIFACTS,
+    MAX_AUDIT_MANIFEST_BYTES,
+    MAX_AUDIT_MANIFEST_DEPTH,
+    RunStore,
+)
 
 
 def audit(database: Path, run_id: str) -> subprocess.CompletedProcess[str]:
@@ -124,6 +130,9 @@ def test_audit_includes_run_scoped_mutable_operational_snapshot_without_private_
         "registered_sandbox_workers": {"available": True, "count": 1},
         "pending_candidates": {"available": True, "count": 1},
         "model_usage": {"available": False},
+        "artifact_inventory": {"available": True, "registered_artifacts": 0,
+                               "registered_derived": 0, "registered_added": 0,
+                               "registered_other": 0, "filesystem_verified": False},
     }
     assert "private-" not in result.stdout + result.stderr
     assert audit(database, run_id).stdout == result.stdout
@@ -237,6 +246,8 @@ def test_audit_operational_counts_share_the_event_chain_snapshot(tmp_path):
         if selected_run == run_id and not written:
             with sqlite3.connect(database) as writer:
                 writer.execute("UPDATE agent_jobs SET state='completed' WHERE run_id=?", (run_id,))
+                writer.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                               (json.dumps({"artifacts": ["new-after-snapshot.txt"]}), run_id))
             written = True
         return events
 
@@ -244,8 +255,10 @@ def test_audit_operational_counts_share_the_event_chain_snapshot(tmp_path):
     summary = store.audit_summary(run_id)
     assert written is True
     assert summary["operational_state"]["agent_job_states"]["counts"]["queued"] == 1
+    assert summary["operational_state"]["artifact_inventory"]["registered_artifacts"] == 0
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT state FROM agent_jobs WHERE run_id=?", (run_id,)).fetchone()[0] == "completed"
+    assert store.audit_summary(run_id)["operational_state"]["artifact_inventory"]["registered_artifacts"] == 1
 
 
 @pytest.mark.parametrize("invalid", [0, -1, 1.5, "private-budget-omitted"])
@@ -263,3 +276,185 @@ def test_audit_budget_rejects_invalid_configuration_without_echo_or_write(tmp_pa
     assert "private-budget-omitted" not in result.stderr
     assert "Traceback" not in result.stderr
     assert database.read_bytes() == before
+
+
+def inventory_fixture(tmp_path, raw):
+    database = tmp_path / "runs.sqlite"
+    store = RunStore(database)
+    store.append(RunEvent(run_id="inventory", sequence=0, status=RunStatus.NEW))
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE codex_sessions (run_id TEXT PRIMARY KEY, manifest TEXT, "
+                   "max_actions INTEGER, wall_seconds INTEGER)")
+        db.execute("INSERT INTO codex_sessions VALUES ('inventory', ?, 2, 60)", (raw,))
+    return database
+
+
+def test_inventory_counts_only_registrations_without_artifact_access_or_writes(tmp_path, monkeypatch):
+    derived = ".metis-derived/" + "a" * 32 + ".bin"
+    paths = ["private-sentinel-original.txt", ".metis-added/private-sentinel-added.txt", derived,
+             "nested/private-sentinel-missing.txt"]
+    database = inventory_fixture(tmp_path, json.dumps({"artifacts": paths,
+                                                      "description": "private-sentinel-description"}))
+    artifact_root = tmp_path / "private-sentinel-root"
+    artifact_root.mkdir()
+    artifact = artifact_root / "private-sentinel-file"
+    artifact.write_text("private-sentinel-content")
+    # Neither registered paths nor artifact_root are consulted, even if missing,
+    # unrelated, or replaced by an inaccessible filesystem entry.
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE codex_sessions ADD COLUMN artifact_root TEXT")
+        db.execute("UPDATE codex_sessions SET artifact_root=?", (str(artifact_root),))
+        db.execute("INSERT INTO codex_sessions VALUES ('other', ?, 2, 60, ?)",
+                   ('private-sentinel-malformed-other-run', "private-sentinel-other-root"))
+        schema_before = db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+        dump_before = list(db.iterdump())
+    before = {path.relative_to(tmp_path): path.read_bytes()
+              for path in tmp_path.rglob("*") if path.is_file()}
+    entries_before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("audit must not open artifacts, initialize a session, or acquire locks")
+
+    original_stat = os.stat
+    database_paths = {database, database.resolve()}
+
+    def database_stat_only(path, *args, **kwargs):
+        if Path(path) not in database_paths:
+            forbidden()
+        return original_stat(path, *args, **kwargs)
+
+    from metis.core import run_lock
+    with monkeypatch.context() as guarded:
+        guarded.setattr(os, "open", forbidden)
+        guarded.setattr(os, "stat", database_stat_only)
+        guarded.setattr(os, "listdir", forbidden)
+        guarded.setattr(os, "scandir", forbidden)
+        guarded.setattr(Path, "open", forbidden)
+        guarded.setattr(CodexSession, "__init__", forbidden)
+        guarded.setattr(run_lock, "run_lock", forbidden)
+        guarded.setattr(run_lock, "operation_lock", forbidden)
+        summary = RunStore(database, read_only=True).audit_summary("inventory")
+    inventory = summary["operational_state"]["artifact_inventory"]
+    assert inventory == {"available": True, "registered_artifacts": 4,
+                         "registered_derived": 1, "registered_added": 1,
+                         "registered_other": 2, "filesystem_verified": False}
+    assert "private-sentinel" not in json.dumps(summary)
+    result = audit(database, "inventory")
+    assert result.returncode == 0, result.stderr
+    assert "private-sentinel" not in result.stdout + result.stderr
+    assert json.loads(result.stdout)["operational_state"]["artifact_inventory"] == inventory
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == entries_before
+    assert {path.relative_to(tmp_path): path.read_bytes()
+            for path in tmp_path.rglob("*") if path.is_file()} == before
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall() == schema_before
+        assert list(db.iterdump()) == dump_before
+
+
+def test_inventory_zero_and_item_limit(tmp_path):
+    database = inventory_fixture(tmp_path, '{"artifacts": []}')
+    inventory = RunStore(database, read_only=True).audit_summary("inventory")["operational_state"]["artifact_inventory"]
+    assert inventory == {"available": True, "registered_artifacts": 0,
+                         "registered_derived": 0, "registered_added": 0,
+                         "registered_other": 0, "filesystem_verified": False}
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=?",
+                   (json.dumps({"artifacts": [f"{n}.bin" for n in range(MAX_AUDIT_ARTIFACTS)]}),))
+    result = audit(database, "inventory")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["operational_state"]["artifact_inventory"]["registered_artifacts"] == MAX_AUDIT_ARTIFACTS
+
+
+@pytest.mark.parametrize("raw", [
+    None, b'{"artifacts": []}', "private-sentinel-not-json", "null", "[]", "{}",
+    '{"artifacts": null}', '{"artifacts": "private-sentinel"}',
+    '{"artifacts": {"private-sentinel": {}}}',
+    '{"artifacts": [false]}', '{"artifacts": [1]}', '{"artifacts": [{}]}',
+    '{"artifacts": [], "artifacts": ["private-sentinel"]}',
+    '{"artifacts": [], "private-sentinel": {"nested": 1, "nested": 2}}',
+    '{"artifacts": [], "private-sentinel": NaN}',
+    '{"artifacts": [], "private-sentinel": Infinity}',
+    '{"artifacts": ["private-sentinel", "private-sentinel"]}',
+    '{"artifacts": []' + ",\"private-sentinel\":" + "[" * 1100 + "0" + "]" * 1100 + "}",
+    json.dumps({"artifacts": [f"{n}.bin" for n in range(MAX_AUDIT_ARTIFACTS + 1)]}),
+    json.dumps({"artifacts": [], "private-sentinel": "x" * MAX_AUDIT_MANIFEST_BYTES}),
+    json.dumps({"artifacts": [], "private-sentinel": "\u3042" * (MAX_AUDIT_MANIFEST_BYTES // 2)}, ensure_ascii=False),
+], ids=lambda raw: type(raw).__name__)
+def test_inventory_rejects_malformed_or_oversized_manifest_safely(tmp_path, raw):
+    database = inventory_fixture(tmp_path, raw)
+    before = database.read_bytes()
+    result = audit(database, "inventory")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "run audit unavailable or corrupt\n"
+    assert database.read_bytes() == before
+    with pytest.raises(ValueError, match="^artifact inventory unavailable or corrupt$"):
+        RunStore(database, read_only=True).audit_summary("inventory")
+
+
+@pytest.mark.parametrize("path", [
+    "", ".", "..", "/private-sentinel", "../private-sentinel", "dir/../private-sentinel",
+    "dir/./private-sentinel", "./private-sentinel", "dir//private-sentinel", "private-sentinel/",
+    "private-sentinel\x00", "private-sentinel\ud800", "dir\\private-sentinel", "C:private-sentinel", "C:/private-sentinel",
+    ".metis-derived", ".metis-derived/private-sentinel.bin",
+    ".metis-derived/" + "a" * 32 + ".bin/private-sentinel",
+    ".metis-derived/" + "A" * 32 + ".bin", ".metis-derived/" + "a" * 32 + ".BIN",
+    ".metis-added", ".metis-added/nested/private-sentinel",
+])
+def test_inventory_rejects_unexpected_paths_without_disclosing_them(tmp_path, path):
+    database = inventory_fixture(tmp_path, json.dumps({"artifacts": [path]}))
+    result = audit(database, "inventory")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "run audit unavailable or corrupt\n"
+
+
+def test_inventory_byte_bound_includes_exact_limit(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    # A legacy UTF-16 database must not bypass the separate UTF-8 byte bound.
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA encoding='UTF-16'")
+        db.execute("CREATE TABLE legacy_encoding_marker (unused INTEGER)")
+    database = inventory_fixture(tmp_path, json.dumps({"artifacts": [], "padding": "\u3042" * 400_000},
+                                                      ensure_ascii=False))
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT length(CAST(manifest AS BLOB)) FROM codex_sessions").fetchone()[0] < MAX_AUDIT_MANIFEST_BYTES
+    assert audit(database, "inventory").returncode == 2
+    raw = '{"artifacts": [], "padding": ""}'
+    raw = raw.replace('"padding": ""', '"padding": "' + "x" * (MAX_AUDIT_MANIFEST_BYTES - len(raw)) + '"')
+    assert len(raw.encode()) == MAX_AUDIT_MANIFEST_BYTES
+    # Exact ASCII byte boundary on a normal UTF-8 database.
+    utf8_dir = tmp_path / "utf8"
+    utf8_dir.mkdir()
+    database = inventory_fixture(utf8_dir, raw)
+    assert audit(database, "inventory").returncode == 0
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=?", (raw + " ",))
+    assert audit(database, "inventory").returncode == 2
+
+
+def test_inventory_depth_bound_respects_quoted_brackets_and_escapes(tmp_path):
+    quoted = json.dumps('private-sentinel' + '[]{}\\"' * 100)
+    raw = ('{"artifacts": [], "quoted": ' + quoted + ', "nested": '
+           + '[' * (MAX_AUDIT_MANIFEST_DEPTH - 1) + '0'
+           + ']' * (MAX_AUDIT_MANIFEST_DEPTH - 1) + '}')
+    database = inventory_fixture(tmp_path, raw)
+    assert audit(database, "inventory").returncode == 0
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=?", (raw.replace('"nested": ', '"nested": [').removesuffix('}') + ']}',))
+    result = audit(database, "inventory")
+    assert result.returncode == 2
+    assert result.stderr == "run audit unavailable or corrupt\n"
+
+
+def test_inventory_legacy_schema_and_missing_session_are_unavailable(tmp_path):
+    database = inventory_fixture(tmp_path, '{"artifacts": []}')
+    store = RunStore(database, read_only=True)
+    RunStore(database).append(RunEvent(run_id="no-session", sequence=0, status=RunStatus.NEW))
+    assert store.audit_summary("no-session")["operational_state"]["artifact_inventory"] == {"available": False}
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE codex_sessions DROP COLUMN manifest")
+    before = database.read_bytes()
+    assert store.audit_summary("inventory")["operational_state"]["artifact_inventory"] == {"available": False}
+    assert database.read_bytes() == before
+    assert store.audit_summary("no-session")["operational_state"]["artifact_inventory"] == {"available": False}
