@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from metis.core.codex_isolation import (
     self_test,
     wrap,
 )
-from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI
+from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI, CodexTurn
 
 VERSION = "0.169.0"
 NATIVE_SHA256 = "739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002"
@@ -36,6 +37,12 @@ class PilotCodex(CodexCLI):
         if self.protected is not None or self.cyber_program is not None:
             raise RuntimeError("Issue #6 requires the default protected roots and standard runtime access")
         return version
+
+    def run(self, prompt: str, *, model: str | None, timeout: float,
+            should_stop: Callable[[], bool] | None = None,
+            images: list[tuple[str, bytes]] | None = None,
+            output_schema: dict[str, Any] | None = None) -> CodexTurn:
+        raise RuntimeError("pilot Codex execution is disabled; offline preflight only")
 
     def argv(self, workdir: Path, schema: Path, output: Path, model: str | None) -> list[str]:
         command = super().argv(workdir, schema, output, model)

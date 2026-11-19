@@ -2,8 +2,9 @@
 
 This follow-up implements the model-free preflight for the [build-triage
 proposal](issue6-build-triage-study-proposal-2026-11-19.md). It has no real-model
-arm. The calibration entry point rejects CodexCLI until a separate reviewed
-execution admission is wired in.
+arm. The controller only consumes built-in fixed response data and rejects
+external runner objects, including CodexCLI wrappers. The pinned preflight
+adapter also rejects model execution.
 
 ## What rehearsal tests
 
@@ -21,21 +22,28 @@ path with the same scripted provisional output, and has no evaluation launcher.
 
 Each phase gets one reserved call in the actual METIS scheduler, one structured
 handoff at most, and a monotonic deadline. A controller-generated ledger report
-records an accepted handoff without containing model output. No agent tool or
+records an accepted handoff without containing model output. The action count
+is the number of accepted controller handoffs, reconciled to assignment and
+attempt reports. It is distinct from generic session intent/action accounting. No agent tool or
 generic controller-intent interface is granted in this workflow. Phase one
 accepts an option ID and a separate strict 384-byte private note. Phase two
 accepts only an option ID. The verifier receives only the final option and
 runs once after two completed handoffs. No verifier feedback enters a prompt.
-The 60-second per-phase ceiling is provisional. Evaluate preflight overhead
+The 60-second per-phase deadline is a controller check, with no claimed
+hard cohort wall or subprocess cleanup bound. Evaluate preflight overhead
 and the timeout risk for the largest tier before a real launch. If runtime
 timeouts jeopardize the calibration completion threshold, disclose that
 feasibility result before freezing any revised run design.
 
 The exact UTF-8 prompt and canonical fixture bytes are committed using keyed
 HMAC receipts before invocation. The receipt is tied to a scheduler call
-reservation and strict output schema. These are controller-side commitments,
-without provider attestation. A private in-memory work note is not saved.
-The ledger and outcome records contain no option IDs, note, raw prompt,
+reservation and strict output schema. Each finished receipt is reconciled
+against the reservation, phase, assignment, attempt, terminal job state,
+and handoff report. Reservation and initial receipt are separate transactions.
+These are controller commitments without provider attestation. The scripted
+controller does not save note contents. A live CodexCLI can write last-message
+and CODEX_HOME data, so live retention and cleanup require their own canary.
+The scripted ledger and outcome records contain no option IDs, note, raw prompt,
 oracle values or case seeds. Random case labels do not encode fixture hashes.
 Retain the 32-byte seed key in private operator storage outside the rehearsal
 root until the agreed audit expiry. The controller derives seeds and order
@@ -50,10 +58,12 @@ identifies exactly one allowed option. It abstains on other cases.
 
 A calibration claims a fresh private directory exclusively. A repeated call
 against that directory is refused whether the previous run completed or was
-interrupted. An unfinished prelaunch receipt is deliberately preserved on
-exceptions and cannot be resumed through the rehearsal entry point. Before
-real execution, the launch authorizer must also prevent replay using the same
-approval in a different directory. No operator override or resume path ships
+interrupted. A controlled scripted interruption records a terminal failure. A process
+crash can leave a missing or nonterminal receipt. Either interruption makes
+the existing root ineligible for resume. Before real execution, verify one-shot admission across directories,
+atomic call-and-receipt admission, an outer cohort watchdog, live retention,
+and the persisted action/finalizer join. No authority or token exists for a
+live launch in this draft. No operator override or resume path ships
 here.
 
 ## Offline CodexCLI and Seatbelt preflight
@@ -71,8 +81,8 @@ feature arguments, and exercises Seatbelt deny controls against private paths,
 process creation and network egress. The proxy canary refuses the other
 host locally. It does not call a model or exercise live model-triggered tool
 routing. A future authorized runtime canary must record any tool exposure
-before a calibration is admitted. The runtime rejects tool event items and
-router errors, and calibration halts on a tool-policy failure.
+before a calibration is admitted. The rehearsal rejects injected tool events and router errors and halts on a
+tool-policy failure. This is a test of controller handling.
 
 Only after review and separate launch admission can the fixed 36-case,
 single-only calibration run. Its total cap is 72 calls and its purpose is to

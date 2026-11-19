@@ -10,12 +10,12 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, final
 
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
-from metis.core.codex_specialist import CodexCLI, CodexTurn
+from metis.core.codex_specialist import CodexTurn
 
 from .issue6_build_artifact import (
     _strict_object,
@@ -33,10 +33,35 @@ TIERS: tuple[Difficulty, ...] = ("small", "medium", "large")
 Workflow = Literal["owner_note", "fresh_reviewer"]
 
 
-class PilotRunner(Protocol):
-    def run(self, prompt: str, *, model: str | None, timeout: float,
-            should_stop: Callable[[], bool] | None = None,
-            output_schema: dict[str, Any] | None = None) -> CodexTurn: ...
+@final
+class ScriptedTurns:
+    """Only prerecorded in-process data is accepted by the offline controller."""
+
+    __slots__ = ("_turns", "prompts", "schemas", "timeouts")
+
+    def __init__(self, *turns: str | CodexTurn | None):
+        if any(type(turn) not in {str, CodexTurn, type(None)} for turn in turns):
+            raise TypeError("offline script entries must be fixed response data")
+        self._turns = iter(turns)
+        self.prompts: list[str] = []
+        self.schemas: list[dict[str, Any]] = []
+        self.timeouts: list[float] = []
+
+    def _next_turn(self, prompt: str, schema: dict[str, Any], timeout: float) -> CodexTurn:
+        self.prompts.append(prompt)
+        self.schemas.append(schema)
+        self.timeouts.append(timeout)
+        output = next(self._turns, None)
+        if output is None:
+            raise RuntimeError("offline response script interrupted")
+        if isinstance(output, CodexTurn):
+            return output
+        return CodexTurn(0, output, usage={"input_tokens": 10, "output_tokens": 2})
+
+
+def _require_scripted(runner: ScriptedTurns) -> None:
+    if type(runner) is not ScriptedTurns:
+        raise TypeError("offline rehearsal accepts only built-in scripted responses")
 
 
 @dataclass(frozen=True)
@@ -106,8 +131,8 @@ def _prompt(artifact: bytes, prior: tuple[str, str] | None, workflow: Workflow) 
         context = {"provisional_option_id": prior[0]}
         if workflow == "owner_note":
             context["prior_work_note"] = prior[1]
-    return (instruction + " Follow the phase output schema; the fixture supplies task rules and evidence. "
-            + "Use only this message. No tools are available.\n"
+    return (instruction + " Return one JSON object with exactly the fields required by this phase. "
+            + "The fixture supplies task rules and evidence. Use only this message. No tools are available.\n"
             + "Review context: " + _json(context) + "\nPublic fixture: " + artifact.decode("ascii"))
 
 
@@ -123,11 +148,45 @@ def _one_assignment(plan: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
-def _charge_receipt(database: Path, run_id: str, receipt: PhaseReceipt, *, terminal: bool = False) -> None:
+def _prepare_receipts(database: Path) -> None:
     with sqlite3.connect(database) as db:
         db.execute("""CREATE TABLE IF NOT EXISTS issue6_build_pilot_receipts (
             run_id TEXT NOT NULL, phase INTEGER NOT NULL, reservation INTEGER NOT NULL UNIQUE,
             payload TEXT NOT NULL, PRIMARY KEY (run_id, phase))""")
+
+
+def _reconcile(database: Path, run_id: str, receipts: list[PhaseReceipt], actions: int) -> None:
+    expected = [
+        (
+            item.reservation, item.phase, _json(asdict(item)),
+            "completed" if item.outcome == "accepted" else "failed", int(item.outcome == "accepted"),
+        )
+        for item in receipts
+    ]
+    with sqlite3.connect(database) as db:
+        recorded = db.execute("""
+            SELECT turns.id, receipts.phase, receipts.payload, jobs.state,
+                (SELECT COUNT(*) FROM ctf_agent_reports reports
+                WHERE reports.run_id = turns.run_id AND reports.assignment_id = turns.assignment_id
+                    AND reports.attempt_id = turns.attempt_id)
+            FROM agent_turn_reservations turns
+            JOIN agent_jobs jobs ON jobs.assignment_id = turns.assignment_id
+                AND jobs.attempt_id = turns.attempt_id AND jobs.run_id = turns.run_id
+            LEFT JOIN issue6_build_pilot_receipts receipts ON receipts.reservation = turns.id
+                AND receipts.run_id = turns.run_id
+            WHERE turns.run_id = ?
+            ORDER BY turns.id
+        """, (run_id,)).fetchall()
+        report_count, = db.execute("SELECT COUNT(*) FROM ctf_agent_reports WHERE run_id = ?", (run_id,)).fetchone()
+        receipt_count, = db.execute(
+            "SELECT COUNT(*) FROM issue6_build_pilot_receipts WHERE run_id = ?", (run_id,),
+        ).fetchone()
+    if recorded != expected or report_count != actions or receipt_count != len(receipts):
+        raise RuntimeError("pilot phase, reservation or report evidence does not reconcile")
+
+
+def _charge_receipt(database: Path, run_id: str, receipt: PhaseReceipt, *, terminal: bool = False) -> None:
+    with sqlite3.connect(database) as db:
         if terminal:
             prior = replace(receipt, input_tokens=None, output_tokens=None, outcome="launching")
             changed = db.execute(
@@ -151,9 +210,10 @@ def _mac(key: bytes, domain: bytes, data: bytes) -> str:
     return hmac.digest(key, domain + b"\0" + data, "sha256").hex()
 
 
-def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: PilotRunner,
+def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: ScriptedTurns,
              model: str, receipt_key: bytes, workflow: Workflow,
              *, clock: Callable[[], float] = time.monotonic) -> ArmResult:
+    _require_scripted(runner)
     if workflow not in {"owner_note", "fresh_reviewer"}:
         raise ValueError("unknown reviewer workflow")
     directory.mkdir(mode=0o700, exist_ok=False)
@@ -162,11 +222,12 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Pilot
     scheduler = AgentScheduler(database, BridgeHost())
     # Scheduler initialization owns several tables; explicitly restrict the file.
     database.chmod(0o600)
+    _prepare_receipts(database)
     scheduler.configure(global_slots=1, per_run_slots=1, specialist_turn_budget=MAX_PHASES,
                         catalog=[{"id": model, "tier": "standard"}], current_model=model,
                         memory_retrieval=False)
     source = directory / "public.json"
-    artifact = canonical_artifact(fixture)
+    artifact = canonical_artifact(fixture, include_submission_rule=False)
     source.write_bytes(artifact)
     session = CodexSession(database)
     run_id = session.intake(title="Synthetic build diagnosis", description="Diagnose a synthetic build.",
@@ -219,11 +280,15 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Pilot
             receipts.append(receipt)
             scheduler.fail(assignment, attempt, "deadline after reservation")
             break
-        turn = runner.run(prompt, model=model, timeout=timeout, should_stop=should_stop, output_schema=schema)
-        if isinstance(runner, CodexCLI) and turn.isolation.get("mode") != "seatbelt":
-            raise RuntimeError("pilot Codex turn lacks the required Seatbelt boundary")
+        try:
+            turn = ScriptedTurns._next_turn(runner, prompt, schema, timeout)
+        except RuntimeError:
+            receipt = replace(receipt, outcome="script_interrupted")
+            _charge_receipt(database, run_id, receipt, terminal=True)
+            scheduler.fail(assignment, attempt, receipt.outcome)
+            raise
         diagnosis = None
-        if turn.violations() or turn.tool_errors:
+        if CodexTurn.violations(turn) or turn.tool_errors:
             outcome = "tool_policy"
         elif turn.timed_out or turn.stopped or should_stop():
             outcome = "deadline_or_cancelled"
@@ -265,6 +330,7 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Pilot
     budget = scheduler.model_turn_budget(run_id)
     if budget is None or budget["reserved"] != len(receipts):
         raise RuntimeError("pilot model-call receipts do not reconcile")
+    _reconcile(database, run_id, receipts, actions)
     complete = actions == MAX_PHASES and checks == 1 and not should_stop()
     return ArmResult(case_id, run_id, complete, complete and verified, actions, budget["reserved"],
                      checks, round((clock() - started) * 1000), tuple(receipts))
@@ -293,10 +359,9 @@ def _direct_slow_baseline(fixture: BuildFixture) -> Cause | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def run_calibration(root: Path, runner: PilotRunner, model: str, study_key: bytes) -> dict[str, Any]:
+def run_calibration(root: Path, runner: ScriptedTurns, model: str, study_key: bytes) -> dict[str, Any]:
     """Rehearse the fixed 36-case calibration in a non-reusable private root."""
-    if isinstance(runner, CodexCLI):
-        raise TypeError("real pilot launch is disabled pending review of execution admission")
+    _require_scripted(runner)
     if len(study_key) < 32:
         raise ValueError("study key requires at least 32 private bytes")
     root.mkdir(mode=0o700, exist_ok=False)
@@ -327,7 +392,7 @@ def run_calibration(root: Path, runner: PilotRunner, model: str, study_key: byte
         raise ValueError("calibration contains a repeated jobs DAG")
     case_ids = [secrets.token_hex(16) for _ in fixtures]
     commitment = _mac(study_key, b"calibration", b"\n".join(
-        case_id.encode() + b"\0" + canonical_artifact(fixture)
+        case_id.encode() + b"\0" + canonical_artifact(fixture, include_submission_rule=False)
         for case_id, (_, fixture) in zip(case_ids, fixtures, strict=True)
     ))
     (root / "claim.json").write_text(_json({"commitment": commitment, "model": model, "cases": case_ids}))
