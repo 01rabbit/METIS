@@ -32,6 +32,16 @@ from metis.core.runtime import ToolRequest
 from metis.core.store import RunStore
 
 NATIVE_TOOLS = DATA_TOOLS
+MAX_DERIVED_ARTIFACTS_PER_RUN = 100
+
+
+class DerivedArtifactLimitError(ValueError):
+    """Raised before mutation when a run exceeds the derived-artifact cap."""
+
+    def __init__(self, count: int):
+        self.count = count
+        self.limit = MAX_DERIVED_ARTIFACTS_PER_RUN
+        super().__init__("derived artifact count exceeds per-run limit")
 
 
 def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
@@ -549,6 +559,8 @@ class CodexSession:
             manifest = ChallengeManifest.model_validate_json(manifest_text)
             derived_paths = sorted(path for path in manifest.artifacts
                                    if path.startswith(".metis-derived/"))
+            if len(derived_paths) > MAX_DERIVED_ARTIFACTS_PER_RUN:
+                raise DerivedArtifactLimitError(len(derived_paths))
             expected_names: set[str] = set()
             for path in derived_paths:
                 name = path.removeprefix(".metis-derived/")

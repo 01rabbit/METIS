@@ -810,8 +810,11 @@ official #39 verdict remain open.
 selection and requires `--apply` for deletion. It reuses the locked per-run
 generated-artifact purge and reports blocked resumable runs. Only terminal
 `solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
-`planning` and extendable `exhausted` runs are preserved. This is a manual
-local retention control, not secure erasure or a complete P8 release gate. See
+`planning` and extendable `exhausted` runs are preserved. Each run is capped at
+100 registered derived artifacts; apply preflights the whole bounded batch under
+all selected run locks and skips deletion if any run exceeds the cap. Overflow
+reports counts and limits without artifact paths. This is a manual local
+retention control, not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
 
 ## Held-out protocol preparation (2026-11-19)
