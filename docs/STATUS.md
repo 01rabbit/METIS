@@ -767,3 +767,14 @@ generated-artifact purge and reports blocked resumable runs. Only terminal
 `planning` and extendable `exhausted` runs are preserved. This is a manual
 local retention control, not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
+
+## Held-out MUNIN snapshot prerequisite (2026-11-19)
+
+An explicit one-time snapshot can now expose selected pre-existing practice or
+competition technique cards to a held-out run before work starts. With no
+snapshot, held-out retrieval stays empty. This enables a prospective memory
+ablation but provides no benchmark result yet. The selected AlpacaHack Rev
+tasks have no relevant card in the current store; an independent practice
+source, protocol commitment, repeated runs and official verdicts are still
+required. Issue #8 remains open. See
+`docs/reports/issue8-frozen-memory-preflight-2026-11-19.md`.

@@ -55,6 +55,9 @@ class KnowledgeBase:
                 id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL,
                 summary TEXT NOT NULL, evidence TEXT NOT NULL, next_step TEXT NOT NULL,
                 created REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS heldout_memory_snapshots (
+                run_id TEXT NOT NULL, card_id INTEGER NOT NULL, payload TEXT NOT NULL,
+                digest TEXT NOT NULL, PRIMARY KEY(run_id, card_id))""")
             try:
                 db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS munin_fts USING fts5(title, summary, conditions, failure_reason)")
                 self.fts = True
@@ -140,7 +143,23 @@ class KnowledgeBase:
         encoded blobs are removed before keyword search.
         """
         context = self.session.context(run_id)
-        if context.get("evaluation_split") not in {"practice", "competition"}:
+        split = context.get("evaluation_split")
+        if split == "heldout":
+            if not 1 <= limit <= 20:
+                raise ValueError("invalid memory search bounds")
+            with sqlite3.connect(self.database) as db:
+                rows = db.execute(
+                    "SELECT card_id,payload,digest FROM heldout_memory_snapshots WHERE run_id=? "
+                    "ORDER BY card_id", (run_id,),
+                ).fetchall()
+            if any(hashlib.sha256(payload.encode()).hexdigest() != checksum
+                   for _, payload, checksum in rows):
+                raise ValueError("held-out memory snapshot digest mismatch")
+            return [{"id": identity, "card": json.loads(payload),
+                     "treat_as": "frozen prior experience; check applicability"}
+                    for identity, payload, _ in rows
+                    if category is None or json.loads(payload).get("category") == category][:limit]
+        if split not in {"practice", "competition"}:
             return []
         safe_query = re.sub(r"[A-Za-z0-9_]{1,32}\{[^{}\r\n]{1,200}\}|(?:FLAG|flag)_[^\s<>\"']{4,200}",
                             " ", query)
@@ -148,6 +167,34 @@ class KnowledgeBase:
                             " ", safe_query, flags=re.IGNORECASE)
         safe_query = re.sub(r"[A-Za-z0-9_+/=-]{48,}", " ", safe_query)
         return self.search(safe_query[:1000], category=category, limit=limit)
+
+    def freeze_for_heldout(self, run_id: str, card_ids: list[int]) -> dict:
+        """Copy selected prior cards once, before a held-out run has any work events."""
+        if self.session.context(run_id).get("evaluation_split") != "heldout":
+            raise ValueError("snapshot requires a held-out run")
+        if not 1 <= len(card_ids) <= 20 or len(card_ids) != len(set(card_ids)):
+            raise ValueError("invalid snapshot card selection")
+        events = self.session.store.read(run_id)
+        if [event.status for event in events] != [
+            RunStatus.NEW, RunStatus.VALIDATED, RunStatus.CLASSIFIED, RunStatus.PLANNING,
+        ]:
+            raise ValueError("snapshot must precede held-out work")
+        with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM heldout_memory_snapshots WHERE run_id=?", (run_id,)).fetchone():
+                raise ValueError("held-out memory is already frozen")
+            rows = db.execute(
+                f"SELECT id,payload,digest,source_split FROM munin_cards WHERE id IN ({','.join('?' for _ in card_ids)})",
+                card_ids,
+            ).fetchall()
+            if len(rows) != len(card_ids) or any(row[3] not in {"practice", "competition"} for row in rows):
+                raise ValueError("snapshot contains unavailable or held-out cards")
+            for identity, payload, digest, _ in rows:
+                if hashlib.sha256(payload.encode()).hexdigest() != digest:
+                    raise ValueError("snapshot card digest mismatch")
+                db.execute("INSERT INTO heldout_memory_snapshots(run_id,card_id,payload,digest) VALUES (?,?,?,?)",
+                           (run_id, identity, payload, digest))
+        return {"run_id": run_id, "card_ids": sorted(card_ids)}
 
     def search(self, query: str, *, category: str | None = None, limit: int = 5) -> list[dict]:
         if len(query) > 1000 or not 1 <= limit <= 20:
