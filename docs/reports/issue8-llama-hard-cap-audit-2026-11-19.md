@@ -37,9 +37,11 @@ worst-case context accounting semantics.
 Startup is now explicitly `--no-warmup`, and the child receives a fixed
 minimal environment instead of inherited `LLAMA_ARG_*`, proxy, or draft-model
 settings. Before `complete()` reserves tokens the only request is `/health`;
-the backend sends neither a prompt nor a completion request. A startup failure
-therefore has no model-token charge. Tests verify injected environment does
-not reach the child and a pre-prompt startup exit creates no reservation.
+the adapter sends neither a prompt nor a completion request. Any runtime
+internal startup inference remains unmeasured, including with `--no-warmup`.
+Tests verify injected environment does not reach the child and a fake server
+exiting before a prompt creates no SQLite reservation; they do not measure
+actual startup model-token use.
 After this hardening, one answer-free local smoke call with the pinned
 Homebrew binary and Shisa GGUF started successfully with `--no-warmup` and the
 sanitized child environment. The harmless `Hello world.` prompt reported four
