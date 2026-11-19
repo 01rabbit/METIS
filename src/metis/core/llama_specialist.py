@@ -27,6 +27,7 @@ class _BackendConfig(TypedDict):
     budget_key: str
     token_limit: int
     max_output_tokens: int
+    context_reservation: bool
 
 
 class LlamaSpecialist:
@@ -35,14 +36,16 @@ class LlamaSpecialist:
 
     def __init__(self, *, model_id: str, binary: Path, binary_sha256: str,
                  model_path: Path, model_sha256: str, database: Path,
-                 budget_key: str, token_limit: int, max_output_tokens: int):
+                 budget_key: str, token_limit: int, max_output_tokens: int,
+                 context_reservation: bool = False):
         if not model_id or len(model_id) > 128:
             raise ValueError("invalid pinned model id")
         self.model_id = model_id
         self.backend_config: _BackendConfig = {"binary": binary, "binary_sha256": binary_sha256,
                                "model": model_path, "model_sha256": model_sha256,
                                "database": database, "budget_key": budget_key,
-                               "token_limit": token_limit, "max_output_tokens": max_output_tokens}
+                               "token_limit": token_limit, "max_output_tokens": max_output_tokens,
+                               "context_reservation": context_reservation}
         self.max_output_tokens = max_output_tokens
 
     def run(self, prompt: str, *, model: str | None, timeout: float,
