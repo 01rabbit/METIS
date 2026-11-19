@@ -866,6 +866,8 @@ def main() -> int:
                                        cookie_env=args.cookie_env, download=not args.no_download,
                                        render=args.render)
             elif args.web_command == "auth":
+                if workflow._environment_auth_only():
+                    raise ValueError("stored web authentication is disabled; use --token-env or --cookie-env")
                 private_value = getpass.getpass("Existing CTF " + args.kind + " (stored only in private local state): ")
                 if args.kind == "rctf-team-token":
                     output = workflow.rctf_login(args.url, private_value)
