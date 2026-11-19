@@ -220,24 +220,41 @@ class LlamaServerBackend:
             raise LlamaBackendError("server request produced no result")
         return result[0][0]
 
-    def _reserve(self, amount: int) -> None:
-        with sqlite3.connect(self.database, timeout=10, isolation_level=None) as db:
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("CREATE TABLE IF NOT EXISTS llama_token_budgets ("
-                       "budget_key TEXT PRIMARY KEY, token_limit INTEGER NOT NULL, reserved INTEGER NOT NULL)")
-            row = db.execute("SELECT token_limit, reserved FROM llama_token_budgets WHERE budget_key=?",
-                             (self.budget_key,)).fetchone()
-            if row is None:
-                db.execute("INSERT INTO llama_token_budgets VALUES (?, ?, ?)",
-                           (self.budget_key, self.token_limit, amount))
-            else:
-                if row[0] != self.token_limit or row[1] + amount > self.token_limit:
-                    raise LlamaBackendError("shared token budget exhausted or changed")
-                db.execute("UPDATE llama_token_budgets SET reserved=reserved+? WHERE budget_key=?",
-                           (amount, self.budget_key))
-            if amount > self.token_limit:
-                raise LlamaBackendError("shared token budget exhausted")
-            db.commit()
+    def _reserve(self, amount: int, *, deadline: float,
+                 should_stop: Callable[[], bool] | None = None) -> None:
+        while True:
+            if should_stop is not None and should_stop():
+                raise LlamaBackendStopped("model call cancelled while reserving token budget")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LlamaBackendError("model call deadline exceeded while reserving token budget")
+            try:
+                with sqlite3.connect(self.database, timeout=min(.05, remaining),
+                                     isolation_level=None) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("CREATE TABLE IF NOT EXISTS llama_token_budgets ("
+                               "budget_key TEXT PRIMARY KEY, token_limit INTEGER NOT NULL, reserved INTEGER NOT NULL)")
+                    row = db.execute("SELECT token_limit, reserved FROM llama_token_budgets WHERE budget_key=?",
+                                     (self.budget_key,)).fetchone()
+                    if row is None:
+                        db.execute("INSERT INTO llama_token_budgets VALUES (?, ?, ?)",
+                                   (self.budget_key, self.token_limit, amount))
+                    else:
+                        if row[0] != self.token_limit or row[1] + amount > self.token_limit:
+                            raise LlamaBackendError("shared token budget exhausted or changed")
+                        db.execute("UPDATE llama_token_budgets SET reserved=reserved+? WHERE budget_key=?",
+                                   (amount, self.budget_key))
+                    if amount > self.token_limit:
+                        raise LlamaBackendError("shared token budget exhausted")
+                    if should_stop is not None and should_stop():
+                        raise LlamaBackendStopped("model call cancelled while reserving token budget")
+                    if time.monotonic() >= deadline:
+                        raise LlamaBackendError("model call deadline exceeded while reserving token budget")
+                    db.commit()
+                    return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
 
     def complete(self, prompt: str, *, n_predict: int, timeout_seconds: float,
                  should_stop: Callable[[], bool] | None = None,
@@ -267,7 +284,15 @@ class LlamaServerBackend:
         # inference. This is independent of /tokenize parity. The extra output
         # allowance covers a server that evaluates generated tokens separately.
         reserved_input = FULL_CONTEXT_RESERVATION_TOKENS if self.context_reservation else prompt_count
-        self._reserve(reserved_input + n_predict)
+        try:
+            self._reserve(reserved_input + n_predict, deadline=deadline, should_stop=should_stop)
+        except LlamaBackendStopped:
+            self.close()
+            raise
+        except LlamaBackendError as exc:
+            if "deadline" in str(exc):
+                self.close()
+            raise
         if should_stop is not None and should_stop():
             self.close()
             raise LlamaBackendStopped("model call cancelled")

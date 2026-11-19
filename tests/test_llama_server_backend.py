@@ -203,6 +203,80 @@ def test_startup_cancellation_before_artifact_hash_prevents_process_launch(backe
         backend.__enter__()
 
 
+def test_startup_hash_observes_run_cancellation(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    checks = 0
+    def stop_on_hash_check():
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+    def interrupt_hash(path, *, abort_check=None):
+        assert abort_check is not None
+        abort_check()
+        return _hash(path)
+    monkeypatch.setattr(module, "_sha256", interrupt_hash)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled hash must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=stop_on_hash_check)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert checks == 2
+
+
+def test_startup_hash_checks_cancellation_between_real_file_chunks(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    model = backend_files["model"]
+    model.write_bytes(b"m" * (2 * 1024 * 1024 + 1))
+    backend_files["model_sha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
+    real_open = Path.open
+    read_calls = 0
+
+    class CountingReader:
+        def __init__(self, source):
+            self.source = source
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            self.source.close()
+
+        def read(self, size=-1):
+            nonlocal read_calls
+            read_calls += 1
+            return self.source.read(size)
+
+    def track_model_open(path, *args, **kwargs):
+        source = real_open(path, *args, **kwargs)
+        return CountingReader(source) if path == model else source
+
+    monkeypatch.setattr(Path, "open", track_model_open)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled hash must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=lambda: read_calls >= 1)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert read_calls == 1
+
+
+def test_startup_hash_observes_call_deadline(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    def expire_hash(path, *, abort_check=None):
+        assert abort_check is not None
+        time.sleep(.1)
+        abort_check()
+        return _hash(path)
+    monkeypatch.setattr(module, "_sha256", expire_hash)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("expired hash must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_deadline=time.monotonic() + .05)
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+
+
 def test_startup_deadline_before_process_launch_is_rechecked(backend_files, monkeypatch):
     from metis.core import llama_server_backend as module
 
@@ -305,6 +379,31 @@ def test_shared_concurrent_reservation(backend_files):
     for thread in threads: thread.start()
     for thread in threads: thread.join()
     assert sorted(results) == ["admitted", "denied"]
+
+
+@pytest.mark.parametrize("stop_mode", ["deadline", "cancel"])
+def test_budget_reservation_lock_obeys_deadline_and_cancellation(backend_files, stop_mode):
+    with LlamaServerBackend(**backend_files) as backend:
+        blocker = sqlite3.connect(backend_files["database"], isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        if stop_mode == "deadline":
+            expected = pytest.raises(LlamaBackendError, match="deadline")
+            kwargs = {"timeout_seconds": .2}
+        else:
+            expected = pytest.raises(LlamaBackendStopped, match="cancelled")
+            cancel_at = time.monotonic() + .2
+            kwargs = {"timeout_seconds": 5, "should_stop": lambda: time.monotonic() >= cancel_at}
+        with expected:
+            backend.complete("one", n_predict=2, **kwargs)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1
+        assert backend._process is None
+        blocker.rollback()
+        blocker.close()
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?",
+                          ("llama_token_budgets",)).fetchone() is None
 
 
 def test_completion_failure_charges_full_reservation_and_stops_process(backend_files, monkeypatch):
