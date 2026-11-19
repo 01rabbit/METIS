@@ -5,7 +5,9 @@ This builds a separate llama-server from upstream
 The binary requires a positive process-wide token budget before llama-server
 initializes. It serves one local decoder-only GGUF on loopback with one slot,
 a 4096-token context, and the built-in CPU backend. Startup accepts only a
-budget, a model path, and a port. The build disables external backend discovery.
+budget, a model path, and a port. The build disables external backend discovery
+and upstream argument merging from system configuration, user configuration,
+and the environment. The launcher rejects runtime environment overrides.
 The launch profile disables warmup, context shift, multimodal loading,
 speculation, and the web UI.
 
@@ -56,7 +58,13 @@ startup with `METIS token work budget denied, requested=2` before model
 readiness. A cap of 22 allowed startup and a 20-position prompt with a
 single generated token. An uncached repeat in the same process exited with
 75. A fresh process with cap 21 became ready and exited with 75 when it tried
-that prompt. The exact-cap case also called `/tokenize` before completion.
+that prompt. The exact-cap case called `/tokenize` before completion.
+With three generated tokens, cap 24 completed and cap 23 exited with 75
+before submitting the last one-position decode graph.
+
+The smoke server runs with a temporary upstream user configuration that
+would require an API key if loaded. Both tokenization and completion succeed
+without credentials.
 
 This prototype is separate from METIS capability detection. Enabling a runtime
 requires controller-owned launch and termination, immutable executable and

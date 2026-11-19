@@ -37,44 +37,49 @@ def running_server(
         port = listener.getsockname()[1]
     base_url = f"http://127.0.0.1:{port}"
     command = [str(binary), "--metis-work-budget", str(tokens), "--model", str(model), "--port", str(port)]
-    with (
-        tempfile.TemporaryFile() as log,
-        subprocess.Popen(command, env={"PATH": os.defpath}, stdout=log, stderr=log) as server,
-    ):
-        try:
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline and server.poll() is None:
-                try:
-                    if request(base_url, "/health")["status"] == "ok":
-                        break
-                except URLError:
-                    time.sleep(0.1)
-            else:
-                raise RuntimeError("server did not become ready")
-            yield base_url, server, log
-        except Exception:
-            log.seek(0)
-            print(log.read().decode(errors="replace"))
-            raise
-        finally:
-            if server.poll() is None:
-                server.terminate()
-                try:
-                    server.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    server.kill()
+    with tempfile.TemporaryDirectory() as config_root, tempfile.TemporaryFile() as log:
+        config = Path(config_root) / "llama.cpp" / "config.ini"
+        config.parent.mkdir()
+        config.write_text("api-key = local-config-test\n")
+        environment = {"PATH": os.defpath, "XDG_CONFIG_HOME": config_root}
+        with subprocess.Popen(command, env=environment, stdout=log, stderr=log) as server:
+            try:
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline and server.poll() is None:
+                    try:
+                        if request(base_url, "/health")["status"] == "ok":
+                            break
+                    except URLError:
+                        time.sleep(0.1)
+                else:
+                    raise RuntimeError("server did not become ready")
+                yield base_url, server, log
+            except Exception:
+                log.seek(0)
+                print(log.read().decode(errors="replace"))
+                raise
+            finally:
+                if server.poll() is None:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
 
 
-def expect_denial(base_url: str, server: subprocess.Popen[bytes], log: BinaryIO) -> None:
+def expect_denial(
+    base_url: str, server: subprocess.Popen[bytes], log: BinaryIO, prompt: dict, requested: int
+) -> None:
     try:
-        request(base_url, "/completion", PROMPT)
+        request(base_url, "/completion", prompt)
     except (RemoteDisconnected, ConnectionResetError):
         pass
     else:
         raise AssertionError("the completion survived budget denial")
     assert server.wait(timeout=5) == 75
     log.seek(0)
-    assert b"METIS token work budget denied" in log.read()
+    denial = f"METIS token work budget denied, requested={requested}\n"
+    assert denial.encode() in log.read()
 
 
 def main() -> None:
@@ -110,13 +115,22 @@ def main() -> None:
         assert request(base_url, "/tokenize", {"content": PROMPT["prompt"]})["tokens"]
         completion = request(base_url, "/completion", PROMPT)
         assert completion["tokens_evaluated"] == prompt_tokens
-        expect_denial(base_url, server, log)
+        expect_denial(base_url, server, log, PROMPT, prompt_tokens)
 
     with running_server(binary, model, exact_cap - 1) as (base_url, server, log):
-        expect_denial(base_url, server, log)
+        expect_denial(base_url, server, log, PROMPT, prompt_tokens)
+
+    longer_completion = {**PROMPT, "n_predict": 3, "temperature": 0, "ignore_eos": True}
+    with running_server(binary, model, exact_cap + 2) as (base_url, _server, _log):
+        completion = request(base_url, "/completion", longer_completion)
+        assert completion["tokens_predicted"] == 3
+
+    with running_server(binary, model, exact_cap + 1) as (base_url, server, log):
+        expect_denial(base_url, server, log, longer_completion, 1)
 
     print(f"Exact cap completed at {exact_cap} tokens ({STARTUP_PROBE_TOKENS} startup + {prompt_tokens} prompt).")
-    print("Startup, repeated work, and a batch above the remaining cap exited with 75.")
+    print("Startup, repeated work, and prompt/decode batches above the remaining cap exited with 75.")
+    print("The launcher ignored ambient configuration.")
 
 
 if __name__ == "__main__":
