@@ -270,7 +270,13 @@ def test_memory_ablation_requires_committed_cards_and_exact_arm_snapshots(tmp_pa
     real_prompt_config(data)
     with pytest.raises(ValueError, match="requires frozen prior cards"):
         Protocol.model_validate(data)
-    payload = '{"category":"crypto","source_split":"practice"}'
+    source_run_id = "f" * 32
+    payload = TechniqueCard(
+        title="Prior decoding method", category="crypto",
+        summary="Inspect the alphabet before using a bounded decoder.",
+        conditions="An encoded message is present.", outcome="inconclusive",
+        source_run_id=source_run_id, source_split="practice",
+    ).model_dump_json()
     card_digest = hashlib.sha256(payload.encode()).hexdigest()
     data["memory_card_digests"] = [card_digest]
     protocol = Protocol.model_validate(data)
@@ -283,6 +289,7 @@ def test_memory_ablation_requires_committed_cards_and_exact_arm_snapshots(tmp_pa
     runs.sort(key=lambda item: ordering[(item["task_id"], item["repetition"], item["arm"])])
     bindings = Bindings.model_validate({"protocol_sha256": digest(protocol), "runs": runs})
     with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO codex_sessions VALUES (?,?,?)", (source_run_id, "practice", 0.5))
         db.execute("CREATE TABLE munin_cards (id INTEGER, payload TEXT, digest TEXT, source_split TEXT, created REAL)")
         db.execute("INSERT INTO munin_cards VALUES (?,?,?,?,?)",
                    (1, payload, card_digest, "practice", 1.0))
@@ -521,6 +528,18 @@ def test_real_munin_freeze_reconciles_with_protocol(tmp_path: Path) -> None:
     bindings = Bindings.model_validate({"protocol_sha256": digest(protocol), "runs": runs})
     result = finalize(protocol, bindings, database, expected_sha256=digest(protocol))
     assert result["ledger_reconciliation"]["trials_reconciled"] == 8
+
+    # A legacy snapshot can have matching bytes and digest despite an unlisted source.
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE codex_sessions SET evaluation_split='unlisted' WHERE run_id=?",
+                   (source["run_id"],))
+    with pytest.raises(ValueError, match="lacks prior source"):
+        finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE codex_sessions DROP COLUMN evaluation_split")
+    with pytest.raises(ValueError, match="lacks prior source"):
+        finalize(protocol, bindings, database, expected_sha256=digest(protocol))
 
 
 def test_protocol_real_model_aggregate_cap(tmp_path: Path) -> None:

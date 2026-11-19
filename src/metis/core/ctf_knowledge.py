@@ -42,6 +42,40 @@ class TechniqueCard(Contract):
     evidence: str = Field(default="", max_length=1000)
 
 
+def _validate_prior_source(
+    db: sqlite3.Connection, payload: str, stored_split: str, created: float, target_started: float,
+) -> None:
+    try:
+        card = TechniqueCard.model_validate_json(payload)
+    except ValueError:
+        raise ValueError("held-out memory snapshot lacks prior source") from None
+    if (stored_split not in {"practice", "competition"} or card.source_split != stored_split
+            or created > target_started):
+        raise ValueError("held-out memory snapshot lacks prior source")
+    if not db.execute(
+        "SELECT 1 FROM pragma_table_info('codex_sessions') WHERE name='evaluation_split'",
+    ).fetchone():
+        raise ValueError("held-out memory snapshot lacks prior source")
+    source = db.execute(
+        "SELECT 1 FROM codex_sessions WHERE run_id=? AND evaluation_split=? AND started <= ?",
+        (card.source_run_id, stored_split, created),
+    ).fetchone()
+    if source is None:
+        raise ValueError("held-out memory snapshot lacks prior source")
+
+
+def validate_heldout_snapshot_source(
+    db: sqlite3.Connection, run_id: str, card_id: int, payload: str, digest: str,
+) -> None:
+    source = db.execute(
+        "SELECT payload,digest,source_split,created FROM munin_cards WHERE id=?", (card_id,),
+    ).fetchone()
+    run = db.execute("SELECT started FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()
+    if source is None or run is None or source[:2] != (payload, digest):
+        raise ValueError("held-out memory snapshot lacks prior source")
+    _validate_prior_source(db, payload, source[2], source[3], run[0])
+
+
 class KnowledgeBase:
     def __init__(self, database: Path):
         self.session = CodexSession(database)
@@ -137,11 +171,11 @@ class KnowledgeBase:
 
     def search_for_run(self, run_id: str, query: str, *, category: str | None = None,
                        limit: int = 5) -> list[dict]:
-        """Retrieve only for runs explicitly classified practice or competition.
+        """Retrieve cards according to the run's evaluation split.
 
-        Held-out and unlisted runs receive no prior cards. The challenge text is
-        untrusted search input, so answer-shaped values, credentials and long
-        encoded blobs are removed before keyword search.
+        Held-out runs can receive only frozen cards with corroborated source sessions.
+        Unlisted runs receive no cards. Keyword search removes answer-shaped values,
+        credentials and long encoded blobs from untrusted challenge text.
         """
         context = self.session.context(run_id)
         split = context.get("evaluation_split")
@@ -149,13 +183,15 @@ class KnowledgeBase:
             if not 1 <= limit <= 20:
                 raise ValueError("invalid memory search bounds")
             with sqlite3.connect(self.database) as db:
+                db.execute("BEGIN")
                 rows = db.execute(
                     "SELECT card_id,payload,digest FROM heldout_memory_snapshots WHERE run_id=? "
                     "ORDER BY card_id", (run_id,),
                 ).fetchall()
-            if any(hashlib.sha256(payload.encode()).hexdigest() != checksum
-                   for _, payload, checksum in rows):
-                raise ValueError("held-out memory snapshot digest mismatch")
+                for identity, payload, checksum in rows:
+                    if hashlib.sha256(payload.encode()).hexdigest() != checksum:
+                        raise ValueError("held-out memory snapshot digest mismatch")
+                    validate_heldout_snapshot_source(db, run_id, identity, payload, checksum)
             return [{"id": identity, "card": json.loads(payload),
                      "treat_as": "frozen prior experience; check applicability"}
                     for identity, payload, _ in rows
@@ -195,9 +231,10 @@ class KnowledgeBase:
                     row[3] not in {"practice", "competition"} or row[4] > started for row in rows
                 ):
                     raise ValueError("snapshot contains unavailable or held-out cards")
-                for identity, payload, digest, _, _ in rows:
+                for identity, payload, digest, source_split, created in rows:
                     if hashlib.sha256(payload.encode()).hexdigest() != digest:
                         raise ValueError("snapshot card digest mismatch")
+                    _validate_prior_source(db, payload, source_split, created, started)
                     db.execute("INSERT INTO heldout_memory_snapshots(run_id,card_id,payload,digest) VALUES (?,?,?,?)",
                                (run_id, identity, payload, digest))
         return {"run_id": run_id, "card_ids": sorted(card_ids)}
