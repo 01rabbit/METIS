@@ -65,6 +65,18 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return fields
 
 
+def _validated_protocol(data: object) -> Protocol:
+    protocol = Protocol.model_validate(data)
+    if protocol.llama_backend is not None:
+        # Non-strict resolve can silently retain a symlink loop on newer Python.
+        # Stat detects it without opening the ledger. The ledger may not exist yet.
+        try:
+            Path(protocol.llama_backend.database_path).stat()
+        except FileNotFoundError:
+            pass
+    return protocol
+
+
 def verify(
     protocol: Protocol,
     manifest: bytes,
@@ -76,7 +88,7 @@ def verify(
     if not 0 < len(manifest) <= MAX_ATTESTATION_BYTES or len(signature) != 64:
         raise ValueError("control attestation input outside bounds")
     try:
-        protocol = Protocol.model_validate(protocol.model_dump())
+        protocol = _validated_protocol(protocol.model_dump())
         protocol_sha256 = digest(protocol)
     except (OSError, ValueError, RuntimeError):
         # Protocol validation resolves a caller-controlled filesystem path.
@@ -129,7 +141,7 @@ def main() -> int:
     parser.add_argument("--reviewer-key", type=Path, required=True)
     args = parser.parse_args()
     try:
-        protocol = Protocol.model_validate(json.loads(
+        protocol = _validated_protocol(json.loads(
             _read(args.protocol, MAX_PROTOCOL_BYTES).decode("utf-8"), object_pairs_hook=_unique_keys,
         ))
         attestation = verify(
