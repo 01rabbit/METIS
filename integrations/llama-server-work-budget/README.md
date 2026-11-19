@@ -3,19 +3,68 @@
 This builds a separate llama-server from upstream
 [b1b770d90d94cad9e9ea5b993bdbc383a522fb28](https://github.com/ggml-org/llama.cpp/commit/b1b770d90d94cad9e9ea5b993bdbc383a522fb28).
 The binary requires a positive process-wide token budget before llama-server
-initializes. It serves one local decoder-only GGUF on loopback with one slot,
-a 4096-token context, and the built-in CPU backend. Startup accepts only a
-budget, a model path, and a port. The build disables external backend discovery
-and upstream argument merging from system configuration, user configuration,
-and the environment. The launcher rejects runtime environment overrides.
-The launch profile disables warmup, context shift, multimodal loading,
-speculation, and the web UI.
+initializes. It serves one local decoder-only GGUF on a Unix socket with one
+slot, a 4096-token context, and the built-in CPU backend. A trusted controller
+provides the socket path, the write end of a pipe, and a fresh launch nonce.
+The build disables external backend discovery and upstream argument merging
+from system configuration, user configuration, and the environment. The
+launcher rejects runtime environment overrides. The launch profile disables
+warmup, context shift, multimodal loading, speculation, and the web UI.
 
 ```sh
 scripts/build_llama_work_budget.sh /tmp/metis-llama-guard-build
-/tmp/metis-llama-guard-build/build/bin/llama-server \
-    --metis-work-budget 4096 --model /absolute/path/to/model.gguf --port 8080
 ```
+
+## Launch and terminal receipt
+
+The controller creates the socket's parent with mode `0700`. The launcher
+requires a canonical absolute socket path ending in `.sock` under a directory
+owned by the effective user. It rejects paths that already exist, including
+stale sockets and symlinks. The dedicated argument parser preserves the
+literal socket path and the listening code opens exactly one AF_UNIX socket.
+Processes under the same operating system user share this trust boundary.
+The controller must protect the directory and its ancestors against rename
+or replacement for the lifetime of the process.
+
+The controller inherits only the write end of a fresh pipe into the child,
+closes its own copy after launch, and keeps the read end until the process has
+exited. The launcher requires a write-only pipe descriptor greater than 2 and
+marks the descriptor nonblocking and close-on-exec. The launch argument shape
+is as follows.
+
+```text
+llama-server --metis-work-budget TOKENS --model LOCAL_GGUF --socket ABS_PATH.sock
+             --metis-receipt-fd FD --metis-launch-nonce LOWERCASE_HEX32
+```
+
+Example terminal receipt for a successful shutdown after 22 charged positions
+under a cap of 24.
+
+```json
+{"version":1,"nonce":"0123456789abcdef0123456789abcdef","cap":24,"charged":22,"reason":"shutdown"}
+```
+
+The binary seals the balance before writing a single newline-delimited
+record of at most 256 bytes. The nonblocking pipe write is atomic. The
+record contains the launch nonce, original cap, and number of charged
+positions. Terminal reasons and expected process observations are:
+
+| Reason | Process observation |
+| --- | --- |
+| `shutdown` | Normal server shutdown, status 0 |
+| `server_error` | Server returned an error status |
+| `cap_denied` | Pre-dispatch denial, status 75 |
+| `unsupported_graph` | Pre-dispatch denial of an unmetered graph, status 75 |
+
+A failed receipt write exits with status 74. An invalid launch, fatal runtime
+failure, or SIGKILL can leave the pipe empty. A controller must wait for process
+exit and require one matching record before accepting a result. Any absent,
+truncated, duplicate, inconsistent, or mismatched receipt requires a failed
+outcome with the full admission charge retained. The pinned upstream SIGTERM
+handler acquires queue state directly. An in-flight SIGTERM can stall before
+the receipt. The controller must bound its wait, kill and reap a stalled
+process, and keep the full charge when the receipt is missing. Abrupt shutdown
+can leave the socket path for the controller to clean up.
 
 ## Accounting boundary
 
@@ -29,12 +78,12 @@ charge. A retry that submits another graph takes another charge. A retry that
 fails before submission takes no charge. Model-load graph reserve and backend
 buffer allocation are outside this token-work unit.
 
-Denied submissions terminate the process with exit status 75 before backend
-dispatch. That prevents denial from being interpreted as a retriable decode
-error. The patch also denies the known graph paths outside the microbatch unit
-in this source pin, including KV shift, the two multimodal scheduler calls, and
-training. An ordinary process restart creates a new balance. Cross-process
-budget ownership belongs to the caller.
+Denied submissions terminate the process before backend dispatch. That prevents
+denial from being interpreted as a retriable decode error. The patch also
+denies the known graph paths outside the microbatch unit in this source pin,
+including KV shift, the two multimodal scheduler calls, and training. An
+ordinary process restart creates a new balance. Cross-process budget ownership
+belongs to the controller.
 
 ## Startup probe and smoke test
 
@@ -53,22 +102,18 @@ python3 integrations/llama-server-work-budget/smoke.py \
     /tmp/metis-llama-guard-build/build/bin/llama-server /absolute/path/to/stories260K.gguf
 ```
 
-With the pinned source and fixture on macOS arm64, a cap of 1 exited during
-startup with `METIS token work budget denied, requested=2` before model
-readiness. A cap of 22 allowed startup and a 20-position prompt with a
-single generated token. An uncached repeat in the same process exited with
-75. A fresh process with cap 21 became ready and exited with 75 when it tried
-that prompt. The exact-cap case called `/tokenize` before completion.
-With three generated tokens, cap 24 completed and cap 23 exited with 75
-before submitting the last one-position decode graph.
+The smoke test on macOS arm64 checks startup refusal at cap 1, prompt refusal
+at cap 21, one completion at cap 22, and the next decode graph after 23 charged
+positions. Cap 24 allows generation of three tokens, which submits two decode
+graphs after the startup and prompt positions. Each terminal record is checked
+against the exact cap, nonce, submitted work, and reason. Additional cases
+cover a literal path containing commas and quotes, stale sockets and
+symlinks, a nonprivate directory, a broken receipt pipe, a timed-out client
+whose server is killed, and ambient config that tries to require an API key.
 
-The smoke server runs with a temporary upstream user configuration that
-would require an API key if loaded. Both tokenization and completion succeed
-without credentials.
-
-This prototype is separate from METIS capability detection. Enabling a runtime
-requires controller-owned launch and termination, immutable executable and
-model identity, a reservation spanning startup and every owned process, and
-durable outcomes on rejection, timeout, and cancellation. Alternate models
-and platforms, injected backend failures, and concurrent HTTP clients still
-need qualification. Completion usage remains distinct from submitted work.
+This stacks on the native gate in METIS PR #87. The Python admission ledger
+still needs to claim each launch exactly once and record the outcome. Enabling
+METIS capability also requires immutable executable and model identity including
+split files, deadlines and cleanup owned by the controller, and qualification
+for alternate models, platforms, concurrent callers, and injected backend
+failures. Completion usage remains distinct from submitted work.
