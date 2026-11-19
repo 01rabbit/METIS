@@ -480,6 +480,7 @@ def test_real_munin_freeze_reconciles_with_protocol(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="token cap is not enforceable"):
         run_assignment(scheduler, extra["run_id"], extra_job["assignment_id"],
                        extra_job["attempt_id"], CodexCLI())
+    assert scheduler.model_turn_budget(extra["run_id"])["reserved"] == 0
 
     class OneTurn:
         prompt = ""
