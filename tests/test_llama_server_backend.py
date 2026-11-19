@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import threading
 import time
@@ -72,6 +73,39 @@ def test_pin_mismatch_refuses_launch(backend_files):
         pass
 
 
+def test_server_start_has_no_warmup_or_inherited_llama_environment(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    monkeypatch.setenv("LLAMA_ARG_DRAFT_MODEL", "/untrusted/draft.gguf")
+    monkeypatch.setenv("LLAMA_ARG_WARMUP", "1")
+    monkeypatch.setenv("LLAMA_ARG_CONTEXT_SHIFT", "1")
+    monkeypatch.setenv("HTTP_PROXY", "http://untrusted.invalid")
+    real_popen = module.subprocess.Popen
+    seen = []
+
+    def capture(*args, **kwargs):
+        seen.append((args[0], kwargs["env"]))
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "Popen", capture)
+    with LlamaServerBackend(**backend_files):
+        pass
+    argv, child_env = seen[0]
+    assert "--no-warmup" in argv and "--no-context-shift" in argv
+    assert not any(key.startswith("LLAMA_ARG_") for key in child_env)
+    assert "HTTP_PROXY" not in child_env
+    assert child_env["HOME"] != os.environ["HOME"]
+
+
+def test_startup_failure_before_any_prompt_has_no_reservation(backend_files):
+    backend_files["startup_seconds"] = .2
+    backend_files["binary"].write_text("#!/bin/sh\nexit 1\n")
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    with pytest.raises(LlamaBackendError, match="startup"), LlamaServerBackend(**backend_files):
+        pass
+    assert not backend_files["database"].exists()
+
+
 def test_shared_concurrent_reservation(backend_files):
     backend_files["token_limit"] = 6
     results = []
@@ -127,6 +161,70 @@ def test_usage_mismatch_stops_server_and_retains_charge(backend_files, monkeypat
         assert backend._process is None
     with sqlite3.connect(backend_files["database"]) as db:
         assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4,)
+
+
+def test_tokenizer_completion_disagreement_is_detected_only_after_inference(backend_files, monkeypatch):
+    """A post-call mismatch cannot establish a strict pre-call token ceiling."""
+    backend_files["token_limit"] = 4
+    completed = []
+    with LlamaServerBackend(**backend_files) as backend:
+        original = backend._request
+
+        def disagree(route, payload, *, timeout):
+            result = original(route, payload, timeout=timeout)
+            if route == "/completion":
+                completed.append(True)
+                result["tokens_evaluated"] += 1
+            return result
+
+        monkeypatch.setattr(backend, "_request", disagree)
+        with pytest.raises(LlamaBackendError, match="usage or settings mismatch"):
+            backend.complete("one two", n_predict=2, timeout_seconds=5)
+    assert completed == [True]
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4,)
+    assert LlamaServerBackend.hard_cap_capable is False
+
+
+def test_full_context_reservation_covers_tokenizer_disagreement(backend_files, monkeypatch):
+    backend_files.update(token_limit=4098, context_reservation=True)
+    with LlamaServerBackend(**backend_files) as backend:
+        original = backend._request
+
+        def disagree(route, payload, *, timeout):
+            result = original(route, payload, timeout=timeout)
+            if route == "/completion":
+                result["tokens_evaluated"] = 100
+            return result
+
+        monkeypatch.setattr(backend, "_request", disagree)
+        content, evaluated, predicted = backend.complete("one two", n_predict=2,
+                                                         timeout_seconds=5)
+        assert (content, evaluated, predicted) == ("xx", 100, 2)
+        with pytest.raises(LlamaBackendError, match="budget"):
+            backend.complete("one", n_predict=1, timeout_seconds=5)
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4098,)
+
+
+def test_full_context_reservation_is_shared_across_processes(backend_files):
+    backend_files.update(token_limit=4098, context_reservation=True)
+    results = []
+
+    def worker():
+        with LlamaServerBackend(**backend_files) as backend:
+            try:
+                backend.complete("one", n_predict=2, timeout_seconds=5)
+                results.append("admitted")
+            except LlamaBackendError:
+                results.append("denied")
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == ["admitted", "denied"]
 
 
 def test_reentry_refused_without_losing_original_process(backend_files):

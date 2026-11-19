@@ -64,7 +64,8 @@ class LlamaServerBackend:
 
     def __init__(self, *, binary: Path, binary_sha256: str, model: Path,
                  model_sha256: str, database: Path, budget_key: str,
-                 token_limit: int, max_output_tokens: int, startup_seconds: float = 30):
+                 token_limit: int, max_output_tokens: int, startup_seconds: float = 30,
+                 context_reservation: bool = False):
         if not budget_key or len(budget_key) > 128 or not 1 <= token_limit <= 10**9:
             raise ValueError("invalid budget configuration")
         if not 1 <= max_output_tokens <= 4096 or not 0 < startup_seconds <= 120:
@@ -73,6 +74,7 @@ class LlamaServerBackend:
         self.binary_sha256, self.model_sha256 = binary_sha256, model_sha256
         self.budget_key, self.token_limit = budget_key, token_limit
         self.max_output_tokens, self.startup_seconds = max_output_tokens, startup_seconds
+        self.context_reservation = context_reservation
         self._process: subprocess.Popen[bytes] | None = None
         self._private: tempfile.TemporaryDirectory[str] | None = None
         self._log: Any = None
@@ -91,11 +93,17 @@ class LlamaServerBackend:
             os.chmod(self._private.name, 0o700)
             self._socket = str(Path(self._private.name) / "server.sock")
             self._log = open(os.devnull, "wb")
+            # Never inherit LLAMA_ARG_* (draft model, context shift, warmup,
+            # endpoints, etc.) or proxy/plugin environment from the parent.
+            # The child receives no prompt before complete() reserves tokens.
+            child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
+                         "TMPDIR": self._private.name, "LANG": "C"}
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
-                 "--parallel", "1", "--no-webui", "--ctx-size", "4096"],
+                 "--parallel", "1", "--no-webui", "--ctx-size", "4096",
+                 "--no-context-shift", "--no-warmup"],
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT,
-                start_new_session=True, close_fds=True,
+                start_new_session=True, close_fds=True, env=child_env,
             )
             deadline = time.monotonic() + self.startup_seconds
             while time.monotonic() < deadline:
@@ -204,7 +212,10 @@ class LlamaServerBackend:
         if not isinstance(tokens, list) or not tokens or len(tokens) > self.token_limit:
             raise LlamaBackendError("unusable prompt token count")
         prompt_count = len(tokens)
-        self._reserve(prompt_count + n_predict)
+        # In conservative mode, reserve the complete configured context before
+        # inference. This is independent of /tokenize parity. The extra output
+        # allowance covers a server that evaluates generated tokens separately.
+        self._reserve((4096 if self.context_reservation else prompt_count) + n_predict)
         if should_stop is not None and should_stop():
             self.close()
             raise LlamaBackendStopped("model call cancelled")
@@ -218,7 +229,9 @@ class LlamaServerBackend:
             raise
         evaluated, predicted = result.get("tokens_evaluated"), result.get("tokens_predicted")
         settings = result.get("generation_settings")
-        if (not _integer(evaluated) or evaluated != prompt_count or not _integer(predicted)
+        if (not _integer(evaluated)
+                or (evaluated > 4096 if self.context_reservation else evaluated != prompt_count)
+                or not _integer(predicted)
                 or predicted > n_predict or not isinstance(settings, dict)
                 or settings.get("n_predict") != n_predict or result.get("model") != str(self.model)
                 or not isinstance(result.get("content"), str)):
