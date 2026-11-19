@@ -3,6 +3,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -405,7 +406,53 @@ def test_inventory_sqlite_text_decode_failure_does_not_discard_audit(tmp_path):
     database = inventory_fixture(tmp_path, '{"artifacts": []}')
     with sqlite3.connect(database) as db:
         db.execute("UPDATE codex_sessions SET manifest=CAST(X'80' AS TEXT)")
-    assert_inventory_unavailable(database)
+        db.execute("CREATE TABLE agent_jobs (run_id TEXT, state TEXT)")
+        db.execute("INSERT INTO agent_jobs VALUES ('inventory', 'completed')")
+    summary = assert_inventory_unavailable(database)
+    assert summary["operational_state"]["agent_job_states"]["counts"]["completed"] == 1
+
+
+@pytest.mark.parametrize("lose_transaction", [False, True])
+def test_inventory_sqlite_error_preserves_or_rejects_the_read_snapshot(tmp_path, lose_transaction):
+    database = inventory_fixture(tmp_path, '{"artifacts": []}')
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE agent_jobs (run_id TEXT, state TEXT)")
+        db.execute("INSERT INTO agent_jobs VALUES ('inventory', 'completed')")
+    store = RunStore(database, read_only=True)
+    later_counter_reads = []
+
+    class InventoryFailureConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if sql.startswith("SELECT CASE WHEN typeof(manifest)"):
+                if lose_transaction:
+                    self.rollback()
+                raise sqlite3.OperationalError("synthetic inventory SQLite failure")
+            if sql.startswith("SELECT state, COUNT(*) FROM agent_jobs"):
+                later_counter_reads.append(sql)
+            return super().execute(sql, parameters)
+
+    @contextmanager
+    def failing_connection():
+        db = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True,
+                             factory=InventoryFailureConnection)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    store._connect = failing_connection
+    if lose_transaction:
+        with pytest.raises(sqlite3.OperationalError, match="synthetic inventory SQLite failure"):
+            store.audit_summary("inventory")
+        assert later_counter_reads == []
+    else:
+        summary = store.audit_summary("inventory")
+        assert summary["chain_valid"] is True
+        assert summary["codex_budget"]["actions_remaining"] == 2
+        assert summary["operational_state"]["artifact_inventory"] == {"available": False}
+        assert summary["operational_state"]["agent_job_states"]["counts"]["completed"] == 1
+        assert len(later_counter_reads) == 1
 
 
 @pytest.mark.parametrize("path", [

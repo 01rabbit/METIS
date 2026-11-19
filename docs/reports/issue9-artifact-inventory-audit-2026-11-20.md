@@ -50,6 +50,12 @@ appear in the audit, and the CLI succeeds if the rest of the audit is valid.
 Other runs' manifests are not parsed. Event-chain corruption still fails the
 audit through its existing error handling.
 
+A SQLite error makes inventory unavailable only while `db.in_transaction`
+remains true. If SQLite has ended the read transaction, the error is re-raised
+and the whole audit fails through its existing safe CLI error handling. Later
+counters are never read after that lost-transaction outcome, so the audit cannot
+silently combine the earlier validated chain with a new SQLite snapshot.
+
 These recognition rules are narrower than the persistence contract and do not
 replace or tighten `ChallengeManifest.check_grant`. Existing valid shapes such
 as `./a.bin`, `a/./b`, `dir/`, duplicate path entries, nested `.metis-added`
@@ -64,9 +70,7 @@ Commands run from this feature worktree with its `src` selected:
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -o addopts='' -q tests/test_run_audit.py tests/test_cli.py tests/test_issue28_evidence.py
-93 passed in 14.04s
-PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest
-1565 passed, 36 skipped, 45 subtests passed in 220.13s (0:03:40)
+95 passed in 14.39s
 /Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src tests
 All checks passed!
 /Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis
@@ -76,6 +80,16 @@ Success: no issues found in 112 source files
 /Users/mao/Developer/GitHub/METIS/.venv/bin/python scripts/check_blue_knowledge.py
 {"status": "passed", "findings": 0}
 git diff --check
+```
+
+The final change only guards the SQLite error fallback and expands its focused
+regressions. The full suite was not rerun for that small change. These results
+were observed on the preceding head
+`2d0dd30540de025b23a3d395408c4769daeeefb8`, before the transaction guard:
+
+```text
+PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest
+1565 passed, 36 skipped, 45 subtests passed in 220.13s (0:03:40)
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m metis.cli validate challenges/training/fixture-001.json
 {"valid": true, "challenge_id": "local-demo-001"}
 /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m build --outdir /private/tmp/metis-issue9-artifact-inventory-dist
@@ -113,8 +127,13 @@ fixture has now been restored. Inventory failures are isolated to its
 valid shapes. Regression tests validate the six representative shapes through
 `ChallengeManifest` first and then assert intact event-chain, budget and job
 counts through both the API and CLI. A SQLite text-decoding failure likewise
-leaves the full audit available. No persistence validation or artifact-access
-authority was changed.
+leaves the full audit available, including a later job count. Further independent
+review identified that a broad SQLite error fallback could mask automatic
+transaction rollback. The final guard re-raises if the transaction is no longer
+active. Synthetic connection faults cover both outcomes: a surviving transaction
+retains chain, budget and later job counts; a rolled-back transaction raises
+without reading any later job counters. No persistence validation or
+artifact-access authority was changed.
 
 No CTF input, credential, provider, release, deployment, reboot or purge was
 used. Issue #9 remains open for its separate acceptance gates.

@@ -10,9 +10,12 @@ initialize a session, acquire METIS locks or remove data. Missing legacy schema
 is unavailable; malformed, duplicate, unrecognized-path or oversized manifests
 make only the inventory unavailable. Existing valid manifest shapes outside the
 inventory's recognition rules keep their event-chain and other audit output;
-the persistence contract is unchanged. All 93 focused audit/CLI/evidence tests
-and standard static/content checks passed. The full suite passed 1,565 tests and
-45 subtests, with 36 skipped. This adds local visibility without proving file
+the persistence contract is unchanged. SQLite errors propagate if the original
+read transaction is no longer active, preserving the audit's snapshot boundary.
+All 95 focused audit/CLI/evidence tests and standard static/content checks passed.
+The preceding head passed the full suite (1,565 tests and 45 subtests, 36 skipped);
+the small transaction guard change received focused validation without another
+full run. This adds local visibility without proving file
 existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
 P7/#8 dependency remain open. See
 [`issue9-artifact-inventory-audit-2026-11-20.md`](reports/issue9-artifact-inventory-audit-2026-11-20.md).

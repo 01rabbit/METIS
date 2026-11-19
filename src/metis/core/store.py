@@ -99,7 +99,7 @@ def _check_manifest_depth(raw: str) -> None:
 
 
 def _artifact_inventory(db: sqlite3.Connection, run_id: str) -> dict[str, object]:
-    """Count recognized registrations; optional inventory never invalidates the audit."""
+    """Count recognized registrations without changing the read snapshot."""
     try:
         columns = {row[1] for row in db.execute("PRAGMA table_info(codex_sessions)")}
         if "manifest" not in columns:
@@ -136,7 +136,13 @@ def _artifact_inventory(db: sqlite3.Connection, run_id: str) -> dict[str, object
                 if len(parts) != 2:
                     raise ValueError("invalid added path")
                 added += 1
-    except (ValueError, TypeError, RecursionError, sqlite3.Error):
+    except sqlite3.Error:
+        # SQLite may roll back a transaction on IOERR/NOMEM. Continuing then
+        # could combine the validated chain with counters from a newer snapshot.
+        if not db.in_transaction:
+            raise
+        return {"available": False}
+    except (ValueError, TypeError, RecursionError):
         return {"available": False}
     return {"available": True, "registered_artifacts": len(seen),
             "registered_derived": derived, "registered_added": added,
