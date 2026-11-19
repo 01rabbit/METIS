@@ -8,6 +8,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
 
 from metis.core.codex_specialist import DECISION_SCHEMA, CodexTurn, _decision
 from metis.core.llama_server_backend import (
@@ -15,6 +16,17 @@ from metis.core.llama_server_backend import (
     LlamaBackendStopped,
     LlamaServerBackend,
 )
+
+
+class _BackendConfig(TypedDict):
+    binary: Path
+    binary_sha256: str
+    model: Path
+    model_sha256: str
+    database: Path
+    budget_key: str
+    token_limit: int
+    max_output_tokens: int
 
 
 class LlamaSpecialist:
@@ -27,7 +39,7 @@ class LlamaSpecialist:
         if not model_id or len(model_id) > 128:
             raise ValueError("invalid pinned model id")
         self.model_id = model_id
-        self.backend_config = {"binary": binary, "binary_sha256": binary_sha256,
+        self.backend_config: _BackendConfig = {"binary": binary, "binary_sha256": binary_sha256,
                                "model": model_path, "model_sha256": model_sha256,
                                "database": database, "budget_key": budget_key,
                                "token_limit": token_limit, "max_output_tokens": max_output_tokens}

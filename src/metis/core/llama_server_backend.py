@@ -18,7 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, TypeGuard
 
 
 class LlamaBackendError(RuntimeError):
@@ -48,7 +48,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _integer(value: Any) -> bool:
+def _integer(value: Any) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
