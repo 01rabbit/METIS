@@ -129,6 +129,22 @@ launch it subtracts the entire allowance from the committed token amount and
 requires the resulting native graph cap to be positive. This leaves room for
 the last sampled token, which can be returned without entering another graph.
 
+Before staging, the controller checks the manifest against an independently
+supplied expected digest committed with the study admission. It checks the
+patch and current host target, and matches the approved binary digest to the
+committed runtime pin. It stages the executable and model in a private
+directory and verifies those copies before claiming the launch. Each
+persisted outcome carries that manifest digest. Earlier admissions retain
+their charges in the original ledger. An unpinned study reserves its unique
+protocol digest there. A separately approved study for the same fixture
+profile therefore needs a fresh dedicated ledger. A genuinely distinct
+profile can be separately committed in the existing ledger.
+
+The private directory protects against other operating system users. A
+process with the same user identity can replace a staged path between
+verification and execution. The check covers the executable and model files,
+with dynamic libraries (`dylib` or `so`) outside its verified scope.
+
 After committing a unique claim, the controller uses the private Unix socket
 for readiness, independent tokenization, and one completion request. It
 requires the known 20 input token IDs, matching completion counters, and
@@ -147,6 +163,9 @@ Run the optional real integration fixture against a build from the native patch.
 ```sh
 METIS_NATIVE_FIXTURE_BINARY=/tmp/metis-llama-guard-build/build/bin/llama-server \
 METIS_NATIVE_FIXTURE_MODEL=/absolute/path/to/stories260K.gguf \
+METIS_NATIVE_FIXTURE_MANIFEST=/tmp/metis-llama-guard-build/native-build.json \
+METIS_NATIVE_FIXTURE_PATCH=/tmp/metis-llama-guard-build/llama-server.patch \
+METIS_NATIVE_FIXTURE_MANIFEST_SHA256="$approved_manifest_sha256" \
     .venv/bin/python -m pytest tests/test_native_work_fixture.py -k public_native_fixture
 ```
 
@@ -201,6 +220,6 @@ identity = verify_native_build(
 The verifier opens bounded regular files to compare their bytes and accepts
 the registered single-file public fixture. It launches no processes. These
 checks rely on the independently approved digest and the build system's target
-metadata. Production still needs trusted publication of that digest and
-binding checked bytes to the actual launched artifact. Verification alone
+metadata. Production still needs trusted publication of that digest and equivalent
+artifact binding beyond this fixed public fixture profile. Verification alone
 supplies no evidence about the backend's runtime token accounting.
