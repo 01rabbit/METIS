@@ -175,6 +175,25 @@ def test_reauth_switches_kind_and_clears_previous_auth_state(tmp_path, sites):
     assert json.loads(payload) == {"token": "final-token", "scheme": "Bearer"}
 
 
+def test_reauth_between_state_load_and_client_creation_fences_old_generation(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    config, state, *_ = workflow._load(run_id)
+    requests_before = len(seen["platform_auth"])
+
+    workflow.auth(platform_url, kind="token", value="platform-secret-token")
+    late_client = workflow._client(config, state)
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        late_client.request(platform_url + "/stale-after-load")
+    assert len(seen["platform_auth"]) == requests_before
+
+    workflow._save_client(run_id, late_client)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/fresh-after-reauth")])
+    assert seen["platform_auth"][-1] == "Token platform-secret-token"
+    assert seen["platform_cookie"][-1] is None
+
+
 def test_environment_auth_mode_ignores_legacy_storage_and_does_not_persist_cookie(tmp_path, sites, monkeypatch):
     platform_url, _, seen = sites
     workflow, run_id = _open(tmp_path, platform_url)
