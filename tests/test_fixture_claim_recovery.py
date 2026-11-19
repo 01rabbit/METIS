@@ -22,7 +22,7 @@ from metis.core.study_token_admission import (
 
 _STUDY = StudyTokenPin(
     study_id="fixture", protocol_sha256="a" * 64, runtime_sha256="b" * 64,
-    model_sha256="c" * 64, token_limit=15,
+    model_sha256="c" * 64, token_limit=15, native_manifest_sha256="e" * 64,
 )
 _SLOT = SlotTokenPin(run_id="run", task_id="fixture", repetition=0, arm="test", token_limit=15)
 _ATTEMPT = TokenAttempt(
@@ -80,7 +80,9 @@ def _finish_with_lock(database: Path, receipt: TokenAdmissionReceipt, ready, rel
         ready.set()
         if not release.wait(timeout=10):
             raise RuntimeError("fixture controller release not received")
-        admission.record_outcome(claim, TokenLaunchOutcome(status="launch_failed"))
+        admission.record_outcome(claim, TokenLaunchOutcome(
+            status="launch_failed", native_manifest_sha256=receipt.study.native_manifest_sha256,
+        ))
 
 
 def _reconcile(database: Path, receipt: TokenAdmissionReceipt, barrier) -> str:
@@ -114,6 +116,7 @@ def test_crashed_controller_reconciles_once_with_full_charge(reserved, tmp_path,
 
         result = admission.reconcile_lost_fixture_claim(receipt)
         assert (result.status, result.exit_status, result.observed_work) == ("lost", None, None)
+        assert result.native_manifest_sha256 == receipt.study.native_manifest_sha256
         if launch_child:
             assert not (tmp_path / "exited").exists()
         with pytest.raises(ValueError, match="outcome already recorded"):
@@ -226,3 +229,29 @@ def test_forged_receipts_leave_no_persistent_lock_paths(reserved, tmp_path):
         with pytest.raises(ValueError, match="committed reservation"):
             admission.reconcile_lost_fixture_claim(forged)
     assert not (tmp_path / ".state.sqlite.fixture-locks").exists()
+
+
+def test_migrate_legacy_ledger_and_reconcile_separate_pinned_fixture_without_refund(tmp_path):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    old_study = _STUDY.model_copy(update={"native_manifest_sha256": None})
+    old_receipt = admission.reserve(old_study, _SLOT, _ATTEMPT)
+    with closing(sqlite3.connect(admission.database)) as db, db:
+        db.execute("ALTER TABLE study_token_pins DROP COLUMN native_manifest_sha256")
+        db.execute("ALTER TABLE study_token_outcomes DROP COLUMN native_manifest_sha256")
+    with pytest.raises(ValueError, match="committed native manifest"):
+        admission.reconcile_lost_fixture_claim(old_receipt)
+    assert not (tmp_path / ".state.sqlite.fixture-locks").exists()
+
+    new_study = _STUDY.model_copy(update={"study_id": "new-study", "protocol_sha256": "f" * 64})
+    new_slot = _SLOT.model_copy(update={"run_id": "new-run"})
+    receipt = admission.reserve(new_study, new_slot, _ATTEMPT)
+    with admission.claim_fixture_launch(receipt):
+        pass
+    result = admission.reconcile_lost_fixture_claim(receipt)
+    assert result.status == "lost"
+    assert result.native_manifest_sha256 == new_study.native_manifest_sha256
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT status, native_manifest_sha256 FROM study_token_outcomes").fetchall() == [
+            ("lost", new_study.native_manifest_sha256),
+        ]
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (30,)

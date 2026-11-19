@@ -293,3 +293,36 @@ def test_admission_from_prior_schema_can_be_claimed(tmp_path):
         db.execute("DROP TABLE study_token_outcomes")
         db.execute("DROP TABLE study_token_launches")
     assert admission.claim_for_launch(receipt).receipt == receipt
+
+
+def test_committed_manifest_pin_binds_reservation_claim_and_outcome(tmp_path):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    pinned = STUDY.model_copy(update={"native_manifest_sha256": "1" * 64})
+    receipt = admission.reserve(pinned, SLOT, ATTEMPT)
+    alternate = pinned.model_copy(update={"native_manifest_sha256": "2" * 64})
+    with pytest.raises(ValueError, match="study token pin mismatch"):
+        admission.reserve(alternate, SLOT, ATTEMPT.model_copy(update={"turn_reservation_id": 2, "tokens": 1}))
+    with pytest.raises(ValueError, match="committed reservation"):
+        admission.claim_for_launch(receipt.model_copy(update={"study": alternate}))
+
+    claim = admission.claim_for_launch(receipt)
+    with pytest.raises(ValueError, match="committed native manifest"):
+        admission.record_outcome(claim, TokenLaunchOutcome(status="launch_failed"))
+    admission.record_outcome(claim, TokenLaunchOutcome(status="launch_failed", native_manifest_sha256="1" * 64))
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT native_manifest_sha256 FROM study_token_outcomes").fetchall() == [("1" * 64,)]
+
+
+def test_legacy_manifest_migration_preserves_charges_and_refuses_repinning(tmp_path):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    receipt = admission.reserve(STUDY, SLOT, ATTEMPT)
+    with closing(sqlite3.connect(admission.database)) as db, db:
+        db.execute("ALTER TABLE study_token_pins DROP COLUMN native_manifest_sha256")
+        db.execute("ALTER TABLE study_token_outcomes DROP COLUMN native_manifest_sha256")
+    assert admission.claim_for_launch(receipt).receipt == receipt
+    subsequent = ATTEMPT.model_copy(update={"turn_reservation_id": 2, "tokens": 11})
+    pinned = STUDY.model_copy(update={"native_manifest_sha256": "1" * 64})
+    with pytest.raises(ValueError, match="study token pin mismatch"):
+        admission.reserve(pinned, SLOT, subsequent)
+    with pytest.raises(ValueError, match="run token budget exhausted"):
+        admission.reserve(STUDY, SLOT, subsequent)

@@ -33,6 +33,7 @@ class StudyTokenPin(_Record):
     runtime_sha256: Digest
     model_sha256: Digest
     token_limit: Tokens
+    native_manifest_sha256: Digest | None = None
 
 
 class SlotTokenPin(_Record):
@@ -69,6 +70,7 @@ class TokenLaunchOutcome(_Record):
     ]
     exit_status: Annotated[int, Field(ge=-127, le=255)] | None = None
     observed_work: Annotated[int, Field(ge=0, le=10_000_000)] | None = None
+    native_manifest_sha256: Digest | None = None
 
     @model_validator(mode="after")
     def validate_observations(self) -> Self:
@@ -91,7 +93,8 @@ class TokenLaunchOutcome(_Record):
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS study_token_pins (
         study_id TEXT PRIMARY KEY, protocol_sha256 TEXT NOT NULL UNIQUE,
-        runtime_sha256 TEXT NOT NULL, model_sha256 TEXT NOT NULL, token_limit INTEGER NOT NULL
+        runtime_sha256 TEXT NOT NULL, model_sha256 TEXT NOT NULL, token_limit INTEGER NOT NULL,
+        native_manifest_sha256 TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS study_token_slots (
         run_id TEXT PRIMARY KEY, study_id TEXT NOT NULL, task_id TEXT NOT NULL,
@@ -117,12 +120,19 @@ _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS study_token_outcomes (
         nonce TEXT PRIMARY KEY NOT NULL,
         status TEXT NOT NULL, exit_status INTEGER, observed_work INTEGER,
+        native_manifest_sha256 TEXT,
         FOREIGN KEY (nonce) REFERENCES study_token_launches(nonce)
     )""",
     """CREATE TABLE IF NOT EXISTS study_token_fixture_claims (
         nonce TEXT PRIMARY KEY NOT NULL,
         FOREIGN KEY (nonce) REFERENCES study_token_launches(nonce)
     )""",
+)
+
+
+_MANIFEST_MIGRATIONS = (
+    ("study_token_pins", "ALTER TABLE study_token_pins ADD COLUMN native_manifest_sha256 TEXT"),
+    ("study_token_outcomes", "ALTER TABLE study_token_outcomes ADD COLUMN native_manifest_sha256 TEXT"),
 )
 
 
@@ -174,6 +184,13 @@ class StudyTokenAdmission:
             db.execute("BEGIN IMMEDIATE")
             for statement in _SCHEMA:
                 db.execute(statement)
+            # Legacy reservations remain unpinned. They retain their original
+            # charge and cannot be promoted to an approved fixture launch.
+            for table, statement in _MANIFEST_MIGRATIONS:
+                if db.execute(
+                    "SELECT 1 FROM pragma_table_info(?) WHERE name = 'native_manifest_sha256'", (table,),
+                ).fetchone() is None:
+                    db.execute(statement)
             yield db
 
     def reserve(
@@ -184,13 +201,17 @@ class StudyTokenAdmission:
         if slot.token_limit > study.token_limit:
             raise ValueError("slot token ceiling exceeds study ceiling")
         study_pin = (study.protocol_sha256, study.runtime_sha256,
-                     study.model_sha256, study.token_limit)
+                     study.model_sha256, study.token_limit, study.native_manifest_sha256)
         slot_pin = (study.study_id, slot.task_id, slot.repetition, slot.arm, slot.token_limit)
         with self._transaction() as db:
-            db.execute("INSERT OR IGNORE INTO study_token_pins VALUES (?, ?, ?, ?, ?)",
-                       (study.study_id, *study_pin))
+            db.execute(
+                """INSERT OR IGNORE INTO study_token_pins (
+                       study_id, protocol_sha256, runtime_sha256, model_sha256, token_limit, native_manifest_sha256
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (study.study_id, *study_pin),
+            )
             recorded_study = db.execute(
-                "SELECT protocol_sha256, runtime_sha256, model_sha256, token_limit "
+                "SELECT protocol_sha256, runtime_sha256, model_sha256, token_limit, native_manifest_sha256 "
                 "FROM study_token_pins WHERE study_id = ?", (study.study_id,),
             ).fetchone()
             if recorded_study != study_pin:
@@ -238,7 +259,7 @@ class StudyTokenAdmission:
         study, slot, attempt = receipt.study, receipt.slot, receipt.attempt
         stored = db.execute(
             """SELECT p.study_id, p.protocol_sha256, p.runtime_sha256, p.model_sha256, p.token_limit,
-                      s.task_id, s.repetition, s.arm, s.token_limit,
+                      p.native_manifest_sha256, s.task_id, s.repetition, s.arm, s.token_limit,
                       a.assignment_id, a.attempt_id, a.prompt_sha256, a.tokens
                FROM study_token_attempts AS a
                JOIN study_token_slots AS s ON s.run_id = a.run_id AND s.study_id = a.study_id
@@ -248,12 +269,14 @@ class StudyTokenAdmission:
         ).fetchone()
         if stored != (
             study.study_id, study.protocol_sha256, study.runtime_sha256, study.model_sha256, study.token_limit,
-            slot.task_id, slot.repetition, slot.arm, slot.token_limit,
+            study.native_manifest_sha256, slot.task_id, slot.repetition, slot.arm, slot.token_limit,
             attempt.assignment_id, attempt.attempt_id, attempt.prompt_sha256, attempt.tokens,
         ):
             raise ValueError("token receipt does not match committed reservation")
 
     def _preflight_fixture_receipt(self, receipt: TokenAdmissionReceipt) -> None:
+        if receipt.study.native_manifest_sha256 is None:
+            raise ValueError("fixture claim requires a committed native manifest")
         with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
             self._require_committed_receipt(db, receipt)
 
@@ -342,7 +365,9 @@ class StudyTokenAdmission:
                 if row is None:
                     raise ValueError("reservation has no recoverable fixture claim")
                 claim = TokenLaunchClaim(receipt=receipt, nonce=row[0])
-            outcome = TokenLaunchOutcome(status="lost")
+            outcome = TokenLaunchOutcome(
+                status="lost", native_manifest_sha256=receipt.study.native_manifest_sha256,
+            )
             self.record_outcome(claim, outcome)
             return outcome
 
@@ -351,6 +376,8 @@ class StudyTokenAdmission:
         claim = TokenLaunchClaim.model_validate(claim)
         outcome = TokenLaunchOutcome.model_validate(outcome)
         receipt = claim.receipt
+        if outcome.native_manifest_sha256 != receipt.study.native_manifest_sha256:
+            raise ValueError("outcome does not match committed native manifest")
         if outcome.observed_work is not None and outcome.observed_work > receipt.attempt.tokens:
             raise ValueError("observed work exceeds admitted token allowance")
         with self._transaction() as db:
@@ -363,9 +390,9 @@ class StudyTokenAdmission:
                 raise ValueError("token launch claim does not match committed nonce")
 
             inserted = db.execute(
-                """INSERT INTO study_token_outcomes (nonce, status, exit_status, observed_work)
-                   VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING""",
-                (claim.nonce, outcome.status, outcome.exit_status, outcome.observed_work),
+                """INSERT INTO study_token_outcomes (nonce, status, exit_status, observed_work, native_manifest_sha256)
+                   VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+                (claim.nonce, outcome.status, outcome.exit_status, outcome.observed_work, outcome.native_manifest_sha256),
             )
             if inserted.rowcount != 1:
                 raise ValueError("token launch outcome already recorded")
