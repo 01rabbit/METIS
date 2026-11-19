@@ -66,9 +66,20 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
     assert "contents: read" in workflow
     assert "attestations: write" in workflow and "id-token: write" in workflow
     assert ".venv/bin/python -m metis.release_artifacts" in workflow
+    assert "--write-checksums" in workflow
+    assert "sha256sum dist/" not in workflow
     assert "gh attestation verify" in workflow
     assert "gh release create" not in workflow
     assert "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
+
+
+def test_release_and_drill_share_checksum_generation_path():
+    workflows = Path(__file__).parents[1] / ".github/workflows"
+    for name in ("release.yml", "release-attestation-drill.yml"):
+        workflow = (workflows / name).read_text()
+        assert workflow.count(".venv/bin/python -m metis.release_artifacts") == 1
+        assert workflow.count("--write-checksums") == 1
+        assert "sha256sum dist/" not in workflow
 
 
 @pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),

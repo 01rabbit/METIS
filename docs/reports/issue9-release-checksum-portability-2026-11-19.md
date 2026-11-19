@@ -2,6 +2,8 @@
 
 The release workflow now generates `SHA256SUMS` from validated archives using only their asset names. GitHub Release downloads put the wheel, sdist, and checksum file in one directory, so `sha256sum -c SHA256SUMS` can verify them there. The previous workflow wrote `dist/` prefixes, which required recipients to recreate that build directory.
 
+The main-branch attestation drill uses the same validator option and manifest format. This keeps its candidate artifact and checksum verification aligned with the tag-triggered release workflow; the drill still cannot publish a release.
+
 The manifest remains an ordinary checksum file. Authenticity depends on the GitHub artifact attestations and their independent verification, not on SHA-256 alone. A signed release, published assets, and recipient-side attestation verification have not been observed. Issue #9's P7, host reboot, and other security gates remain open.
 
 From this worktree, run the focused tests with `PYTHONPATH=src python -m pytest tests/test_validate_release_artifacts.py` and lint with `ruff check src/metis/release_artifacts.py tests/test_validate_release_artifacts.py`.
