@@ -22,15 +22,16 @@ with interval **[−0.3667, 0.0333]**. The final-call schema increased workflow
 completion alone to 23/30 versus 21/30, but fewer of those completions were
 oracle correct. Completion alone is not the acceptance metric.
 
-The final-call arm had seven jobs failing at a candidate-ready shared-call
-ceiling, six candidate-ready specialist-call ceiling failures, and seven
+The final-call arm had seven trials with a candidate ready at a shared-call
+ceiling, six with a candidate ready at a specialist-call ceiling, and seven
 report rejections. The current multi arm had six, four, and ten respectively.
-These mechanisms do not explain away the negative primary result. Mean input
+These ceiling counts may overlap and must not be added together. They do not
+explain away the negative primary result. Mean input
 tokens were 83,686 for final-call, 79,342 for current multi, and 62,873 for
 single. Provider cost was unavailable and is reported as unknown.
 
 The analyzer checked all 30 task clusters and complete arm sets against the
-frozen order. The metrics JSON and analysis JSON are under `reports/data/`.
+frozen order. The metrics JSON and analysis JSON are under `docs/reports/data/`.
 The experiment uses synthetic encoding tasks with one trial per cluster; it
 does not establish performance on general CTF challenges. This is a negative
 result for this bounded design, so Issue #6 and its dependent Issue #7 remain
