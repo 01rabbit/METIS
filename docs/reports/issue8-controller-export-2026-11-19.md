@@ -1,13 +1,14 @@
 # Issue #8: controller-derived, answer-free trial export
 
-`python -m metis.evaluation.heldout_export MANIFEST.json --database STATE.sqlite`
-now reads an existing METIS database without creating tables and prints a
-`heldout_analysis.Study` JSON record. The caller supplies a complete study
+`python -m metis.evaluation.heldout_study_export MANIFEST.json --database STATE.sqlite`
+now assembles a `heldout_analysis.Study` JSON record from an existing METIS
+database without creating tables. It complements the retained single-run
+`heldout_export.snapshot_run` interface. The caller supplies a complete study
 manifest: task labels, exposure/solvability declarations, equal arm budgets,
 and one run ID per task, repetition and arm. Missing or repeated cells fail.
 
 The exporter validates each run's full event hash chain and split, then derives
-the terminal verifier class, run completion, charged actions, reserved model
+the terminal verifier class, assignment/report completion, charged actions, reserved model
 calls, elapsed event time, and available job token usage. A real-model study
 must match the declared model to every assigned job. It never copies event
 details, candidates, answer values, artifact paths, or raw model messages.
