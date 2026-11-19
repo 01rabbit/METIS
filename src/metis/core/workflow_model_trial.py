@@ -1,6 +1,8 @@
 """Answer-free, bounded real-model trial for the fixed local workflow runner."""
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -8,6 +10,7 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -151,6 +154,47 @@ class _TrialFixture:
     oracle_sha256: str
 
 
+def _reject_acl_grants(descriptor: int, *, label: str) -> None:
+    """A Darwin extended ACL can grant privileges beyond the POSIX mode."""
+    if sys.platform != "darwin":
+        return
+    acl_type_extended = 0x100
+    acl_first_entry, acl_next_entry = 0, -1
+    acl_extended_deny = 2
+    unverified = f"{label} extended ACL could not be verified"
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        get_acl, get_entry = libc.acl_get_fd_np, libc.acl_get_entry
+        get_tag, free_acl = libc.acl_get_tag_type, libc.acl_free
+    except (AttributeError, OSError):
+        raise ValueError(unverified) from None
+
+    get_acl.argtypes = [ctypes.c_int, ctypes.c_int]
+    get_acl.restype = ctypes.c_void_p
+    get_entry.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    get_tag.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+    free_acl.argtypes = [ctypes.c_void_p]
+    acl = get_acl(descriptor, acl_type_extended)
+    if not acl:
+        if ctypes.get_errno() == errno.ENOENT:  # Darwin indicates an absent ACL.
+            return
+        raise ValueError(unverified)
+    try:
+        entry = ctypes.c_void_p()
+        selector = acl_first_entry
+        while get_entry(acl, selector, ctypes.byref(entry)) == 0:
+            tag = ctypes.c_int()
+            if get_tag(entry, ctypes.byref(tag)) != 0:
+                raise ValueError(unverified)
+            if tag.value != acl_extended_deny:
+                raise ValueError(f"{label} must have no extended ACL grants")
+            selector = acl_next_entry
+        if ctypes.get_errno() != errno.EINVAL:  # Darwin signals the end of the list.
+            raise ValueError(unverified)
+    finally:
+        free_acl(acl)
+
+
 def _read_trial_file(path: Path, *, limit: int, private: bool = False) -> bytes:
     """Snapshot a bounded regular file without opening a symlink or blocking on a FIFO."""
     label = "private oracle commitment" if private else "encoded fixture"
@@ -162,6 +206,8 @@ def _read_trial_file(path: Path, *, limit: int, private: bool = False) -> bytes:
                 raise ValueError(f"{label} must be a regular file")
             if private and (info.st_mode & 0o077 or info.st_uid != os.getuid() or info.st_nlink != 1):
                 raise ValueError("oracle commitment must be a private file owned by the operator")
+            if private:
+                _reject_acl_grants(source.fileno(), label=label)
             if not 0 < info.st_size <= limit:
                 raise ValueError(f"{label} exceeds size bounds or is empty")
             content = source.read(limit + 1)
@@ -185,6 +231,16 @@ def _directory_outside_checkout(path: Path, *, label: str) -> Path:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in trusted_uids
                     or info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
                 raise ValueError(f"{label} must have trusted directory ancestry")
+            if sys.platform == "darwin":
+                descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    if not os.path.samestat(info, os.fstat(descriptor)):
+                        raise ValueError(f"{label} changed during ancestry checks")
+                    _reject_acl_grants(descriptor, label=label)
+                    if not os.path.samestat(info, parent.lstat()):
+                        raise ValueError(f"{label} changed during ancestry checks")
+                finally:
+                    os.close(descriptor)
             if os.path.lexists(parent / ".git"):
                 raise ValueError(f"{label} must be outside Git checkouts")
     except (OSError, RuntimeError):
@@ -237,6 +293,8 @@ def run_external_fixture_trial(database: Path, *, image: str, platform: str | No
                                fixture: Path, oracle: Path,
                                proposer: Proposer | None = None) -> dict[str, object]:
     """Run one operator-authorized encoding fixture with an independent local commitment."""
+    if sys.platform not in {"darwin", "linux"}:
+        raise ValueError("external fixture intake requires macOS or Linux")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
         raise ValueError("sandbox image must be an immutable SHA-256 digest")
     if platform is not None and not PLATFORM_PATTERN.fullmatch(platform):

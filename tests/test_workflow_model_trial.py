@@ -336,3 +336,59 @@ def test_external_trial_accepts_sticky_shared_path_with_trusted_owners(
         run_external_fixture_trial(private / "run-workspace" / "state.sqlite",
                                    image="sha256:" + "a" * 64, platform=None,
                                    fixture=fixture, oracle=oracle, proposer=propose)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS extended ACLs")
+@pytest.mark.parametrize("acl_target", ["oracle file", "oracle ancestor", "workspace ancestor"])
+def test_external_trial_rejects_macos_acl_grants_despite_private_mode(
+    tmp_path, external_fixture, acl_target,
+):
+    fixture, oracle, _ = external_fixture
+    run_parent = tmp_path
+    if acl_target == "oracle file":
+        target = oracle
+        entry = "everyone allow read"
+    elif acl_target == "oracle ancestor":
+        target = tmp_path / "oracle-ancestor"
+        target.mkdir(mode=0o755)
+        private = target / "private"
+        private.mkdir(mode=0o700)
+        oracle = oracle.rename(private / oracle.name)
+        entry = "everyone allow add_file,delete_child"
+    else:
+        target = tmp_path / "run-ancestor"
+        target.mkdir(mode=0o755)
+        run_parent = target
+        entry = "everyone allow add_file,delete_child"
+
+    subprocess.run(["/bin/chmod", "+a", entry, target], check=True, timeout=5)
+    try:
+        assert target.stat().st_mode & 0o022 == 0
+        workspace = run_parent / "run-workspace"
+        with pytest.raises(ValueError, match="must have no extended ACL grants"):
+            run_external_fixture_trial(workspace / "state.sqlite", image="sha256:" + "a" * 64,
+                                       platform=None, fixture=fixture, oracle=oracle,
+                                       proposer=lambda _: pytest.fail("ACL grant reached proposer"))
+        assert not workspace.exists()
+    finally:
+        subprocess.run(["/bin/chmod", "-a", entry, target], check=True, timeout=5)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS extended ACLs")
+def test_external_trial_accepts_mac_deny_only_acl(tmp_path, external_fixture):
+    fixture, oracle, _ = external_fixture
+    protected = tmp_path / "run-parent"
+    protected.mkdir(mode=0o700)
+
+    def propose(_):
+        raise RuntimeError("stop before replay")
+
+    entry = "everyone deny delete"
+    subprocess.run(["/bin/chmod", "+a", entry, protected], check=True, timeout=5)
+    try:
+        with pytest.raises(RuntimeError, match="stop before replay"):
+            run_external_fixture_trial(protected / "run-workspace" / "state.sqlite",
+                                       image="sha256:" + "a" * 64, platform=None,
+                                       fixture=fixture, oracle=oracle, proposer=propose)
+    finally:
+        subprocess.run(["/bin/chmod", "-a", entry, protected], check=True, timeout=5)
