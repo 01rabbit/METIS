@@ -195,10 +195,12 @@ class PinnedOllama:
 
 
 class OllamaSpecialist:
-    """CodexRunner-compatible, tool-free specialist for one bound held-out run."""
+    """Experimental tool-free specialist; mutable tags prohibit hard-cap studies."""
 
     model_turn_budget_enforced = True
-    hard_token_budget_enforced = True
+    # Ollama dispatches by mutable tag. A concurrent tag swap can defeat the
+    # pre-count before post-call reconciliation; keep real held-out calls closed.
+    hard_token_budget_enforced = False
 
     def __init__(self, database: Path, run_id: str, engine: PinnedOllama, output_cap: int):
         from metis.evaluation.heldout_arm import binding

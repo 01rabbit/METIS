@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from metis.core.ollama_token_budget import PinnedOllama, TokenBudget
+from metis.core.ollama_token_budget import OllamaSpecialist, PinnedOllama, TokenBudget
 
 
 def process_claim(database: str, result: multiprocessing.Queue) -> None:
@@ -156,3 +156,21 @@ def test_unknown_server_response_stays_charged_and_blocks(tmp_path: Path, monkey
         pinned.generate("Reply OK.", output_cap=2, budget=budget)
     with pytest.raises(ValueError, match="invalid"):
         TokenBudget(budget.database, "run-1", 10).reserve(1, "p", "m")
+
+
+def test_mutable_ollama_tag_cannot_unlock_heldout_dispatch(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from metis.core.codex_specialist import run_assignment
+
+    assert OllamaSpecialist.hard_token_budget_enforced is False
+    scheduler = SimpleNamespace(database=tmp_path / "state.sqlite",
+                                config=lambda: {"catalog": [], "current_model": "gemma4:12b"})
+    job = {"run_id": "run-1", "attempt_id": "attempt-1", "state": "running", "model": None}
+    monkeypatch.setattr("metis.core.codex_specialist._job", lambda *args: job)
+    monkeypatch.setattr("metis.evaluation.heldout_arm.binding", lambda *args: {
+        "model_pin": "gemma4:12b", "prompt_text": "fixed prompt"})
+    runner = SimpleNamespace(hard_token_budget_enforced=OllamaSpecialist.hard_token_budget_enforced,
+                             run=lambda *args, **kwargs: pytest.fail("model dispatch must not occur"))
+    with pytest.raises(ValueError, match="token cap is not enforceable"):
+        run_assignment(scheduler, "run-1", "assignment-1", "attempt-1", runner)

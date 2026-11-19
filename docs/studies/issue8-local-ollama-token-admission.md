@@ -1,8 +1,9 @@
 # Issue #8 local Ollama token admission prototype
 
-This change adds a **conditional** local-model route for a bound real-model
-held-out run. It does not launch or score a CTF trial. The existing Codex CLI
-route still refuses a real-model held-out call without a hard token cap.
+This change adds an **experimental**, answer-free local-model admission
+prototype. It does not launch or score a CTF trial. Both Codex CLI and this
+Ollama specialist refuse real-model held-out calls because neither can
+guarantee a hard pre-dispatch token ceiling in the current runtime.
 
 The route requires the caller to pin the Ollama manifest SHA-256, its GGUF model
 layer SHA-256, and the `llama-tokenize` binary SHA-256. It checks the manifest
@@ -36,7 +37,7 @@ quality has not been measured by this change.
 
 ## Remaining gate
 
-This is a reviewable mechanism, not permission to start a new study. The model
+This is a reviewable prototype, not permission to start a new study. The model
 tag and local files can be changed by another process between verification
 and use. The cap assumes a trusted local Ollama installation and stable pinned
 files during each request. A model swap or server behavior change after the
@@ -45,8 +46,8 @@ On this Ollama 0.40.16 installation, `/api/generate` did not accept a manifest
 digest as `model`: a bare digest and `sha256:` prefix returned HTTP 404, while
 `gemma4:12b@sha256:<digest>` returned HTTP 400. The request must use a mutable
 tag. Thus this is **not** a hard cap against a concurrent local process that
-changes the tag, files, or Ollama server. Its hard-cap claim is limited to the
-trusted, stable local runtime and the pinned raw-text model path tested here.
-Independent review and CI are required before this route can be considered for
-a newly preregistered comparison. A subsequent study must still establish the
-actual arm, oracle, runtime, and model-quality requirements separately.
+changes the tag, files, or Ollama server. `OllamaSpecialist` advertises
+`hard_token_budget_enforced = False`, so the held-out gate refuses it before
+any model call. These probes establish only compatibility under tested local
+conditions. A future study requires a genuinely immutable or exclusively
+controlled model route, independent review, CI, and new preregistration.
