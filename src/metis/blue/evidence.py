@@ -395,7 +395,12 @@ def analyze_cloudtrail(raw, report, budget, since=None, until=None, **unused):
                        "authentication": auth, "outcome": outcome,
                        "principal": encode_numbers(row.get("userIdentity")),
                        "request_parameters": encode_numbers(row.get("requestParameters")),
-                       "response_elements": encode_numbers(row.get("responseElements"))})
+                       "response_elements": encode_numbers(row.get("responseElements")),
+                       # As recorded by the service: an address or a service name, not proof of the actor.
+                       "source_ip_address": encode_numbers(row.get("sourceIPAddress")),
+                       "user_agent": encode_numbers(row.get("userAgent")),
+                       "aws_region": encode_numbers(row.get("awsRegion")),
+                       "error_code": encode_numbers(row.get("errorCode"))})
     report["data"].update({"records": result, "input_records": len(rows), "duplicate_records": duplicates,
         "conflicting_event_ids": sorted(collisions), "missing_event_id_record_indexes": missing,
         "outside_interval": outside, "groups": [dict(zip(("event_source", "action", "category",

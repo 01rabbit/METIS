@@ -459,6 +459,23 @@ def run_ollama(root=ROOT, bundle_meta=None, model=None, out=None, url=None,
     return result
 
 
+def _from_cwd(value):
+    """Accept paths typed relative to the current directory (for example ``blue/.state/...`` from the
+    METIS checkout) when they land inside the knowledge root; other relative paths keep their
+    root-relative meaning (``examples/...``, ``.state/benchmarks/...``)."""
+    if value is None:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return value
+    root = ROOT.resolve()
+    candidate = (Path.cwd() / path).resolve()
+    if candidate == root or root not in candidate.parents:
+        return value
+    relative = candidate.relative_to(root)
+    return relative.as_posix() if isinstance(value, str) else candidate
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -483,6 +500,9 @@ def main(argv=None):
     run.add_argument("--timeout", type=int, default=600)
     run.add_argument("--out", type=Path, required=True, help="Fresh private JSON name; unknown completion blocks subsequent runs until reconciled")
     args = parser.parse_args(argv)
+    for name in ("out", "cases", "answer", "bundle_meta", "usage"):
+        if hasattr(args, name):
+            setattr(args, name, _from_cwd(getattr(args, name)))
     try:
         if args.command == "bundle":
             result = bundle(out=args.out, cases_relative=args.cases, protocol=args.protocol)
