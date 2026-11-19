@@ -5,8 +5,11 @@ model work. Admission alone does not make a runner hard-cap capable.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import secrets
 import sqlite3
+import stat
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -115,7 +118,15 @@ _SCHEMA = (
         status TEXT NOT NULL, exit_status INTEGER, observed_work INTEGER,
         FOREIGN KEY (nonce) REFERENCES study_token_launches(nonce)
     )""",
+    """CREATE TABLE IF NOT EXISTS study_token_fixture_claims (
+        nonce TEXT PRIMARY KEY NOT NULL,
+        FOREIGN KEY (nonce) REFERENCES study_token_launches(nonce)
+    )""",
 )
+
+
+class FixtureClaimBusy(ValueError):
+    """A fixture controller or reconciler still holds the claim lock."""
 
 
 class StudyTokenAdmission:
@@ -222,8 +233,52 @@ class StudyTokenAdmission:
         ):
             raise ValueError("token receipt does not match committed reservation")
 
+    @contextmanager
+    def _fixture_lock(self, receipt: TokenAdmissionReceipt) -> Iterator[None]:
+        # The generic ledger remains usable on platforms without POSIX flock.
+        import fcntl
+
+        directory = self.database.with_name(f".{self.database.name}.fixture-locks")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            attributes = os.fstat(directory_fd)
+            if attributes.st_uid != os.geteuid() or stat.S_IMODE(attributes.st_mode) != 0o700:
+                raise ValueError("fixture claims require a private operator-owned lock directory")
+            key = f"{receipt.slot.run_id}:{receipt.attempt.turn_reservation_id}".encode("ascii")
+            name = hashlib.sha256(key).hexdigest() + ".lock"
+            fd = os.open(
+                name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                0o600, dir_fd=directory_fd,
+            )
+            try:
+                attributes = os.fstat(fd)
+                if (not stat.S_ISREG(attributes.st_mode) or attributes.st_uid != os.geteuid()
+                        or stat.S_IMODE(attributes.st_mode) != 0o600 or attributes.st_nlink != 1):
+                    raise ValueError("fixture claim lock must be a private operator-owned regular file")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise FixtureClaimBusy("fixture claim already has an active owner") from None
+                yield
+            finally:
+                # Keep the path in place so later owners always lock the same inode.
+                os.close(fd)
+        finally:
+            os.close(directory_fd)
+
     def claim_for_launch(self, receipt: TokenAdmissionReceipt) -> TokenLaunchClaim:
         """Return a one-time launch claim only after its transaction commits."""
+        return self._claim_for_launch(receipt, fixture_owned=False)
+
+    @contextmanager
+    def claim_fixture_launch(self, receipt: TokenAdmissionReceipt) -> Iterator[TokenLaunchClaim]:
+        """Hold exclusive fixture ownership until terminal recording or controller exit."""
+        receipt = TokenAdmissionReceipt.model_validate(receipt)
+        with self._fixture_lock(receipt):
+            yield self._claim_for_launch(receipt, fixture_owned=True)
+
+    def _claim_for_launch(self, receipt: TokenAdmissionReceipt, *, fixture_owned: bool) -> TokenLaunchClaim:
         claim = TokenLaunchClaim(receipt=receipt, nonce=secrets.token_hex(16))
         receipt = claim.receipt
         with self._transaction() as db:
@@ -235,7 +290,28 @@ class StudyTokenAdmission:
             )
             if inserted.rowcount != 1:
                 raise ValueError("token launch already claimed or nonce unavailable")
+            if fixture_owned:
+                db.execute("INSERT INTO study_token_fixture_claims (nonce) VALUES (?)", (claim.nonce,))
         return claim
+
+    def reconcile_lost_fixture_claim(self, receipt: TokenAdmissionReceipt) -> TokenLaunchOutcome:
+        """Record a lost controller outcome without implying the worker stopped."""
+        receipt = TokenAdmissionReceipt.model_validate(receipt)
+        with self._fixture_lock(receipt):
+            with self._transaction() as db:
+                self._require_committed_receipt(db, receipt)
+                row = db.execute(
+                    """SELECT l.nonce FROM study_token_launches AS l
+                       JOIN study_token_fixture_claims AS f ON l.nonce = f.nonce
+                       WHERE l.run_id = ? AND l.turn_reservation_id = ?""",
+                    (receipt.slot.run_id, receipt.attempt.turn_reservation_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("reservation has no recoverable fixture claim")
+                claim = TokenLaunchClaim(receipt=receipt, nonce=row[0])
+            outcome = TokenLaunchOutcome(status="lost")
+            self.record_outcome(claim, outcome)
+            return outcome
 
     def record_outcome(self, claim: TokenLaunchClaim, outcome: TokenLaunchOutcome) -> None:
         """Record one terminal observation without changing the admission charge."""

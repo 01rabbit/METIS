@@ -296,7 +296,7 @@ def qualify_native_launch(
         # The digest identifies the entire registered single-file GGUF. Other
         # file layouts, including split GGUFs, cannot reach launch.
         _stage(model, staged_model, FIXTURE_MODEL_SHA256, limit=2 * 1024**2)
-        claim = admission.claim_for_launch(receipt)
-        outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
-        admission.record_outcome(claim, outcome)
-        return outcome
+        with admission.claim_fixture_launch(receipt) as claim:
+            outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
+            admission.record_outcome(claim, outcome)
+            return outcome

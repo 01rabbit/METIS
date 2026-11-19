@@ -11,6 +11,7 @@ from threading import Barrier
 import pytest
 
 from metis.core.study_token_admission import (
+    FixtureClaimBusy,
     SlotTokenPin,
     StudyTokenAdmission,
     StudyTokenPin,
@@ -255,7 +256,7 @@ def test_one_process_can_launch_for_racing_controllers(tmp_path, monkeypatch):
         try:
             return fixture.qualify_native_launch(admission, receipt, binary=binary, model=model).status
         except ValueError as error:
-            assert "already claimed" in str(error)
+            assert isinstance(error, FixtureClaimBusy) or "already claimed" in str(error)
             return "denied"
 
     with ThreadPoolExecutor(max_workers=2) as pool:
