@@ -30,6 +30,7 @@ esac
 
 metis_repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 metis_source_pin=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
+metis_trace_patch_sha256=7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d
 metis_source_remote=${METIS_LLAMA_SOURCE_REMOTE:-https://github.com/ggml-org/llama.cpp.git}
 metis_build_jobs=${METIS_LLAMA_BUILD_JOBS:-4}
 case "$metis_build_jobs" in
@@ -45,6 +46,12 @@ metis_build_root=$(CDPATH='' cd -- "$1" && pwd)
 cp -- "$metis_repo_root/integrations/llama-server-work-trace/llama-work-trace.patch" \
     "$metis_build_root/llama-work-trace.patch"
 chmod a-w "$metis_build_root/llama-work-trace.patch"
+metis_actual_patch_sha256=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+    "$metis_build_root/llama-work-trace.patch")
+if [ "$metis_actual_patch_sha256" != "$metis_trace_patch_sha256" ]; then
+    echo "Trace patch does not match the repository-pinned digest." >&2
+    exit 2
+fi
 
 # Always fetch the exact commit into a fresh tree; a local mirror can be supplied
 # through METIS_LLAMA_SOURCE_REMOTE to keep an offline reproduction self-contained.

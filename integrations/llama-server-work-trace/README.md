@@ -23,9 +23,9 @@ upper bound for all models or runtimes.
 ## Build
 
 The builder checks out the exact source commit into a fresh directory, verifies
-the commit, verifies the patch SHA-256
-`7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d`, applies
-the patch with normal context checks, and builds the CPU-only server. The
+the commit, then checks this patch SHA-256 before applying it:
+`7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d`. It
+applies the patch with normal context checks and builds the CPU-only server. The
 runner also rejects any build manifest whose patch digest differs from this
 repository-pinned digest. The manifest is a content-addressed build record,
 not a signed attestation that independently proves how a supplied binary was
@@ -68,7 +68,8 @@ To exercise the server's batch-retry control-flow path, a test-only environment
 switch injects one synthetic precompute refusal after readiness and before
 graph submission. The probe requires exactly one injected refusal, one failed
 process call, and one server retry, with no graph failure. The following attempt
-runs normally:
+runs normally, and the startup phase must contain no failed process, retry, or
+graph work:
 
 ```sh
 scripts/run_llama_work_trace.py --inject-one-retry \

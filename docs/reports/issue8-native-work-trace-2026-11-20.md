@@ -12,8 +12,8 @@ fixture is `stories260K.gguf`, SHA-256
 
 The patch SHA-256 is
 `7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d`; the
-locally built binary SHA-256 was
-`feeaae916f0aaba2770bb326a05a0865fb1186aa5de716f8ef2c9b1e0d39f6d2`. The
+latest locally built binary SHA-256 was
+`3b11670bba685f535eae45dd880113045637e5325b762a0eaa83c3c4df99f090`. The
 manifest identifies those artifact digests and the declared source pin. The
 manifest alone is not a signed or independent proof that an arbitrary binary
 was built from that source; the reported observation came from the checked
@@ -38,9 +38,9 @@ allocator failure behavior.
 - The pinned CPU-only `llama-server` build completed from a fresh source tree.
 - Normal and injected-retry fixture probes completed and their aggregate
   records passed the strict parser.
-- `tests/test_native_work_trace.py`: 14 passed, including patch pin mismatch,
-  inconsistent retry counters, duplicate JSON keys, and OS-level 4 MiB log-file
-  limit checks.
+- `tests/test_native_work_trace.py`: 20 passed, including pre-apply patch pin
+  checks, startup and request retry-counter invariants, duplicate JSON keys,
+  and OS-level 4 MiB log-file limit checks.
 - Ruff, mypy, `scripts/check_repo.py`, `sh -n scripts/build_llama_work_trace.sh`,
   and `git diff --check` passed.
 

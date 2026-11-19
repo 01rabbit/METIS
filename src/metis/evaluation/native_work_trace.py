@@ -157,6 +157,16 @@ def verify_build_manifest(manifest_path: Path, *, binary: Path, patch: Path) -> 
 
 def validate_retry_probe(trace: NativeWorkTrace, *, injected: bool) -> None:
     """Require the injected control-flow probe to have its exact expected counters."""
+    startup = trace.startup
+    startup_failures = (
+        startup.process_failures,
+        startup.server_batch_retries,
+        startup.injected_precompute_failures,
+        startup.graph_failures,
+        startup.graph_pre_dispatch_failures,
+    )
+    if startup_failures != (0, 0, 0, 0, 0):
+        raise ValueError("retry probe recorded an unexpected startup failure")
     counts = trace.requests
     expected = (1, 1, 1) if injected else (0, 0, 0)
     actual = (

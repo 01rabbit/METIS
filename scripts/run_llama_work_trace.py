@@ -224,7 +224,7 @@ def main() -> int:
     parser.add_argument("binary", type=Path)
     parser.add_argument("model", type=Path)
     parser.add_argument("--inject-one-retry", action="store_true",
-                        help="inject one precompute KV-capacity refusal after readiness")
+                        help="inject one synthetic precompute refusal after readiness")
     parser.add_argument("--output", type=Path,
                         help="create a new 0600 JSON file with aggregate-only evidence")
     args = parser.parse_args()

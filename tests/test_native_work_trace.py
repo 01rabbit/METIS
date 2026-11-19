@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -140,6 +141,15 @@ def test_trace_build_manifest_rejects_unpinned_patch(tmp_path):
         verify_build_manifest(manifest_path, binary=binary, patch=patch)
 
 
+def test_builder_checks_patch_digest_before_source_application():
+    builder = (Path(__file__).parents[1] / "scripts/build_llama_work_trace.sh").read_text()
+    digest_check = builder.index("metis_actual_patch_sha256")
+    apply_check = builder.index('git -C "$metis_build_root/source" apply --check')
+
+    assert work_trace.TRACE_PATCH_SHA256 in builder
+    assert digest_check < apply_check
+
+
 def test_retry_probe_requires_exact_synthetic_counters():
     trace = NativeWorkTrace.model_validate(_record(requests={
         "process_calls": 2, "process_decode_calls": 2, "decode_calls": 2,
@@ -175,6 +185,31 @@ def test_retry_probe_rejects_unexpected_counters_without_injection():
     }))
     with pytest.raises(ValueError):
         validate_retry_probe(candidate, injected=False)
+
+
+@pytest.mark.parametrize("field", [
+    "process_failures", "server_batch_retries", "injected_precompute_failures",
+    "graph_failures", "graph_pre_dispatch_failures",
+])
+def test_retry_probe_rejects_unexpected_startup_failures(field):
+    startup = _counts()
+    startup[field] = 1
+    if field == "process_failures":
+        startup.update(process_calls=2, process_decode_calls=2, decode_calls=2)
+    elif field == "server_batch_retries":
+        startup.update(process_calls=2, process_decode_calls=2, decode_calls=2,
+                       process_failures=1)
+    elif field == "injected_precompute_failures":
+        startup.update(process_calls=2, process_decode_calls=2, decode_calls=2,
+                       process_failures=1, server_batch_retries=1)
+    elif field == "graph_failures":
+        startup.update(graph_dispatches=2)
+    trace = NativeWorkTrace.model_validate(_record(startup=startup))
+
+    with pytest.raises(ValueError, match="startup failure"):
+        validate_retry_probe(trace, injected=False)
+    with pytest.raises(ValueError, match="startup failure"):
+        validate_retry_probe(trace, injected=True)
 
 
 def test_server_log_file_is_limited_by_child_file_size_resource(tmp_path):
