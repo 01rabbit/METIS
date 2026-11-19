@@ -191,6 +191,7 @@ class CodexTurn:
 
 class CodexRunner(Protocol):
     model_turn_budget_enforced: bool
+    hard_token_budget_enforced: bool
 
     def run(self, prompt: str, *, model: str | None, timeout: float,
             should_stop: Callable[[], bool] | None = None,
@@ -217,6 +218,9 @@ class CodexCLI:
     """
 
     model_turn_budget_enforced = True
+    # The CLI reports tokens only after a turn and has no proven input/output
+    # admission limit. A declared study token cap must therefore fail closed.
+    hard_token_budget_enforced = False
 
     def __init__(self, executable: str | None = None, *, features: set[str] | None = None,
                  isolation: str = "required", allow_untested: bool = False,
@@ -562,6 +566,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     heldout = binding(scheduler.database, run_id)
     if heldout is not None and (selected != heldout["model_pin"] or note is not None):
         raise ValueError("held-out specialist model or prompt override conflicts with protocol")
+    if (heldout is not None and heldout.get("prompt_text") is not None
+            and not getattr(runner, "hard_token_budget_enforced", False)):
+        raise ValueError("real-model held-out token cap is not enforceable by this runner")
     def bound_prompt() -> str:
         rendered = render_prompt(brief, transcript, note)
         if heldout is None:

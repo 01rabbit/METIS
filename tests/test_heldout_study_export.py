@@ -487,9 +487,20 @@ def test_real_munin_freeze_reconciles_with_protocol(tmp_path: Path) -> None:
     extra_wave = AgentLedger(database).create_wave(extra["run_id"])
     scheduler.enqueue(extra["run_id"], extra_wave["wave_id"])
     extra_job = scheduler.dispatch(extra["run_id"])["started"][0]
+    class UnsupportedRunner:
+        hard_token_budget_enforced = False
+
+        def run(self, *args, **kwargs):
+            raise AssertionError("model call must not start")
+
+    with pytest.raises(ValueError, match="token cap is not enforceable"):
+        run_assignment(scheduler, extra["run_id"], extra_job["assignment_id"],
+                       extra_job["attempt_id"], UnsupportedRunner())  # type: ignore[arg-type]
+    assert scheduler.model_turn_budget(extra["run_id"])["reserved"] == 0
 
     class OneTurn:
         prompt = ""
+        hard_token_budget_enforced = True
 
         def run(self, prompt, *, model, timeout, should_stop=None, images=None):
             self.prompt = prompt
