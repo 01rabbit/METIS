@@ -1,10 +1,10 @@
 # Issue #9: wheel installation and controller recovery inside Colima
 
 On 2026-11-19, an Apple Silicon Mac ran a new, disposable Colima 0.10.3 VZ
-profile with Docker and host directory mounts disabled. The guest reported
-Ubuntu 24.04.4 LTS, Linux `6.8.0-117-generic` on `aarch64`, Python 3.12.3,
-and Docker 29.5.2. The METIS controller and recovery CLI both ran inside
-the guest from the installed wheel.
+profile with the Docker runtime enabled. Host directory mounts were disabled.
+The guest reported Ubuntu 24.04.4 LTS, Linux `6.8.0-117-generic` on
+`aarch64`, Python 3.12.3, and Docker 29.5.2. The METIS controller and
+recovery CLI both ran inside the guest from the installed wheel.
 
 ## Installation
 
