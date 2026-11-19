@@ -90,5 +90,8 @@ For reviewers without access to that local database, a restricted export is
 included at `docs/evidence/issue28-ksnctf39/`. It contains the original event
 chain and nonsecret verdict metadata plus a redacted checkpoint and the public
 encrypted archive. Run the same verifier with `--public-bundle` as described in
-the export README. The export does not turn the official response into a
-server-signed receipt; it makes the locally recorded evidence inspectable.
+the export README. The verifier checks the complete ordered Stage 2 window
+sequence from hash-chained event payloads, so its coverage conclusion does not
+depend only on the redacted checkpoint. The export does not turn the official
+response into a server-signed receipt; it makes the locally recorded evidence
+inspectable.

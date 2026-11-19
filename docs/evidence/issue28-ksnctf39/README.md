@@ -18,6 +18,10 @@ the two verdict labels and timestamps, a restricted adapter/challenge binding,
 the public encrypted ZIP, and only the counters and identity fields required
 from the private checkpoint. The official ZIP SHA-256 is
 `ff663a29abc5f0ded2c3456bc731b1b21329eb95914286733c40364624e5d8f5`.
+The verifier checks the ordered 24 probe windows and all 88 × 8 full-scan
+windows from the chained event payloads, including each `next_index`, scanned
+width and completion marker. The private checkpoint alone is not the proof of
+full coverage.
 
 The export omits authentication state, candidate HMAC digests, the recovered
 key, share contents, the answer, private shard references, and unrelated runs.

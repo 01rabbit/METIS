@@ -54,6 +54,16 @@ def verify(database: Path, *, public_bundle: bool = False) -> dict[str, object]:
             ).fetchone()[0]
             for tool in ("zipcrypto_stay_stage2", "zipcrypto_stay_recover")
         }
+        stage2_results = [json.loads(row[0])["detail"] for row in db.execute(
+            "SELECT payload FROM events WHERE run_id=? "
+            "AND json_extract(payload,'$.status')='observing' "
+            "AND json_extract(payload,'$.detail.artifact_tool')='zipcrypto_stay_stage2' "
+            "ORDER BY sequence", (RUN_ID,))]
+        recovery_results = [json.loads(row[0])["detail"] for row in db.execute(
+            "SELECT payload FROM events WHERE run_id=? "
+            "AND json_extract(payload,'$.status')='observing' "
+            "AND json_extract(payload,'$.detail.artifact_tool')='zipcrypto_stay_recover' "
+            "ORDER BY sequence", (RUN_ID,))]
 
     archive_path = database.parent / artifact_root / ARCHIVE
     if archive_path.is_symlink() or not archive_path.is_file():
@@ -78,6 +88,24 @@ def verify(database: Path, *, public_bundle: bool = False) -> dict[str, object]:
             or operation_counts["zipcrypto_stay_recover"] != 138
             or checkpoint["actions"] != 866):
         raise ValueError("audited Stage 2 action counts do not match checkpoint")
+    probe_stops = (1 << 20, (1 << 25) + (1 << 19), 1 << 26)
+    expected_stage2 = [
+        (stop, 1 << 20) for _ in range(8) for stop in probe_stops
+    ] + [
+        (chunk * (1 << 23), 1 << 23) for _ in range(88) for chunk in range(1, 9)
+    ]
+    if len(stage2_results) != len(expected_stage2) or any(
+        result.get("tool_ok") != "true" or result.get("complete") != "True"
+        or result.get("next_index") != str(stop)
+        or result.get("scanned") != str(width)
+        for result, (stop, width) in zip(stage2_results, expected_stage2, strict=True)
+    ):
+        raise ValueError("audited Stage 2 scan sequence incomplete or inconsistent")
+    if (len(recovery_results) != 138
+            or any(result.get("tool_ok") != "true" for result in recovery_results)
+            or [result.get("keys_count") for result in recovery_results].count("1") != 1
+            or recovery_results[-1].get("keys_count") != "1"):
+        raise ValueError("audited key recovery sequence inconsistent")
 
     if len(attempts) != 2 or [row[0] for row in attempts] != ["incorrect", "correct"]:
         raise ValueError("official verdict sequence mismatch")

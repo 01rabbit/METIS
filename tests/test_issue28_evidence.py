@@ -56,8 +56,20 @@ def recorded_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ])
         parent = ""
         events = [("new", {})]
-        events += [("executing", {"tool": "zipcrypto_stay_stage2"})] * 728
-        events += [("executing", {"tool": "zipcrypto_stay_recover"})] * 138
+        probe_stops = (1 << 20, (1 << 25) + (1 << 19), 1 << 26)
+        stops = [(stop, 1 << 20) for _ in range(8) for stop in probe_stops]
+        stops += [(chunk * (1 << 23), 1 << 23)
+                  for _ in range(88) for chunk in range(1, 9)]
+        for stop, width in stops:
+            events.append(("executing", {"tool": "zipcrypto_stay_stage2"}))
+            events.append(("observing", {"artifact_tool": "zipcrypto_stay_stage2",
+                                         "tool_ok": "true", "complete": "True",
+                                         "next_index": str(stop), "scanned": str(width)}))
+        for index in range(138):
+            events.append(("executing", {"tool": "zipcrypto_stay_recover"}))
+            events.append(("observing", {"artifact_tool": "zipcrypto_stay_recover",
+                                         "tool_ok": "true",
+                                         "keys_count": "1" if index == 137 else "0"}))
         events += [("solved", {"verification": "official_ksnctf"})]
         for sequence, (status, detail) in enumerate(events):
             payload = json.dumps({"schema_version": 1, "run_id": evidence.RUN_ID,
@@ -87,7 +99,7 @@ def test_rejects_corrupt_audit_chain(recorded_run: Path) -> None:
 @pytest.mark.parametrize("change", [
     "UPDATE web_attempts SET verdict='incorrect' WHERE verdict='correct'",
     "UPDATE web_runs SET config='{" + '"adapter":"html","challenge_id":39' + "}'",
-    "UPDATE events SET payload='{}' WHERE sequence=867",
+    "UPDATE events SET payload='{}' WHERE sequence=(SELECT MAX(sequence) FROM events)",
 ])
 def test_rejects_verdict_or_binding_mismatch(recorded_run: Path, change: str) -> None:
     with sqlite3.connect(recorded_run) as db:
@@ -102,4 +114,21 @@ def test_rejects_incomplete_scan(recorded_run: Path) -> None:
     state["full_cursor"] = 87
     path.write_text(json.dumps(state))
     with pytest.raises(ValueError, match="full-scan checkpoint incomplete"):
+        evidence.verify(recorded_run)
+
+
+def test_rejects_incomplete_audited_scan_with_valid_chain(recorded_run: Path) -> None:
+    with sqlite3.connect(recorded_run) as db:
+        rows = db.execute("SELECT sequence,payload,timestamp FROM events ORDER BY sequence").fetchall()
+        parent = ""
+        for sequence, raw, timestamp in rows:
+            payload = json.loads(raw)
+            if sequence == 2:
+                payload["detail"]["next_index"] = "1"
+                raw = json.dumps(payload, separators=(",", ":"))
+            digest = RunStore._digest(raw, timestamp, parent)
+            db.execute("UPDATE events SET payload=?,previous_hash=?,digest=? WHERE sequence=?",
+                       (raw, parent, digest, sequence))
+            parent = digest
+    with pytest.raises(ValueError, match="Stage 2 scan sequence"):
         evidence.verify(recorded_run)
