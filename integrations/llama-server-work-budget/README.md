@@ -154,9 +154,23 @@ the observed process exit. Observed work in the ledger counts submitted
 graph positions. The controller also checks that graph work plus sampled
 outputs fit the original admission. An EOS or stop match can reduce the
 observed output while the full requested headroom stays reserved.
-All outcomes retain the entire admission charge. An abruptly terminated
-controller may leave an orphaned process or a claim without an outcome. The
-same claim cannot be reused, and the process retains its immutable native cap.
+All outcomes retain the entire admission charge. The controller holds a
+claim lock through the terminal write. The lock closes on exec and in a raw
+Python fork child. The controller compares the supplied receipt to the ledger
+read-only before creating lock paths and rechecks it in the claim transaction.
+After that lock releases,
+`StudyTokenAdmission.reconcile_lost_fixture_claim(receipt)` can close a matching
+pending fixture claim once as `lost` and retain its committed manifest digest.
+A live owner, an earlier terminal record, or a claim created without fixture
+locking blocks reconciliation. Use a
+trusted, local filesystem and one canonical path for the ledger and its
+lock directory. Hardlinked ledgers are rejected. Keep both paths stable
+for the lifetime of the study.
+
+A lost outcome leaves the child state unknown. An abruptly terminated
+controller may leave an orphaned process, which retains its immutable native
+cap. Reconciliation never signals an identified or suspected process. The
+claim remains spent.
 
 Run the optional real integration fixture against a build from the native patch.
 

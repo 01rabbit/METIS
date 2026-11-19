@@ -1,5 +1,25 @@
 # METIS implementation status
 
+## Issue #9 artifact registration audit (2026-11-20)
+
+`metis audit` now reports bounded, count-only artifact registrations from the
+current run's manifest in its existing SQLite snapshot. Derived, added and other
+registration counts omit paths and contents and always report
+`filesystem_verified: false`. The audit does not inspect artifact files,
+initialize a session, acquire METIS locks or remove data. Missing legacy schema
+is unavailable; malformed, duplicate, unrecognized-path or oversized manifests
+make only the inventory unavailable. Existing valid manifest shapes outside the
+inventory's recognition rules keep their event-chain and other audit output;
+the persistence contract is unchanged. SQLite errors propagate if the original
+read transaction is no longer active, preserving the audit's snapshot boundary.
+All 95 focused audit/CLI/evidence tests and standard static/content checks passed.
+The current head also completed the full test suite with exit code 0; pytest
+collection reported 1,603 tests. The quiet run did not expose pass/skip counts.
+This adds local visibility without proving file
+existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
+P7/#8 dependency remain open. See
+[`issue9-artifact-inventory-audit-2026-11-20.md`](reports/issue9-artifact-inventory-audit-2026-11-20.md).
+
 ## Codex-native solve workflow
 
 The active implementation is on `metis-full-implementation`. Codex supplies the
@@ -654,6 +674,11 @@ and the [unified operational audit](reports/issue9-unified-operational-audit-202
 
 A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The checksum manifest now uses release asset basenames so recipients can run `sha256sum -c SHA256SUMS` in the download directory; see `docs/reports/issue9-release-checksum-portability-2026-11-19.md` for local test evidence. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
 
+The offline release validator also checks a staged wheel, sdist and canonical
+checksum manifest as an exact bundle using `--verify-checksums`. This confirms
+local bundle consistency; signed installer and recipient provenance evidence
+remain open. See the [release bundle checks](reports/issue9-release-checksum-portability-2026-11-19.md#offline-bundle-verification).
+
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
 before registering a worker or accepting results, and cannot replace another
@@ -828,8 +853,16 @@ official #39 verdict remain open.
 selection and requires `--apply` for deletion. It reuses the locked per-run
 generated-artifact purge and reports blocked resumable runs. Only terminal
 `solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
-`planning` and extendable `exhausted` runs are preserved. This is a manual
-local retention control, not secure erasure or a complete P8 release gate. See
+`planning` and extendable `exhausted` runs are preserved. Each run is capped at
+100 registered derived artifacts; the run-locked writer refuses the 101st
+before creating it. Apply preflights the whole bounded batch under all selected
+run locks and skips deletion if any run exceeds the cap. Overflow
+reports counts and limits without artifact paths; directory enumeration stops
+at the per-run bound. Apply derives lock capacity from `RLIMIT_NOFILE`, open
+FDs, a 16-FD reserve, and two FDs per run, and returns before locking if the
+batch exceeds capacity. It filters resumable runs before lock acquisition and
+uses a 15-second batch lock deadline. This is a manual local retention control,
+not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
 
 ## Held-out protocol preparation (2026-11-19)

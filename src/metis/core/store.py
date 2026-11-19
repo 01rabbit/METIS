@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -69,6 +70,104 @@ class _AuditTurnBudget(BaseModel):
 class _AuditCount(BaseModel):
     model_config = ConfigDict(strict=True)
     count: int = Field(ge=0)
+
+
+MAX_AUDIT_MANIFEST_BYTES = 1_048_576
+MAX_AUDIT_ARTIFACTS = 4096
+MAX_AUDIT_MANIFEST_DEPTH = 64
+
+
+class _AuditManifest(BaseModel):
+    """Only registration paths enter this projection; other fields stay private."""
+
+    model_config = ConfigDict(strict=True)
+    artifacts: list[str] = Field(max_length=MAX_AUDIT_ARTIFACTS)
+
+
+def _unique_manifest_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("artifact inventory unavailable or corrupt")
+        result[key] = value
+    return result
+
+
+def _invalid_manifest_constant(value: str) -> object:
+    raise ValueError("artifact inventory unavailable or corrupt")
+
+
+def _check_manifest_depth(raw: str) -> None:
+    """Bound container nesting before JSON decoding, respecting quoted strings."""
+    depth = 0
+    quoted = escaped = False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_AUDIT_MANIFEST_DEPTH:
+                raise ValueError("artifact inventory unavailable or corrupt")
+        elif char in "]}":
+            depth -= 1
+
+
+def _artifact_inventory(db: sqlite3.Connection, run_id: str) -> dict[str, object]:
+    """Count recognized registrations without changing the read snapshot."""
+    try:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(codex_sessions)")}
+        if "manifest" not in columns:
+            return {"available": False}
+        # Bound stored bytes before transfer to Python, including embedded NULs.
+        # The second check below also bounds UTF-8 when a legacy DB uses UTF-16.
+        rows = db.execute(
+            "SELECT CASE WHEN typeof(manifest)='text' "
+            "AND length(CAST(manifest AS BLOB)) <= ? THEN manifest END "
+            "FROM codex_sessions WHERE run_id=? LIMIT 2", (MAX_AUDIT_MANIFEST_BYTES, run_id),
+        ).fetchall()
+        if len(rows) != 1 or not isinstance(rows[0][0], str):
+            raise ValueError("invalid manifest")
+        if len(rows[0][0].encode("utf-8")) > MAX_AUDIT_MANIFEST_BYTES:
+            raise ValueError("oversized manifest")
+        _check_manifest_depth(rows[0][0])
+        value = json.loads(rows[0][0], object_pairs_hook=_unique_manifest_fields,
+                           parse_constant=_invalid_manifest_constant)
+        manifest = _AuditManifest.model_validate(value)
+        seen: set[str] = set()
+        derived = added = 0
+        for path in manifest.artifacts:
+            parts = path.split("/")
+            if (path in seen or any(part in {"", ".", ".."} for part in parts)
+                    or "\x00" in path or "\\" in path or PureWindowsPath(path).drive
+                    or any(0xD800 <= ord(char) <= 0xDFFF for char in path)):
+                raise ValueError("invalid artifact path")
+            seen.add(path)
+            if parts[0] == ".metis-derived":
+                if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{32}\.[a-z0-9]{1,8}", parts[1]):
+                    raise ValueError("invalid derived path")
+                derived += 1
+            elif parts[0] == ".metis-added":
+                if len(parts) != 2:
+                    raise ValueError("invalid added path")
+                added += 1
+    except sqlite3.Error:
+        # SQLite may roll back a transaction on IOERR/NOMEM. Continuing then
+        # could combine the validated chain with counters from a newer snapshot.
+        if not db.in_transaction:
+            raise
+        return {"available": False}
+    except (ValueError, TypeError, RecursionError):
+        return {"available": False}
+    return {"available": True, "registered_artifacts": len(seen),
+            "registered_derived": derived, "registered_added": added,
+            "registered_other": len(seen) - derived - added, "filesystem_verified": False}
 
 
 class RunStore:
@@ -221,7 +320,10 @@ class RunStore:
                 "registered_sandbox_workers": {"available": False},
                 "pending_candidates": {"available": False},
                 "model_usage": {"available": False},
+                "artifact_inventory": {"available": False},
             }
+            if "codex_sessions" in tables:
+                operational["artifact_inventory"] = _artifact_inventory(db, run_id)
             if "agent_jobs" in tables:
                 known_states = ("queued", "running", "unknown", "completed", "failed",
                                 "cancelled", "timed_out")
