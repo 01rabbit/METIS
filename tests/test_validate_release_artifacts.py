@@ -45,6 +45,18 @@ def test_release_workflow_uses_installed_module_cli(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_attestation_drill_is_main_only_and_cannot_publish():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release-attestation-drill.yml").read_text()
+    assert "workflow_dispatch:" in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "contents: read" in workflow
+    assert "attestations: write" in workflow and "id-token: write" in workflow
+    assert ".venv/bin/python -m metis.release_artifacts" in workflow
+    assert "gh attestation verify" in workflow
+    assert "gh release create" not in workflow
+    assert "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
+
+
 @pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),
                                                    ("v0.5.0-rc1", "0.5.0")])
 def test_release_validation_rejects_mismatched_or_nonrelease_tag(tmp_path, tag, project_version):
