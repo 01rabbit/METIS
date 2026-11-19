@@ -156,6 +156,9 @@ class WebWorkflow:
         if scheme not in {"Token", "Bearer"}:
             raise ValueError("invalid credential scheme")
         with sqlite3.connect(self.database) as db:
+            # Best effort for deleted/updated cells in the main database. This
+            # does not erase WAL frames, snapshots, backups, or provider state.
+            db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             # One origin has one active stored credential. A replacement also
             # invalidates cookies derived from the previous authentication.
@@ -181,6 +184,7 @@ class WebWorkflow:
         """Forget locally stored credentials and cookies for one authentication origin."""
         key = origin(url)
         with sqlite3.connect(self.database) as db:
+            db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
                        "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
@@ -198,12 +202,16 @@ class WebWorkflow:
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed
         return {"origin": key, "credential_removed": removed,
+                "provider_revocation_required": True,
                 "limit": ("Local stored credentials only; environment variables and provider credentials "
-                          "are unchanged, and an in-flight request may already have sent authentication")}
+                          "are unchanged, an in-flight request may already have sent authentication, "
+                          "and SQLite WAL, snapshots and backups may retain prior values")}
 
     def forget_all_auth(self, *, apply: bool = False) -> dict:
         """Preview or fence all saved platform authentication in one bounded transaction."""
         with sqlite3.connect(self.database) as db:
+            if apply:
+                db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
             credentials = db.execute("SELECT origin FROM web_credentials LIMIT 101").fetchall()
             runs = db.execute("SELECT run_id,config,state FROM web_runs LIMIT 1001").fetchall()
@@ -236,9 +244,10 @@ class WebWorkflow:
                     db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
         return {"applied": apply, "origins": len(origins), "stored_credentials": len(credentials),
                 "selected_runs": len(runs),
+                "provider_revocation_required": apply,
                 "limit": ("Local platform-authentication state only; environment variables, "
                           "challenge-origin cookies, provider credentials, in-flight requests or intake, "
-                          "SQLite history and backups are unchanged")}
+                          "SQLite WAL, snapshots and backups may retain prior values")}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:

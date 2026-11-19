@@ -275,10 +275,15 @@ def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatc
     assert main() == 0
     output = json.loads(capsys.readouterr().out)
     assert output["origin"] == platform_url and output["credential_removed"] is True
+    assert output["provider_revocation_required"] is True
     assert "in-flight request" in output["limit"]
+    assert "WAL" in output["limit"] and "backups" in output["limit"]
     assert "platform-secret-token" not in json.dumps(output)
 
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_auth"][-1] is None
+    # A new controller process must not regain the retired local credential.
+    WebWorkflow(workflow.database).request(run_id, [WebRequest(url=platform_url + "/after-restart")])
     assert seen["platform_auth"][-1] is None
     assert workflow.forget_auth(platform_url)["credential_removed"] is False
 
@@ -328,6 +333,7 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     assert preview["origins"] == 2
     assert preview["stored_credentials"] == 2
     assert preview["selected_runs"] == 1
+    assert preview["provider_revocation_required"] is False
     assert "private-token" not in json.dumps(preview)
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 2
@@ -340,6 +346,8 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     assert main() == 0
     result = json.loads(capsys.readouterr().out)
     assert result["applied"] is True
+    assert result["provider_revocation_required"] is True
+    assert "WAL" in result["limit"] and "backups" in result["limit"]
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 0
         assert db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
