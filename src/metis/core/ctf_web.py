@@ -122,6 +122,13 @@ def feedback_text(value: str, candidate: str, client: SafeHTTP) -> str:
 class WebWorkflow:
     _AUTH_GENERATION_STATE_KEY = "_metis_auth_generation"
 
+    @staticmethod
+    def _environment_auth_only() -> bool:
+        mode = os.environ.get("METIS_WEB_AUTH_STORAGE", "local")
+        if mode not in {"local", "environment"}:
+            raise ValueError("METIS_WEB_AUTH_STORAGE must be local or environment")
+        return mode == "environment"
+
     def __init__(self, database: Path):
         self.session = CodexSession(database)
         self.database = database
@@ -141,19 +148,35 @@ class WebWorkflow:
             db.execute("CREATE TABLE IF NOT EXISTS web_auth_generations (origin TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
 
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
+        if self._environment_auth_only():
+            raise ValueError("stored web authentication is disabled; use --token-env or --cookie-env")
         key = origin(url)
         if kind not in {"token", "cookie"} or not value or len(value) > 16384 or any(char in value for char in "\r\n"):
             raise ValueError("invalid private CTF credential")
         if scheme not in {"Token", "Bearer"}:
             raise ValueError("invalid credential scheme")
         with sqlite3.connect(self.database) as db:
+            # Best effort for deleted/updated cells in the main database. This
+            # does not erase WAL frames, snapshots, backups, or provider state.
+            db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT payload FROM web_credentials WHERE origin=?", (key,)).fetchone()
-            values = json.loads(row[0]) if row else {}
-            values[kind] = value
-            values["scheme"] = scheme
+            # One origin has one active stored credential. A replacement also
+            # invalidates cookies derived from the previous authentication.
+            values = {kind: value, "scheme": scheme}
             db.execute("INSERT INTO web_credentials(origin,payload) VALUES (?,?) "
                        "ON CONFLICT(origin) DO UPDATE SET payload=excluded.payload", (key, json.dumps(values)))
+            db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                       "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+            generation, = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                     (key,)).fetchone()
+            rows = db.execute("SELECT run_id,state FROM web_runs WHERE json_extract(config,'$.auth_origin')=?",
+                              (key,)).fetchall()
+            for run_id, raw_state in rows:
+                state = json.loads(raw_state)
+                state.get("cookies", {}).pop(key, None)
+                state.pop("cookie_fingerprint", None)
+                state[self._AUTH_GENERATION_STATE_KEY] = generation
+                db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
         return {"origin": key, "credential_stored": True, "kind": kind,
                 "storage": "private local state; excluded from Git"}
 
@@ -161,6 +184,7 @@ class WebWorkflow:
         """Forget locally stored credentials and cookies for one authentication origin."""
         key = origin(url)
         with sqlite3.connect(self.database) as db:
+            db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
                        "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
@@ -178,8 +202,52 @@ class WebWorkflow:
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed
         return {"origin": key, "credential_removed": removed,
+                "provider_revocation_required": True,
                 "limit": ("Local stored credentials only; environment variables and provider credentials "
-                          "are unchanged, and an in-flight request may already have sent authentication")}
+                          "are unchanged, an in-flight request may already have sent authentication, "
+                          "and SQLite WAL, snapshots and backups may retain prior values")}
+
+    def forget_all_auth(self, *, apply: bool = False) -> dict:
+        """Preview or fence all saved platform authentication in one bounded transaction."""
+        with sqlite3.connect(self.database) as db:
+            if apply:
+                db.execute("PRAGMA secure_delete=ON")
+            db.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
+            credentials = db.execute("SELECT origin FROM web_credentials LIMIT 101").fetchall()
+            runs = db.execute("SELECT run_id,config,state FROM web_runs LIMIT 1001").fetchall()
+            if len(credentials) > 100 or len(runs) > 1000:
+                raise ValueError("bulk auth forgetting exceeds 100 origins or 1000 runs; use web forget URL per origin")
+            origins = {row[0] for row in credentials}
+            selected: list[tuple[str, str, dict]] = []
+            for run_id, raw_config, raw_state in runs:
+                config, state = json.loads(raw_config), json.loads(raw_state)
+                key = config.get("auth_origin") if isinstance(config, dict) else None
+                if (not isinstance(key, str) or not isinstance(state, dict)
+                        or not isinstance(state.get("cookies", {}), dict)):
+                    raise TypeError("stored web authentication state is invalid")
+                origins.add(key)
+                selected.append((run_id, key, state))
+            if len(origins) > 100:
+                raise ValueError("bulk auth forgetting exceeds 100 origins")
+            if apply:
+                generations: dict[str, int] = {}
+                for key in sorted(origins):
+                    db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                               "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+                    generations[key] = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                                  (key,)).fetchone()[0]
+                db.execute("DELETE FROM web_credentials")
+                for run_id, key, state in selected:
+                    state.get("cookies", {}).pop(key, None)
+                    state.pop("cookie_fingerprint", None)
+                    state[self._AUTH_GENERATION_STATE_KEY] = generations[key]
+                    db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
+        return {"applied": apply, "origins": len(origins), "stored_credentials": len(credentials),
+                "selected_runs": len(runs),
+                "provider_revocation_required": apply,
+                "limit": ("Local platform-authentication state only; environment variables, "
+                          "challenge-origin cookies, provider credentials, in-flight requests or intake, "
+                          "SQLite WAL, snapshots and backups may retain prior values")}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:
@@ -190,6 +258,9 @@ class WebWorkflow:
                 raise ValueError("web workflow not found")
             config, state = json.loads(row[0]), json.loads(row[1])
             auth_origin = config["auth_origin"]
+            if self._environment_auth_only():
+                state.get("cookies", {}).pop(auth_origin, None)
+                state.pop("cookie_fingerprint", None)
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (auth_origin,)).fetchone()
             generation = generation_row[0] if generation_row else 0
@@ -201,20 +272,27 @@ class WebWorkflow:
         return config, state, json.loads(row[2]), json.loads(row[3]), row[4], row[5]
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
+        environment_only = self._environment_auth_only()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
-            row = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
-                             (config["auth_origin"],)).fetchone()
+            row = None if environment_only else db.execute(
+                "SELECT payload FROM web_credentials WHERE origin=?", (config["auth_origin"],)).fetchone()
             row_generation = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (config["auth_origin"],)).fetchone()
             current_generation = row_generation[0] if row_generation else 0
         state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, current_generation)
+        if environment_only:
+            state.get("cookies", {}).pop(config["auth_origin"], None)
+            state.pop("cookie_fingerprint", None)
         client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
-                        state=state, credentials=json.loads(row[0]) if row else {}, timeout=15)
+                        state=state, credentials=json.loads(row[0]) if row else
+                        {"scheme": "Bearer"} if config.get("adapter") == "rctf" else {}, timeout=15)
         client.auth_generation = state_generation
-        client.auth_generation_check = lambda expected: self._auth_generation_matches(
-            config["auth_origin"], expected)
+        client._metis_environment_only = environment_only
+        client.auth_generation_check = lambda expected: (
+            self._environment_auth_only() == environment_only
+            and self._auth_generation_matches(config["auth_origin"], expected))
         return client
 
     def _auth_generation_matches(self, auth_origin: str, expected: int) -> bool:
@@ -233,6 +311,9 @@ class WebWorkflow:
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
             generation = row[0] if row else 0
             state = client.export_state()
+            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
+                state.get("cookies", {}).pop(auth_origin, None)
+                state.pop("cookie_fingerprint", None)
             if generation != client.auth_generation:
                 state.get("cookies", {}).pop(auth_origin, None)
                 state.pop("cookie_fingerprint", None)
@@ -242,6 +323,8 @@ class WebWorkflow:
 
     def rctf_login(self, url: str, team_token: str) -> dict:
         """Exchange an rCTF team token for an auth token and store it privately as Bearer."""
+        if self._environment_auth_only():
+            raise ValueError("stored web authentication is disabled; use --token-env")
         if not team_token or len(team_token) > 4096 or any(char in team_token for char in "\r\n"):
             raise ValueError("invalid rCTF team token")
         key = origin(url)
@@ -263,7 +346,7 @@ class WebWorkflow:
         url = clean_url(url)
         base = url.rstrip("/")
         config = {"origins": [origin(url)], "auth_origin": origin(url),
-                  "token_env": token_env, "cookie_env": cookie_env}
+                  "token_env": token_env, "cookie_env": cookie_env, "adapter": adapter}
         client = self._client(config, {})
         if adapter == "rctf":
             response = client.request(origin(url) + "/api/v1/challs", max_bytes=8 * 1024 * 1024)
@@ -511,6 +594,9 @@ class WebWorkflow:
                                         (config["auth_origin"],)).fetchone()
             generation = generation_row[0] if generation_row else 0
             initial_state = client.export_state()
+            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
+                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
+                initial_state.pop("cookie_fingerprint", None)
             if generation != client.auth_generation:
                 initial_state.get("cookies", {}).pop(config["auth_origin"], None)
                 initial_state.pop("cookie_fingerprint", None)

@@ -146,6 +146,126 @@ def test_reauth_replaces_stored_platform_credential(tmp_path, sites):
     assert "platform-secret-token" not in payload
 
 
+def test_reauth_switches_kind_and_clears_previous_auth_state(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    config, state, *_ = workflow._load(run_id)
+    stale_client = workflow._client(config, state)
+
+    workflow.auth(platform_url, kind="cookie", value="session=replacement-cookie")
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        stale_client.request(platform_url + "/stale")
+    workflow._save_client(run_id, stale_client)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/cookie-check")])
+    assert seen["platform_auth"][-1] is None
+    assert seen["platform_cookie"][-1] == "session=replacement-cookie"
+    with sqlite3.connect(workflow.database) as db:
+        payload, = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
+                              (platform_url,)).fetchone()
+    assert json.loads(payload) == {"cookie": "session=replacement-cookie", "scheme": "Token"}
+
+    workflow.auth(platform_url, kind="token", value="final-token", scheme="Bearer")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/token-check")])
+    assert seen["platform_auth"][-1] == "Bearer final-token"
+    assert seen["platform_cookie"][-1] is None
+    with sqlite3.connect(workflow.database) as db:
+        payload, = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
+                              (platform_url,)).fetchone()
+    assert json.loads(payload) == {"token": "final-token", "scheme": "Bearer"}
+
+
+def test_reauth_between_state_load_and_client_creation_fences_old_generation(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    config, state, *_ = workflow._load(run_id)
+    requests_before = len(seen["platform_auth"])
+
+    workflow.auth(platform_url, kind="token", value="platform-secret-token")
+    late_client = workflow._client(config, state)
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        late_client.request(platform_url + "/stale-after-load")
+    assert len(seen["platform_auth"]) == requests_before
+
+    workflow._save_client(run_id, late_client)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/fresh-after-reauth")])
+    assert seen["platform_auth"][-1] == "Token platform-secret-token"
+    assert seen["platform_cookie"][-1] is None
+
+
+def test_environment_auth_mode_ignores_legacy_storage_and_does_not_persist_cookie(tmp_path, sites, monkeypatch):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    config, pre_switch_state, *_ = workflow._load(run_id)
+    stale_client = workflow._client(config, pre_switch_state)
+    with sqlite3.connect(workflow.database) as db:
+        old_payload = db.execute("SELECT payload FROM web_credentials WHERE origin=?", (platform_url,)).fetchone()[0]
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        stale_client.request(platform_url + "/after-switch")
+    with pytest.raises(ValueError, match="stored web authentication is disabled"):
+        workflow.auth(platform_url, kind="token", value="new-private-token")
+    with pytest.raises(ValueError, match="stored web authentication is disabled"):
+        workflow.rctf_login(platform_url, "team-token")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-switch")])
+    assert seen["platform_auth"][-1] is None
+    assert seen["platform_cookie"][-1] is None
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT payload FROM web_credentials WHERE origin=?", (platform_url,)).fetchone()[0] == old_payload
+        state = json.loads(db.execute("SELECT state FROM web_runs WHERE run_id=?", (run_id,)).fetchone()[0])
+    assert platform_url not in state.get("cookies", {})
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "local")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-restore")])
+    assert seen["platform_auth"][-1] == "Token platform-secret-token"
+
+
+def test_environment_auth_mode_uses_explicit_variable(tmp_path, sites, monkeypatch):
+    platform_url, _, seen = sites
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
+    monkeypatch.setenv("METIS_TEST_PLATFORM_TOKEN", "private-env-token")
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    run_id = workflow.open(platform_url + "/problem", token_env="METIS_TEST_PLATFORM_TOKEN")["context"]["run_id"]
+    workflow.request(run_id, [WebRequest(url=platform_url + "/check")])
+    assert seen["platform_auth"][-1] == "Token private-env-token"
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 0
+        persisted = db.execute("SELECT config,state FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
+    assert "private-env-token" not in "".join(persisted)
+
+
+def test_environment_auth_mode_uses_bearer_for_rctf(tmp_path, sites, monkeypatch):
+    platform_url, _, seen = sites
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
+    monkeypatch.setenv("METIS_TEST_RCTF_TOKEN", "private-rctf-token")
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    client = workflow._client({"origins": [platform_url], "auth_origin": platform_url,
+                               "adapter": "rctf", "token_env": "METIS_TEST_RCTF_TOKEN"}, {})
+    client.request(platform_url + "/check")
+    assert seen["platform_auth"][-1] == "Bearer private-rctf-token"
+
+
+def test_environment_auth_mode_rejects_unknown_setting(tmp_path, monkeypatch):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "unknown")
+    with pytest.raises(ValueError, match="must be local or environment"):
+        workflow.auth("https://example.com", kind="token", value="private")
+
+
+def test_environment_auth_mode_cli_rejects_before_secret_prompt(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "state" / "metis.sqlite"
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
+    monkeypatch.setattr("getpass.getpass", lambda *_: pytest.fail("secret prompt should not occur"))
+    monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(database),
+                                      "auth", "https://example.com", "--kind", "token"])
+    with pytest.raises(SystemExit) as rejection:
+        main()
+    assert rejection.value.code == 2
+    assert "CTF web command rejected" in capsys.readouterr().err
+
+
 def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatch, capsys):
     platform_url, _, seen = sites
     workflow, run_id = _open(tmp_path, platform_url)
@@ -155,12 +275,37 @@ def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatc
     assert main() == 0
     output = json.loads(capsys.readouterr().out)
     assert output["origin"] == platform_url and output["credential_removed"] is True
+    assert output["provider_revocation_required"] is True
     assert "in-flight request" in output["limit"]
+    assert "WAL" in output["limit"] and "backups" in output["limit"]
     assert "platform-secret-token" not in json.dumps(output)
 
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_auth"][-1] is None
+    # Recreating the workflow over the same database must not regain the credential.
+    WebWorkflow(workflow.database).request(run_id, [WebRequest(url=platform_url + "/after-reopen")])
+    assert seen["platform_auth"][-1] is None
     assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_auth_retirement_enables_secure_delete_on_write_connection(tmp_path, monkeypatch):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    real_connect = sqlite3.connect
+    connections = []
+
+    def track_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", track_connect)
+    workflow.auth("https://example.com", kind="token", value="synthetic-token")
+    workflow.forget_auth("https://example.com")
+    workflow.forget_all_auth(apply=True)
+    assert len(connections) == 3
+    assert all(db.execute("PRAGMA secure_delete").fetchone()[0] == 1 for db in connections)
+    for db in connections:
+        db.close()
 
 
 def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
@@ -189,6 +334,64 @@ def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_cookie"][-1] is None
     assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch, capsys):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    other_origin = "https://other.example"
+    workflow.auth(other_origin, kind="token", value="other-private-token")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    config, state, *_ = workflow._load(run_id)
+    stale_client = workflow._client(config, state)
+    with sqlite3.connect(workflow.database) as db:
+        generations_before = db.execute("SELECT origin,generation FROM web_auth_generations ORDER BY origin").fetchall()
+    monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(workflow.database), "forget-all"])
+    assert main() == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["applied"] is False
+    assert preview["origins"] == 2
+    assert preview["stored_credentials"] == 2
+    assert preview["selected_runs"] == 1
+    assert preview["provider_revocation_required"] is False
+    assert "private-token" not in json.dumps(preview)
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 2
+        assert db.execute("SELECT origin,generation FROM web_auth_generations ORDER BY origin").fetchall() == generations_before
+        preview_state = json.loads(db.execute("SELECT state FROM web_runs WHERE run_id=?", (run_id,)).fetchone()[0])
+        assert platform_url in preview_state.get("cookies", {})
+
+    monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(workflow.database),
+                                      "forget-all", "--apply"])
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert result["provider_revocation_required"] is True
+    assert "WAL" in result["limit"] and "backups" in result["limit"]
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 0
+        assert db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                          (other_origin,)).fetchone()[0] == 2
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        stale_client.request(platform_url + "/after-forget")
+    workflow._save_client(run_id, stale_client)
+    _, saved_state, *_ = workflow._load(run_id)
+    assert platform_url not in saved_state.get("cookies", {})
+    workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
+    assert seen["platform_auth"][-1] is None
+    assert seen["platform_cookie"][-1] is None
+    assert workflow.forget_all_auth(apply=True)["stored_credentials"] == 0
+
+
+def test_forget_all_refuses_over_limit_without_mutation(tmp_path):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    with sqlite3.connect(workflow.database) as db:
+        db.executemany("INSERT INTO web_credentials(origin,payload) VALUES (?,?)",
+                       [(f"https://site{i}.example", '{"token":"private"}') for i in range(101)])
+    with pytest.raises(ValueError, match="exceeds 100 origins"):
+        workflow.forget_all_auth(apply=True)
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 101
 
 
 def test_open_does_not_persist_cookie_if_auth_is_forgotten_during_intake(tmp_path, sites, monkeypatch):

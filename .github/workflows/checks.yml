@@ -33,7 +33,7 @@ jobs:
       - run: docker build --tag metis-sandbox:zipcrypto --platform linux/amd64 sandbox
       - name: Record immutable test image
         run: echo "METIS_TEST_SANDBOX_IMAGE=$(docker image inspect --format='{{.Id}}' metis-sandbox:zipcrypto)" >> "$GITHUB_ENV"
-      - name: Test enforced sandbox budgets and ZipCrypto intent chain
+      - name: Test sandbox budgets, workflow replay and ZipCrypto intent chain
         env:
           METIS_TEST_SLOW: '1'
         run: >-
@@ -41,6 +41,7 @@ jobs:
           tests/test_ctf_sandbox.py::test_real_engine_enforces_memory_limit
           tests/test_ctf_sandbox.py::test_real_engine_timeout_removes_process_group
           tests/test_ctf_sandbox.py::test_real_engine_separate_controller_recovers_orphaned_sandbox
+          tests/test_ctf_workflow.py
           tests/test_ctf_zipcrypto.py::test_zipcrypto_worker_enforces_container_deadline
           tests/test_ctf_zipcrypto.py::test_zipcrypto_real_low_memory_container_reports_memory_limit
           tests/test_ctf_zipcrypto.py::test_zipcrypto_production_profile_oom_classification_and_cleanup

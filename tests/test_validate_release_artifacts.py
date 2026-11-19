@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from metis.release_artifacts import validate_release
+from metis.release_artifacts import validate_release, write_checksums
 
 
 def write_distributions(root: Path, *, wheel_version: str = "0.5.0",
@@ -32,17 +33,53 @@ def test_release_validation_accepts_matching_wheel_sdist_and_tag(tmp_path):
     assert [path.suffix for path in artifacts] == [".whl", ".gz"]
 
 
+def test_checksums_use_release_asset_names_and_match_archive_bytes(tmp_path):
+    artifacts = validate_release(write_distributions(tmp_path), "v0.5.0", "metis-ctf", "0.5.0")
+    manifest = write_checksums(artifacts)
+    assert manifest.parent == artifacts[0].parent
+    assert manifest.read_text().splitlines() == [
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}" for path in artifacts
+    ]
+    assert "dist/" not in manifest.read_text()
+
+
 def test_release_workflow_uses_installed_module_cli(tmp_path):
     workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
     assert ".venv/bin/python -m metis.release_artifacts" in workflow
     assert "scripts/validate_release_artifacts.py" not in workflow
+    assert "--write-checksums" in workflow
+    dist = write_distributions(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "metis.release_artifacts", "--dist-dir",
-         str(write_distributions(tmp_path)), "--tag", "v0.5.0",
+         str(dist), "--tag", "v0.5.0", "--write-checksums",
          "--project-name", "metis-ctf", "--project-version", "0.5.0"],
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert (dist / "SHA256SUMS").is_file()
+
+
+def test_attestation_drill_is_main_only_and_cannot_publish():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release-attestation-drill.yml").read_text()
+    assert "workflow_dispatch:" in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "contents: read" in workflow
+    assert "attestations: write" in workflow and "id-token: write" in workflow
+    assert ".venv/bin/python -m metis.release_artifacts" in workflow
+    assert "--write-checksums" in workflow
+    assert "sha256sum dist/" not in workflow
+    assert "gh attestation verify" in workflow
+    assert "gh release create" not in workflow
+    assert "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
+
+
+def test_release_and_drill_share_checksum_generation_path():
+    workflows = Path(__file__).parents[1] / ".github/workflows"
+    for name in ("release.yml", "release-attestation-drill.yml"):
+        workflow = (workflows / name).read_text()
+        assert workflow.count(".venv/bin/python -m metis.release_artifacts") == 1
+        assert workflow.count("--write-checksums") == 1
+        assert "sha256sum dist/" not in workflow
 
 
 @pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),

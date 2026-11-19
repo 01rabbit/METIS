@@ -25,6 +25,19 @@ from metis.evaluation.verifier_provenance import (
 MAX_EVENTS = 100_000
 
 
+def _job_model(value: str | None) -> str | None:
+    """Read both legacy plain pins and scheduler model-selection records."""
+    if value is None:
+        return None
+    if not value.startswith("{"):
+        return value
+    try:
+        record = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return record.get("model") if isinstance(record, dict) and isinstance(record.get("model"), str) else None
+
+
 class RunAssignment(Record):
     task_id: Identifier
     repetition: Annotated[int, Field(ge=0, le=19)]
@@ -149,7 +162,7 @@ def export(manifest: ExportManifest, database: Path) -> Study:
             for assignment in manifest.runs:
                 models = [row[0] for row in db.execute(
                     "SELECT model FROM agent_jobs WHERE run_id=?", (assignment.run_id,))]
-                if not models or any(model != manifest.model_pin for model in models):
+                if not models or any(_job_model(model) != manifest.model_pin for model in models):
                     raise ValueError("model pin does not match job records")
     return Study(schema_version=1, study_id=manifest.study_id,
                  measurement=manifest.measurement, model_pin=manifest.model_pin,

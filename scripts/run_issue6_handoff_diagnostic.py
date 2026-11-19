@@ -2,6 +2,7 @@
 """Run the preregistered symmetric Issue #6 synthetic replication."""
 from __future__ import annotations
 
+import argparse
 import atexit
 import base64
 import hashlib
@@ -82,7 +83,7 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
                  'with keys "component0_hex" and "component1_hex", each the exact decoded bytes in '
                  'lowercase hex. Use candidate_report when the candidate and report are both ready; otherwise '
                  'use the separate candidate/report sequence. Never return plaintext or compute the final digest.'}
-    elif arm in {"multi_separate", "multi_combined", "multi_fixed", "multi_borrow"}:
+    elif arm in {"multi_separate", "multi_combined", "multi_final_handoff", "multi_fixed", "multi_borrow"}:
         assignments = [dict(by_role["crypto-specialist"]), dict(by_role["forensics-specialist"])]
         notes = {}
         for index, assignment in enumerate(assignments):
@@ -92,6 +93,9 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
             if arm == "multi_separate":
                 handoff = ("Use the separate handoff: first send the exact decoded bytes privately using action "
                            "candidate, then submit your compact report in a later turn. Do not use candidate_report.")
+            elif arm == "multi_final_handoff":
+                handoff = ("The controller reserves your fourth call for candidate_report, report, or fail. "
+                           "Complete analysis before that call and send the candidate and report together when ready.")
             else:
                 handoff = ("Use candidate_report to send the exact decoded bytes privately and the compact report "
                            "in the same turn when both are ready. The separate handoff remains available.")
@@ -164,10 +168,31 @@ def compose_candidate(arm: str, setup: dict[str, Any], candidates: dict[str, str
         return None
 
 
+def call_limits(arm: str, final_handoff_study: bool) -> tuple[int | None, int | None]:
+    """Return (ordinary cap, final-report cap) for this study arm."""
+    if not final_handoff_study:
+        return None, None
+    if arm == "multi_combined":
+        return 4, None
+    if arm == "multi_final_handoff":
+        return None, 4
+    return None, None
+
+
+def capped_failures(results: dict[str, dict[str, Any]], arm: str) -> set[str]:
+    """Classify only explicit per-specialist cap failures, never other fourth-call failures."""
+    if arm == "single":
+        return set()
+    return {assignment_id for assignment_id, result in results.items()
+            if result["job_state"] == "failed"
+            and str(result.get("failure") or "").startswith("per-specialist call cap exhausted")}
+
+
 def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCodexCLI, base: Path,
             case_id: str, components: tuple[bytes, bytes], family: tuple[str, str], arm: str,
             *, oracle_file: Path | None = None,
-            evaluation_split: str = EVALUATION_SPLIT) -> dict[str, Any]:
+            evaluation_split: str = EVALUATION_SPLIT,
+            final_handoff_study: bool = False) -> dict[str, Any]:
     paths = []
     for index, (kind, component) in enumerate(zip(family, components, strict=True)):
         path = base / f"{case_id}-{arm}-component-{index}.txt"
@@ -197,10 +222,13 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
 
     def drive(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         assignment_id = job["assignment_id"]
+        specialist_limit, final_limit = call_limits(arm, final_handoff_study)
         result = run_assignment(scheduler, run_id, assignment_id, job["attempt_id"], runner,
                                 model=MODEL, turn_timeout=180,
                                 note=setup["notes"][assignment_id],
-                                allow_candidate_report=arm != "multi_separate")
+                                allow_candidate_report=arm != "multi_separate",
+                                final_handoff_call_limit=final_limit,
+                                specialist_call_limit=specialist_limit)
         return assignment_id, result
 
     if len(started_jobs) == 1:
@@ -311,7 +339,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         else:
             category = "other"
         terminal_categories[category] = terminal_categories.get(category, 0) + 1
-    return {"case": case_id, "task_id": case_id.rsplit("-rep-", 1)[0], "arm": arm,
+    result_record = {"case": case_id, "task_id": case_id.rsplit("-rep-", 1)[0], "arm": arm,
             "run_id": run_id, "oracle_verified": bool(verified),
             "workflow_verified": bool(verified and winning_assignment_completed),
             "verified_assignment_state": verified_assignment_state,
@@ -326,9 +354,24 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
             "terminal_reason_categories": terminal_categories, "model_turn_budget_denials": budget_denials,
             "peer_reserve_denials": peer_reserve_denials,
             "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low", "cost_usd": "unknown"}
+    if final_handoff_study:
+        capped = capped_failures(results, arm)
+        result_record["per_specialist_call_ceiling_failures"] = len(capped)
+        result_record["candidate_ready_per_specialist_call_ceiling_failures"] = len(capped & candidate_ready)
+    return result_record
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--final-handoff-diagnostic", action="store_true",
+                        help="fresh symmetric single/current multi/final-handoff multi study")
+    args = parser.parse_args()
+    global STUDY_ID, SEED, ORDER_SEED, OUTPUT
+    if args.final_handoff_diagnostic:
+        STUDY_ID = "issue6-final-handoff-diagnostic-2026-11-19"
+        SEED = 20261120
+        ORDER_SEED = SEED ^ 0x6A09E667
+        OUTPUT = Path("docs/reports/data/issue6-final-handoff-diagnostic-2026-11-19.json")
     if OUTPUT.exists():
         raise SystemExit(f"refusing to rerun or overwrite retained study data: {OUTPUT}")
     runner = PinnedCodexCLI()
@@ -367,8 +410,10 @@ def main() -> None:
         json.dump(answers, stream, sort_keys=True)
     order_rng = random.Random(ORDER_SEED)
     trial_order = {}
+    study_arms = (("single", "multi_combined", "multi_final_handoff")
+                  if args.final_handoff_diagnostic else ("single", "multi_separate", "multi_combined"))
     for case_id, *_ in cases:
-        arms = ["single", "multi_separate", "multi_combined"]
+        arms = list(study_arms)
         order_rng.shuffle(arms)
         trial_order[case_id] = arms
     session = CodexSession(root / "state" / "metis.sqlite")
@@ -378,16 +423,19 @@ def main() -> None:
     # Retain only answer-free metrics. Replace atomically after every completed arm.
     for case_id, components, case_family in cases:
         for arm in trial_order[case_id]:
-            record = run_arm(session, scheduler, runner, root, case_id, components, case_family, arm)
+            record = run_arm(session, scheduler, runner, root, case_id, components, case_family, arm,
+                             final_handoff_study=args.final_handoff_diagnostic)
             records.append(record)
-            dataset = build_dataset(records, task_families, trial_order)
+            dataset = build_dataset(records, task_families, trial_order, arms=study_arms,
+                                    study=STUDY_ID, seed=SEED, order_seed=ORDER_SEED)
             temporary = OUTPUT.with_suffix(".tmp")
             temporary.write_text(json.dumps(dataset, separators=(",", ":")), encoding="utf-8")
             temporary.replace(OUTPUT)
             print(json.dumps({"case": case_id, "arm": arm, "verified": record["oracle_verified"],
                               "completed_records": len(records), "elapsed_seconds": record["elapsed_seconds"],
                               "calls": record["calls_observed"]}, separators=(",", ":")), flush=True)
-    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order),
+    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order, arms=study_arms,
+                                               study=STUDY_ID, seed=SEED, order_seed=ORDER_SEED),
                                  sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
@@ -402,14 +450,18 @@ def build_dataset(records: list[dict[str, Any]], task_families: dict[str, list[s
         if any(row is None for row in trial.values()):
             continue
         complete_trial = {arm: row for arm, row in trial.items() if row is not None}
-        comparisons.append({"case": case_id, "task_id": case_id.rsplit("-rep-", 1)[0],
-                           "arms": {arm: {key: complete_trial[arm][key] for key in (
+        metric_fields: tuple[str, ...] = (
                                "oracle_verified", "elapsed_seconds", "calls_observed", "calls_reserved",
                                "usage", "actions", "synthesis_complete", "job_states", "candidate_ready_jobs",
                                "decision_counts", "report_rejections", "report_rejection_categories",
                                "report_rejection_stages",
                                "terminal_reason_categories", "model_turn_budget_denials",
-                               "peer_reserve_denials")}
+                               "peer_reserve_denials")
+        if study == "issue6-final-handoff-diagnostic-2026-11-19":
+            metric_fields += ("per_specialist_call_ceiling_failures",
+                              "candidate_ready_per_specialist_call_ceiling_failures")
+        comparisons.append({"case": case_id, "task_id": case_id.rsplit("-rep-", 1)[0],
+                           "arms": {arm: {key: complete_trial[arm][key] for key in metric_fields}
                                     for arm in arms}})
     return {"study": study, "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low",
             "seed": seed, "order_seed": order_seed, "distinct_tasks": len(task_families),

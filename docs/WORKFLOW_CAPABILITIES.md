@@ -21,10 +21,14 @@ The only review-gated capability currently implemented is the fixed built-in
 
 To repeat a declared workflow in the isolated sandbox, use
 `metis workflow --database PATH replay RUN_ID --target INPUT_ARTIFACT --workflow-artifact PLAN_ARTIFACT`.
-The command runs the same plan twice against the original input and reports
-only whether the bounded outputs and sandbox identity match. Optionally pass
+Before decoding, the sandbox checks the staged plan against the exact bytes
+validated by the controller. The controller also checks the digest of the
+input read by the sandbox against the declared artifact before registering
+the output. Replay compares the input, plan and output digests along with the
+sandbox identity and platform. Optionally pass
 `--oracle-sha256-file PRIVATE_FILE` to compare both outputs with a controller-
-held commitment; neither the commitment nor output digests are printed.
+held commitment. The command omits the commitment and all digests from its
+result.
 Each replay consumes two bounded sandbox actions and registers two untrusted
 derived artifacts. A failed or mismatched run does not certify a solve.
 
@@ -48,6 +52,18 @@ Future capabilities require a reviewed METIS code change that adds one fixed
 built-in implementation, a versioned descriptor, sandbox enforcement, and
 tests before the capability can be exposed to the approval CLI. This gate is
 for reviewed built-ins; it is not a plugin loader or self-extension mechanism.
+
+## Unseen local model pilot
+
+`scripts/issue7_unseen_trial.py` draws one fresh random instance from each
+known encoding family. A real Codex session sees only encoded input and a schema restricted
+to the three base transforms. Its proposed JSON is validated before intake.
+METIS replays the plan twice through the pinned, network-free sandbox in
+digest-only mode and checks both results against a private in-memory SHA-256
+commitment. No decoded answer artifact is registered. The trial
+prints only step names, run IDs, reproducibility, and match booleans. A model
+proposal cannot request a new tool, policy, verifier, executable, path, or
+endpoint. This is a bounded local pilot, not general CTF evidence.
 
 ## Evidence
 

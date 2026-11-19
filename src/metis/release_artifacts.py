@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import tarfile
 import zipfile
@@ -80,15 +81,33 @@ def validate_release(dist_dir: Path, tag: str, project_name: str, project_versio
     return inspect_distributions(dist_dir, project_name, tag_version)
 
 
+def write_checksums(artifacts: list[Path]) -> Path:
+    """Write a portable checksum manifest beside the validated archives."""
+    if not artifacts:
+        raise ValueError("no release artifacts to checksum")
+    manifest = artifacts[0].parent / "SHA256SUMS"
+    lines = []
+    for artifact in artifacts:
+        if artifact.parent != manifest.parent or artifact.name in {"SHA256SUMS", ".", ".."}:
+            raise ValueError("release artifacts must share a directory and have safe names")
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        lines.append(f"{digest}  {artifact.name}\n")
+    manifest.write_text("".join(lines), encoding="ascii")
+    return manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--project-version", required=True)
+    parser.add_argument("--write-checksums", action="store_true")
     args = parser.parse_args()
     try:
         artifacts = validate_release(args.dist_dir, args.tag, args.project_name, args.project_version)
+        if args.write_checksums:
+            write_checksums(artifacts)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     print("Validated release distributions:")
