@@ -23,15 +23,21 @@ python -m metis.release_artifacts --dist-dir /path/to/staged-bundle \
 
 This mode validates the package metadata and checks that the manifest matches
 the exact two archives. It expects the canonical generator's wheel-first,
-sdist-second order, release basenames, and LF line endings. It streams the
-archive digests and reads at most one byte beyond the expected manifest size.
+sdist-second order, release basenames, and LF line endings. The check reads regular files through a pinned directory descriptor and
+uses the same in-memory archive bytes for hashes and metadata checks.
+It caps each archive at 16 MiB, decompressed tar at 32 MiB, selected
+metadata at 128 KiB per entry, and member counts at 4,096 per archive.
+The manifest read is capped at 644 bytes.
 The staged bundle is read-only for this check. Successful verification shows
 bundle consistency. Replacing both an archive and its manifest can still pass.
 Verify artifact attestations through a separate trusted provenance check.
-Keep staging paths stable during validation.
+It checks member and directory identities again before reporting success.
+The directory and its ancestors should remain under operator control. Verify
+again if the bundle is subsequently moved or changed.
 
-Twenty focused tests passed using synthetic archives. Cases include a
+Thirty-two focused tests passed using synthetic archives. Cases include a
 substituted wheel with unchanged package metadata, a missing manifest,
 symlink, missing or duplicate lines, extra entries, traversal text, changed
-digests, trailing content, and reorder. Ruff, mypy, the repository scanner
+digests, trailing content, reorder, concurrent file substitution, FIFO
+replacement, oversized input, excessive expansion and truncated gzip. Ruff, mypy, the repository scanner
 and diff check passed. No release was tagged, published, or downloaded.

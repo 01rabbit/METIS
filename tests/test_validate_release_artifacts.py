@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
+import os
 import subprocess
 import sys
 import tarfile
@@ -10,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from metis.release_artifacts import validate_release, verify_checksums, write_checksums
+from metis import release_artifacts
+from metis.release_artifacts import validate_release, verify_release_bundle, write_checksums
 
 
 def write_distributions(root: Path, *, wheel_version: str = "0.5.0",
@@ -122,7 +125,7 @@ def test_offline_verification_rejects_noncanonical_bundle_manifest(tmp_path, cha
     invalid = changes[change]
     manifest.write_bytes(invalid)
     with pytest.raises(ValueError, match="does not match"):
-        verify_checksums(artifacts)
+        verify_release_bundle(artifacts[0].parent, "v0.5.0", "metis-ctf", "0.5.0")
     assert manifest.read_bytes() == invalid
 
 
@@ -139,7 +142,7 @@ def test_offline_verification_accepts_bundle_then_rejects_archive_substitution(t
     with zipfile.ZipFile(artifacts[0], "a") as archive:
         archive.writestr("synthetic.py", "# same package metadata, different bytes\n")
     with pytest.raises(ValueError, match="does not match"):
-        verify_checksums(validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0"))
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
     rejected = subprocess.run(command, capture_output=True, text=True, check=False)
     assert rejected.returncode != 0
     assert "does not match" in rejected.stderr
@@ -148,11 +151,107 @@ def test_offline_verification_accepts_bundle_then_rejects_archive_substitution(t
 
 def test_offline_verification_requires_regular_manifest(tmp_path):
     artifacts = validate_release(write_distributions(tmp_path), "v0.5.0", "metis-ctf", "0.5.0")
-    with pytest.raises(ValueError, match="regular SHA256SUMS"):
-        verify_checksums(artifacts)
+    with pytest.raises(OSError):
+        verify_release_bundle(artifacts[0].parent, "v0.5.0", "metis-ctf", "0.5.0")
     manifest = write_checksums(artifacts)
     outside = tmp_path / "external-checksums"
     manifest.rename(outside)
     manifest.symlink_to(outside)
-    with pytest.raises(ValueError, match="regular SHA256SUMS"):
-        verify_checksums(artifacts)
+    with pytest.raises(OSError):
+        verify_release_bundle(artifacts[0].parent, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+
+def test_offline_verification_rejects_archive_swap_after_snapshot(tmp_path, monkeypatch):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    write_checksums(artifacts)
+    wheel = artifacts[0]
+    replacement = tmp_path / wheel.name
+    replacement.write_bytes(wheel.read_bytes())
+    validate_metadata = release_artifacts._validate_metadata
+
+    def swap_and_check(*args, **kwargs):
+        replacement.replace(wheel)
+        validate_metadata(*args, **kwargs)
+
+    monkeypatch.setattr(release_artifacts, "_validate_metadata", swap_and_check)
+    with pytest.raises(ValueError, match="changed during verification"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+@pytest.mark.parametrize("member", ["wheel", "manifest"])
+@pytest.mark.parametrize("kind", ["fifo", "symlink"])
+def test_special_file_replacing_member_is_rejected_without_blocking(tmp_path, monkeypatch, member, kind):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    manifest = write_checksums(artifacts)
+    target = artifacts[0] if member == "wheel" else manifest
+    bundle_entries = release_artifacts._bundle_entries
+
+    def swap_after_listing(*args):
+        paths = bundle_entries(*args)
+        target.unlink()
+        if kind == "fifo":
+            os.mkfifo(target)
+        else:
+            target.symlink_to(tmp_path / "external")
+        return paths
+
+    monkeypatch.setattr(release_artifacts, "_bundle_entries", swap_after_listing)
+    error = ValueError if kind == "fifo" else OSError
+    with pytest.raises(error):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+@pytest.mark.parametrize(("limit", "size", "reason"), [
+    ("_MAX_ARCHIVE_BYTES", 32, "file size outside bounds"),
+    ("_MAX_TAR_BYTES", 512, "decompression exceeds limit"),
+    ("_MAX_METADATA_BYTES", 8, "wheel metadata exceeds limit"),
+    ("_MAX_MEMBERS", 0, "wheel member count exceeds limit"),
+])
+def test_offline_verifier_bounds_archive_work(tmp_path, monkeypatch, limit, size, reason):
+    dist = write_distributions(tmp_path)
+    write_checksums(validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0"))
+    monkeypatch.setattr(release_artifacts, limit, size)
+    with pytest.raises(ValueError, match=reason):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+def test_offline_verifier_rejects_truncated_gzip_even_with_matching_digest(tmp_path):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    artifacts[1].write_bytes(gzip.compress(b"synthetic")[:-4])
+    write_checksums(artifacts)
+    with pytest.raises(ValueError, match="valid gzip"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+
+def test_offline_verifier_rejects_replaced_bundle_directory(tmp_path, monkeypatch):
+    dist = write_distributions(tmp_path)
+    write_checksums(validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0"))
+    validate_metadata = release_artifacts._validate_metadata
+
+    def replace_directory(*args, **kwargs):
+        moved = dist.rename(tmp_path / "original")
+        dist.mkdir()
+        for path in moved.iterdir():
+            (dist / path.name).write_bytes(path.read_bytes())
+        validate_metadata(*args, **kwargs)
+
+    monkeypatch.setattr(release_artifacts, "_validate_metadata", replace_directory)
+    with pytest.raises(ValueError, match="directory changed during verification"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+def test_offline_verifier_bounds_tar_members_separately(tmp_path, monkeypatch):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    with tarfile.open(artifacts[1], mode="w:gz") as archive:
+        archive.addfile(tarfile.TarInfo("first"))
+        archive.addfile(tarfile.TarInfo("second"))
+    write_checksums(artifacts)
+    monkeypatch.setattr(release_artifacts, "_MAX_MEMBERS", 1)
+    with pytest.raises(ValueError, match="sdist member count exceeds limit"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
