@@ -12,7 +12,7 @@ import pytest
 from metis.core.agent_host import FakeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
-from metis.core.codex_specialist import CodexTurn, run_assignment
+from metis.core.codex_specialist import CodexCLI, CodexTurn, run_assignment
 from metis.core.contracts import ChallengeManifest
 from metis.core.ctf_knowledge import KnowledgeBase, TechniqueCard
 from metis.core.ctf_orchestration import AgentLedger
@@ -477,9 +477,13 @@ def test_real_munin_freeze_reconciles_with_protocol(tmp_path: Path) -> None:
     extra_wave = AgentLedger(database).create_wave(extra["run_id"])
     scheduler.enqueue(extra["run_id"], extra_wave["wave_id"])
     extra_job = scheduler.dispatch(extra["run_id"])["started"][0]
+    with pytest.raises(ValueError, match="token cap is not enforceable"):
+        run_assignment(scheduler, extra["run_id"], extra_job["assignment_id"],
+                       extra_job["attempt_id"], CodexCLI())
 
     class OneTurn:
         prompt = ""
+        hard_token_budget_enforced = True
 
         def run(self, prompt, *, model, timeout, should_stop=None, images=None):
             self.prompt = prompt
