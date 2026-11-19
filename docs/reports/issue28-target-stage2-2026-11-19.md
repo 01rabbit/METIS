@@ -51,3 +51,37 @@ shard's run path, file type, mode and key structure. Negative-path and restart
 tests cover rejected, malformed, stalled, failed and symlink cases. These
 changes harden future execution; the earlier official verdict is independently
 recorded in the original run state.
+
+## Read-only evidence cross-check
+
+Run from the repository worktree with access to the original local run state:
+
+```sh
+PYTHONPATH=src .venv/bin/python scripts/verify_issue28_evidence.py \
+  --database /Users/mao/Developer/GitHub/METIS/.metis-state/metis.sqlite
+```
+
+Observed on 2026-11-19 (JST):
+
+| Field | Value |
+| --- | --- |
+| Run ID | `0045b063168045c289eaef276dab21c2` |
+| Registered ZIP SHA-256 | `ff663a29abc5f0ded2c3456bc731b1b21329eb95914286733c40364624e5d8f5` |
+| Audit chain / terminal sequence | valid / `3738` |
+| Terminal digest | `4ef4edf71c42b7c097bda78a1ca28fb28229bed211efb7ddf6f766046c4d481c` |
+| Audited Stage 2 / recovery actions | `728` (`24` probe + `704` full) / `138` |
+| Private full-scan checkpoint | `88/88` eligible hits, `866` task actions, no in-flight action |
+| Official adapter / challenge | `ksnctf` / `39` |
+| Submission verdicts | `incorrect`, then `correct` (one attempt each) |
+| Correct verdict / solved event | `2026-11-18T23:48:10.021560+00:00` / `2026-11-18T23:48:10.058090+00:00` |
+| Solved event verification | `official_ksnctf` |
+| Active operations | `0` |
+
+The verifier opens the SQLite database read-only. It checks the archive bytes,
+registered run and official adapter binding, private full-scan cursor, audited
+tool counts, verdict sequence, and terminal event within 30 seconds of the
+`correct` verdict. It outputs no answer, key, share or HMAC candidate digest.
+The PR contains this verifier and the observed nonsecret result; the underlying
+local database and private checkpoint are not committed. This is a cross-check
+of METIS's recorded official response, not a cryptographically signed receipt
+from ksnctf.
