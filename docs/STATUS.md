@@ -788,3 +788,14 @@ official verdict has been recorded; prior model exposure to the older public
 tasks is unknown. See
 `docs/reports/issue8-memory-protocol-binding-2026-11-19.md`. Issue #8 remains
 open.
+
+## Held-out MUNIN snapshot prerequisite (2026-11-19)
+
+An explicit one-time snapshot can now expose selected pre-existing practice or
+competition technique cards to a held-out run before work starts. With no
+snapshot, held-out retrieval stays empty. This enables a prospective memory
+ablation but provides no benchmark result yet. The selected AlpacaHack Rev
+tasks now have one independently generated practice card in an isolated DB;
+protocol commitment, repeated runs and official verdicts are still required.
+Issue #8 remains open. See
+`docs/reports/issue8-frozen-memory-preflight-2026-11-19.md`.

@@ -4,6 +4,8 @@ from __future__ import annotations
 import codecs
 import hashlib
 import json
+import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -146,6 +148,134 @@ def test_search_for_run_redacts_answer_and_credential_terms(tmp_path: Path):
                                      "rstuvwxyz012345678901234567890123456789012345678901234567890",
                                      category="crypto")
     assert found and "CTF{private-answer}" not in json.dumps(found)
+
+
+def test_heldout_snapshot_is_fixed_before_work(tmp_path: Path):
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    knowledge = KnowledgeBase(session.database)
+    source = session.start(ChallengeManifest.model_validate(_manifest(
+        "snapshot-source", "Alphabetic ciphertext", "Decode a supplied text.")),
+        evaluation_split="practice")
+    first = knowledge.remember(TechniqueCard(
+        title="Alphabetic ciphertext", category="crypto",
+        summary="Check the alphabet before selecting a bounded decoder.",
+        conditions="A short text uses a standard encoding.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    heldout = session.start(ChallengeManifest.model_validate(_manifest(
+        "snapshot-target", "Held-out ciphertext", "Recover the text.")),
+        evaluation_split="heldout")
+    run_id = heldout["run_id"]
+    assert knowledge.search_for_run(run_id, "alphabetic", category="crypto") == []
+    knowledge.freeze_for_heldout(run_id, [first["id"]])
+    found = knowledge.search_for_run(run_id, "alphabetic", category="crypto")
+    assert [item["id"] for item in found] == [first["id"]]
+    with pytest.raises(ValueError, match="already frozen"):
+        knowledge.freeze_for_heldout(run_id, [first["id"]])
+    second = knowledge.remember(TechniqueCard(
+        title="Second alphabetic method", category="crypto",
+        summary="Inspect frequency before deciding how to decode the text.",
+        conditions="The input is an alphabetic ciphertext.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    assert second["id"] not in [item["id"] for item in knowledge.search_for_run(
+        run_id, "alphabetic", category="crypto")]
+    with sqlite3.connect(session.database) as db:
+        db.execute("UPDATE heldout_memory_snapshots SET payload=? WHERE run_id=?",
+                   ('{"category":"crypto","title":"tampered"}', run_id))
+    with pytest.raises(ValueError, match="digest mismatch"):
+        knowledge.search_for_run(run_id, "alphabetic", category="crypto")
+
+
+def test_heldout_snapshot_rejects_worked_or_nonheldout_run(tmp_path: Path):
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    knowledge = KnowledgeBase(session.database)
+    source = session.start(ChallengeManifest.model_validate(_manifest(
+        "snapshot-late-source", "Source", "A practice problem.")),
+        evaluation_split="practice")
+    card = knowledge.remember(TechniqueCard(
+        title="Method from practice", category="crypto",
+        summary="Test the format using a bounded local decoder.",
+        conditions="The input is an encoded text.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    with pytest.raises(ValueError, match="held-out run"):
+        knowledge.freeze_for_heldout(source["run_id"], [card["id"]])
+    target = session.start(ChallengeManifest.model_validate(_manifest(
+        "snapshot-late-target", "Target", "A held-out problem.")),
+        evaluation_split="heldout")
+    late = knowledge.remember(TechniqueCard(
+        title="Too late method", category="crypto",
+        summary="Inspect the alphabet before choosing a bounded decoder.",
+        conditions="An encoded message is present.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    with pytest.raises(ValueError, match="unavailable"):
+        knowledge.freeze_for_heldout(target["run_id"], [late["id"]])
+    session.act(target["run_id"], ToolRequest(tool="rot13", data="test"))
+    with pytest.raises(ValueError, match="precede held-out work"):
+        knowledge.freeze_for_heldout(target["run_id"], [card["id"]])
+
+
+def test_snapshot_blocks_concurrent_run_start(tmp_path: Path, monkeypatch):
+    session = CodexSession(tmp_path / "state" / "metis.sqlite")
+    knowledge = KnowledgeBase(session.database)
+    source = session.start(ChallengeManifest.model_validate(_manifest(
+        "concurrent-source", "Source", "Practice source.")), evaluation_split="practice")
+    card = knowledge.remember(TechniqueCard(
+        title="Prior decoding method", category="crypto",
+        summary="Inspect the alphabet before using a bounded decoder.",
+        conditions="An encoded message is present.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    target = session.start(ChallengeManifest.model_validate(_manifest(
+        "concurrent-target", "Target", "Held-out target.")), evaluation_split="heldout")
+    run_id = target["run_id"]
+    inspected = threading.Event()
+    release = threading.Event()
+    action_started = threading.Event()
+    action_done = threading.Event()
+    errors: list[Exception] = []
+    original_read = knowledge.session.store.read
+
+    def pause_after_inspection(identity: str):
+        events = original_read(identity)
+        if identity == run_id:
+            inspected.set()
+            if not release.wait(3):
+                raise TimeoutError("test did not release snapshot")
+        return events
+
+    monkeypatch.setattr(knowledge.session.store, "read", pause_after_inspection)
+
+    def freeze():
+        try:
+            knowledge.freeze_for_heldout(run_id, [card["id"]])
+        except Exception as exc:  # noqa: BLE001 - surface worker failures to the test
+            errors.append(exc)
+
+    def act():
+        try:
+            action_started.set()
+            session.act(run_id, ToolRequest(tool="rot13", data="test"))
+        except Exception as exc:  # noqa: BLE001 - surface worker failures to the test
+            errors.append(exc)
+        finally:
+            action_done.set()
+
+    freezer = threading.Thread(target=freeze)
+    worker = threading.Thread(target=act)
+    freezer.start()
+    try:
+        assert inspected.wait(3)
+        worker.start()
+        assert action_started.wait(3)
+        assert not action_done.wait(0.2)
+    finally:
+        release.set()
+        freezer.join(3)
+        if worker.ident is not None:
+            worker.join(3)
+    assert not errors
+    assert action_done.is_set()
+    assert [item["id"] for item in knowledge.search_for_run(
+        run_id, "decode", category="crypto")] == [card["id"]]
+    assert any(event.status.value == "executing" for event in session.store.read(run_id))
 
 
 def test_unlisted_source_cannot_be_mislabeled_as_practice_memory(tmp_path: Path):
