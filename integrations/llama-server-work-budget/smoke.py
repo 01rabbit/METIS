@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 FIXTURE_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 STARTUP_PROBE_TOKENS = 2
@@ -78,16 +78,20 @@ def running_server(
     *,
     ready: bool = True,
     private: bool = True,
-    stale_socket: bool = False,
+    stale: Literal["socket", "symlink"] | None = None,
     abandoned_pipe: bool = False,
+    socket_name: str = "model.sock",
 ) -> Iterator[Server]:
-    with tempfile.TemporaryDirectory(prefix="metis-receipt-") as root, tempfile.TemporaryFile() as log:
+    with tempfile.TemporaryDirectory(prefix="m8-", dir="/tmp") as root, tempfile.TemporaryFile() as log:
         private_dir = Path(root).resolve()
-        socket_path = private_dir / "model.sock"
+        socket_path = private_dir / socket_name
         if not private:
             private_dir.chmod(0o755)
-        if stale_socket:
-            socket_path.touch()
+        if stale == "socket":
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stale_listener:
+                stale_listener.bind(str(socket_path))
+        elif stale == "symlink":
+            socket_path.symlink_to(private_dir / "missing.sock")
 
         # A key configured this way makes /completion reject anonymous clients
         # on the stock parser. The dedicated launch profile ignores the file.
@@ -194,8 +198,22 @@ def main() -> None:
     with running_server(binary, model, exact_cap, ready=False, private=False) as server:
         server.expect_no_receipt(2)
 
-    with running_server(binary, model, exact_cap, ready=False, stale_socket=True) as server:
+    with running_server(binary, model, exact_cap, ready=False, stale="socket") as server:
         server.expect_no_receipt(2)
+
+    with running_server(binary, model, exact_cap, ready=False, stale="symlink") as server:
+        server.expect_no_receipt(2)
+
+    with running_server(binary, model, exact_cap, socket_name='model.sock,127.0.0.1,"tail".sock') as server:
+        assert server.request("/completion", PROMPT)["tokens_evaluated"] == prompt_tokens
+        server.process.terminate()
+        server.expect_outcome(0, exact_cap, "shutdown")
+        addresses = [
+            line.partition(b"listening on ")[2]
+            for line in server.logs().splitlines()
+            if b"listening on " in line
+        ]
+        assert addresses == [f"unix://{server.socket_path}".encode()]
 
     with running_server(binary, model, 1, ready=False, abandoned_pipe=True) as server:
         assert server.process.wait(timeout=5) == 74
@@ -213,7 +231,8 @@ def main() -> None:
         server.expect_no_receipt(-signal.SIGKILL)
 
     print(f"Verified work receipts on Unix socket shutdown and denial at prompt/decode cap {exact_cap}.")
-    print("Verified stale/public socket refusal, broken receipt pipe refusal, and missing receipt after a deadline and SIGKILL.")
+    print("Verified literal comma path, single Unix listener, and stale/symlink/public paths refused.")
+    print("Verified broken receipt pipe refusal and missing receipt after a deadline and SIGKILL.")
 
 
 if __name__ == "__main__":

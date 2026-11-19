@@ -19,8 +19,12 @@ scripts/build_llama_work_budget.sh /tmp/metis-llama-guard-build
 
 The controller creates the socket's parent with mode `0700`. The launcher
 requires a canonical absolute socket path ending in `.sock` under a directory
-owned by the effective user. It rejects a path that already exists. Processes
-under the same operating system user share this trust boundary.
+owned by the effective user. It rejects paths that already exist, including
+stale sockets and symlinks. The dedicated argument parser preserves the
+literal socket path and the listening code opens exactly one AF_UNIX socket.
+Processes under the same operating system user share this trust boundary.
+The controller must protect the directory and its ancestors against rename
+or replacement for the lifetime of the process.
 
 The controller inherits only the write end of a fresh pipe into the child,
 closes its own copy after launch, and keeps the read end until the process has
@@ -56,8 +60,11 @@ A failed receipt write exits with status 74. An invalid launch, fatal runtime
 failure, or SIGKILL can leave the pipe empty. A controller must wait for process
 exit and require one matching record before accepting a result. Any absent,
 truncated, duplicate, inconsistent, or mismatched receipt requires a failed
-outcome with the full admission charge retained. Abrupt shutdown can leave the
-socket path for the controller to clean up.
+outcome with the full admission charge retained. The pinned upstream SIGTERM
+handler acquires queue state directly. An in-flight SIGTERM can stall before
+the receipt. The controller must bound its wait, kill and reap a stalled
+process, and keep the full charge when the receipt is missing. Abrupt shutdown
+can leave the socket path for the controller to clean up.
 
 ## Accounting boundary
 
@@ -100,9 +107,9 @@ at cap 21, one completion at cap 22, and the next decode graph after 23 charged
 positions. Cap 24 allows generation of three tokens, which submits two decode
 graphs after the startup and prompt positions. Each terminal record is checked
 against the exact cap, nonce, submitted work, and reason. Additional cases
-cover an existing socket path, a nonprivate directory, a broken receipt pipe,
-a timed-out client whose server is killed, and ambient config that tries to
-require an API key.
+cover a literal path containing commas and quotes, stale sockets and
+symlinks, a nonprivate directory, a broken receipt pipe, a timed-out client
+whose server is killed, and ambient config that tries to require an API key.
 
 This stacks on the native gate in METIS PR #87. The Python admission ledger
 still needs to claim each launch exactly once and record the outcome. Enabling

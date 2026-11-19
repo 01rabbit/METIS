@@ -1,5 +1,5 @@
 diff --git a/common/arg.cpp b/common/arg.cpp
-index 6bf9355fb..3069a5b25 100644
+index 6bf9355fb..c684b15d2 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
 @@ -14 +13,0 @@
@@ -86,6 +86,24 @@ index 6bf9355fb..3069a5b25 100644
 -            if (opt.has_value_from_env()) {
 -                fprintf(stderr, "warn: %s environment variable is set, but will be overwritten by command line argument %s\n", opt.env, arg.c_str());
 -            }
+@@ -3315,2 +3240,2 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+-        {"--host"}, "HOST",
+-        string_format("IP addresses to listen on, comma-separated, or UNIX socket paths ending in .sock; with multiple TCP addresses, :: binds IPv6 only; overlapping addresses result in undefined behavior (default: %s)", params.hostnames[0].c_str()),
++        {"--host"}, "SOCKET",
++        "METIS private Unix socket path",
+@@ -3318,10 +3243,2 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+-            params.hostnames.clear();
+-            for (auto & host : parse_csv_row(value)) {
+-                host = string_strip(host);
+-                if (!host.empty()) {
+-                    params.hostnames.push_back(host);
+-                }
+-            }
+-            if (params.hostnames.empty()) {
+-                throw std::invalid_argument("--host requires at least one address");
+-            }
++            // Preserve the exact path checked by the dedicated launcher.
++            params.hostnames = {value};
 diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
 index c3bc92679..bb3ac716b 100644
 --- a/ggml/src/ggml-backend-reg.cpp
@@ -287,12 +305,13 @@ index 7f13b7f62..28977e37c 100644
 +    std::fflush(stderr);
 +    llama_metis_abort_unmetered_work();
 diff --git a/tools/server/main.cpp b/tools/server/main.cpp
-index 7f17c56a8..50041515a 100644
+index 7f17c56a8..c3d22b96b 100644
 --- a/tools/server/main.cpp
 +++ b/tools/server/main.cpp
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,19 @@
 +#include "llama.h"
 +
++#include <algorithm>
 +#include <cerrno>
 +#include <charconv>
 +#include <csignal>
@@ -309,10 +328,13 @@ index 7f17c56a8..50041515a 100644
 +
 +extern char ** environ;
 +
-@@ -2,0 +21,32 @@ int llama_server(int argc, char ** argv);
+@@ -2,0 +22,35 @@ int llama_server(int argc, char ** argv);
 +static bool metis_private_socket(const std::filesystem::path & socket_path) {
++    const auto & literal = socket_path.native();
++    const auto is_control = [](unsigned char c) { return c < 32 || c == 127; };
 +    if (!socket_path.is_absolute() || socket_path.extension() != ".sock"
-+            || socket_path.native().size() >= sizeof(sockaddr_un{}.sun_path)) {
++            || literal.size() >= sizeof(sockaddr_un{}.sun_path)
++            || std::any_of(literal.begin(), literal.end(), is_control)) {
 +        return false;
 +    }
 +    const auto parent = socket_path.parent_path();
@@ -342,7 +364,7 @@ index 7f17c56a8..50041515a 100644
 +}
 +
 +// This binary accepts only the local, single-model, text-only CPU profile.
-@@ -4 +54,59 @@ int main(int argc, char ** argv) {
+@@ -4 +58,59 @@ int main(int argc, char ** argv) {
 -    return llama_server(argc, argv);
 +    if (argc != 11 || std::string_view(argv[1]) != "--metis-work-budget"
 +            || std::string_view(argv[3]) != "--model" || std::string_view(argv[5]) != "--socket"
@@ -413,3 +435,56 @@ index a6059ab38..bc930784d 100644
 +            return false;
 +        }
 +
+diff --git a/tools/server/server-http.cpp b/tools/server/server-http.cpp
+index 5bdece55b..093899350 100644
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -610,2 +609,0 @@ bool server_http_context::start() {
+-    // Bind and listen
+-
+@@ -613,27 +611,16 @@ bool server_http_context::start() {
+-    for (size_t i = 0; i < pimpl->servers.size(); ++i) {
+-        const auto & srv = pimpl->servers[i];
+-        const auto & host = pimpl->hosts[i];
+-        const bool is_sock = string_ends_with(host, ".sock");
+-        bool was_bound;
+-        if (is_sock) {
+-            SRV_TRC("%s", "setting address family to AF_UNIX\n");
+-            srv->set_address_family(AF_UNIX);
+-            // AF_UNIX ignores the port, but bind_to_port requires a nonzero value.
+-            was_bound = srv->bind_to_port(host, 8080);
+-        } else if (port == 0) {
+-            const auto bound_port = srv->bind_to_any_port(host);
+-            was_bound = bound_port >= 0;
+-            if (was_bound) {
+-                port = bound_port;
+-            }
+-        } else {
+-            was_bound = srv->bind_to_port(host, port);
+-        }
+-        if (!was_bound) {
+-            SRV_ERR("couldn't bind HTTP server socket, hostname: %s, port: %d\n", host.c_str(), port);
+-            stop();
+-            listening_addresses.clear();
+-            return false;
+-        }
+-        listening_addresses.push_back(is_sock ? string_format("unix://%s", host.c_str())
+-                                              : string_format("%s://%s:%d", is_ssl ? "https" : "http", common_http_format_host(host).c_str(), port));
++    if (pimpl->servers.size() != 1 || pimpl->hosts.size() != 1) {
++        SRV_ERR("%s", "METIS requires exactly one listener\n");
++        return false;
++    }
++    const auto & listener = pimpl->servers.front();
++    const auto & host = pimpl->hosts.front();
++    if (host.empty() || host.front() != '/' || !string_ends_with(host, ".sock")) {
++        SRV_ERR("%s", "METIS requires an absolute Unix socket listener\n");
++        return false;
++    }
++    listener->set_address_family(AF_UNIX);
++    // AF_UNIX ignores the port, but bind_to_port requires a nonzero value.
++    if (!listener->bind_to_port(host, 8080)) {
++        SRV_ERR("%s", "couldn't bind METIS Unix socket listener\n");
++        stop();
++        return false;
+@@ -640,0 +628 @@ bool server_http_context::start() {
++    listening_addresses.push_back(string_format("unix://%s", host.c_str()));
