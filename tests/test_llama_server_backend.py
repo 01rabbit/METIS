@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from metis.core.llama_server_backend import LlamaBackendError, LlamaServerBackend
+from metis.core.llama_server_backend import (
+    LlamaBackendError,
+    LlamaBackendStopped,
+    LlamaServerBackend,
+)
 
 
 def _hash(path: Path) -> str:
@@ -153,3 +157,20 @@ def test_whole_call_deadline_during_tokenize_stops_without_charge(backend_files)
         assert time.monotonic() - started < 2
         assert backend._process is None
     assert not backend_files["database"].exists()
+
+
+def test_live_cancellation_stops_process_and_retains_reservation(backend_files):
+    event = threading.Event()
+    def cancel_soon():
+        time.sleep(.15)
+        event.set()
+    with LlamaServerBackend(**backend_files) as backend:
+        trigger = threading.Thread(target=cancel_soon)
+        trigger.start()
+        with pytest.raises(LlamaBackendStopped, match="cancelled"):
+            backend.complete("slow trickle", n_predict=2, timeout_seconds=5,
+                             should_stop=event.is_set)
+        trigger.join()
+        assert backend._process is None
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4,)
