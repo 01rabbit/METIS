@@ -123,8 +123,7 @@ class LlamaServerBackend:
             # The child receives no prompt before complete() reserves tokens.
             child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
                          "TMPDIR": self._private.name, "LANG": "C"}
-            if self.startup_should_stop is not None and self.startup_should_stop():
-                raise LlamaBackendStopped("model call cancelled during server startup")
+            self._check_startup_abort(deadline, deadline_error)
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
                  "--parallel", "1", "--no-webui", "--ctx-size",
@@ -241,7 +240,8 @@ class LlamaServerBackend:
             db.commit()
 
     def complete(self, prompt: str, *, n_predict: int, timeout_seconds: float,
-                 should_stop: Callable[[], bool] | None = None) -> tuple[str, int, int]:
+                 should_stop: Callable[[], bool] | None = None,
+                 call_deadline: float | None = None) -> tuple[str, int, int]:
         if not isinstance(prompt, str) or len(prompt.encode()) > 65_536:
             raise ValueError("prompt exceeds input boundary")
         if not 1 <= n_predict <= self.max_output_tokens or not 0 < timeout_seconds <= 120:
@@ -250,6 +250,10 @@ class LlamaServerBackend:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         deadline = time.monotonic() + timeout_seconds
+        if call_deadline is not None:
+            deadline = min(deadline, call_deadline)
+        if deadline <= time.monotonic():
+            raise LlamaBackendError("model call deadline exceeded")
         tokenized = self._request_before("/tokenize",
                                          {"content": prompt, "add_special": True}, deadline=deadline,
                                          should_stop=should_stop)

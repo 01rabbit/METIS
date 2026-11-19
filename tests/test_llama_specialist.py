@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,35 @@ def test_cancel_before_and_during_call(tmp_path, monkeypatch):
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", CancelBackend)
     during = runner.run("prompt", model="pinned-shisa", timeout=5, should_stop=lambda: False)
     assert during.stopped and during.message is None
+
+
+def test_non_admitted_run_bounds_startup_and_passes_cancellation(tmp_path, monkeypatch):
+    runner = _runner(tmp_path)
+    stop = lambda: False
+    class CancelStartup:
+        def __init__(self, **kwargs):
+            assert isinstance(kwargs["startup_deadline"], float)
+            assert kwargs["startup_should_stop"] is stop
+        def __enter__(self): raise LlamaBackendStopped("cancelled during startup")
+        def __exit__(self, *_args): pass
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", CancelStartup)
+    turn = runner.run("prompt", model=runner.model_id, timeout=5, should_stop=stop)
+    assert turn.returncode == 1 and turn.stopped
+
+
+def test_non_admitted_startup_time_counts_against_call_deadline(tmp_path, monkeypatch):
+    runner = _runner(tmp_path)
+    class SlowStartup:
+        def __init__(self, **kwargs):
+            assert isinstance(kwargs["startup_deadline"], float)
+        def __enter__(self):
+            time.sleep(.02)
+            return self
+        def __exit__(self, *_args): pass
+        def complete(self, *_args, **_kwargs): pytest.fail("completion must not start after deadline")
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", SlowStartup)
+    turn = runner.run("prompt", model=runner.model_id, timeout=.01)
+    assert turn.returncode == 1 and turn.timed_out
 
 
 def test_invalid_json_retains_observed_usage(tmp_path, monkeypatch):

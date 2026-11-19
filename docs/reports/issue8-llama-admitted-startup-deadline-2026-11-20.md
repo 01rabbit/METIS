@@ -1,19 +1,20 @@
-# Issue #8: bound admitted llama startup by call deadline (2026-11-20)
+# Issue #8: bound llama startup by call deadline (2026-11-20)
 
-The scheduler-admitted `LlamaSpecialist` now computes one monotonic call
-deadline before native server startup and passes it, with the run stop callback,
-into the backend. Health polling checks cancellation between attempts, caps each
-health request by the remaining deadline, and terminates the process group on
-cancellation or timeout. Tokenization and completion share the same deadline;
-time spent starting the server cannot extend the admitted call budget. A
-startup cancellation records a cancelled terminal outcome, while deadline
-expiry records a timeout. The already-consumed token reservation is retained.
+Both `LlamaSpecialist.run()` and the scheduler-admitted `run_admitted()` compute
+one monotonic call deadline before native server startup and pass it, with the
+run stop callback, into the backend. Health polling uses the same bounded,
+cancellable request path as tokenization and completion. Artifact hashing checks
+the deadline and cancellation between 1 MiB reads, and expiry is checked again
+immediately before the child process is launched. The backend terminates the
+process group on cancellation or timeout. A startup cancellation records a
+cancelled outcome, while deadline expiry records a timeout. The already-consumed
+admitted token reservation is retained.
 
 Validation on the PR branch:
 
 ```text
 PYTHONPATH=src:. /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest -q tests/test_llama_server_backend.py tests/test_llama_specialist.py
-54 passed
+58 passed
 ruff check src tests scripts
 All checks passed
 mypy src
@@ -26,8 +27,9 @@ passed
 
 The fake server fixture delays startup and trickles health-response bytes to
 verify cancellation and deadline cleanup without model inference or network
-access. Additional tests ensure an already-cancelled or expired call does not
-hash or launch the server. This does not demonstrate a real model hard token
+access; a marker confirms each probe reached the trickling response. Additional
+tests verify cancellation during a multi-chunk artifact hash and prevent child
+launch after deadline expiry. This does not demonstrate a real model hard token
 cap, provider billing limits, or held-out benchmark improvement.
 `LlamaSpecialist.hard_token_budget_enforced` remains false and Issue #8 remains
 open.

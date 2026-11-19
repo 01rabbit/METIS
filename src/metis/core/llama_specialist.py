@@ -109,14 +109,20 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         if timeout <= 0:
             return CodexTurn(returncode=1, message=None, timed_out=True, isolation=isolation)
+        call_deadline = time.monotonic() + min(timeout, 120)
         # The schema is an instruction to the model; the parsed decision is checked
         # independently below. No tool affordance is passed to the native server.
         request = self.build_native_request(prompt, output_schema)
         try:
-            with LlamaServerBackend(**self.backend_config) as backend:
+            with LlamaServerBackend(**self.backend_config, startup_deadline=call_deadline,
+                                    startup_should_stop=should_stop) as backend:
+                remaining = call_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LlamaBackendError("model call deadline exceeded during server startup")
                 content, input_tokens, output_tokens = backend.complete(
                     request, n_predict=self.max_output_tokens,
-                    timeout_seconds=min(timeout, 120), should_stop=should_stop)
+                    timeout_seconds=remaining, should_stop=should_stop,
+                    call_deadline=call_deadline)
             if should_stop is not None and should_stop():
                 return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
             usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}

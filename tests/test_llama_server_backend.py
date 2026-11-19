@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import sqlite3
 import threading
@@ -21,17 +22,20 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _make_health_trickle(backend_files) -> None:
+def _make_health_trickle(backend_files) -> Path:
     binary = backend_files["binary"]
     source = binary.read_text()
     ordinary = '''self.send_response(200); self.end_headers(); self.wfile.write(b'{"status":"ok"}')'''
-    trickle = ("self.send_response(200); self.send_header('Content-Length','15'); self.end_headers(); "
-               "[ (self.wfile.write(bytes([byte])), self.wfile.flush(), __import__('time').sleep(.05)) "
+    marker = binary.parent / "health-started"
+    trickle = (f"self.send_response(200); self.send_header('Content-Length','15'); self.end_headers(); "
+               f"open({str(marker)!r}, 'w').write('started'); "
+               "[ (self.wfile.write(bytes([byte])), self.wfile.flush(), __import__('time').sleep(.25)) "
                "for byte in b'{\"status\":\"ok\"}' ]")
     assert ordinary in source
     binary.write_text(source.replace(ordinary, trickle))
     binary.chmod(0o700)
     backend_files["binary_sha256"] = _hash(binary)
+    return marker
 
 
 @pytest.fixture
@@ -199,6 +203,23 @@ def test_startup_cancellation_before_artifact_hash_prevents_process_launch(backe
         backend.__enter__()
 
 
+def test_startup_deadline_before_process_launch_is_rechecked(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    real_tempdir = module.tempfile.TemporaryDirectory
+
+    def slow_tempdir(*args, **kwargs):
+        time.sleep(.1)
+        return real_tempdir(*args, **kwargs)
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", slow_tempdir)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("expired call must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_deadline=time.monotonic() + .05)
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+
+
 def test_startup_is_bounded_by_call_deadline(backend_files):
     source = backend_files["binary"].read_text()
     backend_files["binary"].write_text(
@@ -217,26 +238,57 @@ def test_startup_is_bounded_by_call_deadline(backend_files):
 
 
 def test_startup_health_trickle_obeys_call_deadline(backend_files):
-    _make_health_trickle(backend_files)
+    marker = _make_health_trickle(backend_files)
     backend = LlamaServerBackend(**backend_files, startup_seconds=5,
-                                 startup_deadline=time.monotonic() + .3)
+                                 startup_deadline=time.monotonic() + 2)
     started = time.monotonic()
     with pytest.raises(LlamaBackendError, match="deadline"):
         backend.__enter__()
-    assert time.monotonic() - started < 1.5
+    assert marker.is_file()
+    assert time.monotonic() - started < 3
     assert backend._process is None and backend._private is None
 
 
 def test_startup_health_trickle_obeys_cancellation(backend_files):
-    _make_health_trickle(backend_files)
-    cancel_at = time.monotonic() + .3
+    marker = _make_health_trickle(backend_files)
+    cancel_at = time.monotonic() + 2
     backend = LlamaServerBackend(**backend_files, startup_seconds=5,
                                  startup_should_stop=lambda: time.monotonic() >= cancel_at)
     started = time.monotonic()
     with pytest.raises(LlamaBackendStopped, match="cancelled"):
         backend.__enter__()
-    assert time.monotonic() - started < 1.5
+    assert marker.is_file()
+    assert time.monotonic() - started < 3
     assert backend._process is None and backend._private is None
+
+
+def test_sha256_checks_abort_between_bounded_reads(tmp_path, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    artifact = tmp_path / "large-model.gguf"
+    artifact.write_bytes(b"x" * (5 * 1024 * 1024))
+    class CountingReader(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.read_calls = 0
+            self.bytes_read = 0
+        def read(self, size=-1):
+            self.read_calls += 1
+            chunk = super().read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+    reader = CountingReader(b"x" * (5 * 1024 * 1024))
+    monkeypatch.setattr(Path, "open", lambda _path, _mode="r", **_kwargs: reader)
+    checks = 0
+    def abort_on_fourth_check():
+        nonlocal checks
+        checks += 1
+        if checks == 4:
+            raise RuntimeError("cancelled during hash")
+    with pytest.raises(RuntimeError, match="cancelled during hash"):
+        module._sha256(artifact, abort_check=abort_on_fourth_check)
+    assert checks == 4 and reader.read_calls == 3
+    assert reader.bytes_read == 3 * 1024 * 1024
 
 
 def test_shared_concurrent_reservation(backend_files):

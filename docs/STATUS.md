@@ -891,12 +891,12 @@ provider revocation, a retention policy, or completion of Issue #9.
 
 ## Issue #8 admitted llama startup cancellation (2026-11-20)
 
-The scheduler-admitted llama runner now applies one monotonic call deadline
-across server startup, tokenization, and completion, and watches run
-cancellation during health polling. Startup cancellation stops the process
-group and records a cancelled outcome; timeout before completion records a
-timeout and retains the consumed reservation. The two affected test files pass
-54 cases, with Ruff, mypy, repository validation, and `git diff --check` also
+Both llama runner paths now apply one monotonic call deadline across artifact
+hashing, server startup, tokenization, and completion, and watch cancellation
+during health polling. Startup cancellation stops the process group and records
+a cancelled outcome; timeout before completion records a timeout and retains
+the consumed admitted reservation. The two affected test files pass 58 cases,
+with Ruff, mypy, repository validation, and `git diff --check` also
 passing on Python 3.12.13. This closes the startup wait-boundary gap only;
 `hard_token_budget_enforced` remains false and Issue #8 remains open. Evidence:
 [`issue8-llama-admitted-startup-deadline-2026-11-20.md`](reports/issue8-llama-admitted-startup-deadline-2026-11-20.md).
