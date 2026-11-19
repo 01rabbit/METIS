@@ -35,8 +35,13 @@ credentials can be used or stored again. The checks do not change existing
 file modes.
 
 Environment-only authentication and explicit local forgetting still work with
-regular files whose permissions are broader. The check inspects POSIX mode
-bits and file ownership. ACLs, concurrent path replacement, existing copies,
-and encryption at rest are outside its scope. Treat a credential already
-stored with broader permissions as potentially exposed and rotate it with the
-provider.
+regular files whose permissions are broader. On such files, environment-only
+mode discards cookies from every origin when loading or saving run state.
+Browser routing checks the stored generation, so a mode switch does not
+guarantee cancellation of an already prepared or in-flight browser request.
+
+The check inspects POSIX mode bits and file ownership at each checked operation.
+It does not validate ancestor-directory symlinks or ACLs, pin a path between
+inspection and opening, erase existing copies, or encrypt files. Treat a
+credential already stored with broader permissions as potentially exposed and
+rotate it with the provider.

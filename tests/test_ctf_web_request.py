@@ -10,6 +10,7 @@ import pytest
 
 from metis.cli import main
 from metis.core.codex_session import CodexSession
+from metis.core.ctf_http import HTTPResult, SafeHTTP
 from metis.core.ctf_web import WebRequest, WebWorkflow
 
 
@@ -127,6 +128,37 @@ def test_local_client_cannot_load_save_or_use_auth_after_storage_mode_change(tmp
                       lambda: client.auth_generation_check(client.auth_generation)):
         with pytest.raises(ValueError, match="database must be private and owned"):
             operation()
+
+
+@pytest.mark.parametrize("database_mode", [0o600, 0o644])
+def test_environment_mode_persists_alternate_origin_cookie_only_in_private_state(tmp_path, monkeypatch, database_mode):
+    database = tmp_path / "state.sqlite"
+    web = WebWorkflow(database)
+    database.chmod(database_mode)
+    monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
+    platform = "https://platform.invalid"
+    alternate = "https://alternate.invalid"
+    secret = "synthetic-alternate-cookie"
+    cookie_client = SafeHTTP([alternate], auth_origin=alternate, credentials={"cookie": f"session={secret}"})
+
+    def fake_request(client, url, **_kwargs):
+        client.jars.update(cookie_client.jars)
+        body = b"<title>Storage fixture</title>"
+        return HTTPResult(url, 200, {}, body, len(body), "a" * 64)
+
+    def stored_state():
+        with closing(sqlite3.connect(database)) as db:
+            return db.execute("SELECT state FROM web_runs").fetchone()[0]
+
+    monkeypatch.setattr(SafeHTTP, "request", fake_request)
+    run_id = web.open(platform, allowed_origins=[alternate], download=False)["context"]["run_id"]
+    assert (secret in stored_state()) == (database_mode == 0o600)
+    config, state, *_ = web._load(run_id)
+    assert (secret in json.dumps(state)) == (database_mode == 0o600)
+    client = web._client(config, state)
+    client.jars.update(cookie_client.jars)
+    web._save_client(run_id, client)
+    assert (secret in stored_state()) == (database_mode == 0o600)
 
 
 def _server(handler_class):

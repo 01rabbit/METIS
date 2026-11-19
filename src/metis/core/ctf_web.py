@@ -149,7 +149,8 @@ class WebWorkflow:
             db.execute("CREATE TABLE IF NOT EXISTS web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS web_auth_generations (origin TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
 
-    def _check_auth_storage(self, *, private: bool, allow_missing: bool = False) -> None:
+    def _check_auth_storage(self, *, private: bool, allow_missing: bool = False) -> bool:
+        owner_private = True
         for suffix, label in (("", "database"), ("-wal", "WAL"), ("-shm", "SHM")):
             try:
                 info = self.database.with_name(self.database.name + suffix).lstat()
@@ -159,11 +160,31 @@ class WebWorkflow:
                 raise ValueError("web authentication state database is missing") from None
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"web authentication state {label} must be a regular file")
-            if private and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
-                raise ValueError(f"web authentication state {label} must be private and owned by the current user")
+            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                if private:
+                    raise ValueError(f"web authentication state {label} must be private and owned by the current user")
+                owner_private = False
+        return owner_private
 
-    def _check_web_storage(self) -> None:
-        self._check_auth_storage(private=not self._environment_auth_only())
+    def _check_web_storage(self) -> bool:
+        return self._check_auth_storage(private=not self._environment_auth_only())
+
+    @staticmethod
+    def _discard_auth_cookies(state: dict, auth_origin: str, private_storage: bool) -> None:
+        if private_storage:
+            state.get("cookies", {}).pop(auth_origin, None)
+        else:
+            state.pop("cookies", None)
+        state.pop("cookie_fingerprint", None)
+
+    def _client_state_for_storage(self, client: SafeHTTP, auth_origin: str, generation: int,
+                                  *, private_storage: bool) -> dict:
+        state = client.export_state()
+        if (not private_storage or self._environment_auth_only()
+                or getattr(client, "_metis_environment_only", False) or generation != client.auth_generation):
+            self._discard_auth_cookies(state, auth_origin, private_storage)
+        state[self._AUTH_GENERATION_STATE_KEY] = generation
+        return state
 
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
         if self._environment_auth_only():
@@ -271,7 +292,7 @@ class WebWorkflow:
                           "SQLite WAL, snapshots and backups may retain prior values")}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
-        self._check_web_storage()
+        private_storage = self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
@@ -280,22 +301,18 @@ class WebWorkflow:
                 raise ValueError("web workflow not found")
             config, state = json.loads(row[0]), json.loads(row[1])
             auth_origin = config["auth_origin"]
-            if self._environment_auth_only():
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (auth_origin,)).fetchone()
             generation = generation_row[0] if generation_row else 0
             state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, generation)
-            if state_generation != generation:
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
+            if not private_storage or self._environment_auth_only() or state_generation != generation:
+                self._discard_auth_cookies(state, auth_origin, private_storage)
             state[self._AUTH_GENERATION_STATE_KEY] = generation
         return config, state, json.loads(row[2]), json.loads(row[3]), row[4], row[5]
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
         environment_only = self._environment_auth_only()
-        self._check_auth_storage(private=not environment_only)
+        private_storage = self._check_auth_storage(private=not environment_only)
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = None if environment_only else db.execute(
@@ -305,8 +322,7 @@ class WebWorkflow:
             current_generation = row_generation[0] if row_generation else 0
         state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, current_generation)
         if environment_only:
-            state.get("cookies", {}).pop(config["auth_origin"], None)
-            state.pop("cookie_fingerprint", None)
+            self._discard_auth_cookies(state, config["auth_origin"], private_storage)
         client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else
@@ -326,7 +342,7 @@ class WebWorkflow:
         return (row[0] if row else 0) == expected
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
-        self._check_web_storage()
+        private_storage = self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             config_row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -335,14 +351,7 @@ class WebWorkflow:
             auth_origin = json.loads(config_row[0])["auth_origin"]
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
             generation = row[0] if row else 0
-            state = client.export_state()
-            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
-            if generation != client.auth_generation:
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
-            state[self._AUTH_GENERATION_STATE_KEY] = generation
+            state = self._client_state_for_storage(client, auth_origin, generation, private_storage=private_storage)
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
                        (json.dumps(state), run_id))
 
@@ -614,20 +623,15 @@ class WebWorkflow:
                                            categories=categories, max_actions=120, wall_seconds=7200,
                                            evaluation_split=evaluation["split"])
         run_id = context["run_id"]
-        self._check_web_storage()
+        private_storage = self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (config["auth_origin"],)).fetchone()
             generation = generation_row[0] if generation_row else 0
-            initial_state = client.export_state()
-            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
-                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
-                initial_state.pop("cookie_fingerprint", None)
-            if generation != client.auth_generation:
-                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
-                initial_state.pop("cookie_fingerprint", None)
-            initial_state[self._AUTH_GENERATION_STATE_KEY] = generation
+            initial_state = self._client_state_for_storage(
+                client, config["auth_origin"], generation, private_storage=private_storage,
+            )
             db.execute("INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
                        (run_id, json.dumps(config), json.dumps(initial_state),
                         json.dumps(page.forms), json.dumps(links), secrets.token_hex(32)))
