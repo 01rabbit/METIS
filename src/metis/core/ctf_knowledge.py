@@ -181,15 +181,19 @@ class KnowledgeBase:
             raise ValueError("snapshot must precede held-out work")
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
+            started = db.execute("SELECT started FROM codex_sessions WHERE run_id=?",
+                                 (run_id,)).fetchone()[0]
             if db.execute("SELECT 1 FROM heldout_memory_snapshots WHERE run_id=?", (run_id,)).fetchone():
                 raise ValueError("held-out memory is already frozen")
             rows = db.execute(
-                f"SELECT id,payload,digest,source_split FROM munin_cards WHERE id IN ({','.join('?' for _ in card_ids)})",
+                f"SELECT id,payload,digest,source_split,created FROM munin_cards WHERE id IN ({','.join('?' for _ in card_ids)})",
                 card_ids,
             ).fetchall()
-            if len(rows) != len(card_ids) or any(row[3] not in {"practice", "competition"} for row in rows):
+            if len(rows) != len(card_ids) or any(
+                row[3] not in {"practice", "competition"} or row[4] > started for row in rows
+            ):
                 raise ValueError("snapshot contains unavailable or held-out cards")
-            for identity, payload, digest, _ in rows:
+            for identity, payload, digest, _, _ in rows:
                 if hashlib.sha256(payload.encode()).hexdigest() != digest:
                     raise ValueError("snapshot card digest mismatch")
                 db.execute("INSERT INTO heldout_memory_snapshots(run_id,card_id,payload,digest) VALUES (?,?,?,?)",

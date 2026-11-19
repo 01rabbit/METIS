@@ -200,6 +200,13 @@ def test_heldout_snapshot_rejects_worked_or_nonheldout_run(tmp_path: Path):
     target = session.start(ChallengeManifest.model_validate(_manifest(
         "snapshot-late-target", "Target", "A held-out problem.")),
         evaluation_split="heldout")
+    late = knowledge.remember(TechniqueCard(
+        title="Too late method", category="crypto",
+        summary="Inspect the alphabet before choosing a bounded decoder.",
+        conditions="An encoded message is present.", outcome="inconclusive",
+        source_run_id=source["run_id"], source_split="practice"))
+    with pytest.raises(ValueError, match="unavailable"):
+        knowledge.freeze_for_heldout(target["run_id"], [late["id"]])
     session.act(target["run_id"], ToolRequest(tool="rot13", data="test"))
     with pytest.raises(ValueError, match="precede held-out work"):
         knowledge.freeze_for_heldout(target["run_id"], [card["id"]])
