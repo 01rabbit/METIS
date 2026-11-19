@@ -123,6 +123,7 @@ def test_audit_includes_run_scoped_mutable_operational_snapshot_without_private_
         "active_operations": {"available": True, "count": 1},
         "registered_sandbox_workers": {"available": True, "count": 1},
         "pending_candidates": {"available": True, "count": 1},
+        "model_usage": {"available": False},
     }
     assert "private-" not in result.stdout + result.stderr
     assert audit(database, run_id).stdout == result.stdout
@@ -137,6 +138,31 @@ def test_audit_operational_tables_are_unavailable_not_fabricated_as_empty(tmp_pa
     assert result.returncode == 0, result.stderr
     operational = json.loads(result.stdout)["operational_state"]
     assert all(value == {"available": False} for value in operational.values())
+
+
+def test_audit_model_usage_reports_only_complete_totals(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    run_id = start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE agent_jobs (run_id TEXT, state TEXT, usage TEXT)")
+        db.executemany("INSERT INTO agent_jobs VALUES (?,?,?)", [
+            (run_id, "completed", json.dumps({"input_tokens": 8, "output_tokens": 3,
+                                 "private": "private-answer-omitted"})),
+            (run_id, "running", None),
+            ("other-run", "completed", json.dumps({"input_tokens": 999, "output_tokens": 999})),
+        ])
+    result = audit(database, run_id)
+    assert result.returncode == 0, result.stderr
+    usage = json.loads(result.stdout)["operational_state"]["model_usage"]
+    assert usage == {"available": True, "jobs": 2, "unknown_jobs": 1,
+                     "known_input_tokens": 8, "known_output_tokens": 3,
+                     "total_tokens": None, "cost_usd": None}
+    assert "private-answer" not in result.stdout
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET usage=? WHERE run_id=? AND usage IS NULL",
+                   (json.dumps({"input_tokens": 2, "output_tokens": 1}), run_id))
+    usage = json.loads(audit(database, run_id).stdout)["operational_state"]["model_usage"]
+    assert usage["total_tokens"] == 14 and usage["unknown_jobs"] == 0
 
 
 def test_audit_fails_closed_on_inconsistent_turn_reservation_counters(tmp_path):
