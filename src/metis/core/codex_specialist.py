@@ -562,7 +562,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                    runner: CodexRunner, *, model: str | None = None, turn_timeout: float = 300.0,
                    clock: Callable[[], float] = time.time, note: str | None = None,
                    allow_candidate_report: bool = True,
-                   final_handoff_call_limit: int | None = None) -> dict[str, Any]:
+                   final_handoff_call_limit: int | None = None,
+                   specialist_call_limit: int | None = None) -> dict[str, Any]:
     """Drive one running attempt to a report, a failure or a stop. Returns a summary.
 
     ``note`` is Daybreak's focus for this attempt (a hypothesis to test, a step to take). It is
@@ -573,8 +574,13 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     if final_handoff_call_limit is not None:
         if final_handoff_call_limit < 1 or not allow_candidate_report:
             raise ValueError("final handoff requires a positive call limit and combined handoff")
+        if specialist_call_limit is not None and specialist_call_limit != final_handoff_call_limit:
+            raise ValueError("final handoff and specialist call limits must match")
         if "output_schema" not in inspect.signature(runner.run).parameters:
             raise ValueError("final handoff requires a runner supporting output_schema")
+    call_limit = final_handoff_call_limit if final_handoff_call_limit is not None else specialist_call_limit
+    if call_limit is not None and call_limit < 1:
+        raise ValueError("specialist call limit must be positive")
     allowed = {entry["id"] for entry in scheduler.config()["catalog"]}
     selected = model or (job["model"] or {}).get("model") or scheduler.config()["current_model"]
     from metis.evaluation.heldout_arm import binding
@@ -652,15 +658,16 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
     outcome: dict[str, Any] = {"state": "running"}
     for _ in range(budget_calls):
-        if final_handoff_call_limit is not None and len(turns) >= final_handoff_call_limit:
-            outcome = scheduler.fail(assignment_id, attempt_id, "final handoff call did not complete the assignment")
-            break
         if scheduler.run_cancelled(run_id):
             outcome = stop_outcome("run cancelled before the next turn")
             break
         current = _job(scheduler, assignment_id)
         if current["attempt_id"] != attempt_id or current["state"] != "running":
             outcome = stop_outcome(f"attempt no longer running ({current['state']})")
+            break
+        if call_limit is not None and len(turns) >= call_limit:
+            outcome = scheduler.fail(assignment_id, attempt_id,
+                                     "per-specialist call cap exhausted without completion")
             break
         remaining = (current["deadline"] or clock() + turn_timeout) - clock()
         if remaining <= 0:
@@ -692,9 +699,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if (not turn.stopped and turn.returncode != 0 and not turn.timed_out
                 and any(marker in turn.stderr_tail.lower() for marker in TRANSIENT_MARKERS)):
             _log(scheduler, assignment_id, attempt_id, "codex_turn_retry", turn.stderr_tail[-160:])
-            if final_handoff_call_limit is not None and len(turns) >= final_handoff_call_limit:
+            if call_limit is not None and len(turns) >= call_limit:
                 outcome = scheduler.fail(assignment_id, attempt_id,
-                                         "final handoff call failed transiently; per-specialist cap exhausted")
+                                         "per-specialist call cap exhausted on transient failure")
                 break
             time.sleep(TRANSIENT_BACKOFF)
             latest = _job(scheduler, assignment_id)

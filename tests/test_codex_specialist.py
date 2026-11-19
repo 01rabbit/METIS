@@ -166,6 +166,38 @@ def test_final_handoff_transient_failure_does_not_retry_past_cap(setup, monkeypa
     assert scheduler.model_turn_budget(run_id)["reserved"] == 1
 
 
+def test_symmetric_baseline_cap_keeps_normal_schema(setup):
+    _database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)),
+                             _say(_intent("artifact", "text", artifact=artifact))])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            specialist_call_limit=2)
+    assert result["job_state"] == "failed"
+    assert len(runner.prompts) == 2
+    assert runner.schemas == [None, None]
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 2
+
+
+def test_cancellation_wins_over_call_cap_at_loop_boundary(setup, monkeypatch):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    calls = 0
+    original = scheduler.run_cancelled
+
+    def cancelled(rid):
+        nonlocal calls
+        calls += 1
+        return calls >= 5 or original(rid)
+
+    monkeypatch.setattr(scheduler, "run_cancelled", cancelled)
+    runner = ScriptedRunner([_say({"action": "report", "intent": None, "report": {}, "reason": None})])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            final_handoff_call_limit=1)
+    assert result["outcome"]["reason"] == "run cancelled before the next turn"
+    assert len(runner.prompts) == 1
+
+
 def test_exhausted_run_turn_budget_stops_before_provider_call(setup):
     _database, scheduler, run_id, _wave, started, _artifact = setup
     job = started[0]

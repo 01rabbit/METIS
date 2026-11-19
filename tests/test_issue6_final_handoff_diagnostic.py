@@ -3,11 +3,23 @@ from __future__ import annotations
 
 import copy
 import random
+import sys
 from itertools import combinations
+from pathlib import Path
 
 import pytest
 
 from metis.evaluation.issue6_final_handoff_diagnostic import ARMS, ORDER_SEED, SEED, STUDY, analyze
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from run_issue6_handoff_diagnostic import call_limits
+
+
+def test_runner_applies_symmetric_multi_call_caps() -> None:
+    assert call_limits("multi_combined", True) == (4, None)
+    assert call_limits("multi_final_handoff", True) == (None, 4)
+    assert call_limits("single", True) == (None, None)
+    assert call_limits("multi_combined", False) == (None, None)
 
 
 def dataset() -> dict:
@@ -34,13 +46,16 @@ def dataset() -> dict:
                 "actions": 1, "candidate_ready_jobs": 0, "decision_counts": {},
                 "report_rejections": 0, "report_rejection_categories": {}, "report_rejection_stages": {},
                 "terminal_reason_categories": {}, "model_turn_budget_denials": 0, "peer_reserve_denials": 0,
+                "per_specialist_call_ceiling_failures": 0,
+                "candidate_ready_per_specialist_call_ceiling_failures": 0,
             }
             records.append(row)
             cached[arm] = {key: row[key] for key in (
                 "oracle_verified", "elapsed_seconds", "calls_observed", "calls_reserved", "usage", "actions",
                 "synthesis_complete", "job_states", "candidate_ready_jobs", "decision_counts", "report_rejections",
                 "report_rejection_categories", "report_rejection_stages", "terminal_reason_categories",
-                "model_turn_budget_denials", "peer_reserve_denials")}
+                "model_turn_budget_denials", "peer_reserve_denials",
+                "per_specialist_call_ceiling_failures", "candidate_ready_per_specialist_call_ceiling_failures")}
         comparisons.append({"case": case, "task_id": f"task-{index:02d}", "arms": cached})
     return {"study": STUDY, "seed": SEED, "order_seed": ORDER_SEED, "arms": list(ARMS),
             "repetitions_per_task": 1, "distinct_tasks": 30, "encoding_pairs": families,
@@ -58,7 +73,25 @@ def test_paired_primary_gate_and_missing_tokens() -> None:
     assert result["contrasts"]["mechanism_final_minus_current_multi"]["difference"] == 1.0
     assert result["arms"]["single"]["mean_input_tokens"] == "unknown"
     assert result["arms"]["multi_final_handoff"]["mean_output_tokens"] == 3.0
+    assert result["arms"]["multi_final_handoff"]["per_specialist_call_ceiling_failures"] == 0
     assert analyze(dataset()) == result
+
+
+def test_reports_candidate_ready_per_specialist_ceiling() -> None:
+    data = dataset()
+    row = next(row for row in data["records"] if row["case"] == "task-00-rep-0"
+               and row["arm"] == "multi_combined")
+    row.update(calls_observed=4, calls_reserved=4, candidate_ready_jobs=1,
+               per_specialist_call_ceiling_failures=1,
+               candidate_ready_per_specialist_call_ceiling_failures=1)
+    cached = data["comparisons"][0]["arms"]["multi_combined"]
+    cached.update({key: row[key] for key in ("calls_observed", "calls_reserved", "candidate_ready_jobs",
+                                             "per_specialist_call_ceiling_failures",
+                                             "candidate_ready_per_specialist_call_ceiling_failures")})
+    result = analyze(data)
+    assert result["arms"]["multi_combined"]["per_specialist_call_ceiling_failures"] == 1
+    assert result["arms"]["multi_combined"]["candidate_ready_per_specialist_call_ceiling_failures"] == 1
+    assert result["arms"]["multi_combined"]["candidate_ready_call_ceiling_failures"] == 0
 
 
 @pytest.mark.parametrize("mutation", [
@@ -66,6 +99,8 @@ def test_paired_primary_gate_and_missing_tokens() -> None:
     lambda data: data["comparisons"][0]["arms"]["single"].update({"calls_reserved": 9}),
     lambda data: data["trial_order"]["task-00-rep-0"].pop(),
     lambda data: data["encoding_pairs"].pop("task-00"),
+    lambda data: data["comparisons"][0]["arms"]["multi_final_handoff"].update(
+        {"per_specialist_call_ceiling_failures": 1}),
 ])
 def test_rejects_inconsistent_study(mutation) -> None:
     data = dataset()

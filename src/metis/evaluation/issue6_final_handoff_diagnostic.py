@@ -23,6 +23,8 @@ CACHED_FIELDS = ("oracle_verified", "elapsed_seconds", "calls_observed", "calls_
                  "actions", "synthesis_complete", "job_states", "candidate_ready_jobs", "decision_counts",
                  "report_rejections", "report_rejection_categories", "report_rejection_stages",
                  "terminal_reason_categories", "model_turn_budget_denials", "peer_reserve_denials")
+CAPPED_FIELDS = ("per_specialist_call_ceiling_failures",
+                 "candidate_ready_per_specialist_call_ceiling_failures")
 
 
 def _interval(deltas: list[int]) -> list[float]:
@@ -82,8 +84,16 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             if record["task_id"] != task_id or record.get("model") != data.get("model") or record.get("cli") != data.get("cli"):
                 raise ValueError("record identity disagrees with study")
             cached = comparison["arms"][arm]
-            if any(cached.get(field) != record.get(field) for field in CACHED_FIELDS):
+            if any(field not in record or field not in cached or cached[field] != record[field]
+                   for field in (*CACHED_FIELDS, *CAPPED_FIELDS)):
                 raise ValueError("comparison metric disagrees with retained record")
+            capped = record["per_specialist_call_ceiling_failures"]
+            candidate_capped = record["candidate_ready_per_specialist_call_ceiling_failures"]
+            if (not isinstance(capped, int) or not isinstance(candidate_capped, int)
+                    or capped < 0 or candidate_capped < 0 or candidate_capped > capped
+                    or capped > (0 if arm == "single" else 2)
+                    or candidate_capped > record["candidate_ready_jobs"]):
+                raise ValueError("invalid per-specialist ceiling metrics")
             jobs = record["job_states"]
             complete = (record["synthesis_complete"] is True and len(jobs) == (1 if arm == "single" else 2)
                         and all(state == "completed" for state in jobs))
@@ -109,6 +119,10 @@ def analyze(data: dict[str, Any]) -> dict[str, Any]:
             "candidate_ready_jobs_at_termination": sum(row["candidate_ready_jobs"] for row in selected),
             "candidate_ready_call_ceiling_failures": sum(row["candidate_ready_jobs"] > 0
                 and not completion[row["case"]][arm] and row["calls_reserved"] >= 8 for row in selected),
+            "per_specialist_call_ceiling_failures": sum(
+                row["per_specialist_call_ceiling_failures"] for row in selected),
+            "candidate_ready_per_specialist_call_ceiling_failures": sum(
+                row["candidate_ready_per_specialist_call_ceiling_failures"] for row in selected),
             "report_rejections": sum(row["report_rejections"] for row in selected),
             "model_turn_budget_denials": sum(row["model_turn_budget_denials"] for row in selected),
             "decision_counts": dict(sum((Counter(row["decision_counts"]) for row in selected), Counter())),
