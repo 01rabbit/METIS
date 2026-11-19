@@ -75,14 +75,19 @@ def verify(
     """Verify the issuer and protocol binding without granting run or scoring authority."""
     if not 0 < len(manifest) <= MAX_ATTESTATION_BYTES or len(signature) != 64:
         raise ValueError("control attestation input outside bounds")
-    protocol = Protocol.model_validate(protocol.model_dump())
+    try:
+        protocol = Protocol.model_validate(protocol.model_dump())
+        protocol_sha256 = digest(protocol)
+    except (OSError, ValueError, RuntimeError):
+        # Protocol validation resolves a caller-controlled filesystem path.
+        raise ValueError("invalid control attestation protocol") from None
     try:
         document = json.loads(manifest.decode("ascii"), object_pairs_hook=_unique_keys)
         attestation = ControlAttestation.model_validate(document)
     except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, RecursionError):
         # Parser and schema exceptions can contain caller-controlled material.
         raise ValueError("invalid control attestation document") from None
-    if attestation.protocol_sha256 != digest(protocol):
+    if attestation.protocol_sha256 != protocol_sha256:
         raise ValueError("control attestation protocol mismatch")
     expected = {
         _id_digest(task.task_id): (
@@ -131,7 +136,7 @@ def main() -> int:
             protocol, _read(args.manifest, MAX_ATTESTATION_BYTES), _read(args.signature, 64),
             trusted_reviewer_key=Ed25519PublicKey.from_public_bytes(_read(args.reviewer_key, 32)),
         )
-    except (OSError, ValueError, RecursionError):
+    except (OSError, ValueError, RuntimeError):
         print("held-out control attestation rejected", file=sys.stderr)
         return 1
     print(json.dumps({"protocol_sha256": attestation.protocol_sha256, "authenticated_task_rows": len(attestation.tasks)}))

@@ -211,3 +211,38 @@ def test_cli_prints_only_review_metadata_and_suppresses_candidate_input(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "held-out control attestation rejected\n"
+
+
+def test_symlink_loop_in_protocol_database_path_rejects_without_disclosure(
+    tmp_path, monkeypatch, capsys, protocol, document
+):
+    database = tmp_path.resolve() / "private-path-marker"
+    data = protocol.model_dump()
+    data["measurement"] = "real_model"
+    data["llama_backend"] = {
+        "binary_sha256": "c" * 64,
+        "model_sha256": "d" * 64,
+        "database_path": str(database),
+        "budget_key": "synthetic",
+        "token_limit": 20,
+        "max_output_tokens": 1,
+        "context_reservation": True,
+    }
+    real_protocol = Protocol.model_validate(data)
+    document["protocol_sha256"] = digest(real_protocol)
+    signature = _sign(document)
+    paths = [tmp_path / name for name in ("protocol", "manifest", "signature", "public")]
+    paths[0].write_text(real_protocol.model_dump_json())
+    paths[1].write_text(json.dumps(document))
+    paths[2].write_bytes(signature)
+    paths[3].write_bytes(_TEST_SIGNER.public_key().public_bytes_raw())
+    database.symlink_to(database.name)
+
+    monkeypatch.setattr(sys, "argv", ["attestation", *map(str, paths[:3]), "--reviewer-key", str(paths[3])])
+    assert review.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "held-out control attestation rejected\n"
+
+    with pytest.raises(ValueError, match="^invalid control attestation protocol$"):
+        _verify(real_protocol, document, signature)
