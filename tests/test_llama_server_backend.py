@@ -11,6 +11,7 @@ import pytest
 
 from metis.core.llama_server_backend import (
     LlamaBackendError,
+    LlamaBackendRefused,
     LlamaBackendStopped,
     LlamaServerBackend,
 )
@@ -65,6 +66,39 @@ def test_reservation_and_cap(backend_files):
     assert not Path(socket_path).exists()
     with sqlite3.connect(backend_files["database"]) as db:
         assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (7,)
+
+
+def test_admitted_completion_uses_claim_allowance_without_standalone_ledger(backend_files):
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files) as backend:
+        with pytest.raises(LlamaBackendError, match="cannot cover"):
+            backend.complete_admitted("one", n_predict=2, token_cap=4097, timeout_seconds=5)
+        assert backend.complete_admitted("one", n_predict=2, token_cap=4098,
+                                         timeout_seconds=5) == ("xx", 1, 2)
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='llama_token_budgets'").fetchone() is None
+
+
+def test_admitted_tokenization_deadline_remains_timeout(backend_files, monkeypatch):
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files) as backend:
+        def tokenization_timeout(route, *_args, **_kwargs):
+            assert route == "/tokenize"
+            raise LlamaBackendError("model call deadline exceeded")
+        monkeypatch.setattr(backend, "_request_before", tokenization_timeout)
+        with pytest.raises(LlamaBackendError, match="deadline"):
+            backend.complete_admitted("one", n_predict=2, token_cap=4098, timeout_seconds=5)
+
+
+def test_admitted_invalid_tokenization_response_is_precompletion_refusal(backend_files, monkeypatch):
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files) as backend:
+        def invalid_utf8(route, *_args, **_kwargs):
+            assert route == "/tokenize"
+            raise UnicodeDecodeError("utf8", b"\xff", 0, 1, "invalid response")
+        monkeypatch.setattr(backend, "_request_before", invalid_utf8)
+        with pytest.raises(LlamaBackendRefused, match="tokenization"):
+            backend.complete_admitted("one", n_predict=2, token_cap=4098, timeout_seconds=5)
 
 
 def test_pin_mismatch_refuses_launch(backend_files):

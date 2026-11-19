@@ -31,6 +31,10 @@ class LlamaBackendStopped(LlamaBackendError):
     """Caller cancelled the live server request."""
 
 
+class LlamaBackendRefused(LlamaBackendError):
+    """The bounded request was rejected before completion could be sent."""
+
+
 class _UnixConnection(http.client.HTTPConnection):
     def __init__(self, path: str, timeout: float):
         super().__init__("localhost", timeout=timeout)
@@ -152,14 +156,14 @@ class LlamaServerBackend:
         if remaining <= 0:
             self.close()
             raise LlamaBackendError("model call deadline exceeded")
-        result: list[dict[str, Any]] = []
-        errors: list[BaseException] = []
+        result: list[tuple[dict[str, Any], float]] = []
+        errors: list[tuple[BaseException, float]] = []
 
         def invoke() -> None:
             try:
-                result.append(self._request(route, payload, timeout=remaining))
+                result.append((self._request(route, payload, timeout=remaining), time.monotonic()))
             except (LlamaBackendError, OSError, TimeoutError, ValueError) as exc:
-                errors.append(exc)
+                errors.append((exc, time.monotonic()))
 
         worker = threading.Thread(target=invoke, name="metis-llama-request", daemon=True)
         worker.start()
@@ -173,11 +177,15 @@ class LlamaServerBackend:
         if worker.is_alive():
             self.close()
             raise LlamaBackendError("model call deadline exceeded")
+        if ((errors and errors[0][1] >= deadline)
+                or (result and result[0][1] >= deadline)):
+            self.close()
+            raise LlamaBackendError("model call deadline exceeded")
         if errors:
-            raise errors[0]
+            raise errors[0][0]
         if not result:
             raise LlamaBackendError("server request produced no result")
-        return result[0]
+        return result[0][0]
 
     def _reserve(self, amount: int) -> None:
         with sqlite3.connect(self.database, timeout=10, isolation_level=None) as db:
@@ -247,6 +255,60 @@ class LlamaServerBackend:
         if should_stop is not None and should_stop():
             self.close()
             raise LlamaBackendStopped("model call cancelled")
+        return result["content"], evaluated, predicted
+
+    def complete_admitted(self, prompt: str, *, n_predict: int, token_cap: int,
+                          timeout_seconds: float,
+                          should_stop: Callable[[], bool] | None = None) -> tuple[str, int, int]:
+        """Run a claim-funded request without the standalone budget ledger.
+
+        The caller has already consumed a durable study claim. The entire
+        conservative context plus sampled-output allowance must fit that claim
+        before completion is sent. No failure refunds the claim.
+        """
+        if not isinstance(prompt, str) or len(prompt.encode()) > 65_536:
+            raise LlamaBackendRefused("prompt exceeds input boundary")
+        if (not self.context_reservation or not 1 <= n_predict <= self.max_output_tokens
+                or not 0 < timeout_seconds <= 120):
+            raise LlamaBackendRefused("admitted call exceeds configured boundary")
+        required = FULL_CONTEXT_RESERVATION_TOKENS + n_predict
+        if required > token_cap:
+            raise LlamaBackendRefused("admission cannot cover conservative call reservation")
+        if should_stop is not None and should_stop():
+            self.close()
+            raise LlamaBackendStopped("model call cancelled")
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            tokenized = self._request_before("/tokenize", {"content": prompt, "add_special": True},
+                                             deadline=deadline, should_stop=should_stop)
+        except LlamaBackendStopped:
+            raise
+        except Exception as exc:
+            if isinstance(exc, LlamaBackendError) and "deadline" in str(exc):
+                raise
+            raise LlamaBackendRefused("prompt tokenization failed") from exc
+        tokens = tokenized.get("tokens")
+        if (not isinstance(tokens, list) or not tokens
+                or len(tokens) > FULL_CONTEXT_RESERVATION_TOKENS):
+            raise LlamaBackendRefused("prompt exceeds reserved context")
+        if should_stop is not None and should_stop():
+            self.close()
+            raise LlamaBackendStopped("model call cancelled")
+        try:
+            result = self._request_before("/completion", {"prompt": prompt, "n_predict": n_predict,
+                                         "temperature": 0, "cache_prompt": False},
+                                         deadline=deadline, should_stop=should_stop)
+        except BaseException:
+            self.close()
+            raise
+        evaluated, predicted = result.get("tokens_evaluated"), result.get("tokens_predicted")
+        settings = result.get("generation_settings")
+        if (not _integer(evaluated) or evaluated > FULL_CONTEXT_RESERVATION_TOKENS
+                or not _integer(predicted) or predicted > n_predict or not isinstance(settings, dict)
+                or settings.get("n_predict") != n_predict or result.get("model") != str(self.model)
+                or not isinstance(result.get("content"), str)):
+            self.close()
+            raise LlamaBackendError("completion usage or settings mismatch")
         return result["content"], evaluated, predicted
 
     def close(self) -> None:

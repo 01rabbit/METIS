@@ -13,11 +13,12 @@ import pytest
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
-from metis.core.codex_specialist import CodexTurn, run_assignment
+from metis.core.codex_specialist import CodexTurn, _decision, final_handoff_schema, run_assignment
 from metis.core.contracts import RunStatus
 from metis.core.ctf_orchestration import AgentLedger
+from metis.core.llama_server_backend import LlamaBackendError, LlamaBackendRefused
 from metis.core.llama_specialist import LlamaSpecialist
-from metis.core.study_token_admission import StudyTokenAdmission
+from metis.core.study_token_admission import StudyTokenAdmission, TokenLaunchOutcome
 from metis.evaluation.heldout_protocol import Protocol, bind_run, digest, schedule
 
 PROMPT_PREFIX = "Use bounded METIS tools and return evidence only."
@@ -144,8 +145,8 @@ def test_run_assignment_claims_actual_reservation_and_hashes_exact_prompt(tmp_pa
 
     assert len(runner.calls) == 1
     prompt, claim = runner.calls[0]
-    assert prompt.startswith(PROMPT_PREFIX + "\n\n")
-    assert "FINAL SPECIALIST CALL:" in prompt[len(PROMPT_PREFIX) + 2:]
+    assert PROMPT_PREFIX + "\n\n" in prompt
+    assert "FINAL SPECIALIST CALL:" in prompt
     assert claim.receipt.attempt.prompt_sha256 == hashlib.sha256(prompt.encode()).hexdigest()
     assert claim.receipt.study.native_manifest_sha256 == "d" * 64
     assert claim.receipt.attempt.tokens == 4098  # Conservative reservation, not measured usage.
@@ -168,6 +169,189 @@ def test_run_assignment_claims_actual_reservation_and_hashes_exact_prompt(tmp_pa
             "SELECT detail FROM agent_job_log UNION ALL SELECT prompt_sha256 FROM study_token_attempts"
         ) for value in row)
         assert prompt not in stored_text
+
+
+def test_run_assignment_native_consumer_hashes_exact_bytes_sent_to_backend(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    requests = []
+    class FakeBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, prompt, **_kwargs):
+            requests.append(prompt)
+            return (json.dumps({"action": "fail", "intent": None, "report": None,
+                                "reason": "synthetic", "candidate": None}), 100, 1)
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                   study_token_admission=admission, final_handoff_call_limit=1)
+
+    assert len(requests) == 1
+    request_digest = hashlib.sha256(requests[0].encode()).hexdigest()
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT prompt_sha256 FROM study_token_attempts").fetchone() == (request_digest,)
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("completed",)
+
+
+def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    deep_json = '{"action":"report","report":{"body":' + "[" * 20_000 + "0" + "]" * 20_000 + "}}"
+    with pytest.raises(RecursionError):
+        _decision(deep_json)
+    class FakeBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, _prompt, **_kwargs):
+            return deep_json, 100, 1
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            study_token_admission=admission, final_handoff_call_limit=1)
+    assert result["job_state"] == "failed"
+    assert any("recursion" in json.dumps(item).lower() for item in result["intents"])
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT status,observed_work FROM study_token_outcomes").fetchone() == (
+            "completed", 101,
+        )
+
+
+@pytest.mark.parametrize(("failure", "expected"), [
+    ("deadline", "timeout"), ("usage", "server_error"), ("refused", "launch_failed"),
+])
+def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, monkeypatch, failure, expected):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    native_calls = []
+    native_requests = []
+    claim_box = []
+    original_claim = admission.claim_scheduler_native_launch
+    def capture_claim(claim, *, owner_id):
+        claim_box.append(claim)
+        return original_claim(claim, owner_id=owner_id)
+    monkeypatch.setattr(admission, "claim_scheduler_native_launch", capture_claim)
+    class FakeBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, prompt, **kwargs):
+            native_calls.append(1)
+            native_requests.append(prompt)
+            if failure == "refused":
+                raise LlamaBackendRefused("prompt exceeds reserved context")
+            reason = "model call deadline exceeded" if failure == "deadline" else "completion usage mismatch"
+            raise LlamaBackendError(reason)
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                   study_token_admission=admission, final_handoff_call_limit=1)
+    assert len(native_calls) == 1 and len(claim_box) == 1
+    claim = claim_box[0]
+    request = native_requests[0]
+    with sqlite3.connect(database) as db:
+        stored_hash = db.execute("SELECT prompt_sha256 FROM study_token_attempts").fetchone()[0]
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == (expected,)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (4098,)
+        assert db.execute("SELECT COUNT(*) FROM study_token_attempts").fetchone() == (1,)
+        assert db.execute("SELECT observed_work FROM study_token_outcomes").fetchone() == (
+            None,
+        )
+        if expected == "server_error":
+            assert db.execute("SELECT exit_status FROM study_token_outcomes").fetchone() == (None,)
+    assert hashlib.sha256(request.encode()).hexdigest() == stored_hash
+    # The exact committed bytes are rejected after a terminal outcome, before
+    # any second backend launch.
+    retry = runner.run_admitted(request, model=protocol.model_pin, timeout=5,
+        token_claim=claim, admission=admission, output_schema=final_handoff_schema())
+    assert retry.returncode == 1 and len(native_calls) == 1
+
+
+def test_concurrent_native_consumers_start_backend_once(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    body = PROMPT_PREFIX + "\n\nsynthetic task"
+    prompt = LlamaSpecialist.build_native_request(body)
+    claims = []
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id, prompt=prompt,
+        ))
+    scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"],
+                                 persist_receipt=persist)
+    claim = claims[0]
+    admission.consume_scheduler_launch_claim(claim)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    native_calls = []
+    class FakeBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, _prompt, **_kwargs):
+            native_calls.append(1)
+            return (json.dumps({"action": "fail", "intent": None, "report": None,
+                                "reason": "synthetic", "candidate": None}), 100, 1)
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    def invoke():
+        return runner.run_admitted(prompt, model=protocol.model_pin, timeout=5,
+                                   token_claim=claim, admission=admission)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        turns = [future.result(timeout=10) for future in
+                 [pool.submit(invoke), pool.submit(invoke)]]
+    assert sum(turn.returncode == 0 for turn in turns) == 1
+    assert len(native_calls) == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("completed",)
+
+
+def test_same_launch_owner_rechecks_scheduler_after_cancellation(tmp_path):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    prompt = LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task")
+    claims = []
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id, prompt=prompt,
+        ))
+    scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"],
+                                 persist_receipt=persist)
+    claim = claims[0]
+    admission.consume_scheduler_launch_claim(claim)
+    owner = "f" * 32
+    assert admission.claim_scheduler_native_launch(claim, owner_id=owner) == "claimed"
+    scheduler.session.cancel(run_id)
+    assert scheduler.jobs(run_id)[0]["state"] == "running"
+    assert admission.claim_scheduler_native_launch(claim, owner_id=owner) == "stale"
+    admission.record_outcome(claim, TokenLaunchOutcome(
+        status="cancelled", native_manifest_sha256=claim.receipt.study.native_manifest_sha256,
+    ))
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("cancelled",)
 
 
 def test_native_binding_cannot_fall_back_to_ordinary_runner(tmp_path):
@@ -225,7 +409,7 @@ def test_llama_specialist_cannot_bypass_admission_with_ordinary_run(tmp_path):
         native_manifest_sha256=pin.native_manifest_sha256,
     )
     assert not runner.hard_token_budget_enforced
-    assert not callable(getattr(runner, "run_admitted", None))
+    assert callable(getattr(runner, "run_admitted", None))
     with pytest.raises(ValueError, match="token-admitted runner"):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert scheduler.model_turn_budget(run_id)["reserved"] == 0
@@ -242,14 +426,38 @@ def test_runner_timeout_keeps_scheduler_and_study_charges(tmp_path):
     assert scheduler.model_turn_budget(run_id)["reserved"] == 1
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
+
+
+def test_consumed_claim_stopped_before_native_consumer_records_cancelled(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    capture = AdmittedFakeRunner(database)
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], capture,
+                   study_token_admission=admission, final_handoff_call_limit=1)
+    prompt, claim = capture.calls[0]
+    scheduler.cancel_run(run_id)
+    pin = protocol.llama_backend
+    native = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend",
+                        lambda **_kwargs: pytest.fail("stopped run must not launch"))
+    turn = native.run_admitted(prompt, model=protocol.model_pin, timeout=5,
+                               token_claim=claim, admission=admission,
+                               output_schema=final_handoff_schema())
+    assert turn.stopped and turn.returncode == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("cancelled",)
         assert db.execute("SELECT COUNT(*) FROM study_token_launches").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM study_token_outcomes").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM study_token_outcomes").fetchone()[0] == 1
 
 
 def test_scheduler_claim_is_single_use_under_replay_and_concurrent_claims(tmp_path):
     database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
     reservation = scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"])
-    prompt = PROMPT_PREFIX + "\n\nsynthetic task"
+    prompt = LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task")
     barrier = Barrier(2)
 
     def claim_once() -> str:
@@ -288,7 +496,7 @@ def test_launch_claim_consumption_is_atomic_and_single_use(tmp_path):
         claims.append(admission.reserve_and_claim_scheduler_turn(
             db, run_id=run_id, assignment_id=job["assignment_id"],
             attempt_id=job["attempt_id"], reservation_id=reservation_id,
-            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+            prompt=LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task"),
         ))
 
     scheduler.reserve_model_turn(
@@ -332,7 +540,7 @@ def test_scheduler_claim_refuses_consumption_after_attempt_stops(tmp_path):
         claims.append(admission.reserve_and_claim_scheduler_turn(
             db, run_id=run_id, assignment_id=job["assignment_id"],
             attempt_id=job["attempt_id"], reservation_id=reservation_id,
-            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+            prompt=LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task"),
         ))
 
     scheduler.reserve_model_turn(
@@ -358,7 +566,7 @@ def test_scheduler_claim_refuses_consumption_after_run_cancellation(tmp_path):
         claims.append(admission.reserve_and_claim_scheduler_turn(
             db, run_id=run_id, assignment_id=job["assignment_id"],
             attempt_id=job["attempt_id"], reservation_id=reservation_id,
-            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+            prompt=LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task"),
         ))
 
     scheduler.reserve_model_turn(
@@ -383,7 +591,7 @@ def test_scheduler_claim_refuses_consumption_after_run_terminalization(tmp_path,
         claims.append(admission.reserve_and_claim_scheduler_turn(
             db, run_id=run_id, assignment_id=job["assignment_id"],
             attempt_id=job["attempt_id"], reservation_id=reservation_id,
-            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+            prompt=LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task"),
         ))
 
     scheduler.reserve_model_turn(
@@ -410,7 +618,7 @@ def test_scheduler_reservation_refuses_terminal_run_without_charging(tmp_path, t
         claims.append(admission.reserve_and_claim_scheduler_turn(
             db, run_id=run_id, assignment_id=job["assignment_id"],
             attempt_id=job["attempt_id"], reservation_id=reservation_id,
-            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+            prompt=LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task"),
         ))
 
     with pytest.raises(ValueError, match="run is missing or not active"):
@@ -435,7 +643,7 @@ def test_scheduler_claim_rejects_slot_with_mismatched_study_id(tmp_path):
         claims.append(admission.reserve_and_claim_scheduler_turn(
             db, run_id=run_id, assignment_id=job["assignment_id"],
             attempt_id=job["attempt_id"], reservation_id=reservation_id,
-            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+            prompt=LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task"),
         ))
 
     scheduler.reserve_model_turn(
@@ -466,7 +674,7 @@ def test_scheduler_claim_rejects_slot_with_mismatched_study_id(tmp_path):
 def test_forged_scheduler_admission_rejected_inside_reservation_transaction(tmp_path, defect):
     database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
     admission = StudyTokenAdmission(database)
-    prompt = PROMPT_PREFIX + "\n\nsynthetic task"
+    prompt = LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task")
     claims = []
 
     def persist(db, reservation_id):
@@ -476,7 +684,8 @@ def test_forged_scheduler_admission_rejected_inside_reservation_transaction(tmp_
             assignment_id=("forged" if defect == "assignment" else job["assignment_id"]),
             attempt_id=("forged" if defect == "attempt" else job["attempt_id"]),
             reservation_id=(reservation_id + 1 if defect == "reservation" else reservation_id),
-            prompt=("forged prefix\n\n" if defect == "prompt" else prompt),
+            prompt=(LlamaSpecialist.build_native_request("forged prefix\n\nsynthetic task")
+                    if defect == "prompt" else prompt),
         ))
 
     with pytest.raises(ValueError):

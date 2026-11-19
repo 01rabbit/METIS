@@ -612,10 +612,11 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 raise ValueError("held-out llama backend requires a token-admitted runner")
         elif isinstance(runner, LlamaSpecialist):
             runner.assert_heldout_binding(heldout, scheduler.database, selected)
-    if (heldout is not None and heldout.get("prompt_text") is not None
-            and not getattr(runner, "hard_token_budget_enforced", False)):
-        raise ValueError("real-model held-out token cap is not enforceable by this runner")
     admitted_native = heldout is not None and heldout.get("llama_backend") is not None
+    if (heldout is not None and heldout.get("prompt_text") is not None
+            and not getattr(runner, "hard_token_budget_enforced", False)
+            and not (admitted_native and study_token_admission is not None)):
+        raise ValueError("real-model held-out token cap is not enforceable by this runner")
     if study_token_admission is not None:
         if not admitted_native or study_token_admission.database != scheduler.database.resolve():
             raise ValueError("held-out token admission must use this run's native study ledger")
@@ -666,6 +667,12 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 prompt = boundary + handoff + "\n\n" + prompt[len(boundary):]
             else:
                 prompt = handoff + "\n\n" + prompt
+        if admitted_native:
+            # Admission hashes this exact deterministic byte string; the
+            # native runner must send it unchanged to tokenize and completion.
+            from metis.core.llama_specialist import LlamaSpecialist
+            schema = (final_handoff_schema() if final_call else DECISION_SCHEMA)
+            prompt = LlamaSpecialist.build_native_request(prompt, schema)
         return prompt
 
     def invoke(reservation: dict[str, Any], timeout: float, prompt: str,
@@ -687,7 +694,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             study_token_admission.consume_scheduler_launch_claim(token_claim)
             turn = runner.run_admitted(  # type: ignore[attr-defined]
                 prompt, model=selected, timeout=timeout, should_stop=stopped,
-                images=list(attached.values()) or None, token_claim=token_claim, **kwargs,
+                images=list(attached.values()) or None, token_claim=token_claim,
+                admission=study_token_admission, **kwargs,
             )
         else:
             turn = runner.run(prompt, model=selected, timeout=timeout,
@@ -828,7 +836,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             break
         try:
             decision = _decision(turn.message)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             decision_counts["invalid"] = decision_counts.get("invalid", 0) + 1
             transcript.append({"error": f"invalid decision: {exc}"[:300]})
             continue
