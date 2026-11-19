@@ -15,7 +15,7 @@ ARCHIVE = "01-00-flag.zip"
 SHA256 = "ff663a29abc5f0ded2c3456bc731b1b21329eb95914286733c40364624e5d8f5"
 
 
-def verify(database: Path) -> dict[str, object]:
+def verify(database: Path, *, public_bundle: bool = False) -> dict[str, object]:
     audit = RunStore(database, read_only=True).audit_summary(RUN_ID)
     if not audit or not audit["chain_valid"] or audit["status"] != "solved":
         raise ValueError("run audit is absent, invalid, or unsolved")
@@ -64,7 +64,7 @@ def verify(database: Path) -> dict[str, object]:
 
     checkpoint_path = database.parent / "private-stay" / RUN_ID / "target-progress.json"
     if (checkpoint_path.is_symlink() or not checkpoint_path.is_file()
-            or checkpoint_path.stat().st_mode & 0o077):
+            or (not public_bundle and checkpoint_path.stat().st_mode & 0o077)):
         raise ValueError("private checkpoint unavailable")
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     if (checkpoint.get("run_id") != RUN_ID or checkpoint.get("archive_sha256") != SHA256
@@ -116,8 +116,11 @@ def verify(database: Path) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--public-bundle", action="store_true",
+                        help="accept the deliberately redacted, nonsecret checkpoint in Git")
     args = parser.parse_args()
-    print(json.dumps(verify(args.database.resolve(strict=True)), sort_keys=True))
+    print(json.dumps(verify(args.database.resolve(strict=True),
+                            public_bundle=args.public_bundle), sort_keys=True))
 
 
 if __name__ == "__main__":

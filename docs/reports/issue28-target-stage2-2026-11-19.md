@@ -85,3 +85,10 @@ The PR contains this verifier and the observed nonsecret result; the underlying
 local database and private checkpoint are not committed. This is a cross-check
 of METIS's recorded official response, not a cryptographically signed receipt
 from ksnctf.
+
+For reviewers without access to that local database, a restricted export is
+included at `docs/evidence/issue28-ksnctf39/`. It contains the original event
+chain and nonsecret verdict metadata plus a redacted checkpoint and the public
+encrypted archive. Run the same verifier with `--public-bundle` as described in
+the export README. The export does not turn the official response into a
+server-signed receipt; it makes the locally recorded evidence inspectable.
