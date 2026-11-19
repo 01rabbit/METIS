@@ -69,9 +69,11 @@ both recovery results. The classifier takes an explicit stable host label
 and checks that the run, worker, and operation IDs match the armed snapshot.
 It requires the next boot before the armed deadline, a matching execution
 event with no terminal event in the verified chain, no surviving worker, and
-two ordered recoveries that leave the run in `planning`. The first recovery
-must confirm teardown and the second must report `not_running`. The action
-balance must remain unchanged from the arm snapshot through both recoveries.
+two ordered recoveries that leave the run in `planning`. Both recovery
+observations must bind the post-reboot boot ID and original worker identity
+through verified audit continuity. The first recovery must confirm teardown
+and the second must report `not_running`. The action balance must remain
+positive and unchanged from the arm snapshot through both recoveries.
 
 The first observation above remains inconclusive for this gate because the
 armed worker expired. The second remains inconclusive for the same-worker

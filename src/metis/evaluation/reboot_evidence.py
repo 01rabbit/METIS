@@ -49,7 +49,9 @@ class PostBootObservation(_Record):
 
 class RecoveryObservation(_Record):
     captured_at: AwareDatetime
-    run_id: Identifier
+    boot_id: UUID
+    worker: WorkerIdentity
+    audit_continuity_verified: bool
     run_state: Literal["planning", "executing", "other"]
     worker_teardown: Literal["confirmed", "not_running", "unconfirmed"]
     remaining_actions: Actions
@@ -71,7 +73,8 @@ class RebootVerdict(_Record):
         "invalid_observation_order", "arm_expired", "worker_missing", "worker_changed",
         "audit_unverified", "terminal_before_recovery", "container_observation_missing",
         "container_survived", "recovery_missing", "run_mismatch", "inconsistent_worker_state",
-        "budget_changed", "recovery_state_unexpected",
+        "budget_changed", "recovery_state_unexpected", "planning_budget_exhausted",
+        "recovery_boot_mismatch", "recovery_worker_mismatch", "recovery_continuity_unverified",
     ]
 
 
@@ -117,10 +120,16 @@ def classify_reboot_evidence(evidence: RebootEvidence) -> RebootVerdict:
         return RebootVerdict(status="inconclusive", reason="recovery_missing")
     if not post.captured_at < recovery.captured_at < repeated.captured_at:
         return RebootVerdict(status="failed", reason="invalid_observation_order")
-    if recovery.run_id != post.run_id or repeated.run_id != post.run_id:
-        return RebootVerdict(status="failed", reason="run_mismatch")
+    if recovery.boot_id != next_boot.boot_id or repeated.boot_id != next_boot.boot_id:
+        return RebootVerdict(status="failed", reason="recovery_boot_mismatch")
+    if recovery.worker != armed.worker or repeated.worker != armed.worker:
+        return RebootVerdict(status="failed", reason="recovery_worker_mismatch")
+    if not recovery.audit_continuity_verified or not repeated.audit_continuity_verified:
+        return RebootVerdict(status="inconclusive", reason="recovery_continuity_unverified")
     if recovery.remaining_actions != post.remaining_actions or repeated.remaining_actions != post.remaining_actions:
         return RebootVerdict(status="failed", reason="budget_changed")
+    if post.remaining_actions == 0:
+        return RebootVerdict(status="failed", reason="planning_budget_exhausted")
     if (recovery.run_state, recovery.worker_teardown, repeated.run_state, repeated.worker_teardown) != (
         "planning", "confirmed", "planning", "not_running",
     ):

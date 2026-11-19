@@ -32,9 +32,11 @@ def complete() -> RebootEvidence:
             remaining_actions=28, surviving_worker=False, audit_chain_verified=True,
             armed_execution_recorded=True, armed_operation_terminal=False,
         ),
-        recovery=RecoveryObservation(captured_at=_time(50), run_id=worker.run_id, run_state="planning",
+        recovery=RecoveryObservation(captured_at=_time(50), boot_id=UUID(int=2), worker=worker,
+                                     audit_continuity_verified=True, run_state="planning",
                                      worker_teardown="confirmed", remaining_actions=28),
-        repeated_recovery=RecoveryObservation(captured_at=_time(60), run_id=worker.run_id, run_state="planning",
+        repeated_recovery=RecoveryObservation(captured_at=_time(60), boot_id=UUID(int=2), worker=worker,
+                                              audit_continuity_verified=True, run_state="planning",
                                               worker_teardown="not_running", remaining_actions=28),
     )
 
@@ -93,7 +95,10 @@ def test_unchanged_boot_does_not_pass(complete):
     ("post_boot", {"surviving_worker": None}, "inconclusive", "container_observation_missing"),
     ("post_boot", {"surviving_worker": True}, "failed", "container_survived"),
     ("post_boot", {"remaining_actions": 29}, "failed", "budget_changed"),
-    ("recovery", {"run_id": "other-run"}, "failed", "run_mismatch"),
+    ("recovery", {"boot_id": UUID(int=3)}, "failed", "recovery_boot_mismatch"),
+    ("repeated_recovery", {"boot_id": UUID(int=3)}, "failed", "recovery_boot_mismatch"),
+    ("recovery", {"audit_continuity_verified": False}, "inconclusive", "recovery_continuity_unverified"),
+    ("repeated_recovery", {"audit_continuity_verified": False}, "inconclusive", "recovery_continuity_unverified"),
     ("recovery", {"worker_teardown": "not_running"}, "failed", "recovery_state_unexpected"),
     ("repeated_recovery", {"captured_at": _time(40)}, "failed", "invalid_observation_order"),
     ("repeated_recovery", {"worker_teardown": "confirmed"}, "failed", "recovery_state_unexpected"),
@@ -117,3 +122,24 @@ def test_schema_rejects_forged_model_value_and_naive_timestamp(complete):
     naive = complete.armed.model_copy(update={"captured_at": datetime(2026, 11, 19)})
     with pytest.raises(ValidationError):
         classify_reboot_evidence(complete.model_copy(update={"armed": naive}))
+
+
+@pytest.mark.parametrize("section", ["recovery", "repeated_recovery"])
+@pytest.mark.parametrize("changed", [
+    {"run_id": "another-run"}, {"worker_id": "successor"}, {"operation_id": "operation-two"},
+])
+def test_recovery_observation_cannot_be_spliced_from_other_worker_or_operation(complete, section, changed):
+    observation = getattr(complete, section)
+    worker = complete.armed.worker.model_copy(update=changed)
+    replacement = observation.model_copy(update={"worker": worker})
+    verdict = classify_reboot_evidence(complete.model_copy(update={section: replacement}))
+    assert (verdict.status, verdict.reason) == ("failed", "recovery_worker_mismatch")
+
+
+def test_zero_remaining_actions_is_incompatible_with_planning_recovery(complete):
+    sections = ("armed", "post_boot", "recovery", "repeated_recovery")
+    exhausted = complete.model_copy(update={
+        name: getattr(complete, name).model_copy(update={"remaining_actions": 0}) for name in sections
+    })
+    verdict = classify_reboot_evidence(exhausted)
+    assert (verdict.status, verdict.reason) == ("failed", "planning_budget_exhausted")
