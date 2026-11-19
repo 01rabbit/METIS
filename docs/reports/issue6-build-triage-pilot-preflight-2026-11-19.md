@@ -76,8 +76,11 @@ python -m metis.evaluation.issue6_build_preflight --executable /path/to/codex
 
 It verifies native SHA-256
 `739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002`,
-runs the native version command inside Seatbelt, inspects the actual disabled
-feature arguments, and exercises Seatbelt deny controls against private paths,
+while staging a private copy of the native bytes before any supplied
+executable can run. Both version and feature probes use that verified copy
+inside Seatbelt, with a private Codex home and a proxy that allows no hosts.
+The preflight inspects the disabled feature arguments and exercises Seatbelt
+deny controls against private paths,
 process creation and network egress. The proxy canary refuses the other
 host locally. It does not call a model or exercise live model-triggered tool
 routing. A future authorized runtime canary must record any tool exposure

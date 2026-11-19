@@ -1,10 +1,13 @@
+import hashlib
 import json
 import sqlite3
+import subprocess
 from dataclasses import asdict
 
 import pytest
 
 from metis.core.codex_specialist import CodexTurn
+from metis.evaluation import issue6_build_preflight as preflight
 from metis.evaluation.issue6_build_artifact import canonical_artifact
 from metis.evaluation.issue6_build_oracle import BuildFixture, Cause, Job, Observation
 from metis.evaluation.issue6_build_pilot import (
@@ -169,3 +172,51 @@ def test_receipt_reconciliation_refuses_equal_count_wrong_reservation(tmp_path):
         db.execute("UPDATE issue6_build_pilot_receipts SET reservation = 77 WHERE phase = 1")
     with pytest.raises(RuntimeError, match="does not reconcile"):
         _reconcile(database, row.run_id, list(row.phases), row.actions)
+
+
+def test_unpinned_executable_is_never_invoked(tmp_path, monkeypatch):
+    sentinel = tmp_path / "executed"
+    executable = tmp_path / "codex"
+    executable.write_text(f'#!/bin/sh\ntouch "{sentinel}"\n')
+    executable.chmod(0o700)
+    monkeypatch.setattr(preflight, "NATIVE_SIZE", executable.stat().st_size)
+
+    def must_not_run(*args, **kwargs):
+        pytest.fail("an executable was invoked before pin validation")
+
+    monkeypatch.setattr(preflight.subprocess, "run", must_not_run)
+    with pytest.raises(RuntimeError, match="pinned native Codex binary"):
+        preflight.offline_preflight(executable)
+    assert not sentinel.exists()
+
+
+def test_preflight_probes_same_verified_copy_under_minimal_seatbelt(tmp_path, monkeypatch):
+    original = tmp_path / "native"
+    content = b"pinned test bytes"
+    original.write_bytes(content)
+    monkeypatch.setattr(preflight, "NATIVE_SIZE", len(content))
+    monkeypatch.setattr(preflight, "NATIVE_SHA256", hashlib.sha256(content).hexdigest())
+    monkeypatch.setattr(preflight, "isolation_backend", lambda: "seatbelt")
+    monkeypatch.setattr(preflight, "self_test", lambda *args, **kwargs: {"passed": True})
+    probes = []
+
+    def wrap(backend, *, turn_dir, argv, env, proxy, readable, protected, workdir, executable):
+        assert backend == "seatbelt" and not proxy.hosts
+        assert executable.read_bytes() == content and executable != original
+        assert readable == [executable] and workdir == turn_dir
+        assert argv[0] == str(executable)
+        assert env == {"PATH": "/usr/bin:/bin", "HOME": str(turn_dir), "CODEX_HOME": str(turn_dir), "LANG": "C"}
+        probes.append((executable, argv[1:]))
+        return ["sandbox", *argv], env
+
+    def run(command, **kwargs):
+        assert command[0] == "sandbox"
+        output = b"codex-cli 0.169.0" if command[-1] == "--version" else b"shell_tool stable true"
+        return subprocess.CompletedProcess(command, 0, output)
+
+    monkeypatch.setattr(preflight, "wrap", wrap)
+    monkeypatch.setattr(preflight.subprocess, "run", run)
+    result = preflight.offline_preflight(original)
+    assert len(probes) == 2 and probes[0][0] == probes[1][0]
+    assert [args for _, args in probes] == [["--version"], ["features", "list"]]
+    assert result["network_model_calls"] == 0

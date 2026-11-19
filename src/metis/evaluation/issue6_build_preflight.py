@@ -3,6 +3,8 @@
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -19,24 +21,18 @@ from metis.core.codex_isolation import (
 from metis.core.codex_specialist import DISABLED_FEATURES, CodexCLI, CodexTurn
 
 VERSION = "0.169.0"
+NATIVE_SIZE = 280_704_736
 NATIVE_SHA256 = "739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002"
 
 
 class PilotCodex(CodexCLI):
-    """Frozen runtime settings for a later explicitly authorized pilot."""
+    """Render offline-only flags without probing an executable in the constructor."""
+
+    def __init__(self, executable: Path, features: set[str]):
+        super().__init__(str(executable), features=features, isolation="required")
 
     def check(self) -> str:
-        binary, _package = native_codex(self.executable)
-        with open(binary, "rb") as stream:
-            binary_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-        if binary_hash != NATIVE_SHA256 or isolation_backend() != "seatbelt":
-            raise RuntimeError("Issue #6 requires the pinned native Codex and Seatbelt")
-        version = super().check()
-        if version != VERSION or self.isolation != "required" or self.allow_untested:
-            raise RuntimeError("Issue #6 Codex runtime configuration mismatch")
-        if self.protected is not None or self.cyber_program is not None:
-            raise RuntimeError("Issue #6 requires the default protected roots and standard runtime access")
-        return version
+        raise RuntimeError("use the sandboxed offline preflight to check the pilot runtime")
 
     def run(self, prompt: str, *, model: str | None, timeout: float,
             should_stop: Callable[[], bool] | None = None,
@@ -49,20 +45,66 @@ class PilotCodex(CodexCLI):
         return [*command[:-1], "-c", 'model_reasoning_effort="low"', command[-1]]
 
 
+def _stage_pinned_native(executable: Path, destination: Path) -> None:
+    resolved, _ = native_codex(str(executable))
+    descriptor = os.open(Path(resolved).resolve(strict=True), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    checksum = hashlib.sha256()
+    with os.fdopen(descriptor, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != NATIVE_SIZE:
+            raise RuntimeError("Issue #6 requires the pinned native Codex binary")
+        with destination.open("xb") as staged:
+            remaining = NATIVE_SIZE
+            while remaining:
+                block = source.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise RuntimeError("native Codex changed while being staged")
+                staged.write(block)
+                checksum.update(block)
+                remaining -= len(block)
+            if source.read(1) or checksum.hexdigest() != NATIVE_SHA256:
+                raise RuntimeError("Issue #6 requires the pinned native Codex binary")
+    destination.chmod(0o500)
+
+
+def _probe(binary: Path, turn: Path, proxy: AllowlistProxy, protected: list[Path], *args: str) -> str:
+    command, env = wrap(
+        "seatbelt", turn_dir=turn, argv=[str(binary), *args],
+        env={"PATH": "/usr/bin:/bin", "HOME": str(turn), "CODEX_HOME": str(turn), "LANG": "C"},
+        proxy=proxy, readable=[binary], protected=protected, workdir=turn, executable=binary,
+    )
+    result = subprocess.run(command, cwd=turn, env=env, stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=15, check=False)
+    if result.returncode:
+        raise RuntimeError("pinned native Codex probe failed under Seatbelt")
+    return result.stdout.decode()
+
+
 def offline_preflight(executable: Path) -> dict[str, Any]:
-    cli = PilotCodex(str(executable))
-    version = cli.check()
-    with tempfile.TemporaryDirectory(prefix="metis-build-preflight-") as temporary, AllowlistProxy() as proxy:
+    with tempfile.TemporaryDirectory(prefix="metis-build-preflight-") as temporary:
         root = Path(temporary).resolve()
+        binary = root / "pinned-codex"
+        _stage_pinned_native(executable, binary)
+        if isolation_backend() != "seatbelt":
+            raise RuntimeError("Issue #6 requires Seatbelt")
+        turn = root / "turn"
+        turn.mkdir(mode=0o700)
+        protected = [path for path in (Path.home(), Path("/private/tmp"), Path("/private/var/tmp"),
+                                      Path("/Volumes"), root.parent, root) if path.exists()]
+        with AllowlistProxy(hosts=()) as proxy:
+            version = _probe(binary, turn, proxy, protected, "--version").strip()
+            if version != f"codex-cli {VERSION}":
+                raise RuntimeError("Issue #6 native Codex version mismatch")
+            feature_text = _probe(binary, turn, proxy, protected, "features", "list")
+        features = {line.split()[0] for line in feature_text.splitlines() if line.strip()}
+        cli = PilotCodex(binary, features)
         private = root / "controller"
         private.mkdir(mode=0o700)
         sentinel = private / "private-canary"
         sentinel.write_text("private")
-        guards = self_test(sentinel, protected=cli.protected_roots(root))
+        guards = self_test(sentinel, protected=protected)
         if not guards.get("passed"):
             raise RuntimeError("offline Seatbelt controls failed")
-        turn = root / "turn"
-        turn.mkdir(mode=0o700)
         schema, output = turn / "schema.json", turn / "output.json"
         flags = cli.argv(turn, schema, output, "gpt-6.1-sol")
         disabled = {flags[i + 1] for i, flag in enumerate(flags[:-1]) if flag == "--disable"}
@@ -72,17 +114,7 @@ def offline_preflight(executable: Path) -> dict[str, Any]:
                      "agents.enabled=false", 'model_reasoning_effort="low"'):
             if flag not in flags:
                 raise RuntimeError("Issue #6 Codex argument guard missing")
-        binary, package = native_codex(str(executable))
-        command, env = wrap(
-            "seatbelt", turn_dir=turn, argv=[binary, "--version"], env={"PATH": "/usr/bin:/bin"},
-            proxy=proxy, readable=[package], protected=cli.protected_roots(root),
-            workdir=turn, executable=Path(binary),
-        )
-        probe = subprocess.run(command, cwd=turn, env=env, stdin=subprocess.DEVNULL,
-                               capture_output=True, timeout=15, check=False)
-        if probe.returncode or probe.stdout.decode().strip() != f"codex-cli {version}":
-            raise RuntimeError("pinned binary failed under Seatbelt")
-    return {"version": version, "native_sha256": NATIVE_SHA256, "backend": "seatbelt",
+    return {"version": VERSION, "native_sha256": NATIVE_SHA256, "backend": "seatbelt",
             "shell_tool_disabled": True, "disabled_features": sorted(disabled),
             "seatbelt_guards": guards, "network_model_calls": 0}
 
