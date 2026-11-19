@@ -512,7 +512,7 @@ class CodexSession:
         return relative
 
     def purge_derived(self, run_id: str, *, apply: bool = False) -> dict[str, object]:
-        """Dry-run or remove only generated `.metis-derived` files for an inactive run.
+        """Dry-run or remove only generated `.metis-derived` files for a terminal run.
 
         Files are unlinked before their manifest entries are removed. If the process
         stops between those steps, a retry treats already-missing registered files
@@ -522,9 +522,12 @@ class CodexSession:
             events = self.store.read(run_id)
             if not events:
                 raise ValueError("run not found")
-            if events[-1].status in {RunStatus.EXECUTING, RunStatus.OBSERVING,
-                                     RunStatus.REPLANNING, RunStatus.VERIFYING}:
-                raise ValueError("run must be inactive before derived artifact purge")
+            # Age alone does not make a run disposable. PLANNING can accept the
+            # next action; EXHAUSTED can be extended by the operator. Check the
+            # allowlist while holding both run locks, before any unlink.
+            if events[-1].status not in {RunStatus.SOLVED, RunStatus.CANCELLED,
+                                        RunStatus.ERROR, RunStatus.POLICY_DENIED}:
+                raise ValueError("run must be terminal before derived artifact purge")
 
             with sqlite3.connect(self.database) as db:
                 tables = {row[0] for row in db.execute(

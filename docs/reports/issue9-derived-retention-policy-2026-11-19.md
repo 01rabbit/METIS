@@ -14,22 +14,31 @@ eligible runs, and an apply with any blocked run exits nonzero. The operation
 is retryable: already removed derived files are reconciled with the manifest.
 Original inputs and user-added artifacts are excluded.
 
+Review follow-up: terminal eligibility is now an explicit allowlist of
+`solved`, `cancelled`, `error`, and `policy_denied`, checked under both run locks
+before unlinking. `planning` remains actionable, and `exhausted` can be
+resumed with an operator budget extension; neither is eligible even when its
+intake timestamp is old. The CLI regression covers old planning and exhausted
+runs, nonzero exit on blocked apply, preservation of their generated files,
+and an actual extension of the exhausted run. A separate completed old run is
+purged in the same test suite while a blocked run remains intact.
+
 Local validation (Python 3.12 virtual environment, synthetic local fixtures):
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -q tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
-37 passed
-/Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src/metis/core/derived_retention.py src/metis/cli.py tests/test_derived_retention.py
+38 passed
+/Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
 All checks passed!
-/Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis/core/derived_retention.py src/metis/cli.py
-Success: no issues found in 2 source files
+/Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py
+Success: no issues found in 3 source files
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python scripts/check_repo.py
 {"status": "passed", "findings": 0}
 git diff --check
 passed
 ```
 
-These tests covered preview, age selection, explicit apply, active-run
+These tests covered preview, age selection, explicit apply, resumable-run
 refusal, original-input preservation, idempotent retry, invalid ages,
 oversized-selection rejection, and the existing purge regressions. This does not securely erase filesystem snapshots,
 SQLite WAL pages or backups, enforce credential retention, or complete Issue

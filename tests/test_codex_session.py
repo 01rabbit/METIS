@@ -117,6 +117,7 @@ def test_purge_derived_keeps_original_and_user_added_artifacts(tmp_path):
     run_id = session.intake(title="retention", description="local fixture", paths=[original])["run_id"]
     derived = session.store_artifact(run_id, b"generated intermediate")
     added_relative = session.add_file(run_id, added)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
     root = session.artifact_root(run_id)
     assert root is not None
     derived_file = root / derived
@@ -153,12 +154,13 @@ def test_purge_derived_refuses_active_runs_and_registered_workers(tmp_path):
     active_root = session.artifact_root(active_run)
     assert active_root is not None
     session._emit(active_run, RunStatus.EXECUTING)
-    with pytest.raises(ValueError, match="inactive"):
+    with pytest.raises(ValueError, match="terminal"):
         session.purge_derived(active_run, apply=True)
     assert (active_root / active_artifact).exists()
 
     worker_run = session.intake(title="worker", description="fixture", paths=[source])["run_id"]
     worker_artifact = session.store_artifact(worker_run, b"keep")
+    session._emit(worker_run, RunStatus.CANCELLED)
     worker_root = session.artifact_root(worker_run)
     assert worker_root is not None
     with sqlite3.connect(database) as db:
@@ -186,6 +188,7 @@ def test_purge_derived_rejects_symlink_and_preserves_external_target(tmp_path):
     session = CodexSession(database)
     run_id = session.intake(title="symlink", description="fixture", paths=[source])["run_id"]
     derived = session.store_artifact(run_id, b"generated")
+    session._emit(run_id, RunStatus.CANCELLED)
     root = session.artifact_root(run_id)
     assert root is not None
     link = root / derived
@@ -205,6 +208,7 @@ def test_purge_derived_recovers_after_file_unlink_before_manifest_update(tmp_pat
     session = CodexSession(database)
     run_id = session.intake(title="retry", description="fixture", paths=[source])["run_id"]
     derived = session.store_artifact(run_id, b"generated")
+    session._emit(run_id, RunStatus.CANCELLED)
     root = session.artifact_root(run_id)
     assert root is not None
     (root / derived).unlink()  # Simulate a crash after unlink and before manifest commit.
@@ -223,6 +227,7 @@ def test_purge_derived_rejects_unregistered_directory_entries(tmp_path):
     session = CodexSession(database)
     run_id = session.intake(title="unexpected", description="fixture", paths=[source])["run_id"]
     derived = session.store_artifact(run_id, b"registered")
+    session._emit(run_id, RunStatus.CANCELLED)
     root = session.artifact_root(run_id)
     assert root is not None
     registered = root / derived

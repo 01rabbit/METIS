@@ -6,6 +6,7 @@ from pathlib import Path
 
 from metis.core import ctf_workflow
 from metis.core.codex_session import CodexSession
+from metis.core.contracts import RunStatus
 from metis.core.ctf_workflow import WorkflowCapabilityApprovals
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +94,7 @@ def test_cli_purge_derived_defaults_to_preview_and_apply_is_explicit(tmp_path):
     session = CodexSession(database)
     run_id = session.intake(title="retention", description="local fixture", paths=[source])["run_id"]
     derived = session.store_artifact(run_id, b"generated")
+    session._emit(run_id, RunStatus.CANCELLED)
     root = session.artifact_root(run_id)
     assert root is not None
     derived_file = root / derived

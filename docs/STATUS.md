@@ -746,6 +746,8 @@ official #39 verdict remain open.
 
 `metis codex retention-derived --older-than-days N` now previews a bounded age
 selection and requires `--apply` for deletion. It reuses the locked per-run
-generated-artifact purge and reports blocked active runs. This is a manual
+generated-artifact purge and reports blocked resumable runs. Only terminal
+`solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
+`planning` and extendable `exhausted` runs are preserved. This is a manual
 local retention control, not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
