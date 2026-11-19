@@ -858,3 +858,14 @@ subtotals and withholds the complete total when job usage is missing. This is
 monitoring, not an enforced token or cost budget. See
 `docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
 remain open pending their separate evidence gates.
+
+## Issue #9 local web credential retirement (2026-11-19)
+
+Credential replacement and `web forget`/`forget-all --apply` enable SQLite
+`secure_delete` on their write connections before changing saved credentials
+and run cookies. Forget responses identify provider revocation as a separate
+operator action and disclose possible WAL, snapshot, and backup remnants.
+The local regression checks recreate the workflow object over the same
+database after forgetting; they do not exercise a fresh process or reboot.
+This remains best-effort local retirement, not physical erasure, automatic
+provider revocation, a retention policy, or completion of Issue #9.
