@@ -33,6 +33,14 @@ Issue #8 remains open. A further trial needs a new protocol, token enforcement,
 and a budget compatible with the delegated specialist workflow. Those conditions
 must be fixed before another model attempt; these results must remain separate.
 
+The historical runner now verifies the saved schedule, unique run bindings,
+held-out session records, audit chains, terminal job states, model-call
+reservations, candidate state, stop reasons, frozen memory, and arm dispatch
+before accepting a saved run. This protocol is closed to new model calls
+because its declared token cap was not enforced. A new comparison requires a
+new preregistered protocol with an effective token control; editing the old
+progress file cannot reopen this study.
+
 The private, answer-free controller records are at
 `/private/tmp/metis-issue8-study-run/`. The public report omits candidate
 answers, oracle digests, and private ledger content.

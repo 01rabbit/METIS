@@ -21,14 +21,18 @@ from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexCLI
 from metis.core.ctf_knowledge import KnowledgeBase
 from metis.core.ctf_orchestration import AgentLedger
+from metis.core.store import RunStore
 from metis.evaluation.heldout_protocol import (
     Bindings,
     Protocol,
     bind_run,
     digest,
     finalize,
+    reconcile_arm_dispatch,
+    reconcile_memory_snapshots,
     schedule,
 )
+from metis.evaluation.heldout_study_export import RunAssignment
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = ROOT / "docs/studies/issue8-rev-memory-protocol.json"
@@ -91,6 +95,70 @@ def preflight(database: Path, inputs: Path, oracles: Path) -> tuple[Protocol, di
     return protocol, cards
 
 
+def validate_completed_prefix(protocol: Protocol, database: Path, state: dict[str, Any]) -> None:
+    """Fail closed on a changed progress file or controller ledger before new work."""
+    rows = state.get("slots")
+    if state.get("protocol_sha256") != EXPECTED_PROTOCOL or not isinstance(rows, list):
+        raise ValueError("invalid saved study progress")
+    planned = schedule(protocol)
+    if len(rows) > len(planned):
+        raise ValueError("saved study has too many slots")
+    assignments: list[RunAssignment] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or {key: row.get(key) for key in planned[index]} != planned[index]:
+            raise ValueError("saved study slot order differs from protocol")
+        if row.get("phase") != "finished":
+            raise RuntimeError("interrupted held-out run needs manual reconciliation")
+        if not isinstance(row.get("stop"), str) or type(row.get("candidate_proposed")) is not bool:
+            raise ValueError("saved outcome is incomplete")
+        if row.get("local_control_match") is not None and type(row.get("local_control_match")) is not bool:
+            raise ValueError("saved local outcome is invalid")
+        assignment = RunAssignment.model_validate({key: row.get(key) for key in
+                                                   ("task_id", "repetition", "arm", "run_id")})
+        assignments.append(assignment)
+    if len({item.run_id for item in assignments}) != len(assignments):
+        raise ValueError("saved run identifier reused")
+    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        db.execute("BEGIN")
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='heldout_arm_bindings'").fetchone()
+        bound = ({run_id for run_id, payload in db.execute("SELECT run_id,payload FROM heldout_arm_bindings")
+                  if json.loads(payload).get("protocol_sha256") == EXPECTED_PROTOCOL} if table else set())
+        if bound != {item.run_id for item in assignments}:
+            raise ValueError("saved runs differ from controller bindings")
+        for row, assignment in zip(rows, assignments, strict=True):
+            run_id = assignment.run_id
+            session = db.execute("SELECT evaluation_split FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()
+            if session != ("heldout",):
+                raise ValueError("saved run is not held out")
+            events = RunStore(database, read_only=True).read(run_id)
+            if not events or events[-1].status.value in {"executing", "observing", "replanning", "verifying"}:
+                raise ValueError("saved run evidence is incomplete")
+            jobs = db.execute("SELECT state FROM agent_jobs WHERE run_id=?", (run_id,)).fetchall()
+            if not jobs or any(job[0] not in {"completed", "failed", "cancelled", "timed_out"} for job in jobs):
+                raise ValueError("saved run has unresolved specialist work")
+            budget = db.execute("SELECT turn_limit,turns_reserved FROM agent_run_turn_budgets WHERE run_id=?",
+                                (run_id,)).fetchone()
+            actual_calls = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?",
+                                      (run_id,)).fetchone()[0]
+            if (budget is None or budget[0] != protocol.budgets[assignment.arm].model_calls
+                    or budget[1] != actual_calls or row.get("model_calls") != actual_calls):
+                raise ValueError("saved model-call count differs from controller")
+            candidate_count = db.execute("SELECT COUNT(*) FROM agent_candidates WHERE run_id=?", (run_id,)).fetchone()[0]
+            if bool(candidate_count) != row["candidate_proposed"]:
+                raise ValueError("saved candidate state differs from controller")
+            local_success = events[-1].status.value == "solved" and (
+                events[-1].detail.get("verification") == "local_sha256_commitment")
+            if row["local_control_match"] != (local_success if candidate_count else None):
+                raise ValueError("saved local outcome differs from run evidence")
+            stops = db.execute("SELECT stop_reason FROM agent_autopilot_runs WHERE run_id=? ORDER BY started",
+                               (run_id,)).fetchall()
+            if len(stops) != 1 or stops[0][0] != row["stop"]:
+                raise ValueError("saved stop reason differs from controller")
+    partial = Bindings.model_construct(protocol_sha256=EXPECTED_PROTOCOL, runs=assignments)
+    reconcile_memory_snapshots(protocol, partial, database)
+    reconcile_arm_dispatch(protocol, partial, database)
+
+
 def run(database: Path, inputs: Path, oracles: Path, progress: Path) -> dict[str, Any]:
     protocol, cards = preflight(database, inputs, oracles)
     if progress.exists():
@@ -100,6 +168,9 @@ def run(database: Path, inputs: Path, oracles: Path, progress: Path) -> dict[str
     else:
         state = {"protocol_sha256": EXPECTED_PROTOCOL, "slots": []}
         _save(progress, state)
+    validate_completed_prefix(protocol, database, state)
+    if len(state["slots"]) != len(schedule(protocol)):
+        raise RuntimeError("study is closed: token cap was not enforced; register a new controlled protocol")
     session = CodexSession(database)
     scheduler = AgentScheduler(database, BridgeHost(max_parallel=4))
     knowledge = KnowledgeBase(database)
@@ -107,12 +178,7 @@ def run(database: Path, inputs: Path, oracles: Path, progress: Path) -> dict[str
                         current_model=protocol.model_pin, memory_retrieval=True)
     for index, slot in enumerate(schedule(protocol)):
         if index < len(state["slots"]):
-            record = state["slots"][index]
-            if {key: record[key] for key in ("task_id", "repetition", "arm")} != slot:
-                raise ValueError("saved slot order differs from protocol")
-            if record["phase"] == "finished":
-                continue
-            raise RuntimeError("interrupted held-out run needs manual reconciliation; no automatic restart")
+            continue
         task = next(item for item in protocol.tasks if item.task_id == slot["task_id"])
         brief = ROOT / f"docs/studies/issue8-{task.task_id}-brief.txt"
         oracle_digest = _sha(oracles / f"{task.task_id}.candidate")
