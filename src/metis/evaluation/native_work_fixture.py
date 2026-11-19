@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import platform
 import signal
 import stat
 import subprocess
@@ -20,6 +21,7 @@ from metis.core.study_token_admission import (
     TokenLaunchClaim,
     TokenLaunchOutcome,
 )
+from metis.evaluation.native_build_identity import read_approved_native_build, verify_native_runtime
 
 FIXTURE_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 FIXTURE_PROMPT = "One day, a rabbit ran down the road."
@@ -270,7 +272,8 @@ def _run_claim(
 
 def qualify_native_launch(
     admission: StudyTokenAdmission, receipt: TokenAdmissionReceipt, *,
-    binary: Path, model: Path, seconds: float = 10,
+    binary: Path, model: Path, manifest: Path, expected_manifest_sha256: str, patch: Path,
+    seconds: float = 10,
     n_predict: int = 1, end: Literal["limit", "word", "eos"] = "limit",
 ) -> TokenLaunchOutcome:
     """Run one fixed public fixture request. The admission is never refunded."""
@@ -289,13 +292,21 @@ def qualify_native_launch(
     if not 0 < seconds <= 30:
         raise ValueError("fixture deadline is outside its bound")
 
+    approved = read_approved_native_build(
+        manifest, expected_manifest_sha256=expected_manifest_sha256, patch=patch,
+        target_os=platform.system(), target_arch=platform.machine(),
+    )
+    if receipt.study.runtime_sha256 != approved.binary_sha256:
+        raise ValueError("native approval does not match committed runtime pin")
+
     with tempfile.TemporaryDirectory(prefix="metis-native-", dir="/tmp") as folder:
         root = Path(folder).resolve()
         staged_binary, staged_model = root / "server", root / "fixture.gguf"
-        _stage(binary, staged_binary, receipt.study.runtime_sha256, limit=128 * 1024**2, executable=True)
+        _stage(binary, staged_binary, approved.binary_sha256, limit=128 * 1024**2, executable=True)
         # The digest identifies the entire registered single-file GGUF. Other
         # file layouts, including split GGUFs, cannot reach launch.
         _stage(model, staged_model, FIXTURE_MODEL_SHA256, limit=2 * 1024**2)
+        verify_native_runtime(approved, binary=staged_binary, model=staged_model)
         claim = admission.claim_for_launch(receipt)
         outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
         admission.record_outcome(claim, outcome)
