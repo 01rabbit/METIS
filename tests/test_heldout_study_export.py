@@ -46,19 +46,25 @@ def fixture(tmp_path: Path) -> tuple[Path, ExportManifest]:
                    "timestamp TEXT, previous_hash TEXT, digest TEXT)")
         db.execute("CREATE TABLE codex_sessions (run_id TEXT, evaluation_split TEXT, started REAL)")
         db.execute("CREATE TABLE agent_jobs (assignment_id TEXT, run_id TEXT, state TEXT, "
-                   "usage TEXT, model TEXT)")
+                   "usage TEXT, model TEXT, attempt_id TEXT DEFAULT '0123456789abcdef', attempt_no INTEGER DEFAULT 1)")
         db.execute("CREATE TABLE ctf_agent_reports (assignment_id TEXT, run_id TEXT)")
-        db.execute("CREATE TABLE agent_turn_reservations (run_id TEXT, assignment_id TEXT, "
-                   "attempt_id TEXT DEFAULT '-')")
+        db.execute("CREATE TABLE agent_turn_reservations (id INTEGER PRIMARY KEY, run_id TEXT, assignment_id TEXT, "
+                   "attempt_id TEXT DEFAULT '0123456789abcdef')")
+        db.execute("CREATE TABLE agent_job_log (assignment_id TEXT, event TEXT, detail TEXT, "
+                   "attempt_id TEXT DEFAULT '0123456789abcdef')")
         for index in range(8):
             run_id = f"{index + 1:032x}"
             db.execute("INSERT INTO codex_sessions VALUES (?,?,?)", (run_id, "heldout", 10.0))
             assignment_id = f"assignment-{index}"
-            db.execute("INSERT INTO agent_jobs VALUES (?,?,?,?,?)", (
-                assignment_id, run_id, "completed", json.dumps({"input_tokens": 3, "output_tokens": 2}),
+            db.execute("INSERT INTO agent_jobs(assignment_id,run_id,state,usage,model) VALUES (?,?,?,?,?)", (
+                assignment_id, run_id, "completed",
+                json.dumps({"host": "codex-exec", "turns": 1, "input_tokens": 3, "output_tokens": 2}),
                 "test-model"))
             db.execute("INSERT INTO ctf_agent_reports VALUES (?,?)", (assignment_id, run_id))
-            db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)", (run_id, assignment_id))
+            charge = db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)",
+                                (run_id, assignment_id))
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       (assignment_id, "codex_turn", json.dumps({"reservation_id": charge.lastrowid})))
             previous = ""
             for sequence, (status, detail) in enumerate([
                 ("new", {}), ("executing", {"tool": "text"}),
@@ -93,8 +99,6 @@ def attest_fixture(database: Path, protocol: Protocol, bindings: Bindings) -> No
     """Supply synthetic dispatch rows for exporter-specific fixtures."""
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE heldout_arm_bindings (run_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-        db.execute("CREATE TABLE agent_job_log (assignment_id TEXT, event TEXT, detail TEXT, "
-                   "attempt_id TEXT DEFAULT '-')")
         for run in bindings.runs:
             config = protocol.arm_config[run.arm]
             record = {"protocol_sha256": digest(protocol), "task_id": run.task_id,
@@ -118,9 +122,6 @@ def attest_fixture(database: Path, protocol: Protocol, bindings: Bindings) -> No
                         json.dumps({"reservation_id": identity, "prefix_sha256": REAL_PROMPT_SHA256,
                                     "prompt_sha256": REAL_PROMPT_SHA256, "model": protocol.model_pin,
                                     "runtime": protocol.runtime_pin})))
-            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
-                       (f"assignment-{int(run.run_id, 16) - 1}", "codex_turn",
-                        json.dumps({"reservation_id": identity})))
 
 
 def test_export_derives_outcome_and_resources(tmp_path: Path) -> None:
@@ -626,3 +627,124 @@ def test_protocol_cli_prepare_and_finalize_fail_closed(tmp_path: Path, monkeypat
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "held-out protocol rejected\n"
+
+
+def test_export_counts_multiple_exactly_joined_charges(tmp_path: Path) -> None:
+    database, manifest = fixture(tmp_path)
+    run_id = manifest.runs[0].run_id
+    with sqlite3.connect(database) as db:
+        charge = db.execute(
+            "INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)",
+            (run_id, "assignment-0"),
+        )
+        db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                   ("assignment-0", "codex_turn", json.dumps({"reservation_id": charge.lastrowid})))
+        db.execute("UPDATE agent_jobs SET usage=? WHERE run_id=?",
+                   (json.dumps({"host": "codex-exec", "turns": 2, "input_tokens": 9, "output_tokens": 4}), run_id))
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 2 and trial.tokens == 13
+
+
+@pytest.mark.parametrize("defect", ["other_attempt", "missing_record", "wrong_reservation", "duplicate_record",
+                                    "orphan_assignment", "uncounted_reservation"])
+def test_export_preserves_charges_but_rejects_missing_or_mismatched_coverage(tmp_path: Path, defect: str) -> None:
+    database, manifest = fixture(tmp_path)
+    run_id = manifest.runs[0].run_id
+    with sqlite3.connect(database) as db:
+        if defect == "other_attempt":
+            db.execute("UPDATE agent_turn_reservations SET attempt_id='stale' WHERE run_id=?", (run_id,))
+        elif defect == "missing_record":
+            db.execute("DELETE FROM agent_job_log WHERE assignment_id='assignment-0'")
+        elif defect == "wrong_reservation":
+            db.execute("UPDATE agent_job_log SET detail=? WHERE assignment_id='assignment-0'",
+                       (json.dumps({"reservation_id": 2}),))
+        elif defect == "duplicate_record":
+            db.execute("INSERT INTO agent_job_log SELECT * FROM agent_job_log WHERE assignment_id='assignment-0'")
+        elif defect == "orphan_assignment":
+            db.execute("UPDATE agent_turn_reservations SET assignment_id='unknown' WHERE run_id=?", (run_id,))
+        elif defect == "uncounted_reservation":
+            db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)",
+                       (run_id, "assignment-0"))
+    trial = export(manifest, database).trials[0]
+    assert trial.tokens is None
+    assert trial.model_calls == (2 if defect == "uncounted_reservation" else 1)
+
+
+def test_export_rejects_latest_retried_attempt_even_when_counts_look_complete(tmp_path: Path) -> None:
+    database, manifest = fixture(tmp_path)
+    run_id = manifest.runs[0].run_id
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET attempt_id='1111111111111111',attempt_no=2 WHERE run_id=?", (run_id,))
+        db.execute("UPDATE agent_turn_reservations SET attempt_id='1111111111111111' WHERE run_id=?", (run_id,))
+        db.execute("UPDATE agent_job_log SET attempt_id='1111111111111111' WHERE assignment_id='assignment-0'")
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("turns", None), ("turns", 0), ("turns", True), ("turns", 1.0),
+    ("input_tokens", 0), ("input_tokens", True), ("output_tokens", False), ("output_tokens", 0),
+    ("host", "unknown-runtime"),
+])
+def test_export_refuses_dishonest_or_unattributed_token_counts(tmp_path: Path, field: str, value: object) -> None:
+    database, manifest = fixture(tmp_path)
+    run_id = manifest.runs[0].run_id
+    usage = {"host": "codex-exec", "turns": 1, "input_tokens": 3, "output_tokens": 2}
+    usage[field] = value
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET usage=? WHERE run_id=?", (json.dumps(usage), run_id))
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
+
+
+def test_export_legacy_schema_keeps_charges_but_not_tokens(tmp_path: Path) -> None:
+    database, manifest = fixture(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE agent_jobs DROP COLUMN attempt_no")
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
+
+
+def test_export_rejects_matching_attempt_placeholders(tmp_path: Path) -> None:
+    database, manifest = fixture(tmp_path)
+    for table in ("agent_jobs", "agent_job_log", "agent_turn_reservations"):
+        with sqlite3.connect(database) as db:
+            db.execute(f"UPDATE {table} SET attempt_id='-' WHERE assignment_id='assignment-0'")
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
+
+
+def test_export_oversized_usage_is_null_without_hiding_charges(tmp_path: Path) -> None:
+    database, manifest = fixture(tmp_path)
+    usage = {"host": "codex-exec", "turns": 1, "input_tokens": 1_000_000_000, "output_tokens": 1}
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id='assignment-0'", (json.dumps(usage),))
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
+
+
+@pytest.mark.parametrize("orphan_usage", [None, '{"host":"codex-exec","turns":1,"input_tokens":8,"output_tokens":1}'])
+def test_export_rejects_uncharged_job_with_usage_or_turn_log(tmp_path: Path, orphan_usage: str | None) -> None:
+    database, manifest = fixture(tmp_path)
+    run_id = manifest.runs[0].run_id
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO agent_jobs(assignment_id,run_id,state,usage,model) VALUES (?,?,?,?,?)",
+                   ("unexpected", run_id, "completed", orphan_usage, "test-model"))
+        assert export(manifest, database).trials[0].model_calls == 1
+        if orphan_usage is None:
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       ("unexpected", "codex_turn", '{"reservation_id":1}'))
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
+
+
+@pytest.mark.parametrize("bad_usage", [
+    '{"host":"codex-exec","turns":1,"turns":1,"input_tokens":3,"output_tokens":2}',
+    " " * 16_385,
+])
+def test_export_rejects_ambiguous_or_oversized_telemetry(tmp_path: Path, bad_usage: str) -> None:
+    database, manifest = fixture(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET usage=? WHERE assignment_id='assignment-0'", (bad_usage,))
+    trial = export(manifest, database).trials[0]
+    assert trial.model_calls == 1 and trial.tokens is None
