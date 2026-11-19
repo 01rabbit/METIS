@@ -558,6 +558,21 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         raise ValueError("attempt is not the running attempt of this assignment")
     allowed = {entry["id"] for entry in scheduler.config()["catalog"]}
     selected = model or (job["model"] or {}).get("model") or scheduler.config()["current_model"]
+    from metis.evaluation.heldout_arm import binding
+    heldout = binding(scheduler.database, run_id)
+    if heldout is not None and (selected != heldout["model_pin"] or note is not None):
+        raise ValueError("held-out specialist model or prompt override conflicts with protocol")
+    def bound_prompt() -> str:
+        rendered = render_prompt(brief, transcript, note)
+        if heldout is None:
+            return rendered
+        prefix = heldout["prompt_text"]
+        full = prefix + "\n\n" + rendered
+        _log(scheduler, assignment_id, attempt_id, "heldout_prompt_applied", json.dumps({
+            "prefix_sha256": hashlib.sha256(prefix.encode()).hexdigest(),
+            "prompt_sha256": hashlib.sha256(full.encode()).hexdigest(),
+        }, sort_keys=True))
+        return full
     if selected and allowed and selected not in allowed:
         raise ValueError("model is not in the active catalog registered with `metis agent slots`")
     plan = scheduler.ledger._plan(run_id, job["wave_id"])
@@ -626,7 +641,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if stopped():
             outcome = stop_outcome("run or attempt stopped before provider call")
             break
-        turn = runner.run(render_prompt(brief, transcript, note), model=selected, timeout=min(turn_timeout, remaining),
+        turn = runner.run(bound_prompt(), model=selected, timeout=min(turn_timeout, remaining),
                           should_stop=stopped, images=list(attached.values()) or None)
         record_turn(turn)
         if scheduler.run_cancelled(run_id):
@@ -656,7 +671,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             if stopped():
                 outcome = stop_outcome("run or attempt stopped before transient retry")
                 break
-            turn = runner.run(render_prompt(brief, transcript, note), model=selected,
+            turn = runner.run(bound_prompt(), model=selected,
                               timeout=min(turn_timeout, retry_remaining),
                               should_stop=stopped, images=list(attached.values()) or None)
             record_turn(turn)

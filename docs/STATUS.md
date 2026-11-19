@@ -799,3 +799,14 @@ tasks now have one independently generated practice card in an isolated DB;
 protocol commitment, repeated runs and official verdicts are still required.
 Issue #8 remains open. See
 `docs/reports/issue8-frozen-memory-preflight-2026-11-19.md`.
+
+## Held-out arm dispatch binding (2026-11-19)
+
+A scheduled run can now bind its committed protocol arm before work. The
+specialist scheduler applies the bound memory switch and model-turn cap, checks
+model/runtime pins, and records dispatch treatment. The Codex driver prefixes
+each turn with the SHA-256-fixed common prompt. Real-model finalization
+rejects missing or changed binding/dispatch evidence. This supports a
+prospective two-arm memory comparison, but no real-model study has started and
+provider-side prompt application is not independently attested. See
+`docs/reports/issue8-run-arm-attestation-2026-11-19.md`; Issue #8 remains open.

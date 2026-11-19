@@ -161,15 +161,27 @@ class AgentScheduler:
         if self.run_cancelled(run_id):
             raise ValueError("run is cancelled; enqueue refused")
         plan = self.ledger._plan(run_id, wave_id)
+        from metis.evaluation.heldout_arm import binding
+        heldout = binding(self.database, run_id)
+        if heldout is not None:
+            config = heldout["arm_config"]
+            if not config["planner_enabled"] or len(plan["assignments"]) > config["max_specialists"]:
+                raise ValueError("held-out arm does not permit this specialist plan")
+            existing = self.model_turn_budget(run_id)
+            if existing is not None and existing["limit"] != heldout["budget"]["model_calls"]:
+                raise ValueError("held-out model-call budget mismatch")
         if dynamic_borrowing:
             budget = self.model_turn_budget(run_id)
-            limit = budget["limit"] if budget else self.config()["specialist_turn_budget"]
+            limit = budget["limit"] if budget else (
+                heldout["budget"]["model_calls"] if heldout is not None
+                else self.config()["specialist_turn_budget"])
             if len(plan["assignments"]) < 2 or len(plan["assignments"]) > limit or self.jobs(run_id):
                 raise ValueError("dynamic borrowing requires a fresh multi-assignment wave within the run cap")
         now = time.time()
         with self._db() as db:
             db.execute("INSERT OR IGNORE INTO agent_run_turn_budgets(run_id,turn_limit,turns_reserved,created) "
-                       "VALUES (?,?,0,?)", (run_id, self.config()["specialist_turn_budget"], now))
+                           "VALUES (?,?,0,?)", (run_id, heldout["budget"]["model_calls"] if heldout is not None
+                                                  else self.config()["specialist_turn_budget"], now))
             for item in plan["assignments"]:
                 db.execute("INSERT OR IGNORE INTO agent_jobs(assignment_id,run_id,wave_id,role,state,"
                            "deadline_seconds,max_turns,created,dynamic_borrowing) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -320,6 +332,12 @@ class AgentScheduler:
         assignment["deadline_seconds"] = job["deadline_seconds"]
         model = select_model(PROFILES[job["role"]].tier, settings["catalog"], current=settings["current_model"])
         brief = self.brief(job["run_id"], assignment, job["attempt_id"])
+        from metis.evaluation.heldout_arm import binding
+        heldout = binding(self.database, job["run_id"])
+        if heldout is not None and (model.model != heldout["model_pin"]
+                                    or self.host.name != heldout["runtime_pin"]):
+            self._end(job["assignment_id"], job["attempt_id"], "failed", "held-out model or runtime mismatch")
+            return None
         # Building a brief can be nontrivial. Recheck after it completes so a
         # reservation that expires during rendering never starts host work.
         if job["deadline"] and time.time() > job["deadline"]:
@@ -338,6 +356,11 @@ class AgentScheduler:
         with self._db() as db:
             db.execute("UPDATE agent_jobs SET host_job_id=?, model=? WHERE assignment_id=? AND attempt_id=?",
                        (host_job, model.model_dump_json(), job["assignment_id"], job["attempt_id"]))
+            if heldout is not None:
+                detail = json.dumps({"protocol_sha256": heldout["protocol_sha256"],
+                                     "arm": heldout["arm"], "memory_cards": len(brief["prior_knowledge"]),
+                                     "model": model.model, "runtime": self.host.name}, sort_keys=True)
+                self._log(db, job["assignment_id"], job["attempt_id"], "heldout_arm_applied", detail)
         return {"assignment_id": job["assignment_id"], "attempt_id": job["attempt_id"],
                 "host_job_id": host_job, "model": model.model_dump(), "brief": brief}
 
@@ -425,7 +448,11 @@ class AgentScheduler:
         visible_artifacts = (declared_artifacts if artifact_scope is None
                              else [name for name in declared_artifacts if name in artifact_scope])
         prior_knowledge: list[dict[str, Any]] = []
-        if self.config()["memory_retrieval"]:
+        from metis.evaluation.heldout_arm import binding
+        heldout = binding(self.database, run_id)
+        memory_enabled = (heldout["arm_config"]["memory_enabled"] if heldout is not None
+                          else self.config()["memory_retrieval"])
+        if memory_enabled:
             from metis.core.ctf_knowledge import KnowledgeBase
 
             challenge = context["challenge"]
