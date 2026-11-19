@@ -357,8 +357,8 @@ still require independent review. A fresh held-out experiment remains
 necessary; Issue #8 stays open.
 See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
 
-On 2026-11-19, two separate AlpacaHack Daily Easy tasks gained private local
-positive/negative controls and human-observed official browser solves. Two
+On 2026-11-19, three separate AlpacaHack Daily tasks (two Easy, one Medium)
+gained private local controls and human-observed official browser solves. Two
 answer-free MUNIN cards from distinct synthetic practice runs passed a later
 synthetic freeze/retrieval provenance check. No MUNIN-on/off model comparison
 was run; these answer-exposed tasks are not fresh held-out trials. Issue #8
