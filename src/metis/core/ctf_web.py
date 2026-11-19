@@ -157,12 +157,23 @@ class WebWorkflow:
             raise ValueError("invalid credential scheme")
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT payload FROM web_credentials WHERE origin=?", (key,)).fetchone()
-            values = json.loads(row[0]) if row else {}
-            values[kind] = value
-            values["scheme"] = scheme
+            # One origin has one active stored credential. A replacement also
+            # invalidates cookies derived from the previous authentication.
+            values = {kind: value, "scheme": scheme}
             db.execute("INSERT INTO web_credentials(origin,payload) VALUES (?,?) "
                        "ON CONFLICT(origin) DO UPDATE SET payload=excluded.payload", (key, json.dumps(values)))
+            db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                       "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+            generation, = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                     (key,)).fetchone()
+            rows = db.execute("SELECT run_id,state FROM web_runs WHERE json_extract(config,'$.auth_origin')=?",
+                              (key,)).fetchall()
+            for run_id, raw_state in rows:
+                state = json.loads(raw_state)
+                state.get("cookies", {}).pop(key, None)
+                state.pop("cookie_fingerprint", None)
+                state[self._AUTH_GENERATION_STATE_KEY] = generation
+                db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
         return {"origin": key, "credential_stored": True, "kind": kind,
                 "storage": "private local state; excluded from Git"}
 
