@@ -397,8 +397,12 @@ class StudyTokenAdmission:
         from metis.core.store import RunStore
 
         events = RunStore(self.database, read_only=True).read(slot.run_id, connection=db)
-        if not events or events[-1].status == RunStatus.CANCELLED:
-            raise ValueError("scheduler run is missing or cancelled")
+        active_statuses = {
+            RunStatus.PLANNING, RunStatus.EXECUTING, RunStatus.OBSERVING,
+            RunStatus.REPLANNING, RunStatus.VERIFYING,
+        }
+        if not events or events[-1].status not in active_statuses:
+            raise ValueError("scheduler run is missing or not active")
         reservation = db.execute(
             "SELECT run_id,assignment_id,attempt_id FROM agent_turn_reservations WHERE id=?",
             (attempt.turn_reservation_id,),

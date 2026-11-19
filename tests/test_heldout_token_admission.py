@@ -14,6 +14,7 @@ from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexTurn, run_assignment
+from metis.core.contracts import RunStatus
 from metis.core.ctf_orchestration import AgentLedger
 from metis.core.llama_specialist import LlamaSpecialist
 from metis.core.study_token_admission import StudyTokenAdmission
@@ -353,7 +354,39 @@ def test_scheduler_claim_refuses_consumption_after_run_cancellation(tmp_path):
     )
     claim = claims[0]
     CodexSession(database).cancel(run_id)
-    with pytest.raises(ValueError, match="run is missing or cancelled"):
+    with pytest.raises(ValueError, match="run is missing or not active"):
+        admission.consume_scheduler_launch_claim(claim)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
+
+
+@pytest.mark.parametrize("terminal_status", [RunStatus.SOLVED, RunStatus.EXHAUSTED])
+def test_scheduler_claim_refuses_consumption_after_run_terminalization(tmp_path, terminal_status):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id,
+            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+        ))
+
+    scheduler.reserve_model_turn(
+        run_id, job["assignment_id"], job["attempt_id"], persist_receipt=persist,
+    )
+    claim = claims[0]
+    session = CodexSession(database)
+    if terminal_status == RunStatus.SOLVED:
+        session._emit(run_id, RunStatus.EXECUTING)
+        session._emit(run_id, RunStatus.OBSERVING)
+        session._emit(run_id, RunStatus.VERIFYING)
+        session._emit(run_id, RunStatus.SOLVED)
+    else:
+        session._emit(run_id, RunStatus.EXHAUSTED, reason="budget_limit")
+    with pytest.raises(ValueError, match="run is missing or not active"):
         admission.consume_scheduler_launch_claim(claim)
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
