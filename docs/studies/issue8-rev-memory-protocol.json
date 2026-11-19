@@ -1,0 +1,69 @@
+{
+  "arm_config": {
+    "full": {
+      "max_specialists": 4,
+      "memory_enabled": true,
+      "planner_enabled": true,
+      "prompt_sha256": "d7b6ed1a70b21ad5a3fa089075e150f33bac8c512619043253329ab24faa05d4"
+    },
+    "without_memory": {
+      "max_specialists": 4,
+      "memory_enabled": false,
+      "planner_enabled": true,
+      "prompt_sha256": "d7b6ed1a70b21ad5a3fa089075e150f33bac8c512619043253329ab24faa05d4"
+    }
+  },
+  "arms": [
+    "full",
+    "without_memory"
+  ],
+  "baseline": "full",
+  "budgets": {
+    "full": {
+      "actions": 8,
+      "cost_usd": null,
+      "model_calls": 6,
+      "seconds": 600.0,
+      "tokens": 50000
+    },
+    "without_memory": {
+      "actions": 8,
+      "cost_usd": null,
+      "model_calls": 6,
+      "seconds": 600.0,
+      "tokens": 50000
+    }
+  },
+  "measurement": "real_model",
+  "memory_card_digests": [
+    "835c160eaeea4845143a21958b78a6f74057fd6d0ac3b643cb8f8a05d474633e"
+  ],
+  "model_pin": "gpt-6.1-sol",
+  "repetitions": 2,
+  "runtime_pin": "bridge",
+  "schema_version": 1,
+  "seed": 20261119,
+  "study_id": "issue8-alpacahack-rev-memory-20261119",
+  "tasks": [
+    {
+      "category": "rev",
+      "difficulty": "easy",
+      "distribution_sha256": "20ec2439fb28ef2cb29a4dfd3e83c16c80330df375883333c00323a1b424dcea",
+      "exposure": "unknown",
+      "solvability_control_verified": true,
+      "source_id": "alpacahack-daily-read-a-binary",
+      "split": "held_out",
+      "task_id": "read-a-binary"
+    },
+    {
+      "category": "rev",
+      "difficulty": "medium",
+      "distribution_sha256": "5d1095cd09dc7c1cf72803673ec4016054a555f623c83e6c5ed177494280a4f1",
+      "exposure": "unknown",
+      "solvability_control_verified": true,
+      "source_id": "alpacahack-daily-misdirection",
+      "split": "held_out",
+      "task_id": "misdirection"
+    }
+  ]
+}
