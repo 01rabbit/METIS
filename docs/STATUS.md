@@ -341,6 +341,16 @@ retained. Issue #6 and dependent #7 stay open. See
 [`issue6-handoff-diagnostic-results-2026-11-18.md`](reports/issue6-handoff-diagnostic-results-2026-11-18.md),
 and [`issue6-handoff-diagnostic-preregistration-2026-11-18.md`](reports/issue6-handoff-diagnostic-preregistration-2026-11-18.md).
 
+On 2026-11-19, a fresh preregistered 30-cluster diagnostic tested a fourth,
+report-only final specialist call against the existing combined handoff and a
+single specialist. All 90 runs completed. Workflow-complete, oracle-verified
+outcomes were 13/30 for final-call multi, 18/30 for current multi, and 28/30
+for single. The primary paired final-minus-single difference was −50 points
+(95% cluster bootstrap interval [−66.67, −33.33]); the Issue #6 gain gate
+failed again. The answer-free data and analysis are retained; Issue #6 and
+dependent #7 remain open. See
+[`issue6-final-handoff-result-2026-11-19.md`](reports/issue6-final-handoff-result-2026-11-19.md).
+
 Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
 with matched cap checks, complete paired repetitions, contamination exclusions,
 independent-verifier provenance filtering, task-cluster intervals and explicit
@@ -356,6 +366,14 @@ remains unknown; the manifest's exposure, solvability and runtime declarations
 still require independent review. A fresh held-out experiment remains
 necessary; Issue #8 stays open.
 See [`issue8-retained-metrics-2026-11-18.md`](reports/issue8-retained-metrics-2026-11-18.md).
+
+On 2026-11-19, three separate AlpacaHack Daily tasks (two Easy, one Medium)
+gained private local controls and human-observed official browser solves. Two
+answer-free MUNIN cards from distinct synthetic practice runs passed a later
+synthetic freeze/retrieval provenance check. No MUNIN-on/off model comparison
+was run; these answer-exposed tasks are not fresh held-out trials. Issue #8
+remains open. See
+[`issue8-official-control-preparation-2026-11-19.md`](reports/issue8-official-control-preparation-2026-11-19.md).
 
 For Issue #8, AlpacaHack Daily Misc task `Not so Pyf**k` was first exercised
 from its official archive in the no-network, no-host-mount sandbox. The
@@ -465,6 +483,12 @@ sandbox rejects a staged plan whose bytes differ from the controller-validated
 plan before applying any transform. Real-container replay and a staged-plan
 substitution test passed. Evidence for model-proposed research and general
 workflow reuse remains open.
+An answer-free real-Codex pilot selected permitted decode steps for two fresh
+instances of known benign local fixture families. Both digest-only sandbox
+replays were reproducible and matched the
+private oracle; rejected tool, policy, verifier, and code proposals have tests.
+General workflow reuse and the Issue #6 dependency remain open. See
+[`issue7-unseen-model-workflow-2026-11-19.md`](reports/issue7-unseen-model-workflow-2026-11-19.md).
 Issue #7 remains open because the P5 dependency (Issue #6) and broader P6
 acceptance remain unmet. See
 [`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).
@@ -562,6 +586,18 @@ sandbox suite includes the real-Docker cross-controller test.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
+On 2026-11-19, a disposable Mac host-reboot drill observed an active sandbox
+run persisted across a changed boot UUID. The first 300-second worker timed
+out before reboot and was inconclusive. In a second attempt, a successor
+worker started before reboot and the run remained `executing` afterward with
+both actions charged. Manual `codex recover` returned `planning`, confirmed
+worker teardown, and was idempotent on a second call; no solve was recorded.
+The prepared script's stricter pre-reboot worker-identity condition did not
+pass because the first worker expired, so this is bounded recovery evidence
+with an explicit timing limit, not production acceptance. Private snapshots
+were retained outside Git and disposable VMs removed. See
+[`issue9-host-reboot-recovery-2026-11-19.md`](reports/issue9-host-reboot-recovery-2026-11-19.md).
+
 A local read-only operator view now serves the existing count-only audit over
 `127.0.0.1` with an in-memory bearer token supplied by environment variable.
 It rejects non-loopback Host headers and Origin-bearing requests, exposes no
@@ -591,7 +627,7 @@ full operator UI. Focused validation passed: 15 audit tests, Ruff, mypy, and
 [`issue9-read-only-run-audit-2026-11-18.md`](reports/issue9-read-only-run-audit-2026-11-18.md)
 and the [unified operational audit](reports/issue9-unified-operational-audit-2026-11-18.md).
 
-A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
+A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The checksum manifest now uses release asset basenames so recipients can run `sha256sum -c SHA256SUMS` in the download directory; see `docs/reports/issue9-release-checksum-portability-2026-11-19.md` for local test evidence. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
 
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
@@ -834,3 +870,14 @@ subtotals and withholds the complete total when job usage is missing. This is
 monitoring, not an enforced token or cost budget. See
 `docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
 remain open pending their separate evidence gates.
+
+## Issue #9 local web credential retirement (2026-11-19)
+
+Credential replacement and `web forget`/`forget-all --apply` enable SQLite
+`secure_delete` on their write connections before changing saved credentials
+and run cookies. Forget responses identify provider revocation as a separate
+operator action and disclose possible WAL, snapshot, and backup remnants.
+The local regression checks recreate the workflow object over the same
+database after forgetting; they do not exercise a fresh process or reboot.
+This remains best-effort local retirement, not physical erasure, automatic
+provider revocation, a retention policy, or completion of Issue #9.

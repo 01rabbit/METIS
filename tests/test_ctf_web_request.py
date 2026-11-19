@@ -275,12 +275,37 @@ def test_cli_forget_revokes_stored_origin_credential(tmp_path, sites, monkeypatc
     assert main() == 0
     output = json.loads(capsys.readouterr().out)
     assert output["origin"] == platform_url and output["credential_removed"] is True
+    assert output["provider_revocation_required"] is True
     assert "in-flight request" in output["limit"]
+    assert "WAL" in output["limit"] and "backups" in output["limit"]
     assert "platform-secret-token" not in json.dumps(output)
 
     workflow.request(run_id, [WebRequest(url=platform_url + "/after-forget")])
     assert seen["platform_auth"][-1] is None
+    # Recreating the workflow over the same database must not regain the credential.
+    WebWorkflow(workflow.database).request(run_id, [WebRequest(url=platform_url + "/after-reopen")])
+    assert seen["platform_auth"][-1] is None
     assert workflow.forget_auth(platform_url)["credential_removed"] is False
+
+
+def test_auth_retirement_enables_secure_delete_on_write_connection(tmp_path, monkeypatch):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    real_connect = sqlite3.connect
+    connections = []
+
+    def track_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", track_connect)
+    workflow.auth("https://example.com", kind="token", value="synthetic-token")
+    workflow.forget_auth("https://example.com")
+    workflow.forget_all_auth(apply=True)
+    assert len(connections) == 3
+    assert all(db.execute("PRAGMA secure_delete").fetchone()[0] == 1 for db in connections)
+    for db in connections:
+        db.close()
 
 
 def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
@@ -328,6 +353,7 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     assert preview["origins"] == 2
     assert preview["stored_credentials"] == 2
     assert preview["selected_runs"] == 1
+    assert preview["provider_revocation_required"] is False
     assert "private-token" not in json.dumps(preview)
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 2
@@ -340,6 +366,8 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     assert main() == 0
     result = json.loads(capsys.readouterr().out)
     assert result["applied"] is True
+    assert result["provider_revocation_required"] is True
+    assert "WAL" in result["limit"] and "backups" in result["limit"]
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 0
         assert db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
