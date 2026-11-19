@@ -465,8 +465,9 @@ sandbox rejects a staged plan whose bytes differ from the controller-validated
 plan before applying any transform. Real-container replay and a staged-plan
 substitution test passed. Evidence for model-proposed research and general
 workflow reuse remains open.
-An answer-free real-Codex pilot selected permitted decode steps for two unseen
-benign local fixtures. Both sandbox replays were reproducible and matched the
+An answer-free real-Codex pilot selected permitted decode steps for two fresh
+instances of known benign local fixture families. Both digest-only sandbox
+replays were reproducible and matched the
 private oracle; rejected tool, policy, verifier, and code proposals have tests.
 General workflow reuse and the Issue #6 dependency remain open. See
 [`issue7-unseen-model-workflow-2026-11-19.md`](reports/issue7-unseen-model-workflow-2026-11-19.md).
