@@ -223,3 +223,25 @@ def test_pending_insert_failure_rolls_back_phase_and_prevents_spawn(tmp_path, mo
         assert db.execute("SELECT turns_reserved FROM agent_run_turn_budgets").fetchone() == (0,)
         assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
         assert db.execute("SELECT COUNT(*) FROM issue6_dry_reservations").fetchone() == (0,)
+
+
+def _sigpipe_controller(root, cancel_after_exit):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    database, workspace, admission, args = prepare(root)
+    with start_canary(admission, workspace, *args) as canary:
+        if cancel_after_exit:
+            assert canary._process.wait(timeout=5) == 0
+            canary.cancel()
+        assert canary.wait() == 0
+    assert state(database)[1:] == ("reaped", "completed")
+
+
+@pytest.mark.parametrize("cancel_after_exit", [False, True])
+def test_default_sigpipe_survives_normal_wait_and_cancel_after_guardian_exit(tmp_path, cancel_after_exit):
+    command = (
+        "import sys, runpy; from pathlib import Path; "
+        "runpy.run_path(sys.argv[1])['_sigpipe_controller'](Path(sys.argv[2]), sys.argv[3] == 'True')"
+    )
+    result = subprocess.run([sys.executable, "-c", command, __file__, str(tmp_path), str(cancel_after_exit)],
+                            capture_output=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stderr.decode()

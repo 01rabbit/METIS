@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import secrets
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -29,7 +30,7 @@ _CANARY_TABLE = """CREATE TABLE IF NOT EXISTS issue6_canaries (
 class Canary:
     """Controller lease with an explicit stop signal and EOF on abandonment."""
 
-    def __init__(self, process: subprocess.Popen[bytes], lease: int):
+    def __init__(self, process: subprocess.Popen[bytes], lease: socket.socket):
         self._process = process
         self._lease = lease
 
@@ -38,21 +39,23 @@ class Canary:
         return self._process.pid
 
     def cancel(self) -> None:
-        if self._lease >= 0:
-            lease, self._lease = self._lease, -1
+        if self._lease.fileno() >= 0:
             try:
-                os.write(lease, b"C")
-            except (BlockingIOError, BrokenPipeError):
-                # A queued signal already wakes the guardian, or the guardian exited.
+                self._lease.send(b"C", socket.MSG_NOSIGNAL)
+            except (BlockingIOError, BrokenPipeError, ConnectionResetError):
+                # The guardian will read a queued signal, or its connection is gone.
                 pass
             finally:
-                os.close(lease)
+                self._lease.close()
 
     def wait(self, *, timeout: float = 8) -> int:
         try:
-            return self._process.wait(timeout=timeout)
-        finally:
+            status = self._process.wait(timeout=timeout)
+        except BaseException:
             self.cancel()
+            raise
+        self._lease.close()
+        return status
 
     def __enter__(self) -> Self:
         return self
@@ -86,21 +89,22 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
                    (reservation, nonce, scratch.name, window.wall_cutoff, cutoff))
 
     reservation = admission.reserve_phase(run_id, assignment_id, attempt_id, receipt, persist_pending=persist_pending)
-    reader, writer = os.pipe()
+    reader, writer = socket.socketpair()
     try:
-        os.set_blocking(writer, False)
+        writer.setblocking(False)
+        reader_fd = reader.fileno()
         process = subprocess.Popen(
-            [sys.executable, "-I", "-S", str(_HELPER), "guardian", str(reader), str(os.getpid()),
+            [sys.executable, "-I", "-S", str(_HELPER), "guardian", str(reader_fd), str(os.getpid()),
              str(window.database),
              str(reservation), nonce, str(scratch), str(cutoff), str(window.wall_cutoff), behavior],
-            env=_ENV, pass_fds=(reader,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            env=_ENV, pass_fds=(reader_fd,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
     except BaseException:
-        os.close(writer)
+        writer.close()
         raise
     finally:
-        os.close(reader)
+        reader.close()
     return Canary(process, writer)
 
 
