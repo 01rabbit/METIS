@@ -10,6 +10,12 @@ This change adds an explicit, one-time snapshot of selected existing practice or
 competition cards before a held-out run starts work. The default remains empty.
 The snapshot stores card payloads and digests, rejects a second freeze, refuses
 work-started or non-held-out runs, and checks the stored digest on retrieval.
+The run-level controller lock now covers the pre-work event check and the
+snapshot transaction together. A concurrent action that attempts to start
+while the snapshot is being made waits for the same lock. The regression test
+pauses the snapshot immediately after event inspection, starts a second worker,
+checks that its action cannot finish, then releases the snapshot and confirms
+both operations complete in order.
 Held-out results still cannot be written back into MUNIN.
 
 Two official AlpacaHack Rev distributions were downloaded to a temporary local
@@ -28,6 +34,6 @@ these older public tasks is unknown and must be reported as a contamination
 limit.
 
 Verification: `PYTHONPATH=src .../pytest -q tests/test_munin_integration.py`
-passed 5 tests; Ruff and mypy passed for the changed module. This establishes
+passed 6 tests; Ruff and mypy passed for the changed module. This establishes
 the prerequisite snapshot behavior, not Issue #8's repeated-run acceptance
 gate. Issue #8 remains open.

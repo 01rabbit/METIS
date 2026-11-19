@@ -13,6 +13,7 @@ from pydantic import Field
 
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeCategory, Contract, RunStatus
+from metis.core.run_lock import run_lock
 
 
 def abstract_text(value: str) -> str:
@@ -170,34 +171,35 @@ class KnowledgeBase:
 
     def freeze_for_heldout(self, run_id: str, card_ids: list[int]) -> dict:
         """Copy selected prior cards once, before a held-out run has any work events."""
-        if self.session.context(run_id).get("evaluation_split") != "heldout":
-            raise ValueError("snapshot requires a held-out run")
         if not 1 <= len(card_ids) <= 20 or len(card_ids) != len(set(card_ids)):
             raise ValueError("invalid snapshot card selection")
-        events = self.session.store.read(run_id)
-        if [event.status for event in events] != [
-            RunStatus.NEW, RunStatus.VALIDATED, RunStatus.CLASSIFIED, RunStatus.PLANNING,
-        ]:
-            raise ValueError("snapshot must precede held-out work")
-        with sqlite3.connect(self.database) as db:
-            db.execute("BEGIN IMMEDIATE")
-            started = db.execute("SELECT started FROM codex_sessions WHERE run_id=?",
-                                 (run_id,)).fetchone()[0]
-            if db.execute("SELECT 1 FROM heldout_memory_snapshots WHERE run_id=?", (run_id,)).fetchone():
-                raise ValueError("held-out memory is already frozen")
-            rows = db.execute(
-                f"SELECT id,payload,digest,source_split,created FROM munin_cards WHERE id IN ({','.join('?' for _ in card_ids)})",
-                card_ids,
-            ).fetchall()
-            if len(rows) != len(card_ids) or any(
-                row[3] not in {"practice", "competition"} or row[4] > started for row in rows
-            ):
-                raise ValueError("snapshot contains unavailable or held-out cards")
-            for identity, payload, digest, _, _ in rows:
-                if hashlib.sha256(payload.encode()).hexdigest() != digest:
-                    raise ValueError("snapshot card digest mismatch")
-                db.execute("INSERT INTO heldout_memory_snapshots(run_id,card_id,payload,digest) VALUES (?,?,?,?)",
-                           (run_id, identity, payload, digest))
+        with run_lock(self.database, run_id):
+            if self.session.context(run_id).get("evaluation_split") != "heldout":
+                raise ValueError("snapshot requires a held-out run")
+            events = self.session.store.read(run_id)
+            if [event.status for event in events] != [
+                RunStatus.NEW, RunStatus.VALIDATED, RunStatus.CLASSIFIED, RunStatus.PLANNING,
+            ]:
+                raise ValueError("snapshot must precede held-out work")
+            with sqlite3.connect(self.database) as db:
+                db.execute("BEGIN IMMEDIATE")
+                started = db.execute("SELECT started FROM codex_sessions WHERE run_id=?",
+                                     (run_id,)).fetchone()[0]
+                if db.execute("SELECT 1 FROM heldout_memory_snapshots WHERE run_id=?", (run_id,)).fetchone():
+                    raise ValueError("held-out memory is already frozen")
+                rows = db.execute(
+                    f"SELECT id,payload,digest,source_split,created FROM munin_cards WHERE id IN ({','.join('?' for _ in card_ids)})",
+                    card_ids,
+                ).fetchall()
+                if len(rows) != len(card_ids) or any(
+                    row[3] not in {"practice", "competition"} or row[4] > started for row in rows
+                ):
+                    raise ValueError("snapshot contains unavailable or held-out cards")
+                for identity, payload, digest, _, _ in rows:
+                    if hashlib.sha256(payload.encode()).hexdigest() != digest:
+                        raise ValueError("snapshot card digest mismatch")
+                    db.execute("INSERT INTO heldout_memory_snapshots(run_id,card_id,payload,digest) VALUES (?,?,?,?)",
+                               (run_id, identity, payload, digest))
         return {"run_id": run_id, "card_ids": sorted(card_ids)}
 
     def search(self, query: str, *, category: str | None = None, limit: int = 5) -> list[dict]:
