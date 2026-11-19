@@ -328,6 +328,66 @@ def test_concurrent_native_consumers_start_backend_once(tmp_path, monkeypatch):
         assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("completed",)
 
 
+def test_cancellation_after_claim_consumption_prevents_native_launch(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    prompt = LlamaSpecialist.build_native_request(PROMPT_PREFIX + "\n\nsynthetic task")
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id, prompt=prompt,
+        ))
+
+    scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"],
+                                 persist_receipt=persist)
+    claim = claims[0]
+    admission.consume_scheduler_launch_claim(claim)
+    is_consumed = admission.is_consumed_scheduler_launch_claim
+
+    def cancel_after_consumption(candidate):
+        assert is_consumed(candidate)
+        scheduler.session.cancel(run_id)
+        return True
+
+    monkeypatch.setattr(admission, "is_consumed_scheduler_launch_claim",
+                        cancel_after_consumption)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    backend_calls = []
+
+    class FakeBackend:
+        def __init__(self, **_kwargs):
+            backend_calls.append("construct")
+
+        def __enter__(self):
+            backend_calls.append("enter")
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def complete_admitted(self, *_args, **_kwargs):
+            backend_calls.append("complete")
+            raise AssertionError("cancelled scheduler turn reached native completion")
+
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    turn = runner.run_admitted(prompt, model=protocol.model_pin, timeout=5,
+                               token_claim=claim, admission=admission)
+
+    assert turn.returncode == 1 and turn.stopped
+    assert backend_calls == []
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed,launched FROM study_token_launches").fetchone() == (1, 1)
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("cancelled",)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (4098,)
+
+
 def test_same_launch_owner_rechecks_scheduler_after_cancellation(tmp_path):
     database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
     admission = StudyTokenAdmission(database)
