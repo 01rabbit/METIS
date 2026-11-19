@@ -171,6 +171,28 @@ def test_run_assignment_claims_actual_reservation_and_hashes_exact_prompt(tmp_pa
         assert prompt not in stored_text
 
 
+def test_run_assignment_reconciles_cancel_racing_claim_consumption(tmp_path, monkeypatch):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    runner = AdmittedFakeRunner(database)
+    consume = admission.consume_scheduler_launch_claim
+
+    def cancel_before_consume(claim):
+        scheduler.session.cancel(run_id)
+        consume(claim)
+
+    monkeypatch.setattr(admission, "consume_scheduler_launch_claim", cancel_before_consume)
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            study_token_admission=admission, final_handoff_call_limit=1)
+
+    assert runner.calls == []
+    assert result["job_state"] == "cancelled"
+    assert scheduler.run_cancelled(run_id)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (4098,)
+
+
 def test_run_assignment_native_consumer_hashes_exact_bytes_sent_to_backend(tmp_path, monkeypatch):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
     admission = StudyTokenAdmission(database)

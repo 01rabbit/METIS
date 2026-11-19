@@ -691,7 +691,14 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if token_claim is not None:
             if study_token_admission is None:
                 raise ValueError("native launch claim has no admission controller")
-            study_token_admission.consume_scheduler_launch_claim(token_claim)
+            try:
+                study_token_admission.consume_scheduler_launch_claim(token_claim)
+            except ValueError:
+                if not stopped():
+                    raise
+                _log(scheduler, assignment_id, attempt_id, "model_turn_abandoned",
+                     json.dumps({"reservation_id": reservation_id}))
+                return CodexTurn(returncode=1, message=None, stopped=True)
             turn = runner.run_admitted(  # type: ignore[attr-defined]
                 prompt, model=selected, timeout=timeout, should_stop=stopped,
                 images=list(attached.values()) or None, token_claim=token_claim,
