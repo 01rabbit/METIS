@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
@@ -162,13 +163,27 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     monkeypatch.setattr(identity, "_PUBLIC_MODEL_SHA256", model_digest)
     patch = tmp_path / "approved.patch"
     patch.write_bytes(b"synthetic patch")
+    dependency = tmp_path / "libfixture.so"
+    dependency.write_bytes(b"synthetic pinned dependency")
+
+    def dependency_closure(_binary, *, target_os, target_arch):
+        assert (target_os, target_arch) == ("Linux", "aarch64")
+        size, digest = identity._snapshot_hash(dependency, identity._BINARY_LIMIT)
+        return (identity.NativeDependency("libfixture.so", str(dependency), size, digest),)
+
+    monkeypatch.setattr(identity, "_dependency_closure", dependency_closure)
+    monkeypatch.setattr(fixture, "platform", SimpleNamespace(system=lambda: "Linux",
+                                                               machine=lambda: "aarch64"))
     manifest = tmp_path / "native-build.json"
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     manifest.write_text(json.dumps({
-        "version": 1, "profile": identity._PROFILE, "source_commit": identity._SOURCE_COMMIT,
-        "target_os": platform.system(), "target_arch": platform.machine(),
+        "version": 2, "profile": identity._PROFILE, "source_commit": identity._SOURCE_COMMIT,
+        "target_os": "Linux", "target_arch": "aarch64",
         "compiler_id": "fixture", "compiler_version": "1", "cmake_version": "1",
         "binary_sha256": binary_digest, "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+        "dependencies": [{"soname": "libfixture.so", "path": str(dependency),
+                          "size": dependency.stat().st_size,
+                          "sha256": hashlib.sha256(dependency.read_bytes()).hexdigest()}],
     }))
     approval = {
         "manifest": manifest, "patch": patch,
@@ -230,7 +245,8 @@ def test_private_launch_verifies_terminal_receipt_and_keeps_full_charge(tmp_path
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
 
-@pytest.mark.parametrize("kind", ["binary", "model", "symlink", "prompt", "unknown_model", "forged_attempt"])
+@pytest.mark.parametrize("kind", ["binary", "model", "symlink", "dependency", "prompt",
+                                  "unknown_model", "forged_attempt"])
 def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
     admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
     if kind == "binary":
@@ -241,6 +257,9 @@ def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
         alias = tmp_path / "alias"
         alias.symlink_to(model)
         model = alias
+    elif kind == "dependency":
+        dependency = Path(json.loads(approval["manifest"].read_text())["dependencies"][0]["path"])
+        dependency.write_bytes(b"substituted dynamic dependency")
     elif kind == "prompt":
         receipt = receipt.model_copy(update={"attempt": receipt.attempt.model_copy(
             update={"prompt_sha256": "a" * 64},
@@ -263,6 +282,41 @@ def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
     else:
         with pytest.raises(ValueError):
             fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("replacement", ["changed", "unlisted", "symlink", "fifo"])
+def test_dependency_closure_failure_is_before_claim_and_launch(tmp_path, monkeypatch, replacement):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    record = json.loads(approval["manifest"].read_text())["dependencies"][0]
+    dependency = Path(record["path"])
+    original = identity._dependency_closure
+    if replacement == "changed":
+        dependency.write_bytes(b"changed dependency")
+    elif replacement == "symlink":
+        dependency.unlink()
+        dependency.symlink_to(binary)
+    elif replacement == "fifo":
+        dependency.unlink()
+        os.mkfifo(dependency)
+    else:
+        def with_unlisted(path, *, target_os, target_arch):
+            found = original(path, target_os=target_os, target_arch=target_arch)
+            extra = tmp_path / "libunlisted.so"
+            extra.write_bytes(b"unlisted transitive dependency")
+            size, digest = identity._snapshot_hash(extra, identity._BINARY_LIMIT)
+            return (*found, identity.NativeDependency("libunlisted.so", str(extra), size, digest))
+        monkeypatch.setattr(identity, "_dependency_closure", with_unlisted)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("dependency mismatch reached Popen")
+
+    monkeypatch.setattr(admission, "claim_for_launch", unexpected)
+    monkeypatch.setattr(fixture, "_run_claim", unexpected)
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    with pytest.raises((ValueError, OSError)):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     with closing(sqlite3.connect(admission.database)) as db:
         assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
 
