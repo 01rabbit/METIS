@@ -215,7 +215,6 @@ def test_dependency_closure_rejects_ambiguous_or_unsupported_loader_features(tmp
     monkeypatch.setattr(identity, "_ldconfig_entries", lambda **_kwargs: {
         ("liba.so", "AArch64"): {library_a},
         ("libb.so", "AArch64"): {library_b},
-        ("ld-linux-aarch64.so.1", "AArch64"): {interpreter.resolve()},
     })
 
     def metadata(argv, *, deadline):
@@ -230,13 +229,27 @@ def test_dependency_closure_rejects_ambiguous_or_unsupported_loader_features(tmp
         if path == library_a:
             return "(NEEDED) Shared library: [libb.so]\n"
         if path == interpreter:
-            return "(NEEDED) Shared library: [ld-linux-aarch64.so.1]\n"
+            return ("(SONAME) Library soname: [ld-linux-aarch64.so.1]\n"
+                    "(NEEDED) Shared library: [ld-linux-aarch64.so.1]\n")
         return ""
 
     monkeypatch.setattr(identity, "_inspect_output", metadata)
     closure = identity._dependency_closure(binary, target_os="Linux", target_arch="aarch64")
     assert [item.soname for item in closure] == ["@interpreter", "liba.so", "libb.so"]
     assert all(len(item.sha256) == 64 for item in closure)
+
+    for malformed in (
+        "(NEEDED) Shared library: [ld-linux-aarch64.so.1]\n",
+        ("(SONAME) Library soname: [ld-linux-aarch64.so.1]\n"
+         "(SONAME) Library soname: [ld-linux-aarch64.so.2]\n"),
+    ):
+        monkeypatch.setattr(identity, "_inspect_output", lambda argv, malformed=malformed, **kwargs: (
+            malformed if argv[1:3] == ["-W", "-d"] and Path(argv[-1]) == interpreter
+            else metadata(argv, **kwargs)
+        ))
+        with pytest.raises(ValueError, match="interpreter identity is invalid or ambiguous"):
+            identity._dependency_closure(binary, target_os="Linux", target_arch="aarch64")
+    monkeypatch.setattr(identity, "_inspect_output", metadata)
 
     monkeypatch.setattr(identity, "_ldconfig_entries", lambda **_kwargs: {
         ("liba.so", "AArch64"): {library_a, library_b},

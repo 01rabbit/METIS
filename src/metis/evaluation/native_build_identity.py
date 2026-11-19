@@ -284,6 +284,10 @@ def _dependency_closure(binary: Path, *, target_os: str, target_arch: str) -> tu
     interpreters = re.findall(r"Requesting program interpreter:\s*([^]\s]+)", interpreter_output)
     if len(interpreters) != 1 or not Path(interpreters[0]).is_absolute():
         raise ValueError("native ELF interpreter is missing or ambiguous")
+    try:
+        interpreter_path = Path(interpreters[0]).resolve(strict=True)
+    except OSError:
+        raise ValueError("native ELF interpreter is unavailable") from None
 
     def needed_names(output: str) -> tuple[str, ...]:
         unsupported = ("(RPATH)", "(RUNPATH)", "(FILTER)", "(AUXILIARY)", "(AUDIT)", "(DEPAUDIT)")
@@ -295,10 +299,20 @@ def _dependency_closure(binary: Path, *, target_os: str, target_arch: str) -> tu
             raise ValueError("native ELF load names are invalid or ambiguous")
         return tuple(names)
 
-    pending: list[tuple[str, Path]] = [("@interpreter", Path(interpreters[0]))]
+    interpreter_dynamic = _inspect_output(
+        [str(readelf), "-W", "-d", str(interpreter_path)], deadline=deadline,
+    )
+    interpreter_sonames = re.findall(r"\(SONAME\).*?\[([^]\x00]+)\]", interpreter_dynamic)
+    if (len(interpreter_sonames) != 1
+            or any(not _SONAME.fullmatch(name) for name in interpreter_sonames)):
+        raise ValueError("native ELF interpreter identity is invalid or ambiguous")
+    interpreter_soname = interpreter_sonames[0]
+
+    pending: list[tuple[str, Path]] = [("@interpreter", interpreter_path)]
     pending.extend((name, Path()) for name in needed_names(dynamic_output))
     records: dict[str, NativeDependency] = {}
     resolved_names: dict[str, str] = {}
+    dynamic_outputs = {str(interpreter_path): interpreter_dynamic}
     total = 0
     while pending:
         if time.monotonic() >= deadline:
@@ -309,6 +323,11 @@ def _dependency_closure(binary: Path, *, target_os: str, target_arch: str) -> tu
                 path = path.resolve(strict=True)
             except OSError:
                 raise ValueError("native ELF interpreter is unavailable") from None
+        elif name == interpreter_soname:
+            path = interpreter_path
+            cache_matches = cache.get((name, arch_tag), set())
+            if cache_matches and cache_matches != {interpreter_path}:
+                raise ValueError("native ELF interpreter name resolves to a different file")
         else:
             matches = cache.get((name, arch_tag), set())
             if len(matches) != 1:
@@ -340,7 +359,10 @@ def _dependency_closure(binary: Path, *, target_os: str, target_arch: str) -> tu
             raise ValueError("native dependency changed during verification")
         total += size
         records[name] = NativeDependency(name, str(path), size, digest)
-        child_dynamic = _inspect_output([str(readelf), "-W", "-d", str(path)], deadline=deadline)
+        child_dynamic = dynamic_outputs.get(str(path))
+        if child_dynamic is None:
+            child_dynamic = _inspect_output([str(readelf), "-W", "-d", str(path)], deadline=deadline)
+            dynamic_outputs[str(path)] = child_dynamic
         pending.extend((child, Path()) for child in needed_names(child_dynamic))
     return tuple(sorted(records.values()))
 

@@ -25,8 +25,10 @@ The pinned native fixture manifest now records a bounded, canonical hash list
 for the executable's recursively declared Linux ELF `DT_NEEDED` dependencies
 and its `PT_INTERP` loader. The build and pre-launch checks inspect ELF
 metadata with `readelf` and the local `ldconfig` cache; they do not run
-`llama-server`. Runtime preflight re-resolves the closure and verifies each
-file before consuming the launch claim. Missing or ambiguous loader-cache
+`llama-server`. If a dependency names the interpreter's own `DT_SONAME`, the
+resolver binds that name to the already declared `PT_INTERP` path, even when
+that alias is absent from the loader cache. Runtime preflight re-resolves the
+closure and verifies each file before consuming the launch claim. Missing or ambiguous loader-cache
 entries, non-matching ELF architecture, oversized output, RPATH/RUNPATH,
 FILTER/AUXILIARY/AUDIT/DEPAUDIT tags, and unsupported targets fail closed.
 Only glibc Linux `aarch64` and `x86_64` hosts with the accepted GNU `readelf`
@@ -39,6 +41,11 @@ glibc's fallback search paths or hardware-capability selection. A present
 `/etc/ld.so.preload` must be root-owned, not group/world writable, and empty.
 The root-owned system `readelf`/`ldconfig` tools, current loader cache, and
 trusted OS files are part of the local trust boundary.
+
+Manifest v1 pins are not accepted by this verifier. Existing v1 or Darwin
+approvals must be regenerated for this manifest version and reviewed again;
+they are not silently migrated or treated as approval of the new dependency
+closure.
 
 This binds the declared ELF dependency closure, not libraries loaded later via
 `dlopen` or mutable loader state after preflight. `readelf`, hashing, and the
