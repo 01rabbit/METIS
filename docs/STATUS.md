@@ -636,6 +636,11 @@ and the [unified operational audit](reports/issue9-unified-operational-audit-202
 
 A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The checksum manifest now uses release asset basenames so recipients can run `sha256sum -c SHA256SUMS` in the download directory; see `docs/reports/issue9-release-checksum-portability-2026-11-19.md` for local test evidence. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
 
+The offline release validator also checks a staged wheel, sdist and canonical
+checksum manifest as an exact bundle using `--verify-checksums`. This confirms
+local bundle consistency; signed installer and recipient provenance evidence
+remain open. See the [release bundle checks](reports/issue9-release-checksum-portability-2026-11-19.md#offline-bundle-verification).
+
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
 before registering a worker or accepting results, and cannot replace another
