@@ -665,13 +665,15 @@ checksum manifest as an exact bundle using `--verify-checksums`. This confirms
 local bundle consistency; signed installer and recipient provenance evidence
 remain open. See the [release bundle checks](reports/issue9-release-checksum-portability-2026-11-19.md#offline-bundle-verification).
 
-The child change stacked on PR #111 adds that offline verification to the
-tag-triggered release workflow after checksum generation and before
-attestation/publication. Synthetic CLI coverage rejects a changed archive,
-and a workflow-order test keeps verification ahead of those release steps.
-This is a candidate code change pending review and exact-head CI; no tag or
-release was run. Bundle consistency does not authenticate source provenance
-or prove OIDC/attestation publication. See
+PR #111, now merged, provides the offline verifier. Main-based integration
+PR #125 applies it to the tag-triggered release and the nonpublishing
+attestation drill after checksum generation and before attestation or
+publication. Synthetic CLI coverage rejects a changed archive, and
+workflow-order tests keep verification ahead of those release steps. The
+integration commit `b71e79f` passed 46 focused tests, Ruff, repository
+validation (0 findings), and `git diff --check`; exact-head CI and review are
+pending. No tag or release was run. Bundle consistency does not authenticate
+source provenance or prove OIDC/attestation publication. See
 [`issue9-release-bundle-workflow-gate-2026-11-20.md`](reports/issue9-release-bundle-workflow-gate-2026-11-20.md).
 
 Sandbox recovery now revokes persisted operation identities after confirmed

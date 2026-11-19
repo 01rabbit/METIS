@@ -2,7 +2,7 @@
 
 ## Change
 
-This branch depends on PR #111, which adds the bounded offline
+This change builds on PR #111, now merged, which adds the bounded offline
 `metis.release_artifacts --verify-checksums` verifier. The tag-triggered
 `.github/workflows/release.yml` now invokes it on the exact `dist/` wheel,
 sdist and `SHA256SUMS` after generation and before package attestation or
@@ -65,6 +65,16 @@ directory; no tag or release was created.
 
 No tag, GitHub release, OIDC token, attestation or publication was requested
 or performed. Exact-head GitHub CI will be reported separately if available.
+
+## Main integration revalidation
+
+The current main-based integration commit is `b71e79f3c3d025c7a67227403b3283da09b6ec6e`.
+It includes the release-bundle gate and attestation identity pin from PR #122.
+On that tree, `PYTHONPATH=src .venv/bin/python -m pytest -o addopts='' -q
+tests/test_validate_release_artifacts.py` passed 46 tests; Ruff passed for the
+test module, `scripts/check_repo.py` reported 0 findings, and `git diff --check`
+passed. Exact-head GitHub Actions were still running when this update was
+written. No tag, release, or external attestation was created.
 
 ## Limits
 
