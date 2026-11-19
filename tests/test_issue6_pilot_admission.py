@@ -266,3 +266,19 @@ def test_reservation_rechecks_claim_and_binding_in_transaction(dry_run, edit):
     with pytest.raises(ValueError, match="claimed approval does not match"):
         admission.reserve_phase(*job, phase())
     assert scheduler.model_turn_budget(job[0])["reserved"] == 0
+
+
+def test_wall_clock_expiry_rejects_reservation_without_monotonic_advance(dry_run):
+    scheduler, workspace, approval, clock, _ = dry_run
+    wall = [1_000.0]
+    admission = DryRunAdmission(scheduler, clock=lambda: clock[0], wall_clock=lambda: wall[0])
+    admission.claim(approval, workspace)
+    admission.open_phase("case-0", 1)
+    job = start(scheduler)
+    with closing(sqlite3.connect(scheduler.database)) as db, db:
+        db.execute("UPDATE agent_jobs SET deadline=1")
+    wall[0] = approval.expires_at
+    with pytest.raises(ValueError, match="approval expired"):
+        admission.reserve_phase(*job, phase())
+    assert scheduler.model_turn_budget(job[0])["reserved"] == 0
+    assert scheduler.jobs(job[0])[0]["state"] == "running"

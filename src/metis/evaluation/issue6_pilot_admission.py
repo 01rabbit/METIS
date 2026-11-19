@@ -176,6 +176,11 @@ class DryRunAdmission:
         if self._scheduler.database.resolve(strict=True) != self._database:
             raise ValueError("scheduler database differs from the dry-run ledger")
 
+        def verify_expiry() -> None:
+            wall_now = self._wall_clock()
+            if not math.isfinite(wall_now) or wall_now >= approval.expires_at:
+                raise ValueError("dry-run approval expired or clock unavailable")
+
         def validate(db: sqlite3.Connection) -> None:
             main_path = next(path for _, name, path in db.execute("PRAGMA database_list") if name == "main")
             if Path(main_path) != self._database:
@@ -186,8 +191,10 @@ class DryRunAdmission:
             ).fetchone()
             if claimed != (approval.model_dump_json(), 1):
                 raise ValueError("claimed approval does not match in the reservation database")
+            verify_expiry()
 
         def persist(db: sqlite3.Connection, reservation: int) -> None:
+            verify_expiry()
             now = self._clock()
             if not math.isfinite(now) or now >= cutoff:
                 raise ValueError("dry-run phase deadline reached")
