@@ -1155,7 +1155,7 @@ def main() -> int:
                                                   older_than_days=args.older_than_days,
                                                   apply=args.apply)
                 print(json.dumps(retention_result))
-                return (2 if args.apply and any(row["status"] == "blocked"
+                return (2 if args.apply and any(row["status"] in {"blocked", "overflow", "capacity_exceeded", "capacity_unavailable"}
                                                  for row in retention_result["results"]) else 0)
             elif args.codex_command == "extend":
                 output = session.extend(args.run_id, actions=args.actions, seconds=args.seconds)
