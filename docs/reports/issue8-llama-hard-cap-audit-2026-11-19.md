@@ -40,6 +40,11 @@ settings. Before `complete()` reserves tokens the only request is `/health`;
 the backend sends neither a prompt nor a completion request. A startup failure
 therefore has no model-token charge. Tests verify injected environment does
 not reach the child and a pre-prompt startup exit creates no reservation.
+After this hardening, one answer-free local smoke call with the pinned
+Homebrew binary and Shisa GGUF started successfully with `--no-warmup` and the
+sanitized child environment. The harmless `Hello world.` prompt reported four
+input tokens and two output tokens against a pre-call reservation of 4098.
+No CTF or held-out task was involved.
 
 The held-out protocol currently binds string `model_pin` and `runtime_pin`.
 The specialist accepts a matching model ID, while its binary and model SHA-256
