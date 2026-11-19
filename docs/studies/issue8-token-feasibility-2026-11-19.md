@@ -40,6 +40,15 @@ tokenizer library is installed. Prompt-byte limits alone have no verified
 token-count bound for this tokenizer. A conservative estimate based on bytes
 would be a hypothesis, not evidence of a strict cap.
 
+`ollama show qwen3.5:0.8b --verbose` reports architecture `qwen35`, tokenizer
+model `gpt2`, and tokenizer pre-processing `qwen35`. Those metadata do not expose
+an exact token-count function. The installed Ollama CLI also offers no public
+tokenization command. We found no compatible `llama-tokenize` executable or
+local `gguf`, `llama_cpp`, `tokenizers`, `sentencepiece`, or `transformers` Python
+module. Until a pinned implementation is compared with the server's
+`prompt_eval_count` on representative raw prompts, including Unicode and
+special-token-like strings, no exact pre-dispatch admission check is established.
+
 ## Decision
 
 No tested no-new-key route proves both input and output bounds before a call.
@@ -50,5 +59,10 @@ admission, a positive output-token limit, and atomic per-run reservations
 across parallel specialists. Its tests must cover retries, cancellation,
 unknown usage, and service responses exceeding the declared bound.
 
-The requested `ai-claude` launcher was not present on this host's PATH or in
-the searched local configuration. The plain `claude` executable was not used.
+After this first probe, the user provided `/Users/mao/.local/bin/ai-claude`.
+An independent, tool-less review through that launcher suggested a byte-count
+upper bound for verified byte-level tokenizers, with explicit overhead and a
+positive `num_predict`. The reviewer marked this as an unverified inference and
+identified model changes, hidden templates, context shifting, and concurrent
+reservations as failure conditions. We therefore did not turn that suggestion
+into a hard-cap claim. The plain `claude` executable was not used.
