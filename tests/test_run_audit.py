@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -300,6 +301,41 @@ def test_list_audit_summaries_is_bounded_newest_first_redacted_and_read_only(tmp
     assert "private-title-omitted" not in encoded
     assert "private-description-omitted" not in encoded
     assert database.read_bytes() == before
+
+
+def test_list_audit_summary_timestamp_matches_index_after_clock_regression(
+        tmp_path, monkeypatch):
+    database = tmp_path / "runs.sqlite"
+    store = RunStore(database)
+    times = iter([
+        datetime(2026, 11, 20, 10, 0, tzinfo=UTC),
+        datetime(2026, 11, 20, 10, 1, tzinfo=UTC),
+        datetime(2026, 11, 20, 10, 2, tzinfo=UTC),
+        datetime(2026, 11, 20, 10, 3, tzinfo=UTC),
+        datetime(2026, 11, 20, 9, 0, tzinfo=UTC),
+        datetime(2026, 11, 20, 9, 30, tzinfo=UTC),
+    ])
+
+    class Clock:
+        @staticmethod
+        def now(_tz):
+            return next(times)
+
+    monkeypatch.setattr(store_module, "datetime", Clock)
+    first = "a" * 32
+    second = "b" * 32
+    statuses = (RunStatus.NEW, RunStatus.VALIDATED, RunStatus.CLASSIFIED,
+                RunStatus.PLANNING, RunStatus.EXECUTING)
+    for sequence, status in enumerate(statuses):
+        store.append(RunEvent(run_id=first, sequence=sequence, status=status))
+    store.append(RunEvent(run_id=second, sequence=0, status=RunStatus.NEW))
+
+    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(limit=2)
+
+    assert truncated is False
+    assert [summary["run_id"] for summary in summaries] == [first, second]
+    assert summaries[0]["last_timestamp"] == "2026-11-20T10:03:00+00:00"
+    assert summaries[0]["last_timestamp"] > summaries[1]["last_timestamp"]
 
 
 @pytest.mark.parametrize("limit", [0, -1, 101, True, False, 1.5])

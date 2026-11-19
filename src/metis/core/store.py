@@ -448,23 +448,24 @@ class RunStore:
             db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SQLITE_INDEX_VALUE_BYTES)
             cursor = db.execute(
                 f"SELECT substr(CAST(run_id AS BLOB), 1, ?), "
-                "length(CAST(run_id AS BLOB)), length(CAST(timestamp AS BLOB)) "
+                "length(CAST(run_id AS BLOB)), "
+                "substr(CAST(timestamp AS BLOB), 1, ?), length(CAST(timestamp AS BLOB)) "
                 f"FROM events INDEXED BY {_RUN_AUDIT_LATEST_INDEX} "
                 "ORDER BY timestamp DESC, run_id DESC "
-                "LIMIT ?", (_MAX_RUN_INDEX_FIELD_BYTES,
+                "LIMIT ?", (_MAX_RUN_INDEX_FIELD_BYTES, _MAX_RUN_INDEX_FIELD_BYTES,
                             _MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS + 1),
             )
-            run_ids = []
+            run_ids: list[tuple[str, str]] = []
             seen_run_ids: set[str] = set()
             discovery_bytes = 0
             discovery_truncated = False
-            for scanned, (run_id_bytes, run_id_length, timestamp_length) in enumerate(
+            for scanned, (run_id_bytes, run_id_length, timestamp_bytes, timestamp_length) in enumerate(
                     cursor, start=1):
                 if scanned > _MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS:
                     discovery_truncated = True
                     break
-                if (not isinstance(run_id_bytes, bytes) or type(run_id_length) is not int
-                        or type(timestamp_length) is not int):
+                if (not isinstance(run_id_bytes, bytes) or not isinstance(timestamp_bytes, bytes)
+                        or type(run_id_length) is not int or type(timestamp_length) is not int):
                     raise ValueError("run audit discovery contains invalid index fields")
                 if (run_id_length > _MAX_RUN_INDEX_FIELD_BYTES
                         or timestamp_length > _MAX_RUN_INDEX_FIELD_BYTES):
@@ -475,19 +476,20 @@ class RunStore:
                     break
                 try:
                     run_id = run_id_bytes.decode("utf-8")
+                    latest_timestamp = timestamp_bytes.decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    raise ValueError("run audit discovery contains invalid run ID") from exc
+                    raise ValueError("run audit discovery contains invalid index text") from exc
                 if run_id not in seen_run_ids:
                     seen_run_ids.add(run_id)
-                    run_ids.append((run_id,))
+                    run_ids.append((run_id, latest_timestamp))
                     if len(run_ids) == limit:
                         break
             cursor.close()
             db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_EVENT_FIELD_BYTES)
-            summaries = []
+            summaries: list[dict[str, object]] = []
             total_events = 0
             total_bytes = 0
-            for (run_id,) in run_ids:
+            for run_id, latest_timestamp in run_ids:
                 event_limit = _MAX_RUN_AUDIT_LIST_EVENTS - total_events
                 byte_limit = _MAX_RUN_AUDIT_LIST_BYTES - total_bytes
                 payloads = db.execute(
@@ -521,10 +523,6 @@ class RunStore:
                 events = self._read(db, run_id)
                 if not events:
                     raise ValueError("run audit disappeared from snapshot")
-                last_timestamp = db.execute(
-                    "SELECT timestamp FROM events WHERE run_id=? "
-                    "ORDER BY sequence DESC LIMIT 1", (run_id,),
-                ).fetchone()[0]
                 budget = None
                 tables = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -539,7 +537,7 @@ class RunStore:
                         budget = {**validated.model_dump(), "actions_charged": charged,
                                   "actions_remaining": max(0, validated.max_actions - charged)}
                 summaries.append({"run_id": run_id, "status": events[-1].status.value,
-                                  "last_timestamp": last_timestamp,
+                                  "last_timestamp": latest_timestamp,
                                   "chain_valid": True,
                                   "codex_budget": budget})
             return summaries, discovery_truncated
