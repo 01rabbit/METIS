@@ -61,9 +61,11 @@ and 1,000-run limits. The output includes counts and omits origin names and
 credential values. The command accepts regular restored SQLite files even when
 their permissions are broader than those allowed for local authentication.
 
-The transaction advances a database-wide epoch. An older client cannot
-overwrite saved state, and an intake already underway cannot persist its
-cookies. Retiring saved cookies does not cancel in-flight requests, revoke
+The transaction advances a database-wide epoch. In a process that checks
+the epoch, a client started before retirement cannot overwrite saved state,
+and an intake already underway cannot persist its cookies. Stop pre-upgrade
+METIS processes that can write to this database before applying the retirement.
+Retiring saved cookies does not cancel in-flight requests, revoke
 provider credentials, or modify environment variables. The command performs
 no WAL checkpoint, and prior values may remain in SQLite WAL, snapshots,
 or backups.
