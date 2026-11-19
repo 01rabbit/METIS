@@ -99,7 +99,7 @@ async def _exchange(path: Path, route: str, body: bytes = b"") -> tuple[int, dic
         length = int(lengths[0])
         if not 0 < length <= _MAX_RESPONSE_BYTES:
             raise ValueError("fixture HTTP response is outside its bound")
-        response = json.loads(await reader.readexactly(length))
+        response = json.loads(await reader.readexactly(length), object_pairs_hook=_unique_fields)
         if not isinstance(response, dict):
             raise TypeError("invalid fixture HTTP response")
         return int(status), response
@@ -152,7 +152,8 @@ async def _complete_once(
                 or type(settings.get("max_tokens")) is not int or settings["max_tokens"] != request.n_predict
                 or settings.get("speculative.types") != "none,none"
                 or settings.get("backend_sampling") is not False or settings.get("stream") is not False
-                or settings.get("ignore_eos") is not False or settings.get("temperature") != 0
+                or settings.get("ignore_eos") is not False
+                or type(settings.get("temperature")) not in (int, float) or settings["temperature"] != 0
                 or settings.get("stop") != expected_stop or settings.get("logit_bias") != expected_bias):
             raise _FixtureMismatch("fixture completion settings or counters mismatch")
         return generated

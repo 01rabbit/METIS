@@ -87,6 +87,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def send_json(self, result):
         raw = json.dumps(result).encode()
+        if mode == "duplicate_http_counter" and "tokens_predicted" in result:
+            raw = raw.replace(b'"tokens_predicted": 1,', b'"tokens_predicted": 2, "tokens_predicted": 1,')
         self.send_response(200)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -178,6 +180,7 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     ("bad_prompt_id", "receipt_invalid", -9, None),
     ("bad_evaluated", "receipt_invalid", -9, None),
     ("bad_generated", "receipt_invalid", -9, None),
+    ("duplicate_http_counter", "receipt_invalid", -9, None),
     ("bad_settings", "receipt_invalid", -9, None),
     ("draft_settings", "receipt_invalid", -9, None),
     ("duplicate", "receipt_invalid", 0, None),
