@@ -21,6 +21,7 @@ from metis.evaluation.heldout_analysis import (
     analyze,
     reconcile_evidence,
 )
+from metis.evaluation.heldout_arm import bind, binding
 from metis.evaluation.heldout_study_export import ExportManifest, RunAssignment, export
 
 MAX_PROTOCOL_BYTES = 1_000_000
@@ -118,6 +119,22 @@ def schedule(protocol: Protocol) -> list[dict[str, Any]]:
     return slots
 
 
+def bind_run(protocol: Protocol, database: Path, run_id: str, *, task_id: str,
+             repetition: int, arm: Arm, expected_sha256: str,
+             prompt_text: str | None = None) -> None:
+    """Bind a scheduled run to its exact prospective treatment before work."""
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id) or digest(protocol) != expected_sha256:
+        raise ValueError("held-out protocol commitment mismatch")
+    slot = {"task_id": task_id, "repetition": repetition, "arm": arm}
+    if slot not in schedule(protocol):
+        raise ValueError("run is outside held-out schedule")
+    bind(database, run_id, {"protocol_sha256": expected_sha256, **slot,
+                            "arm_config": protocol.arm_config[arm].model_dump(mode="json"),
+                            "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
+                            "budget": protocol.budgets[arm].model_dump(mode="json"),
+                            "measurement": protocol.measurement, "prompt_text": prompt_text})
+
+
 def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database: Path) -> None:
     """Require each bound run's frozen cards to match the committed arm treatment."""
     expected = sorted(protocol.memory_card_digests)
@@ -150,6 +167,85 @@ def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database:
                     raise ValueError("held-out memory snapshot lacks prior source")
 
 
+def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Path) -> None:
+    """Require each real-model run to carry its bound treatment into host jobs."""
+    if protocol.measurement != "real_model":
+        return
+    expected_digest = digest(protocol)
+    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        for assignment in bindings.runs:
+            recorded = binding(database, assignment.run_id)
+            if recorded is None:
+                raise ValueError("held-out arm binding mismatch")
+            prompt_text = recorded.get("prompt_text")
+            if not isinstance(prompt_text, str) or hashlib.sha256(prompt_text.encode()).hexdigest() != (
+                    protocol.arm_config[assignment.arm].prompt_sha256):
+                raise ValueError("held-out prompt binding mismatch")
+            if {key: value for key, value in recorded.items() if key != "prompt_text"} != {
+                "protocol_sha256": expected_digest, "task_id": assignment.task_id,
+                "repetition": assignment.repetition, "arm": assignment.arm,
+                "arm_config": protocol.arm_config[assignment.arm].model_dump(mode="json"),
+                "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
+                "budget": protocol.budgets[assignment.arm].model_dump(mode="json"),
+            }:
+                raise ValueError("held-out arm binding mismatch")
+            jobs = db.execute("SELECT assignment_id,state FROM agent_jobs WHERE run_id=?",
+                              (assignment.run_id,)).fetchall()
+            if not jobs:
+                raise ValueError("held-out dispatch evidence missing")
+            for assignment_id, state in jobs:
+                rows = db.execute("SELECT attempt_id,detail FROM agent_job_log WHERE assignment_id=? "
+                                  "AND event='heldout_arm_applied'", (assignment_id,)).fetchall()
+                if not rows:
+                    raise ValueError("held-out dispatch evidence missing")
+                reservations = db.execute(
+                    "SELECT rowid,attempt_id FROM agent_turn_reservations WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchall()
+                events = db.execute(
+                    "SELECT attempt_id,event,detail FROM agent_job_log WHERE assignment_id=? "
+                    "AND event IN ('heldout_prompt_applied','codex_turn','model_turn_abandoned')",
+                    (assignment_id,),
+                ).fetchall()
+                by_id: dict[int, list[tuple[str, str, dict[str, Any]]]] = {}
+                for attempt, event, detail in events:
+                    try:
+                        parsed = json.loads(detail)
+                    except (TypeError, json.JSONDecodeError):
+                        raise ValueError("held-out prompt dispatch mismatch") from None
+                    identity = parsed.get("reservation_id") if isinstance(parsed, dict) else None
+                    if type(identity) is not int:
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    by_id.setdefault(identity, []).append((attempt, event, parsed))
+                if set(by_id) != {identity for identity, _ in reservations}:
+                    raise ValueError("held-out prompt dispatch mismatch")
+                for identity, attempt in reservations:
+                    if not any(recorded_attempt == attempt for recorded_attempt, _ in rows):
+                        raise ValueError("held-out dispatch treatment mismatch")
+                    matched = by_id[identity]
+                    if any(recorded_attempt != attempt for recorded_attempt, _, _ in matched):
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    kinds = sorted(event for _, event, _ in matched)
+                    if kinds == ["model_turn_abandoned"]:
+                        continue
+                    if kinds != ["codex_turn", "heldout_prompt_applied"]:
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    prompt = next(detail for _, event, detail in matched if event == "heldout_prompt_applied")
+                    if (prompt.get("prefix_sha256") != protocol.arm_config[assignment.arm].prompt_sha256
+                            or not isinstance(prompt.get("prompt_sha256"), str)
+                            or len(prompt["prompt_sha256"]) != 64
+                            or prompt.get("model") != protocol.model_pin
+                            or prompt.get("runtime") != protocol.runtime_pin):
+                        raise ValueError("held-out prompt dispatch mismatch")
+                expected_cards = len(protocol.memory_card_digests) if protocol.arm_config[assignment.arm].memory_enabled else 0
+                for _, detail in rows:
+                    applied = json.loads(detail)
+                    if applied != {"protocol_sha256": expected_digest, "arm": assignment.arm,
+                                   "memory_cards": expected_cards, "model": protocol.model_pin,
+                                   "runtime": protocol.runtime_pin}:
+                        raise ValueError("held-out dispatch treatment mismatch")
+
+
 def finalize(protocol: Protocol, bindings: Bindings, database: Path,
              *, expected_sha256: str) -> dict[str, Any]:
     """Accept only the frozen protocol and exact run matrix, then analyze ledger evidence."""
@@ -166,6 +262,7 @@ def finalize(protocol: Protocol, bindings: Bindings, database: Path,
     if bound != planned:
         raise ValueError("run bindings do not follow the frozen schedule")
     reconcile_memory_snapshots(protocol, bindings, database)
+    reconcile_arm_dispatch(protocol, bindings, database)
     data = protocol.model_dump()
     data.pop("arm_config")
     data.pop("memory_card_digests")
@@ -199,6 +296,15 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("protocol", type=Path)
+    bind_command = commands.add_parser("bind")
+    bind_command.add_argument("protocol", type=Path)
+    bind_command.add_argument("--database", type=Path, required=True)
+    bind_command.add_argument("--expected-sha256", required=True)
+    bind_command.add_argument("--run-id", required=True)
+    bind_command.add_argument("--task-id", required=True)
+    bind_command.add_argument("--repetition", type=int, required=True)
+    bind_command.add_argument("--arm", required=True)
+    bind_command.add_argument("--prompt-file", type=Path)
     finish = commands.add_parser("finalize")
     finish.add_argument("protocol", type=Path)
     finish.add_argument("bindings", type=Path)
@@ -207,8 +313,16 @@ def main() -> int:
     args = parser.parse_args()
     try:
         protocol = Protocol.model_validate_json(_read(args.protocol, MAX_PROTOCOL_BYTES))
+        output: dict[str, Any]
         if args.command == "prepare":
             output = {"protocol_sha256": digest(protocol), "schedule": schedule(protocol)}
+        elif args.command == "bind":
+            prompt_text = (_read(args.prompt_file, 4_000).decode("utf-8")
+                           if args.prompt_file is not None else None)
+            bind_run(protocol, args.database, args.run_id, task_id=args.task_id,
+                     repetition=args.repetition, arm=args.arm,
+                     expected_sha256=args.expected_sha256, prompt_text=prompt_text)
+            output = {"run_id": args.run_id, "bound": True}
         else:
             bindings = Bindings.model_validate_json(_read(args.bindings, MAX_BINDINGS_BYTES))
             output = finalize(protocol, bindings, args.database,

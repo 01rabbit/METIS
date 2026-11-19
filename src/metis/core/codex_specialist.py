@@ -558,6 +558,16 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         raise ValueError("attempt is not the running attempt of this assignment")
     allowed = {entry["id"] for entry in scheduler.config()["catalog"]}
     selected = model or (job["model"] or {}).get("model") or scheduler.config()["current_model"]
+    from metis.evaluation.heldout_arm import binding
+    heldout = binding(scheduler.database, run_id)
+    if heldout is not None and (selected != heldout["model_pin"] or note is not None):
+        raise ValueError("held-out specialist model or prompt override conflicts with protocol")
+    def bound_prompt() -> str:
+        rendered = render_prompt(brief, transcript, note)
+        if heldout is None:
+            return rendered
+        prefix = heldout["prompt_text"]
+        return prefix + "\n\n" + rendered
     if selected and allowed and selected not in allowed:
         raise ValueError("model is not in the active catalog registered with `metis agent slots`")
     plan = scheduler.ledger._plan(run_id, job["wave_id"])
@@ -569,16 +579,31 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     private_candidates: set[str] = set()
     decision_counts: dict[str, int] = {}
 
-    def record_turn(turn: CodexTurn) -> None:
+    def record_turn(turn: CodexTurn, reservation_id: int) -> None:
         record = {"thread_id": turn.thread_id, "returncode": turn.returncode, "usage": turn.usage,
                   "items": turn.item_types, "timed_out": turn.timed_out, "tool_errors": len(turn.tool_errors),
                   "isolation": turn.isolation}
         turns.append(record)
         iso = turn.isolation or {}
         summary = {key: record[key] for key in ("thread_id", "returncode", "timed_out", "items", "tool_errors")}
+        summary["reservation_id"] = reservation_id
         summary["isolation"] = f"{iso.get('mode', 'none')}:refused={len(iso.get('refused', []))}:{iso.get('auth', '-')}"
         _log(scheduler, assignment_id, attempt_id, "codex_turn", json.dumps(summary))
         _usage(scheduler, assignment_id, turns, selected)
+
+    def invoke(reservation: dict[str, Any], timeout: float) -> CodexTurn:
+        prompt = bound_prompt()
+        reservation_id = reservation["reservation_id"]
+        if heldout is not None:
+            detail = {"reservation_id": reservation_id, "prefix_sha256":
+                      hashlib.sha256(heldout["prompt_text"].encode()).hexdigest(),
+                      "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                      "model": selected, "runtime": job["host"]}
+            _log(scheduler, assignment_id, attempt_id, "heldout_prompt_applied", json.dumps(detail, sort_keys=True))
+        turn = runner.run(prompt, model=selected, timeout=timeout,
+                          should_stop=stopped, images=list(attached.values()) or None)
+        record_turn(turn, reservation_id)
+        return turn
 
     def stop_outcome(reason: str) -> dict[str, str]:
         scheduler.cancel_run(run_id)
@@ -624,11 +649,11 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                        or "run specialist model-turn budget exhausted"}
             break
         if stopped():
+            _log(scheduler, assignment_id, attempt_id, "model_turn_abandoned",
+                 json.dumps({"reservation_id": reservation["reservation_id"]}))
             outcome = stop_outcome("run or attempt stopped before provider call")
             break
-        turn = runner.run(render_prompt(brief, transcript, note), model=selected, timeout=min(turn_timeout, remaining),
-                          should_stop=stopped, images=list(attached.values()) or None)
-        record_turn(turn)
+        turn = invoke(reservation, min(turn_timeout, remaining))
         if scheduler.run_cancelled(run_id):
             outcome = stop_outcome("run cancelled during a Codex turn; result discarded")
             break
@@ -654,12 +679,11 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                            or "run specialist model-turn budget exhausted before retry"}
                 break
             if stopped():
+                _log(scheduler, assignment_id, attempt_id, "model_turn_abandoned",
+                     json.dumps({"reservation_id": retry_reservation["reservation_id"]}))
                 outcome = stop_outcome("run or attempt stopped before transient retry")
                 break
-            turn = runner.run(render_prompt(brief, transcript, note), model=selected,
-                              timeout=min(turn_timeout, retry_remaining),
-                              should_stop=stopped, images=list(attached.values()) or None)
-            record_turn(turn)
+            turn = invoke(retry_reservation, min(turn_timeout, retry_remaining))
             if scheduler.run_cancelled(run_id):
                 outcome = stop_outcome("run cancelled during retry; result discarded")
                 break
