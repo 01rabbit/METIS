@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import socket
 import stat
 import subprocess
 import sys
@@ -161,9 +162,11 @@ async def _complete_once(
         return generated
 
 
-def _finish_process(process: subprocess.Popen[bytes], *, command: bytes) -> tuple[bool, int | None]:
-    control, result = process.stdin, process.stdout
-    assert control is not None and result is not None
+def _finish_process(
+    process: subprocess.Popen[bytes], control: socket.socket, *, command: bytes,
+) -> tuple[bool, int | None]:
+    result = process.stdout
+    assert result is not None
     try:
         if not command:
             try:
@@ -172,9 +175,8 @@ def _finish_process(process: subprocess.Popen[bytes], *, command: bytes) -> tupl
                 command = b"K"
         if command and process.poll() is None:
             try:
-                control.write(command)
-                control.flush()
-            except BrokenPipeError:
+                control.send(command, socket.MSG_NOSIGNAL)
+            except (BrokenPipeError, ConnectionResetError):
                 pass
     finally:
         control.close()
@@ -236,18 +238,22 @@ def _run_claim(
     except OSError:
         return TokenLaunchOutcome(status="launch_failed")
     try:
+        control_parent, control_child = socket.socketpair()
         try:
             process = subprocess.Popen(
                 [sys.executable, "-I", str(Path(__file__).with_name("_fixture_guardian.py")), str(write_fd),
                  str(binary), "--metis-work-budget", str(native_cap), "--model", str(model),
                  "--socket", str(socket_path), "--metis-receipt-fd", str(write_fd), "--metis-launch-nonce", claim.nonce],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, pass_fds=(write_fd,),
+                stdin=control_child.fileno(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                pass_fds=(write_fd,),
                 bufsize=0,
                 start_new_session=True, env={"PATH": os.defpath, "LANG": "C", "TMPDIR": str(socket_path.parent)},
             )
         except OSError:
+            control_parent.close()
             return TokenLaunchOutcome(status="launch_failed")
         finally:
+            control_child.close()
             os.close(write_fd)
 
         generated = None
@@ -263,7 +269,8 @@ def _run_claim(
             interrupted = "cancelled"
         finally:
             finished, status = _finish_process(
-                process, command=b"K" if interrupted else b"T" if generated is not None else b"",
+                process, control_parent,
+                command=b"K" if interrupted else b"T" if generated is not None else b"",
             )
 
         if not finished:

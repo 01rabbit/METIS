@@ -107,3 +107,20 @@ def test_guardian_reports_normal_worker_completion(tmp_path):
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_stale_poll_and_closed_control_peer_do_not_raise_sigpipe():
+    code = f"""
+import signal, socket, subprocess, sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})
+from metis.evaluation.native_work_fixture import _finish_process
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+parent, peer = socket.socketpair()
+process = subprocess.Popen([sys.executable, '-c', 'print(23)'], stdout=subprocess.PIPE)
+assert process.wait(timeout=5) == 0
+peer.close()
+process.poll = lambda: None  # emulate exit immediately after the caller's poll
+assert _finish_process(process, parent, command=b'T') == (True, 23)
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=8, check=False)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
