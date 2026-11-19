@@ -353,6 +353,35 @@ def verify_workflow_digest(result: Mapping[str, Any], oracle_sha256: str) -> boo
     return secrets.compare_digest(str(result.get("output_sha256", "")), oracle_sha256)
 
 
+def replay_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
+                               workflow_artifact: str, timeout: int = 20,
+                               oracle_sha256: str | None = None) -> dict[str, Any]:
+    """Run one declared workflow twice and compare bounded, isolated results.
+
+    Both outputs remain registered as untrusted run-derived artifacts. Neither
+    their bytes nor their digests are returned by this review projection.
+    """
+    if oracle_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", oracle_sha256):
+        raise ValueError("oracle commitment must be a lowercase SHA-256 digest")
+    first = run_workflow_in_sandbox(database, run_id, target=target,
+                                    workflow_artifact=workflow_artifact, timeout=timeout)
+    if first.get("ok") is not True:
+        return {"ok": False, "reproducible": False, "reason": "first sandbox run failed"}
+    second = run_workflow_in_sandbox(database, run_id, target=target,
+                                     workflow_artifact=workflow_artifact, timeout=timeout)
+    if second.get("ok") is not True:
+        return {"ok": False, "reproducible": False, "reason": "second sandbox run failed"}
+    comparable = ("workflow_sha256", "steps", "output_bytes", "output_sha256", "sandbox")
+    reproducible = all(first.get(key) == second.get(key) for key in comparable)
+    oracle_match = (None if oracle_sha256 is None else
+                    reproducible and verify_workflow_digest(first, oracle_sha256)
+                    and verify_workflow_digest(second, oracle_sha256))
+    return {"ok": reproducible, "reproducible": reproducible,
+            "oracle_match": oracle_match, "steps": first.get("steps") if reproducible else None,
+            "output_bytes": first.get("output_bytes") if reproducible else None,
+            "reason": None if reproducible else "sandbox runs differ"}
+
+
 def _visible_artifact_name(name: str) -> str:
     basename = PurePosixPath(name).name
     visible = re.sub(r"^[0-9]{2}-", "", basename) or basename

@@ -19,6 +19,15 @@ The only review-gated capability currently implemented is the fixed built-in
    `metis workflow --database PATH revoke RUN_ID rot13_decode`, again typing
    the exact confirmation.
 
+To repeat a declared workflow in the isolated sandbox, use
+`metis workflow --database PATH replay RUN_ID --target INPUT_ARTIFACT --workflow-artifact PLAN_ARTIFACT`.
+The command runs the same plan twice against the original input and reports
+only whether the bounded outputs and sandbox identity match. Optionally pass
+`--oracle-sha256-file PRIVATE_FILE` to compare both outputs with a controller-
+held commitment; neither the commitment nor output digests are printed.
+Each replay consumes two bounded sandbox actions and registers two untrusted
+derived artifacts. A failed or mismatched run does not certify a solve.
+
 The CLI records the local OS username, timestamp, decision, fixed capability
 version, and SHA-256 of its canonical descriptor. The descriptor digest binds
 the approval to the implementation snippet and its fixed input/output limits.

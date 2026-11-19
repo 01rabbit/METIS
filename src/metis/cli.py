@@ -46,7 +46,11 @@ from metis.core.ctf_swarm import handoff as handoff_report
 from metis.core.ctf_swarm import status as swarm_status_report
 from metis.core.ctf_tools import DATA_TOOLS
 from metis.core.ctf_web import WebRequest, WebWorkflow
-from metis.core.ctf_workflow import WorkflowCapabilityApprovals, capability_review_details
+from metis.core.ctf_workflow import (
+    WorkflowCapabilityApprovals,
+    capability_review_details,
+    replay_workflow_in_sandbox,
+)
 from metis.core.ctf_writeup import WriteupBook, WriteupInput
 from metis.core.fixtures import generate_fixtures
 from metis.core.models import FixtureProvider, ModelProvider
@@ -416,6 +420,12 @@ def main() -> int:
         review.add_argument("capability", choices=("rot13_decode",))
     workflow_status = workflow_commands.add_parser("status", help="show approvals and append-only review history")
     workflow_status.add_argument("run_id")
+    workflow_replay = workflow_commands.add_parser("replay", help="replay one declared workflow twice in the sandbox")
+    workflow_replay.add_argument("run_id")
+    workflow_replay.add_argument("--target", required=True)
+    workflow_replay.add_argument("--workflow-artifact", required=True)
+    workflow_replay.add_argument("--timeout", type=int, default=20)
+    workflow_replay.add_argument("--oracle-sha256-file", type=Path)
     form = web_commands.add_parser("configure-form", help="configure a trusted generic POST form before any submission")
     form.add_argument("run_id")
     form.add_argument("--form-index", type=int, required=True)
@@ -912,6 +922,19 @@ def main() -> int:
                         + " (check target scope, credentials, form configuration and limits)\n")
     if args.command == "workflow":
         try:
+            if args.workflow_command == "replay":
+                oracle_sha256 = None
+                if args.oracle_sha256_file is not None:
+                    raw = args.oracle_sha256_file.read_bytes()
+                    if len(raw) > 128:
+                        raise ValueError("oracle commitment file exceeds limit")
+                    oracle_sha256 = raw.decode("ascii").strip()
+                output = replay_workflow_in_sandbox(
+                    args.database, args.run_id, target=args.target,
+                    workflow_artifact=args.workflow_artifact,
+                    timeout=args.timeout, oracle_sha256=oracle_sha256)
+                print(json.dumps(output))
+                return 0 if output["ok"] else 2
             approvals = WorkflowCapabilityApprovals(args.database)
             if args.workflow_command == "status":
                 print(json.dumps(approvals.status(args.run_id)))
@@ -930,6 +953,8 @@ def main() -> int:
             print(json.dumps(output))
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error, EOFError) as exc:
+            if args.workflow_command == "replay":
+                parser.exit(2, "Workflow replay rejected\n")
             workflow_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
             parser.exit(2, "Workflow capability review rejected: " + workflow_reason + "\n")
     if args.command == "remote":
