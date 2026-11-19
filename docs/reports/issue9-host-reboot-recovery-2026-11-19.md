@@ -56,5 +56,34 @@ only to reviewers with access to this machine.
 
 This is one disposable host-reboot recovery observation. It does not prove
 production recovery, credential retention or revocation, signed release
-provenance, the Issue #7 dependency, or the full Issue #9 acceptance gate.
+provenance, the P7 benchmark dependency (Issue #8), or the full Issue #9
+acceptance gate.
 Issue #9 remains open.
+
+## Offline same-worker gate
+
+`metis.evaluation.reboot_evidence.classify_reboot_evidence` checks typed
+observations that a reviewer normalizes from the arm record, boot record,
+pre-recovery SQLite snapshot, verified audit chain, container status, and
+both recovery results. The classifier takes an explicit stable host label
+and checks that the run, worker, and operation IDs match the armed snapshot.
+It requires the next boot before the armed deadline, a matching execution
+event with no terminal event in the verified chain, no surviving worker, and
+two ordered recoveries that leave the run in `planning`. Both recovery
+observations must bind the post-reboot boot ID and original worker identity
+through verified audit continuity. The first recovery must confirm teardown
+and the second must report `not_running`. The action balance must remain
+positive and unchanged from the arm snapshot through both recoveries. The
+wall-time balance can decrease between observations and must stay positive
+through both planning recoveries.
+
+The first observation above remains inconclusive for this gate because the
+armed worker expired. The second remains inconclusive for the same-worker
+gate because a successor appeared after the armed worker expired. The
+bounded manual recovery remains a separate observation.
+
+The classifier uses reviewer-supplied observations, including its audit
+continuity inputs. Authentication of the original sources and verification
+of continuity belong to the reviewer. It performs no host, container, network, or release
+actions and does not establish production recovery. Its tests use synthetic
+observations and leave the private archive outside Git.
