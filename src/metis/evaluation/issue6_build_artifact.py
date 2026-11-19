@@ -15,7 +15,7 @@ def _options(fixture: BuildFixture) -> dict[str, Cause]:
     return {f"option-{index:03}": cause for index, cause in enumerate(ordered, 1)}
 
 
-def canonical_artifact(fixture: BuildFixture) -> bytes:
+def canonical_artifact(fixture: BuildFixture, *, include_submission_rule: bool = True) -> bytes:
     options = [{"id": label, **asdict(cause)} for label, cause in _options(fixture).items()]
     jobs = [
         {**asdict(job), "deps": sorted(job.deps)}
@@ -24,9 +24,12 @@ def canonical_artifact(fixture: BuildFixture) -> bytes:
     observations = [
         asdict(row) for row in sorted(fixture.observations, key=lambda row: (row.job, row.event))
     ]
+    rules = PUBLIC_RULES
+    if include_submission_rule:
+        rules += " Return one JSON object containing only the matching option_id."
     payload = {
         "version": 1,
-        "rules": PUBLIC_RULES + " Return one JSON object containing only the matching option_id.",
+        "rules": rules,
         "jobs": jobs,
         "options": options,
         "observations": observations,
