@@ -179,6 +179,15 @@ def call_limits(arm: str, final_handoff_study: bool) -> tuple[int | None, int | 
     return None, None
 
 
+def capped_failures(results: dict[str, dict[str, Any]], arm: str) -> set[str]:
+    """Classify only explicit per-specialist cap failures, never other fourth-call failures."""
+    if arm == "single":
+        return set()
+    return {assignment_id for assignment_id, result in results.items()
+            if result["job_state"] == "failed"
+            and str(result.get("failure") or "").startswith("per-specialist call cap exhausted")}
+
+
 def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCodexCLI, base: Path,
             case_id: str, components: tuple[bytes, bytes], family: tuple[str, str], arm: str,
             *, oracle_file: Path | None = None,
@@ -346,9 +355,7 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
             "peer_reserve_denials": peer_reserve_denials,
             "model": MODEL, "cli": CLI_VERSION, "reasoning_effort": "low", "cost_usd": "unknown"}
     if final_handoff_study:
-        capped = {assignment_id for assignment_id, result in results.items()
-                  if arm != "single" and len(result.get("codex_turns", [])) >= 4
-                  and result["job_state"] != "completed"}
+        capped = capped_failures(results, arm)
         result_record["per_specialist_call_ceiling_failures"] = len(capped)
         result_record["candidate_ready_per_specialist_call_ceiling_failures"] = len(capped & candidate_ready)
     return result_record

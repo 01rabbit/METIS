@@ -16,7 +16,7 @@ Does reserving each multi specialist's fourth and final model call for a compact
 
 Independent review found that the current multi arm had no enforced four-call specialist cap while the final-handoff arm did. Before any real-model trial, both multi arms now have the same four-call cap per specialist. The current multi arm retains the unrestricted decision schema on every call; the final-handoff arm uses the report-only schema on its fourth call. Provider failures and transient retries consume reservations and count toward each specialist's four calls. A transient failure on call four cannot trigger a fifth retry. A rejected report on call four cannot trigger a fifth correction call. Cancellation and an attempt that has already stopped are checked before cap failure at the next loop boundary. The single arm retains its existing shared eight-call behavior.
 
-The retained answer-free data now include per-arm counts of jobs that reach their four-call specialist ceiling without completion, and the subset with a private candidate ready. The analyzer reports these alongside the shared eight-call ceiling metric. This amendment changes no answer, task, model, seed, arm order, or primary comparison; the first real-model run has not begun.
+The retained answer-free data now include per-arm counts of jobs explicitly failed by the four-call specialist cap, and the subset with a private candidate ready. A provider error or policy violation on the fourth call is classified by its own failure reason, not as a cap failure. The analyzer reports these alongside the shared eight-call ceiling metric. This amendment changes no answer, task, model, seed, arm order, or primary comparison; the first real-model run has not begun.
 
 ## Outcomes and interpretation
 

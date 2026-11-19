@@ -12,7 +12,7 @@ import pytest
 from metis.evaluation.issue6_final_handoff_diagnostic import ARMS, ORDER_SEED, SEED, STUDY, analyze
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from run_issue6_handoff_diagnostic import call_limits
+from run_issue6_handoff_diagnostic import call_limits, capped_failures
 
 
 def test_runner_applies_symmetric_multi_call_caps() -> None:
@@ -20,6 +20,20 @@ def test_runner_applies_symmetric_multi_call_caps() -> None:
     assert call_limits("multi_final_handoff", True) == (None, 4)
     assert call_limits("single", True) == (None, None)
     assert call_limits("multi_combined", False) == (None, None)
+
+
+def test_fourth_call_other_failure_is_not_a_ceiling_failure() -> None:
+    results = {
+        "cap": {"job_state": "failed", "failure": "per-specialist call cap exhausted without completion",
+                "codex_turns": [{}, {}, {}, {}]},
+        "provider": {"job_state": "failed", "failure": "codex exited 1: provider error",
+                     "codex_turns": [{}, {}, {}, {}]},
+        "policy": {"job_state": "failed", "failure": "policy_violation: Codex used tools command_execution",
+                   "codex_turns": [{}, {}, {}, {}]},
+    }
+    assert capped_failures(results, "multi_combined") == {"cap"}
+    assert capped_failures(results, "multi_final_handoff") == {"cap"}
+    assert capped_failures(results, "single") == set()
 
 
 def dataset() -> dict:
