@@ -69,7 +69,7 @@ switch injects one synthetic precompute refusal after readiness and before
 graph submission. The probe requires exactly one injected refusal, one failed
 process call, and one server retry, with no graph failure. The following attempt
 runs normally, and the startup phase must contain no failed process, retry, or
-graph work:
+graph failure. Startup graph work is recorded separately:
 
 ```sh
 scripts/run_llama_work_trace.py --inject-one-retry \
