@@ -12,7 +12,7 @@ import pytest
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.evaluation.issue6_build_pilot import _one_assignment
-from metis.evaluation.issue6_canary_watchdog import quarantine_expired, start_canary
+from metis.evaluation.issue6_canary_watchdog import _CANARY_TABLE, quarantine_expired, start_canary
 from metis.evaluation.issue6_pilot_admission import (
     DryRunAdmission,
     DryRunApproval,
@@ -102,26 +102,37 @@ def test_worker_exit_and_deadline_are_reaped_and_scrubbed(tmp_path, behavior, se
     assert list(workspace.iterdir()) == []
 
 
-def _controller_to_kill(root):
+def _controller_to_kill(root, fork_writer):
     _, workspace, admission, args = prepare(root)
     with start_canary(admission, workspace, *args, behavior="wait_for_stop", seconds=4) as canary:
+        if fork_writer and os.fork() == 0:
+            (root / "fork-ready").touch()
+            time.sleep(2.5)
+            (root / "fork-done").touch()
+            os._exit(0)
         canary.wait()
 
 
-def test_controller_death_closes_lease_and_guardian_reaps_worker(tmp_path):
+@pytest.mark.parametrize("fork_writer", [False, True])
+def test_controller_death_stops_guardian_even_if_fork_retains_lease(tmp_path, fork_writer):
     command = (
         "import sys, runpy; from pathlib import Path; "
-        "runpy.run_path(sys.argv[1])['_controller_to_kill'](Path(sys.argv[2]))"
+        "runpy.run_path(sys.argv[1])['_controller_to_kill'](Path(sys.argv[2]), sys.argv[3] == 'True')"
     )
-    process = subprocess.Popen([sys.executable, "-c", command, __file__, str(tmp_path)])
+    process = subprocess.Popen([sys.executable, "-c", command, __file__, str(tmp_path), str(fork_writer)])
     try:
         workspace = tmp_path / "workspace"
         eventually(lambda: live_marker(workspace))
+        if fork_writer:
+            eventually(lambda: (tmp_path / "fork-ready").exists())
         process.kill()
         process.wait(timeout=5)
         database = tmp_path / "ledger.sqlite"
         eventually(lambda: (row := state(database)) and row[1:] == ("reaped", "lease_closed"))
         assert list(workspace.iterdir()) == []
+        if fork_writer:
+            assert not (tmp_path / "fork-done").exists()
+            eventually(lambda: (tmp_path / "fork-done").exists())
     finally:
         if process.poll() is None:
             process.kill()
@@ -158,3 +169,26 @@ def test_spawn_failure_leaves_prelaunch_record_for_quarantine(tmp_path, monkeypa
         start_canary(admission, workspace, *args, seconds=0.25)
     eventually(lambda: quarantine_expired(database) == 1)
     assert state(database)[1:] == ("quarantined", "unconfirmed")
+
+
+def test_pending_insert_failure_rolls_back_phase_and_prevents_spawn(tmp_path, monkeypatch):
+    database, workspace, admission, args = prepare(tmp_path)
+    with closing(sqlite3.connect(database)) as db, db:
+        db.execute(_CANARY_TABLE)
+        db.execute("""
+            CREATE TRIGGER fail_pending BEFORE INSERT ON issue6_canaries
+            BEGIN SELECT RAISE(ABORT, 'injected pending failure'); END
+        """)
+
+    def must_not_start(*_args, **_kwargs):
+        pytest.fail("controller attempted to spawn without a committed pending record")
+
+    monkeypatch.setattr("metis.evaluation.issue6_canary_watchdog.subprocess.Popen", must_not_start)
+    with pytest.raises(sqlite3.IntegrityError, match="injected pending failure"):
+        start_canary(admission, workspace, *args)
+    assert state(database) is None
+    assert list(workspace.iterdir()) == []
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT turns_reserved FROM agent_run_turn_budgets").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM issue6_dry_reservations").fetchone() == (0,)

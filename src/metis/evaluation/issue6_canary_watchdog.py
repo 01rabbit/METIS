@@ -19,6 +19,11 @@ from .issue6_pilot_admission import DryRunAdmission, DryRunPhase
 _HELPER = Path(__file__).with_name("_issue6_canary_process.py")
 _ENV = {"PATH": os.defpath, "LANG": "C"}
 _MAX_SECONDS = 5
+_CANARY_TABLE = """CREATE TABLE IF NOT EXISTS issue6_canaries (
+            reservation INTEGER PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, scratch TEXT NOT NULL,
+            state TEXT NOT NULL, outcome TEXT, wall_cutoff REAL NOT NULL,
+            monotonic_cutoff REAL NOT NULL
+        )"""
 
 
 class Canary:
@@ -55,7 +60,7 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
                  attempt_id: str, receipt: DryRunPhase, *,
                  behavior: Literal["complete", "wait_for_stop"] = "complete",
                  seconds: float = _MAX_SECONDS) -> Canary:
-    """Consume the phase budget and record intent before starting the fixed worker."""
+    """Atomically charge the phase and record intent before starting the fixed worker."""
     if behavior not in {"complete", "wait_for_stop"} or not math.isfinite(seconds) or not 0 < seconds <= _MAX_SECONDS:
         raise ValueError("unsupported canary behavior or deadline")
     workspace = workspace.resolve(strict=True)
@@ -66,21 +71,19 @@ def start_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assig
     cutoff = min(window.monotonic_cutoff, time.monotonic() + seconds)
     if time.monotonic() >= cutoff or time.time() >= window.wall_cutoff:
         raise ValueError("canary deadline reached before reservation")
-    reservation = admission.reserve_phase(run_id, assignment_id, attempt_id, receipt)
     nonce = secrets.token_hex(16)
     scratch = workspace / ("canary-" + nonce)
-    with closing(sqlite3.connect(window.database)) as db, db:
-        db.execute("""CREATE TABLE IF NOT EXISTS issue6_canaries (
-            reservation INTEGER PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, scratch TEXT NOT NULL,
-            state TEXT NOT NULL, outcome TEXT, wall_cutoff REAL NOT NULL,
-            monotonic_cutoff REAL NOT NULL
-        )""")
+    def persist_pending(db: sqlite3.Connection, reservation: int) -> None:
+        db.execute(_CANARY_TABLE)
         db.execute("INSERT INTO issue6_canaries VALUES (?, ?, ?, 'pending', NULL, ?, ?)",
                    (reservation, nonce, scratch.name, window.wall_cutoff, cutoff))
+
+    reservation = admission.reserve_phase(run_id, assignment_id, attempt_id, receipt, persist_pending=persist_pending)
     reader, writer = os.pipe()
     try:
         process = subprocess.Popen(
-            [sys.executable, "-I", "-S", str(_HELPER), "guardian", str(reader), str(window.database),
+            [sys.executable, "-I", "-S", str(_HELPER), "guardian", str(reader), str(os.getpid()),
+             str(window.database),
              str(reservation), nonce, str(scratch), str(cutoff), str(window.wall_cutoff), behavior],
             env=_ENV, pass_fds=(reader,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,

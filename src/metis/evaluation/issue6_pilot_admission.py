@@ -178,7 +178,8 @@ class DryRunAdmission:
         raise ValueError("dry-run case does not belong to the claimed cohort")
 
     def reserve_phase(self, run_id: str, assignment_id: str, attempt_id: str,
-                      receipt: DryRunPhase) -> int:
+                      receipt: DryRunPhase, *,
+                      persist_pending: Callable[[sqlite3.Connection, int], None] | None = None) -> int:
         """Commit a scheduler charge and its dry-run receipt as a single write."""
         receipt = DryRunPhase.model_validate(receipt)
         case_index = self._case_index(receipt.case_id)
@@ -218,6 +219,8 @@ class DryRunAdmission:
             if not math.isfinite(now) or now >= cutoff:
                 raise ValueError("dry-run phase deadline reached")
             self._append(db, approval, case_index, receipt, reservation, run_id, assignment_id)
+            if persist_pending is not None:
+                persist_pending(db, reservation)
 
         reserved = self._scheduler.reserve_model_turn(
             run_id, assignment_id, attempt_id, validate_reservation=validate, persist_receipt=persist,
