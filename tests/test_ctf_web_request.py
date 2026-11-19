@@ -146,6 +146,35 @@ def test_reauth_replaces_stored_platform_credential(tmp_path, sites):
     assert "platform-secret-token" not in payload
 
 
+def test_reauth_switches_kind_and_clears_previous_auth_state(tmp_path, sites):
+    platform_url, _, seen = sites
+    workflow, run_id = _open(tmp_path, platform_url)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
+    config, state, *_ = workflow._load(run_id)
+    stale_client = workflow._client(config, state)
+
+    workflow.auth(platform_url, kind="cookie", value="session=replacement-cookie")
+    with pytest.raises(ValueError, match="authentication has been forgotten"):
+        stale_client.request(platform_url + "/stale")
+    workflow._save_client(run_id, stale_client)
+    workflow.request(run_id, [WebRequest(url=platform_url + "/cookie-check")])
+    assert seen["platform_auth"][-1] is None
+    assert seen["platform_cookie"][-1] == "session=replacement-cookie"
+    with sqlite3.connect(workflow.database) as db:
+        payload, = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
+                              (platform_url,)).fetchone()
+    assert json.loads(payload) == {"cookie": "session=replacement-cookie", "scheme": "Token"}
+
+    workflow.auth(platform_url, kind="token", value="final-token", scheme="Bearer")
+    workflow.request(run_id, [WebRequest(url=platform_url + "/token-check")])
+    assert seen["platform_auth"][-1] == "Bearer final-token"
+    assert seen["platform_cookie"][-1] is None
+    with sqlite3.connect(workflow.database) as db:
+        payload, = db.execute("SELECT payload FROM web_credentials WHERE origin=?",
+                              (platform_url,)).fetchone()
+    assert json.loads(payload) == {"token": "final-token", "scheme": "Bearer"}
+
+
 def test_environment_auth_mode_ignores_legacy_storage_and_does_not_persist_cookie(tmp_path, sites, monkeypatch):
     platform_url, _, seen = sites
     workflow, run_id = _open(tmp_path, platform_url)
@@ -271,6 +300,8 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     workflow.request(run_id, [WebRequest(url=platform_url + "/set-cookie")])
     config, state, *_ = workflow._load(run_id)
     stale_client = workflow._client(config, state)
+    with sqlite3.connect(workflow.database) as db:
+        generations_before = db.execute("SELECT origin,generation FROM web_auth_generations ORDER BY origin").fetchall()
     monkeypatch.setattr(sys, "argv", ["metis", "web", "--database", str(workflow.database), "forget-all"])
     assert main() == 0
     preview = json.loads(capsys.readouterr().out)
@@ -281,7 +312,7 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     assert "private-token" not in json.dumps(preview)
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 2
-        assert db.execute("SELECT COUNT(*) FROM web_auth_generations").fetchone()[0] == 0
+        assert db.execute("SELECT origin,generation FROM web_auth_generations ORDER BY origin").fetchall() == generations_before
         preview_state = json.loads(db.execute("SELECT state FROM web_runs WHERE run_id=?", (run_id,)).fetchone()[0])
         assert platform_url in preview_state.get("cookies", {})
 
@@ -293,7 +324,7 @@ def test_forget_all_previews_then_fences_saved_auth(tmp_path, sites, monkeypatch
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone()[0] == 0
         assert db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
-                          (other_origin,)).fetchone()[0] == 1
+                          (other_origin,)).fetchone()[0] == 2
     with pytest.raises(ValueError, match="authentication has been forgotten"):
         stale_client.request(platform_url + "/after-forget")
     workflow._save_client(run_id, stale_client)
