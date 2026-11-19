@@ -177,6 +177,16 @@ def test_real_model_pin_must_match_job_records(tmp_path: Path) -> None:
         export(real_manifest, database)
 
 
+def test_real_model_pin_accepts_scheduler_selection_record(tmp_path: Path) -> None:
+    database, manifest = fixture(tmp_path)
+    data = manifest.model_dump()
+    data["measurement"] = "real_model"
+    real_manifest = ExportManifest.model_validate(data)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET model=?", (json.dumps({"model": "test-model", "source": "current"}),))
+    assert len(export(real_manifest, database).trials) == 8
+
+
 def test_verified_event_without_completed_report_does_not_score(tmp_path: Path) -> None:
     database, manifest = fixture(tmp_path)
     with sqlite3.connect(database) as db:
