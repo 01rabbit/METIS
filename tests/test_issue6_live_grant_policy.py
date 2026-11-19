@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -5,7 +6,7 @@ from contextlib import closing
 from threading import Barrier
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from metis.evaluation.issue6_build_preflight import NATIVE_SHA256
 from metis.evaluation.issue6_live_grant_policy import (
@@ -164,6 +165,7 @@ def test_signed_payload_includes_fixed_limits(live):
     document = json.loads(grant.signing_bytes().split(b"\x00", 1)[1])
     assert document["limits"] == {
         "cases": 36, "max_calls": 72, "phase_seconds": 60, "cohort_seconds": 72 * 60,
+        "max_grant_seconds": 77 * 60,
     }
 
 
@@ -235,3 +237,57 @@ def test_rejects_state_with_group_writable_ancestor(tmp_path):
     key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     with pytest.raises(ValueError, match="untrusted path ancestor"):
         LiveGrantReview(state, trusted_operator_key=key.public_key())
+
+
+def test_canonical_schema_rejects_trigger_that_would_remove_spent_grant(live):
+    key, directory, reviewer, plan, grant = live
+    signature = key.sign(grant.signing_bytes())
+    with closing(sqlite3.connect(directory / "issue6-live-reviews.sqlite")) as db, db:
+        db.execute("""
+            CREATE TRIGGER erase_spent AFTER INSERT ON offline_live_grant_reviews
+            BEGIN DELETE FROM offline_live_grant_reviews WHERE grant_id=NEW.grant_id; END
+        """)
+    # The schema was valid when reviewer was constructed. It must be checked again in the write.
+    for _ in range(3):
+        with pytest.raises(ValueError, match="canonical schema"):
+            reviewer.consume_for_review(grant, signature, plan)
+    with pytest.raises(ValueError, match="canonical schema"):
+        LiveGrantReview(directory, trusted_operator_key=key.public_key())
+    assert review_count(directory) == 0
+
+
+@pytest.mark.parametrize("ddl", [
+    "CREATE VIEW copied_identity AS SELECT * FROM offline_live_ledger_identity",
+    "ALTER TABLE offline_live_grant_reviews ADD COLUMN unrelated TEXT",
+])
+def test_canonical_schema_rejects_other_sql_objects_or_table_drift(live, ddl):
+    key, directory, reviewer, plan, grant = live
+    with closing(sqlite3.connect(directory / "issue6-live-reviews.sqlite")) as db, db:
+        db.execute(ddl)
+    with pytest.raises(ValueError, match="canonical schema"):
+        reviewer.consume_for_review(grant, key.sign(grant.signing_bytes()), plan)
+
+
+def test_grant_lifetime_bounded_by_cohort_plus_five_minutes(live):
+    _, _, _, _, grant = live
+    for seconds in (0, -1, 77 * 60 + 1):
+        invalid = grant.model_copy(update={"expires_at": grant.issued_at + seconds})
+        with pytest.raises(ValueError, match="grant lifetime"):
+            LiveCalibrationGrant.model_validate(invalid)
+    maximum = grant.model_copy(update={"expires_at": grant.issued_at + 77 * 60})
+    assert LiveCalibrationGrant.model_validate(maximum) == maximum
+
+
+def test_independent_openssl_signing_vector(live):
+    _, _, _, _, grant = live
+    vector = grant.model_copy(update={"ledger_binding": "0" * 64})
+    payload = vector.signing_bytes()
+    # Independently encoded expected JSON and OpenSSL pkeyutl with seed bytes 00..1f.
+    assert hashlib.sha256(payload).hexdigest() == "c1829d161f52767addfc205fd666082770d7da98d89eb53e221115fca4e86040"
+    key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(
+        "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+    ))
+    key.verify(bytes.fromhex(
+        "168182b88c925ff5bfe3b471d8a26b78bcd902cf858a02ee47a6ac0616e72c4df"
+        "12827c3a3b34bce44539510700e3662ede74e5ee10cb42b2201892be62cdb0a"
+    ), payload)

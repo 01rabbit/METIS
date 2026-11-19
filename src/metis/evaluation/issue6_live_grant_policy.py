@@ -39,6 +39,7 @@ from .issue6_pilot_admission import (
 
 _DOMAIN = b"METIS Issue #6 live build-triage calibration grant v1\x00"
 _DB = "issue6-live-reviews.sqlite"
+MAX_GRANT_SECONDS = COHORT_SECONDS + 5 * 60
 LEDGER_SCHEMA = (
     """CREATE TABLE offline_live_ledger_identity (
         id INTEGER PRIMARY KEY CHECK (id=1), generation TEXT NOT NULL
@@ -97,9 +98,9 @@ class LiveCalibrationGrant(_Record):
     expires_at: UnixSeconds
 
     @model_validator(mode="after")
-    def expiry_follows_issuance(self) -> Self:
-        if self.expires_at <= self.issued_at:
-            raise ValueError("grant expiry must follow issuance")
+    def bounded_validity_window(self) -> Self:
+        if not 0 < self.expires_at - self.issued_at <= MAX_GRANT_SECONDS:
+            raise ValueError("grant lifetime must be positive and no longer than the cohort plus five minutes")
         return self
 
     def signing_bytes(self) -> bytes:
@@ -111,6 +112,7 @@ class LiveCalibrationGrant(_Record):
                 "max_calls": MAX_CALLS,
                 "phase_seconds": PHASE_SECONDS,
                 "cohort_seconds": COHORT_SECONDS,
+                "max_grant_seconds": MAX_GRANT_SECONDS,
             },
         }
         return _DOMAIN + json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
@@ -149,12 +151,11 @@ class LiveGrantReview:
 
     @staticmethod
     def _generation(db: sqlite3.Connection) -> str:
-        tables = db.execute("""
-            SELECT name FROM sqlite_master WHERE type='table'
-            AND name IN ('offline_live_ledger_identity', 'offline_live_grant_reviews')
-        """).fetchall()
-        if len(tables) != 2:
+        objects = db.execute("SELECT type, sql FROM main.sqlite_master WHERE sql IS NOT NULL").fetchall()
+        if not objects:
             raise ValueError("live approval ledger must be provisioned before review")
+        if sorted(objects) != sorted(("table", statement) for statement in LEDGER_SCHEMA):
+            raise ValueError("live approval ledger does not match the canonical schema")
         row = db.execute("SELECT generation FROM offline_live_ledger_identity WHERE id=1").fetchone()
         if row is None or not isinstance(row[0], str) or len(row[0]) != 64 or set(row[0]) - set("0123456789abcdef"):
             raise ValueError("live approval ledger requires a provisioned generation")
