@@ -65,9 +65,39 @@ prints only step names, run IDs, reproducibility, and match booleans. A model
 proposal cannot request a new tool, policy, verifier, executable, path, or
 endpoint. This is a bounded local pilot, not general CTF evidence.
 
+## Externally prepared benign encoding fixture
+
+Supply `--fixture` and `--oracle` together to `scripts/issue7_unseen_trial.py` to
+evaluate one operator-authorized offline encoding fixture. Use a single ASCII
+encoding token of at most 65,536 bytes, with no trailing newline. A separate
+reviewer should choose a fixture outside the seeded generator and compute the
+SHA-256 of the exact expected decoded bytes before the trial, independently of
+the proposer and METIS replay. Store the lowercase digest on its own line in
+an owner-only regular file in an owner-only directory outside Git checkouts.
+For `--database`, use a file path inside a new directory whose parent already
+exists outside Git. METIS creates the run directory with mode `0700`, and
+rejects an existing directory to avoid overwriting local state or input files.
+The two directory paths must resolve through directories owned by root or the
+operator. Shared writable ancestors must have the sticky bit set. On macOS,
+METIS rejects extended ACLs that grant access on either directory path or on
+the oracle file. Deny-only ACLs are allowed. On Linux the path check uses
+POSIX ownership and mode. External fixture intake requires macOS or Linux.
+
+The intake snapshots both inputs in memory before calling the proposer. The
+proposer receives only the encoded token. The Seatbelt profile protects the
+canonical oracle directory on macOS. On Linux it must be outside all
+bubblewrap mounts readable by the proposer. Prompt delivery and diagnostic
+output draining share the same 120-second deadline. METIS reuses the pilot's three base
+transforms and digest-only replay. The report adds the encoded fixture's
+SHA-256 for identification. The expected digest and source paths stay out of
+the report and run events. A missing or mismatched replay verdict fails the
+trial. Independent preparation and whether the material is new to the model
+depend on the reviewer; the intake checks file shape and bounds.
+
 ## Evidence
 
-The sandbox-backed test procedure and exact environment are in
-[`issue7-capability-review-2026-11-17.md`](reports/issue7-capability-review-2026-11-17.md).
+The capability review and external-fixture container evidence are in
+[`issue7-capability-review-2026-11-17.md`](reports/issue7-capability-review-2026-11-17.md)
+and [`issue7-external-fixture-replay-2026-11-19.md`](reports/issue7-external-fixture-replay-2026-11-19.md).
 Issue #7 remains open while its P5 dependency and broader P6 evidence gates are
 unmet.
