@@ -32,9 +32,10 @@ def audit(registration: Registration, outcomes: OutcomeExport) -> dict[str, obje
     """Validate packet consistency and retain the existing scorer's projection.
 
     The output status is always ``consistency_only`` for a complete eligible
-    packet. Ineligible packets are returned as ineligible; malformed,
-    duplicate, unregistered, or non-canonical records fail closed with
-    ``ValueError`` from the existing scorer or this ordering check.
+    packet. Ineligible packets are returned before the ordering check.
+    Malformed, duplicate, or unregistered records fail closed through the
+    existing scorer; a complete eligible packet with non-canonical export
+    ordering fails closed with ``ValueError``.
     """
     # Revalidate model instances too: Pydantic models are mutable, and the
     # upstream scoring contracts do not enable assignment validation.
@@ -66,7 +67,7 @@ def audit(registration: Registration, outcomes: OutcomeExport) -> dict[str, obje
         "consistency": "valid",
         "order_check": "canonical_serialization_only",
         "registered_tasks": len(registration.tasks),
-        "registered_arms": list(ARMS),
+        "scorer_fixed_arms": list(ARMS),
         "outcome_records": len(outcomes.records),
         "reported_usage_within_registered_caps": True,
         "execution_order_status": "unavailable_preregistered_order_not_in_schema",

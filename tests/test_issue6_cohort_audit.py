@@ -48,6 +48,7 @@ def test_complete_packet_reuses_existing_score_without_qualifying_execution(coho
     result = audit(registration, outcomes)
     assert result["status"] == "consistency_only"
     assert result["unverified_score_projection"] == analyze_outcomes(registration, outcomes)
+    assert result["scorer_fixed_arms"] == list(ARMS)
     assert result["order_check"] == "canonical_serialization_only"
     assert result["evidence_reference_count"] == 0
     assert result["execution_evidence_status"] == "unavailable_not_checked"
