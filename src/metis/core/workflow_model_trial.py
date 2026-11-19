@@ -366,10 +366,9 @@ def _load_trial_manifest(path: Path) -> tuple[tuple[_LoadedTrialCase, ...], Path
         fixture_digests.add(fixture_digest)
         loaded.append(_LoadedTrialCase(case_id=case.case_id, fixture=snapshot))
     commitments = {item.fixture.oracle_sha256 for item in loaded}
-    commitment_digests = {item.fixture.oracle_sha256 for item in loaded}
     if any(any(commitment.encode("ascii") in item.fixture.challenge
                for commitment in commitments)
-           or hashlib.sha256(item.fixture.challenge).hexdigest() in commitment_digests
+           or hashlib.sha256(item.fixture.challenge).hexdigest() in commitments
            for item in loaded):
         raise ValueError("trial manifest fixture exposes a case oracle commitment or answer")
     return tuple(loaded), parent
