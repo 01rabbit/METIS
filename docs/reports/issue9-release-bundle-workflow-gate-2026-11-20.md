@@ -42,9 +42,13 @@ and sdist after generating their checksum manifest:
 PYTHONPATH=src .venv/bin/python -m build --outdir "$BUNDLE_DIR"
 Successfully built metis_ctf-0.5.0.tar.gz and metis_ctf-0.5.0-py3-none-any.whl
 PYTHONPATH=src .venv/bin/python -m metis.release_artifacts --dist-dir "$BUNDLE_DIR" --tag v0.5.0 --project-name metis-ctf --project-version 0.5.0 --write-checksums
-Validated release distributions: wheel and sdist
+Validated release distributions:
+metis_ctf-0.5.0-py3-none-any.whl
+metis_ctf-0.5.0.tar.gz
 PYTHONPATH=src .venv/bin/python -m metis.release_artifacts --dist-dir "$BUNDLE_DIR" --tag v0.5.0 --project-name metis-ctf --project-version 0.5.0 --verify-checksums
-Validated release distributions: wheel and sdist
+Validated release distributions:
+metis_ctf-0.5.0-py3-none-any.whl
+metis_ctf-0.5.0.tar.gz
 ```
 
 `BUNDLE_DIR` was a temporary directory. No tag or release was created.
