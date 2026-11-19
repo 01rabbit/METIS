@@ -132,14 +132,21 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
                               note=_note(args))
     if command == "ollama":
         from metis.core.codex_specialist import run_assignment
-        from metis.core.ollama_token_budget import OllamaSpecialist, PinnedOllama
+        from metis.core.ollama_token_budget import PinnedOllama
+        from metis.evaluation.heldout_ollama_study import registered_runner
+        from metis.evaluation.heldout_protocol import MAX_PROTOCOL_BYTES, Protocol
 
+        if args.protocol.stat().st_size > MAX_PROTOCOL_BYTES:
+            raise ValueError("held-out protocol exceeds size limit")
+        protocol = Protocol.model_validate_json(args.protocol.read_bytes())
         engine = PinnedOllama(model=args.model, model_digest=args.model_digest,
                               manifest=args.manifest,
                               gguf=args.gguf, gguf_sha256=args.gguf_sha256,
                               tokenizer=args.tokenizer, tokenizer_sha256=args.tokenizer_sha256,
                               context_tokens=args.context_tokens)
-        runner = OllamaSpecialist(args.database, args.run_id, engine, args.output_cap)
+        runner = registered_runner(scheduler, args.run_id, protocol,
+                                   expected_sha256=args.expected_protocol_sha256,
+                                   expected_runtime_sha256=args.expected_runtime_sha256, engine=engine)
         return run_assignment(scheduler, args.run_id, args.assignment_id, args.attempt,
                               runner, model=args.model, turn_timeout=args.turn_timeout)
     if command == "candidates":
@@ -345,6 +352,9 @@ def main() -> int:
     agent_ollama.add_argument("assignment_id")
     agent_ollama.add_argument("--attempt", required=True)
     agent_ollama.add_argument("--model", required=True)
+    agent_ollama.add_argument("--protocol", type=Path, required=True)
+    agent_ollama.add_argument("--expected-protocol-sha256", required=True)
+    agent_ollama.add_argument("--expected-runtime-sha256", required=True)
     agent_ollama.add_argument("--model-digest", required=True)
     agent_ollama.add_argument("--manifest", type=Path, required=True)
     agent_ollama.add_argument("--gguf", type=Path, required=True)
@@ -352,7 +362,6 @@ def main() -> int:
     agent_ollama.add_argument("--tokenizer", type=Path, required=True)
     agent_ollama.add_argument("--tokenizer-sha256", required=True)
     agent_ollama.add_argument("--context-tokens", type=int, required=True)
-    agent_ollama.add_argument("--output-cap", type=int, default=1024)
     agent_ollama.add_argument("--turn-timeout", type=float, default=300.0)
     agent_candidates = agent_commands.add_parser(
         "candidates", help="private candidates handed over by specialists (paths and digests, never values)")
