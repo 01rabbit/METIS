@@ -13,14 +13,17 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from metis.core.codex_isolation import (
+    SYSTEM_RO,
     AllowlistProxy,
     TurnHome,
     default_codex_home,
     isolation_backend,
     native_codex,
+    python_roots,
     upstream_proxy,
     wrap,
 )
@@ -38,7 +41,47 @@ from metis.core.ctf_workflow import (
 Proposer = Callable[[bytes], bytes]
 
 
-def codex_proposer(challenge: bytes) -> bytes:
+def _exchange_proposal(process: subprocess.Popen[bytes], prompt: bytes, *,
+                       timeout: float = 120, output_limit: int = 65_536) -> None:
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    deadline = time.monotonic() + timeout
+    pending = memoryview(prompt)
+    captured = 0
+    try:
+        with selectors.DefaultSelector() as selector:
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE)
+            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stderr, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                for ready, event in selector.select(remaining):
+                    if event == selectors.EVENT_WRITE:
+                        try:
+                            written = os.write(ready.fd, pending[:4096])
+                        except BlockingIOError:
+                            continue
+                        pending = pending[written:]
+                        if not pending:
+                            selector.unregister(ready.fileobj)
+                            process.stdin.close()
+                    else:
+                        chunk = os.read(ready.fd, 4096)
+                        if not chunk:
+                            selector.unregister(ready.fileobj)
+                        captured += len(chunk)
+                        if captured > output_limit:
+                            raise ValueError("Codex diagnostic output exceeded bounds")
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+    except (OSError, TimeoutError, subprocess.TimeoutExpired, ValueError):
+        process.kill()
+        process.wait()
+        raise RuntimeError("Codex proposal unavailable, timed out, or exceeded bounds") from None
+
+
+def codex_proposer(challenge: bytes, *, oracle_directory: Path | None = None) -> bytes:
     """Ask a real Codex model for JSON only; give it no tool or oracle access."""
     if len(challenge) > MAX_WORKFLOW_INPUT:
         raise ValueError("fixture exceeds model input bound")
@@ -73,6 +116,14 @@ def codex_proposer(challenge: bytes) -> bytes:
         if backend is None:
             raise RuntimeError("Codex OS isolation unavailable")
         binary, package = native_codex(cli.executable)
+        protected = cli.protected_roots(root.parent)
+        if oracle_directory is not None:
+            readable = [package, root]
+            if backend == "bwrap":
+                readable.extend(Path(path) for path in (*SYSTEM_RO, *python_roots()))
+            if any(oracle_directory.is_relative_to(path.resolve()) for path in readable):
+                raise ValueError("oracle directory overlaps a model-readable mount")
+            protected = [*protected, oracle_directory]
         with ExitStack() as stack:
             home = TurnHome(root, default_codex_home() / "auth.json")
             proxy = stack.enter_context(AllowlistProxy(cli.hosts, upstream=upstream_proxy()))
@@ -82,36 +133,11 @@ def codex_proposer(challenge: bytes) -> bytes:
             env.update(CODEX_HOME=str(home.path), TMPDIR=str(root) + "/")
             command, env = wrap(backend, turn_dir=root, argv=[binary, *command[1:]],
                                 env=env, proxy=proxy, readable=[package],
-                                protected=cli.protected_roots(root.parent),
+                                protected=protected,
                                 workdir=workdir, executable=Path(binary))
-            try:
-                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE, cwd=workdir, env=env)
-                assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-                process.stdin.write(prompt.encode("ascii"))
-                process.stdin.close()
-                with selectors.DefaultSelector() as selector:
-                    selector.register(process.stdout, selectors.EVENT_READ)
-                    selector.register(process.stderr, selectors.EVENT_READ)
-                    captured = 0
-                    deadline = time.monotonic() + 120
-                    while selector.get_map():
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError
-                        for ready, _ in selector.select(timeout=min(1, deadline - time.monotonic())):
-                            chunk = os.read(ready.fd, 4096)
-                            if not chunk:
-                                selector.unregister(ready.fileobj)
-                                continue
-                            captured += len(chunk)
-                            if captured > 65_536:
-                                raise ValueError("Codex diagnostic output exceeded bounds")
-                process.wait(timeout=max(1, deadline - time.monotonic()))
-            except (OSError, TimeoutError, subprocess.TimeoutExpired, ValueError) as exc:
-                if "process" in locals():
-                    process.kill()
-                    process.wait()
-                raise RuntimeError("Codex proposal unavailable, timed out, or exceeded bounds") from exc
+            with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, cwd=workdir, env=env) as process:
+                _exchange_proposal(process, prompt.encode("ascii"))
             home.write_back()
         if process.returncode != 0 or not output.is_file() or output.stat().st_size > 4096:
             raise RuntimeError("Codex proposal failed or exceeded bounds")
@@ -147,16 +173,21 @@ def _read_trial_file(path: Path, *, limit: int, private: bool = False) -> bytes:
         raise ValueError(f"{label} could not be read as a local file") from None
 
 
-def _load_external_fixture(fixture: Path, oracle: Path) -> _TrialFixture:
+def _directory_outside_checkout(path: Path, *, label: str) -> Path:
     try:
-        oracle_parent = oracle.parent.resolve(strict=True)
-        in_checkout = any((parent / ".git").exists()
-                          for parent in (oracle_parent, *oracle_parent.parents))
+        directory = path.resolve(strict=True)
+        if not directory.is_dir():
+            raise ValueError(f"{label} must be a directory")
+        for parent in (directory, *directory.parents):
+            if os.path.lexists(parent / ".git"):
+                raise ValueError(f"{label} must be outside Git checkouts")
     except (OSError, RuntimeError):
-        raise ValueError("private oracle directory could not be verified") from None
-    if in_checkout:
-        raise ValueError("oracle commitment must be outside Git checkouts")
-    oracle_bytes = _read_trial_file(oracle_parent / oracle.name, limit=65, private=True)
+        raise ValueError(f"{label} could not be verified") from None
+    return directory
+
+
+def _load_external_fixture(fixture: Path, oracle: Path) -> _TrialFixture:
+    oracle_bytes = _read_trial_file(oracle, limit=65, private=True)
     if not re.fullmatch(rb"[0-9a-f]{64}\n?", oracle_bytes):
         raise ValueError("oracle commitment must contain one lowercase SHA-256 digest")
     oracle_sha256 = oracle_bytes.rstrip(b"\n").decode("ascii")
@@ -198,14 +229,30 @@ def _run_fixture(database: Path, fixture: _TrialFixture, *, index: int,
 
 def run_external_fixture_trial(database: Path, *, image: str, platform: str | None,
                                fixture: Path, oracle: Path,
-                               proposer: Proposer = codex_proposer) -> dict[str, object]:
+                               proposer: Proposer | None = None) -> dict[str, object]:
     """Run one operator-authorized encoding fixture with an independent local commitment."""
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
         raise ValueError("sandbox image must be an immutable SHA-256 digest")
-    snapshot = _load_external_fixture(fixture, oracle)
+    oracle_parent = _directory_outside_checkout(oracle.parent, label="private oracle directory")
+    oracle_info = oracle_parent.stat()
+    if oracle_info.st_uid != os.getuid() or oracle_info.st_mode & 0o077:
+        raise ValueError("oracle commitment must be in an owner-only directory")
+    snapshot = _load_external_fixture(fixture, oracle_parent / oracle.name)
     fixture_sha256 = hashlib.sha256(snapshot.challenge).hexdigest()
-    configure(database, engine="docker", image=image, platform=platform)
-    return {**_run_fixture(database, snapshot, index=1, proposer=proposer),
+
+    workspace_parent = _directory_outside_checkout(database.parent.parent, label="run workspace parent")
+    if database.name.casefold() in {"", "..", "sandbox.json"} or database.parent.name in {"", ".."}:
+        raise ValueError("database must name a file in a new private run directory")
+    workspace = workspace_parent / database.parent.name
+    try:
+        workspace.mkdir(mode=0o700)
+    except OSError:
+        raise ValueError("database requires a new private run directory") from None
+
+    run_database = workspace / database.name
+    configure(run_database, engine="docker", image=image, platform=platform)
+    model_proposer = proposer or partial(codex_proposer, oracle_directory=oracle_parent)
+    return {**_run_fixture(run_database, snapshot, index=1, proposer=model_proposer),
             "fixture_sha256": fixture_sha256}
 
 

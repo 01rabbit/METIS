@@ -73,11 +73,16 @@ encoding token of at most 65,536 bytes, with no trailing newline. A separate
 reviewer should choose a fixture outside the seeded generator and compute the
 SHA-256 of the exact expected decoded bytes before the trial, independently of
 the proposer and METIS replay. Store the lowercase digest on its own line in
-an owner-only regular file outside Git checkouts. Supply only file paths and
-keep the run database and its artifacts in a private directory outside Git.
+an owner-only regular file in an owner-only directory outside Git checkouts.
+For `--database`, use a file path inside a new directory whose parent already
+exists outside Git. METIS creates the run directory with mode `0700`, and
+rejects an existing directory to avoid overwriting local state or input files.
 
 The intake snapshots both inputs in memory before calling the proposer. The
-proposer receives only the encoded token. METIS reuses the pilot's three base
+proposer receives only the encoded token. The Seatbelt profile protects the
+canonical oracle directory on macOS. On Linux it must be outside all
+bubblewrap mounts readable by the proposer. Prompt delivery and diagnostic
+output draining share the same 120-second deadline. METIS reuses the pilot's three base
 transforms and digest-only replay. The report adds the encoded fixture's
 SHA-256 for identification. The expected digest and source paths stay out of
 the report and run events. A missing or mismatched replay verdict fails the
