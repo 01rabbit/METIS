@@ -29,7 +29,10 @@ def test_runtime_stage_never_makes_hash_mismatch_executable(tmp_path):
 
 @pytest.mark.parametrize(("stub", "outcome"), [
     ("print('codex-cli 0.169.0')", "completed"),
+    ("expected_isolation_warning", "completed"),
+    ("expected_isolation_warning_plus_other", "invalid_probe"),
     ("print('wrong')", "invalid_probe"),
+    ("print('codex-cli 0.169.0'); import sys; print('unexpected', file=sys.stderr)", "invalid_probe"),
     ("print('x' * 100_000)", "output_limit"),
     ("import sys; print('x' * 100_000, file=sys.stderr)", "output_limit"),
     ("import time; time.sleep(30)", "deadline"),
@@ -54,7 +57,17 @@ def test_direct_guardian_bounds_process_output_and_reaps_before_cleanup(tmp_path
         binary, profile = directory / "pinned-codex", directory / "runtime.sb"
         binary.touch()
         profile.touch()
-        return [sys.executable, "-I", "-S", "-c", stub]
+        if stub.startswith("expected_isolation_warning"):
+            warning = (
+                "WARNING: proceeding, even though we could not create PATH aliases: "
+                f'failed to read CODEX_HOME "{scratch}": Operation not permitted (os error 1)'
+            )
+            if stub.endswith("_plus_other"):
+                warning += "\nextra warning"
+            program = f"import sys; print('codex-cli 0.169.0'); print({warning!r}, file=sys.stderr)"
+        else:
+            program = stub
+        return [sys.executable, "-I", "-S", "-c", program]
 
     monkeypatch.setattr(guardian, "_runtime_command", command)
     monkeypatch.setattr(guardian.subprocess, "Popen", direct_child)
@@ -145,3 +158,18 @@ def test_cleanup_failure_leaves_pending_without_safe_terminal_receipt(tmp_path, 
                                    scratch, cutoff, wall, Path("/not-read"))
     assert state(db_path)[1:] == ("pending", None)
     assert (scratch / "unexpected").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_exact_native_offline_probe_when_operator_supplies_pinned_binary(tmp_path):
+    binary = os.environ.get("METIS_ISSUE6_PINNED_CODEX")
+    if not binary:
+        pytest.skip("set METIS_ISSUE6_PINNED_CODEX to the approved native offline version probe binary")
+    database, workspace, admission, args = prepare(tmp_path)
+    with start_offline_runtime_canary(admission, workspace, *args, Path(binary)) as canary:
+        assert canary.wait() == 0
+    assert state(database)[1:] == ("reaped", "completed")
+    assert list(workspace.iterdir()) == []
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT COUNT(*) FROM issue6_dry_reservations").fetchone() == (1,)
+    assert b"CODEX_HOME" not in database.read_bytes()

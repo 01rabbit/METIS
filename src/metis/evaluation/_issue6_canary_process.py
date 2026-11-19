@@ -231,7 +231,14 @@ def _runtime_guardian(lease: int, parent: int, database: Path, reservation: int,
                     break
                 if status is not None:
                     expected = f"codex-cli {NATIVE_VERSION}\n".encode("ascii")
-                    reason = "completed" if status == 0 and stdout == expected and not stderr else "invalid_probe"
+                    # The pinned CLI probes PATH aliases before printing --version. The
+                    # exact warning confirms Seatbelt denied reading the empty CODEX_HOME.
+                    denied_aliases = (
+                        "WARNING: proceeding, even though we could not create PATH aliases: "
+                        f'failed to read CODEX_HOME "{scratch}": Operation not permitted (os error 1)\n'
+                    ).encode("ascii")
+                    valid = status == 0 and stdout == expected and stderr in (b"", denied_aliases)
+                    reason = "completed" if valid else "invalid_probe"
                     break
     except (OSError, RuntimeError, ValueError):
         reason = "runtime_failed"
