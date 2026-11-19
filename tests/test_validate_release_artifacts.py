@@ -115,6 +115,55 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
     assert "continue-on-error:" not in workflow
 
 
+@pytest.mark.parametrize(("workflow_file", "workflow_name"), [
+    ("release.yml", "release.yml"),
+    ("release-attestation-drill.yml", "release-attestation-drill.yml"),
+])
+def test_attestation_verification_pins_repository_workflow_source_and_runner(
+    workflow_file, workflow_name,
+):
+    workflow = (Path(__file__).parents[1] / ".github/workflows" / workflow_file).read_text()
+    command_start = workflow.index('gh attestation verify "$artifact"')
+    command_end = workflow.index("done", command_start)
+    command = workflow[command_start:command_end]
+
+    assert '--repo "$GITHUB_REPOSITORY"' in command
+    assert (f'--cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/'
+            f'{workflow_name}@$GITHUB_REF"' in command)
+    assert '--cert-oidc-issuer "https://token.actions.githubusercontent.com"' in command
+    assert '--source-ref "$GITHUB_REF"' in command
+    assert '--source-digest "$GITHUB_SHA"' in command
+    assert "--deny-self-hosted-runners" in command
+
+
+@pytest.mark.parametrize(("workflow_file", "publish_command"), [
+    ("release.yml", "gh release create "),
+    ("release-attestation-drill.yml", None),
+])
+def test_attestation_verification_fails_closed_for_every_release_artifact(
+    workflow_file, publish_command,
+):
+    workflow = (Path(__file__).parents[1] / ".github/workflows" / workflow_file).read_text()
+    verify = workflow.index('gh attestation verify "$artifact"')
+    step_start = workflow.rindex("      - name: ", 0, verify)
+    step_end = workflow.find("      - name: ", verify)
+    step = workflow[step_start:] if step_end < 0 else workflow[step_start:step_end]
+
+    assert 'for artifact in dist/*.whl dist/*.tar.gz dist/SHA256SUMS; do' in step
+    assert step.count('gh attestation verify "$artifact"') == 1
+    assert "||" not in step
+    assert "set +e" not in step
+    assert "if gh attestation verify" not in step
+    assert "continue-on-error:" not in step
+    assert "--cert-identity-regex" not in step
+    assert "--signer-repo" not in step
+    if publish_command is not None:
+        assert publish_command in step
+        assert verify < workflow.index(publish_command)
+    else:
+        assert "gh release create " not in step
+
+
 def test_release_and_drill_share_checksum_generation_path():
     workflows = Path(__file__).parents[1] / ".github/workflows"
     release = (workflows / "release.yml").read_text()
