@@ -137,7 +137,9 @@ class RunStore:
             parent = digest
         return events
 
-    def read(self, run_id: str) -> list[RunEvent]:
+    def read(self, run_id: str, *, connection: sqlite3.Connection | None = None) -> list[RunEvent]:
+        if connection is not None:
+            return self._read(connection, run_id)
         with self._connect() as db:
             return self._read(db, run_id)
 

@@ -20,6 +20,7 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from pathlib import Path
@@ -192,18 +193,29 @@ class AgentScheduler:
         return self.jobs(run_id, wave_id)
 
     @locked
-    def reserve_model_turn(self, run_id: str, assignment_id: str, attempt_id: str) -> dict[str, Any] | None:
+    def reserve_model_turn(
+        self, run_id: str, assignment_id: str, attempt_id: str, *,
+        validate_reservation: Callable[[sqlite3.Connection], None] | None = None,
+        persist_receipt: Callable[[sqlite3.Connection, int], None] | None = None,
+    ) -> dict[str, Any] | None:
         """Atomically reserve one Codex call attempt from the run's immutable turn budget.
 
         Reservations are charged before the provider call and never refunded on failure or retry.
+        Optional trusted controller callbacks validate the connection before mutation and
+        write the receipt before commit. Neither callback may commit the transaction.
         ``None`` means the cap is exhausted; the active assignment is ended and logged.
         """
-        if self.run_cancelled(run_id):
+        if validate_reservation is None and self.run_cancelled(run_id):
             self.cancel_run(run_id)
             raise ValueError("run is cancelled; model-turn reservation refused")
         db = sqlite3.connect(self.database, timeout=30, isolation_level=None)
         try:
             db.execute("BEGIN IMMEDIATE")
+            if validate_reservation is not None:
+                validate_reservation(db)
+                events = self.session.store.read(run_id, connection=db)
+                if not events or events[-1].status == RunStatus.CANCELLED:
+                    raise ValueError("run is missing or cancelled; model-turn reservation refused")
             row = db.execute("SELECT run_id,state,attempt_id,deadline FROM agent_jobs WHERE assignment_id=?",
                              (assignment_id,)).fetchone()
             if row is None or row[:3] != (run_id, "running", attempt_id):
@@ -252,10 +264,15 @@ class AgentScheduler:
             db.execute("UPDATE agent_run_turn_budgets SET turns_reserved=? WHERE run_id=?", (turn_no, run_id))
             cursor = db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id,attempt_id,reserved) "
                                 "VALUES (?,?,?,?)", (run_id, assignment_id, attempt_id, now))
+            reservation_id = cursor.lastrowid
+            if reservation_id is None:
+                raise RuntimeError("scheduler could not identify its new reservation")
+            if persist_receipt is not None:
+                persist_receipt(db, reservation_id)
             self._log(db, assignment_id, attempt_id, "model_turn_reserved", f"{turn_no}/{limit}")
             db.execute("COMMIT")
             return {"turn": turn_no, "limit": limit, "remaining": limit - turn_no,
-                    "reservation_id": cursor.lastrowid}
+                    "reservation_id": reservation_id}
         except BaseException:
             if db.in_transaction:
                 db.execute("ROLLBACK")
