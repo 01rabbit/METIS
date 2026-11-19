@@ -1,8 +1,11 @@
 """Age-based removal never touches original inputs or active runs."""
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -249,3 +252,50 @@ def test_retention_capacity_unavailable_exits_nonzero(tmp_path, monkeypatch, cap
     assert report["batch_lock_capacity"] is None
     assert report["results"] == [{"run_id": run_id, "status": "capacity_unavailable"}]
     assert session._session(run_id)[0]
+
+
+def test_retention_100_runs_under_real_256_fd_limit_in_subprocess(tmp_path):
+    database = tmp_path / "state.sqlite"
+    source = tmp_path / "input.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    now = 100 * 86_400
+    artifacts = []
+    run_ids = []
+    for index in range(100):
+        run_id = session.intake(title=f"limited-{index}", description="fixture",
+                                paths=[source])["run_id"]
+        relative = session.store_artifact(run_id, b"generated")
+        session._emit(run_id, RunStatus.CANCELLED)
+        root = session.artifact_root(run_id)
+        assert root is not None
+        artifacts.append(root / relative)
+        run_ids.append(run_id)
+    with sqlite3.connect(database) as db:
+        db.executemany("UPDATE codex_sessions SET started=? WHERE run_id=?",
+                       [(now - 31 * 86_400, run_id) for run_id in run_ids])
+
+    script = '''
+import json
+import resource
+import sys
+from pathlib import Path
+resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+from metis.core.derived_retention import retain_derived
+print(json.dumps(retain_derived(Path(sys.argv[1]), older_than_days=30,
+                                apply=True, now=float(sys.argv[2]))))
+'''
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    completed = subprocess.run([sys.executable, "-c", script, str(database), str(now)],
+                               capture_output=True, text=True, check=True, env=environment)
+    report = json.loads(completed.stdout)
+    statuses = [row["status"] for row in report["results"]]
+    assert report["selected_runs"] == 100
+    assert report["batch_lock_capacity"] is None or report["batch_lock_capacity"] <= 100
+    if all(status == "applied" for status in statuses):
+        assert all(not artifact.exists() for artifact in artifacts)
+    else:
+        assert not any(status == "applied" for status in statuses)
+        assert set(statuses) <= {"capacity_exceeded", "capacity_unavailable", "blocked"}
+        assert all(artifact.is_file() for artifact in artifacts)

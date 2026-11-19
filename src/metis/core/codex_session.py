@@ -13,6 +13,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 
@@ -176,7 +177,7 @@ class CodexSession:
         return self.context(run_id)
 
     def _session(self, run_id: str) -> tuple:
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             row = db.execute("SELECT manifest, commitment, started, max_actions, wall_seconds "
                              "FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
@@ -475,7 +476,7 @@ class CodexSession:
     def artifact_root(self, run_id: str) -> Path | None:
         """Snapshot directory of a run; relative roots live beside the database."""
         self._session(run_id)
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             root = db.execute("SELECT artifact_root FROM codex_sessions WHERE run_id=?",
                               (run_id,)).fetchone()[0]
         if root is None:
@@ -539,7 +540,7 @@ class CodexSession:
                                         RunStatus.ERROR, RunStatus.POLICY_DENIED}:
                 raise ValueError("run must be terminal before derived artifact purge")
 
-            with sqlite3.connect(self.database) as db:
+            with closing(sqlite3.connect(self.database)) as db:
                 tables = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
                 active_operations = (db.execute(
@@ -625,7 +626,7 @@ class CodexSession:
                 data["artifacts"] = [path for path in manifest.artifacts
                                      if not path.startswith(".metis-derived/")]
                 updated = ChallengeManifest.model_validate(data)
-                with sqlite3.connect(self.database) as db:
+                with closing(sqlite3.connect(self.database)) as db, db:
                     db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
                                (updated.model_dump_json(), run_id))
                 return {"run_id": run_id, "applied": True, "files": entries, "bytes": total_bytes,

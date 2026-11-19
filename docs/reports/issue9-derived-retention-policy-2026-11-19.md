@@ -26,7 +26,9 @@ capacity from the soft `RLIMIT_NOFILE`, current open descriptors, a 16-FD
 reserve, and two lock descriptors per run. The batch limit is at most 100; a
 selection above measured capacity or an unavailable capacity report returns
 without acquiring locks or deleting files. Lock acquisition has a 15-second
-batch deadline and reports contention as blocked.
+batch deadline and reports contention as blocked. SQLite connections opened by
+retention selection, run lookups, artifact-root lookup and purge checks/manifest
+updates are explicitly closed so the batch does not accumulate database FDs.
 
 Review follow-up: terminal eligibility is now an explicit allowlist of
 `solved`, `cancelled`, `error`, and `policy_denied`, checked under both run locks
@@ -41,13 +43,13 @@ Local validation (Python 3.12 virtual environment, synthetic local fixtures):
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -q tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
-44 passed
+45 passed
 /Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
 All checks passed!
 /Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py
 Success: no issues found in 3 source files
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -ra
-1529 passed, 37 skipped, 45 subtests passed in 210.77s
+1530 passed, 37 skipped, 45 subtests passed in 212.08s
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python scripts/check_repo.py
 {"status": "passed", "findings": 0}
 git diff --check

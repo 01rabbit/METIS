@@ -5,7 +5,7 @@ import os
 import resource
 import sqlite3
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +58,7 @@ def retain_derived(database: Path, *, older_than_days: int, apply: bool = False,
     if now is None:
         now = time.time()
     cutoff = now - older_than_days * 86_400
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as db:
         rows = db.execute(
             "SELECT run_id FROM codex_sessions WHERE started <= ? "
             "ORDER BY started, run_id LIMIT ?", (cutoff, MAX_RETENTION_RUNS + 1),
