@@ -1,6 +1,8 @@
 import errno
 import hashlib
+import json
 import os
+import platform
 import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +18,7 @@ from metis.core.study_token_admission import (
     StudyTokenPin,
     TokenAttempt,
 )
+from metis.evaluation import native_build_identity as identity
 from metis.evaluation import native_work_fixture as fixture
 
 # The fixture-only controller uses this staged binary as a bounded stand-in for
@@ -156,16 +159,32 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     model.write_bytes(b"fixture test bytes")
     model_digest = hashlib.sha256(model.read_bytes()).hexdigest()
     monkeypatch.setattr(fixture, "FIXTURE_MODEL_SHA256", model_digest)
+    monkeypatch.setattr(identity, "_PUBLIC_MODEL_SHA256", model_digest)
+    patch = tmp_path / "approved.patch"
+    patch.write_bytes(b"synthetic patch")
+    manifest = tmp_path / "native-build.json"
+    binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps({
+        "version": 1, "profile": identity._PROFILE, "source_commit": identity._SOURCE_COMMIT,
+        "target_os": platform.system(), "target_arch": platform.machine(),
+        "compiler_id": "fixture", "compiler_version": "1", "cmake_version": "1",
+        "binary_sha256": binary_digest, "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+    }))
+    approval = {
+        "manifest": manifest, "patch": patch,
+        "expected_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    }
     study = StudyTokenPin(
         study_id="fixture", protocol_sha256=fixture.fixture_protocol_sha256(n_predict, end=end),
-        runtime_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+        runtime_sha256=binary_digest,
         model_sha256=model_digest, token_limit=cap,
+        native_manifest_sha256=approval["expected_manifest_sha256"],
     )
     slot = SlotTokenPin(run_id="run", task_id="fixture", repetition=0, arm="test", token_limit=cap)
     attempt = TokenAttempt(assignment_id="assignment", attempt_id="attempt", turn_reservation_id=1,
                            prompt_sha256=fixture.FIXTURE_PROMPT_SHA256, tokens=cap)
     admission = StudyTokenAdmission(tmp_path / "ledger.sqlite")
-    return admission, admission.reserve(study, slot, attempt), binary, model
+    return admission, admission.reserve(study, slot, attempt), binary, model, approval
 
 
 @pytest.mark.parametrize(("mode", "status", "exit_status", "work"), [
@@ -193,25 +212,27 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
 ])
 def test_private_launch_verifies_terminal_receipt_and_keeps_full_charge(tmp_path, monkeypatch, mode,
                                                                       status, exit_status, work):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, mode)
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, mode)
     outcome = fixture.qualify_native_launch(
-        admission, receipt, binary=binary, model=model, seconds=0.7 if mode in ("timeout", "trickle") else 4,
+        admission, receipt, binary=binary, model=model, **approval, seconds=0.7 if mode in ("timeout", "trickle") else 4,
     )
     assert (outcome.status, outcome.exit_status, outcome.observed_work) == (status, exit_status, work)
     with closing(sqlite3.connect(admission.database)) as db:
-        assert db.execute("SELECT status, exit_status, observed_work FROM study_token_outcomes").fetchall() == [
-            (status, exit_status, work),
+        assert db.execute(
+            "SELECT status, exit_status, observed_work, native_manifest_sha256 FROM study_token_outcomes"
+        ).fetchall() == [
+            (status, exit_status, work, approval["expected_manifest_sha256"]),
         ]
     extra_attempt = receipt.attempt.model_copy(update={"turn_reservation_id": 2, "tokens": 1})
     with pytest.raises(ValueError, match="study token budget exhausted"):
         admission.reserve(receipt.study, receipt.slot, extra_attempt)
     with pytest.raises(ValueError, match="already claimed"):
-        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
 
 @pytest.mark.parametrize("kind", ["binary", "model", "symlink", "prompt", "unknown_model", "forged_attempt"])
 def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid")
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
     if kind == "binary":
         binary.write_bytes(b"substituted binary")
     elif kind == "model":
@@ -237,23 +258,23 @@ def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
     monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
     if kind == "symlink":
         with pytest.raises(OSError) as error:
-            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
         assert error.value.errno == errno.ELOOP
     else:
         with pytest.raises(ValueError):
-            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     with closing(sqlite3.connect(admission.database)) as db:
         assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
 
 
 def test_one_process_can_launch_for_racing_controllers(tmp_path, monkeypatch):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid")
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
     barrier = Barrier(2)
 
     def run():
         barrier.wait(timeout=5)
         try:
-            return fixture.qualify_native_launch(admission, receipt, binary=binary, model=model).status
+            return fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval).status
         except ValueError as error:
             assert "already claimed" in str(error)
             return "denied"
@@ -264,22 +285,26 @@ def test_one_process_can_launch_for_racing_controllers(tmp_path, monkeypatch):
 
 
 def test_failed_spawn_keeps_claim_and_records_terminal_failure(tmp_path, monkeypatch):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid")
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
 
     def fail(*args, **kwargs):
         raise OSError(errno.EACCES, "synthetic launch failure")
 
     monkeypatch.setattr(fixture.subprocess, "Popen", fail)
-    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     assert outcome.status == "launch_failed"
     with pytest.raises(ValueError, match="already claimed"):
-        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
 def test_public_native_fixture_cap_matrix(tmp_path):
     binary_file = os.environ.get("METIS_NATIVE_FIXTURE_BINARY")
     model_file = os.environ.get("METIS_NATIVE_FIXTURE_MODEL")
-    if not binary_file or not model_file:
-        pytest.skip("requires the pinned standalone build and public stories260K fixture")
+    manifest_file = os.environ.get("METIS_NATIVE_FIXTURE_MANIFEST")
+    patch_file = os.environ.get("METIS_NATIVE_FIXTURE_PATCH")
+    expected = os.environ.get("METIS_NATIVE_FIXTURE_MANIFEST_SHA256")
+    if not (binary_file and model_file and manifest_file and patch_file and expected):
+        pytest.skip("requires the approved standalone build and public stories260K fixture")
+    approval = {"manifest": Path(manifest_file), "patch": Path(patch_file), "expected_manifest_sha256": expected}
 
     binary, model = Path(binary_file), Path(model_file)
     with binary.open("rb") as artifact:
@@ -301,13 +326,14 @@ def test_public_native_fixture_cap_matrix(tmp_path):
         study = StudyTokenPin(
             study_id="native_fixture", protocol_sha256=fixture.fixture_protocol_sha256(limit, end=end),
             runtime_sha256=runtime_sha256, model_sha256=fixture.FIXTURE_MODEL_SHA256, token_limit=cap,
+            native_manifest_sha256=expected,
         )
         slot = SlotTokenPin(run_id="public_fixture", task_id="native_fixture", repetition=0,
                             arm="test", token_limit=cap)
         attempt = TokenAttempt(assignment_id="fixture", attempt_id="attempt", turn_reservation_id=1,
                                prompt_sha256=fixture.FIXTURE_PROMPT_SHA256, tokens=cap)
         receipt = admission.reserve(study, slot, attempt)
-        result = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model,
+        result = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                                n_predict=limit, end=end)
         assert (result.status, result.observed_work) == (status, work)
         with closing(sqlite3.connect(admission.database)) as db:
@@ -315,14 +341,14 @@ def test_public_native_fixture_cap_matrix(tmp_path):
 
 @pytest.mark.parametrize(("end", "work"), [("limit", 24), ("word", 22), ("eos", 22)])
 def test_three_token_profile_reserves_full_output_headroom(tmp_path, monkeypatch, end, work):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid", n_predict=3, end=end)
-    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model,
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid", n_predict=3, end=end)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                            n_predict=3, end=end)
     assert (outcome.status, outcome.observed_work) == ("completed", work)
 
 
 def test_budget_and_profile_mismatches_do_not_claim_or_spawn(tmp_path, monkeypatch):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "valid", n_predict=3, cap=3)
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid", n_predict=3, cap=3)
 
     def unexpected(*args, **kwargs):
         pytest.fail("unverified output policy reached Popen")
@@ -331,15 +357,115 @@ def test_budget_and_profile_mismatches_do_not_claim_or_spawn(tmp_path, monkeypat
     for limit, end, message in [(1, "limit", "sampling profile"), (3, "word", "sampling profile"),
                                 (3, "limit", "no positive native cap")]:
         with pytest.raises(ValueError, match=message):
-            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model,
+            fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                           n_predict=limit, end=end)
     with closing(sqlite3.connect(admission.database)) as db:
         assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
 
 
 def test_startup_retry_denial_keeps_admission_charged(tmp_path, monkeypatch):
-    admission, receipt, binary, model = _setup(tmp_path, monkeypatch, "startup_retry", cap=2)
-    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "startup_retry", cap=2)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     assert (outcome.status, outcome.exit_status, outcome.observed_work) == ("cap_denied", 75, 1)
     with pytest.raises(ValueError, match="already claimed"):
-        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model)
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+
+
+@pytest.mark.parametrize("kind", [
+    "foreign_manifest", "changed_patch", "wrong_target", "runtime_pin", "forged_provenance", "missing_pin",
+])
+def test_unapproved_build_stops_before_staging_or_launch(tmp_path, monkeypatch, kind):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    if kind == "foreign_manifest":
+        binary.write_bytes(b"different binary")
+        manifest = json.loads(approval["manifest"].read_bytes())
+        manifest["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
+        approval["manifest"].write_text(json.dumps(manifest))
+    elif kind == "changed_patch":
+        approval["patch"].write_bytes(b"different patch")
+    elif kind == "wrong_target":
+        path = approval["manifest"]
+        manifest = json.loads(path.read_bytes())
+        target = ("Linux", "x86_64") if platform.system() == "Darwin" else ("Darwin", "arm64")
+        manifest["target_os"], manifest["target_arch"] = target
+        path.write_text(json.dumps(manifest))
+        approval["expected_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        changed = receipt.study.model_copy(update={"native_manifest_sha256": approval["expected_manifest_sha256"]})
+        receipt = receipt.model_copy(update={"study": changed})
+    elif kind == "forged_provenance":
+        _make_foreign_provenance(approval)
+    else:
+        changed = receipt.study.model_copy(update=(
+            {"runtime_sha256": "f" * 64} if kind == "runtime_pin" else {"native_manifest_sha256": None}
+        ))
+        receipt = receipt.model_copy(update={"study": changed})
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("unapproved build crossed preflight")
+
+    monkeypatch.setattr(fixture, "_stage", unexpected)
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    with pytest.raises(ValueError):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("replaced_executable", [False, True])
+def test_substituted_staged_bytes_do_not_reach_process_launch(tmp_path, monkeypatch, replaced_executable):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    stage = fixture._stage
+
+    def substitute(source, destination, expected, *, limit, executable=False):
+        stage(source, destination, expected, limit=limit, executable=executable)
+        if executable == replaced_executable:
+            destination.chmod(0o600)
+            destination.write_bytes(b"substituted after staging")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("substituted artifact reached Popen")
+
+    monkeypatch.setattr(fixture, "_stage", substitute)
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    with pytest.raises(ValueError, match="native binary digest mismatch|registered single-file"):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
+
+
+def test_controller_uses_approved_copies_after_original_paths_change(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    stage = fixture._stage
+
+    def replace_original(source, destination, expected, *, limit, executable=False):
+        stage(source, destination, expected, limit=limit, executable=executable)
+        source.write_bytes(b"source replaced after approved copy")
+
+    monkeypatch.setattr(fixture, "_stage", replace_original)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+    assert outcome.status == "completed"
+
+
+def _make_foreign_provenance(approval):
+    manifest_path, patch_path = approval["manifest"], approval["patch"]
+    patch_path.write_bytes(b"different but internally consistent patch")
+    document = json.loads(manifest_path.read_bytes())
+    document["patch_sha256"] = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(document))
+    approval["expected_manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_mutated_receipt_cannot_self_approve_foreign_provenance(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    _make_foreign_provenance(approval)
+    changed = receipt.study.model_copy(update={"native_manifest_sha256": approval["expected_manifest_sha256"]})
+    forged_receipt = receipt.model_copy(update={"study": changed})
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("forged receipt reached Popen")
+
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    with pytest.raises(ValueError, match="committed reservation"):
+        fixture.qualify_native_launch(admission, forged_receipt, binary=binary, model=model, **approval)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
