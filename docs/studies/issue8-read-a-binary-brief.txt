@@ -1,0 +1,5 @@
+Source: https://alpacahack.com/daily/challenges/read-a-binary
+Title: read-a-binary
+Category: Rev
+Official statement: ELFバイナリの処理内容を読んでみよう！
+Distribution: read-a-binary (provided as the other scoped artifact in this run)
