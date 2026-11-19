@@ -810,3 +810,24 @@ rejects missing or changed binding/dispatch evidence. This supports a
 prospective two-arm memory comparison, but no real-model study has started and
 provider-side prompt application is not independently attested. See
 `docs/reports/issue8-run-arm-attestation-2026-11-19.md`; Issue #8 remains open.
+
+## Integrated Issue #8 exploratory result and token gate (2026-11-19)
+
+The preregistered AlpacaHack Rev memory comparison ran eight exploratory
+held-out trials after the preparatory entries above. All 24 specialist jobs
+exhausted the six-call run cap; no candidate was produced, and every run
+exceeded its declared 50,000-token budget. Model exposure to these older
+public tasks remains unknown. This result cannot establish MUNIN benefit or
+satisfy Issue #8. The historical runner now validates saved progress against
+controller evidence and refuses new calls under the closed protocol. The
+Codex CLI is also marked as lacking a proven hard input/output token cap, so
+future real-model held-out dispatch fails closed until a capable runner is
+implemented and a new protocol is registered. See
+`docs/studies/issue8-rev-memory-exploratory-result.md` and
+`docs/studies/issue8-token-capability.md`.
+
+Issue #9's read-only run audit additionally reports known model-token
+subtotals and withholds the complete total when job usage is missing. This is
+monitoring, not an enforced token or cost budget. See
+`docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
+remain open pending their separate evidence gates.
