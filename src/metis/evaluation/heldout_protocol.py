@@ -120,12 +120,12 @@ def schedule(protocol: Protocol) -> list[dict[str, Any]]:
 
 def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database: Path) -> None:
     """Require each bound run's frozen cards to match the committed arm treatment."""
-    if not protocol.memory_card_digests:
-        return
     expected = sorted(protocol.memory_card_digests)
     with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='heldout_memory_snapshots'").fetchone() is None:
-            raise ValueError("held-out memory snapshots missing")
+            if expected:
+                raise ValueError("held-out memory snapshots missing")
+            return
         db.execute("BEGIN")
         for assignment in bindings.runs:
             rows = db.execute(

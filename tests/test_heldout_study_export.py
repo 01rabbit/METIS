@@ -9,6 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
+from metis.core.codex_session import CodexSession
+from metis.core.contracts import ChallengeManifest
+from metis.core.ctf_knowledge import KnowledgeBase, TechniqueCard
 from metis.core.store import RunStore
 from metis.evaluation.heldout_analysis import reconcile_evidence
 from metis.evaluation.heldout_protocol import Bindings, Protocol, digest, finalize, main, schedule
@@ -233,6 +238,72 @@ def test_memory_ablation_requires_committed_cards_and_exact_arm_snapshots(tmp_pa
                    (next(item["run_id"] for item in runs if item["arm"] == "full"),))
     with pytest.raises(ValueError, match="digest mismatch"):
         finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+
+
+def test_undeclared_memory_snapshot_is_rejected(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE heldout_memory_snapshots (run_id TEXT, card_id INTEGER, payload TEXT, digest TEXT)")
+        db.execute("INSERT INTO heldout_memory_snapshots VALUES (?,?,?,?)",
+                   (bindings.runs[0].run_id, 1, "{}", hashlib.sha256(b"{}").hexdigest()))
+    with pytest.raises(ValueError, match="conflicts with arm"):
+        finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+
+
+def test_real_munin_freeze_reconciles_with_protocol(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    session = CodexSession(database)
+    AgentScheduler(database, FakeHost())
+    knowledge = KnowledgeBase(database)
+
+    def manifest(identity: str) -> ChallengeManifest:
+        return ChallengeManifest.model_validate({
+            "challenge_id": identity, "title": "Independent byte checker",
+            "description": "Recover a candidate by static analysis.", "categories": ["rev"],
+            "scope": {"granted_by": "test", "challenge_id": identity,
+                      "allowed_endpoints": [], "authorized": True},
+        })
+
+    source = session.start(manifest("practice-source"), evaluation_split="practice")
+    card = knowledge.remember(TechniqueCard(
+        title="Invert byte checker", category="rev",
+        summary="Recover the input by reversing a bytewise checker transform.",
+        conditions="A local checker has a reversible byte transform.",
+        outcome="inconclusive", source_run_id=source["run_id"], source_split="practice",
+    ))
+    budget = {"model_calls": 4, "tokens": 100, "actions": 4,
+              "seconds": 60.0, "cost_usd": None}
+    protocol = Protocol.model_validate({
+        "schema_version": 1, "study_id": "real-munin-integration", "measurement": "synthetic_fixture",
+        "model_pin": "test-model", "runtime_pin": "test-runtime", "seed": 17,
+        "repetitions": 2, "arms": ["full", "without_memory"], "baseline": "full",
+        "budgets": {"full": budget, "without_memory": budget},
+        "tasks": [{"task_id": f"task{index}", "source_id": f"fixture-{index}",
+                   "category": "rev", "difficulty": "easy", "split": "held_out",
+                   "exposure": "unknown", "solvability_control_verified": False,
+                   "distribution_sha256": f"{index + 10:064x}"} for index in range(2)],
+        "arm_config": {
+            "full": {"memory_enabled": True, "planner_enabled": True,
+                     "max_specialists": 2, "prompt_sha256": "a" * 64},
+            "without_memory": {"memory_enabled": False, "planner_enabled": True,
+                               "max_specialists": 2, "prompt_sha256": "a" * 64},
+        },
+        "memory_card_digests": [card["digest"]],
+    })
+    runs = []
+    for slot in schedule(protocol):
+        target = session.start(manifest(f"{slot['task_id']}-{slot['repetition']}-{slot['arm']}"),
+                               evaluation_split="heldout")
+        if slot["arm"] == "full":
+            knowledge.freeze_for_heldout(target["run_id"], [card["id"]])
+            assert [item["id"] for item in knowledge.search_for_run(
+                target["run_id"], "checker", category="rev")] == [card["id"]]
+        else:
+            assert knowledge.search_for_run(target["run_id"], "checker", category="rev") == []
+        runs.append({**slot, "run_id": target["run_id"]})
+    bindings = Bindings.model_validate({"protocol_sha256": digest(protocol), "runs": runs})
+    result = finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+    assert result["ledger_reconciliation"]["trials_reconciled"] == 8
 
 
 def test_protocol_real_model_aggregate_cap(tmp_path: Path) -> None:

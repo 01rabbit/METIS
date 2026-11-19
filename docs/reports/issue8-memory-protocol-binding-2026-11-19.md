@@ -26,16 +26,25 @@ downloaded but not executed or analyzed. No held-out model call, official
 candidate submission or benchmark result exists yet. The two tasks were
 released in February 2026; prior model exposure remains unknown.
 
+After review, the branch was integrated with PR #55's actual `KnowledgeBase`
+implementation. The integration test now creates a practice card through
+`remember()`, starts eight independent held-out runs, freezes the card in the
+`full` runs only, checks each arm's retrieval behavior, and finalizes the
+protocol against the same controller DB. A separate regression test inserts an
+undeclared snapshot under a protocol with an empty card list and requires
+rejection. Empty card declarations no longer skip snapshot reconciliation.
+
 Validation on Python 3.12:
 
 ```text
-PYTHONPATH=src .../pytest -q tests/test_heldout_study_export.py tests/test_heldout_analysis.py tests/test_heldout_export.py
-50 passed
+PYTHONPATH=src .../pytest -ra tests/test_heldout_study_export.py tests/test_heldout_analysis.py tests/test_heldout_export.py tests/test_munin_integration.py
+58 passed
 .../ruff check src/metis/evaluation/heldout_protocol.py tests/test_heldout_study_export.py
 All checks passed!
 .../mypy src/metis/evaluation/heldout_protocol.py
 Success: no issues found in 1 source file
 ```
 
-This branch depends on PR #54's protocol and PR #55's snapshot table. The
+This branch is based on PR #54's protocol and now contains PR #55's snapshot
+implementation to make the integration test runnable in CI. The
 experiment remains in preparation; Issue #8 stays open.
