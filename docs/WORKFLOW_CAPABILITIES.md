@@ -96,7 +96,8 @@ depend on the reviewer; the intake checks file shape and bounds.
 
 ## Evidence
 
-The sandbox-backed test procedure and exact environment are in
-[`issue7-capability-review-2026-11-17.md`](reports/issue7-capability-review-2026-11-17.md).
+The capability review and external-fixture container evidence are in
+[`issue7-capability-review-2026-11-17.md`](reports/issue7-capability-review-2026-11-17.md)
+and [`issue7-external-fixture-replay-2026-11-19.md`](reports/issue7-external-fixture-replay-2026-11-19.md).
 Issue #7 remains open while its P5 dependency and broader P6 evidence gates are
 unmet.

@@ -1,7 +1,9 @@
 """The model proposal never expands workflow capability or scope."""
+import base64
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -392,3 +394,101 @@ def test_external_trial_accepts_mac_deny_only_acl(tmp_path, external_fixture):
                                        fixture=fixture, oracle=oracle, proposer=propose)
     finally:
         subprocess.run(["/bin/chmod", "-a", entry, protected], check=True, timeout=5)
+
+
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
+                    reason="requires an immutable METIS_TEST_SANDBOX_IMAGE")
+def test_external_fixture_real_docker_replay_keeps_oracle_private(tmp_path, monkeypatch):
+    # Prepare a benign input independently of METIS's built-in fixture generator.
+    tmp_path.chmod(0o700)
+    message = b"Workflow canary " + secrets.token_hex(24).encode()
+    challenge = base64.b32encode(message.hex().encode("ascii"))
+    fixture = tmp_path / "external-input.txt"
+    fixture.write_bytes(challenge)
+    private = tmp_path / "reviewer"
+    private.mkdir(mode=0o700)
+    openssl = shutil.which("openssl")
+    assert openssl is not None
+    expected_sha256 = subprocess.run([openssl, "dgst", "-sha256", "-binary"],
+                                     input=message, capture_output=True, timeout=5,
+                                     check=True).stdout.hex()
+    oracle = private / "independent.sha256"
+    oracle.write_text(expected_sha256 + "\n")
+    oracle.chmod(0o600)
+
+    plan = json.dumps({
+        "schema_version": 1, "input_artifact": "challenge.txt",
+        "steps": [{"tool": "base32_decode"}, {"tool": "hex_decode"}],
+    }).encode()
+    proposer = None
+    if sys.platform == "darwin":
+        # Drive the production Seatbelt proposal path with a harmless local stand-in.
+        # It exits unsuccessfully unless the OS denies opening the oracle by its real path.
+        canary_dir = tmp_path / "canary-package"
+        canary_dir.mkdir()
+        stand_in = canary_dir / "proposer.pl"
+        stand_in.write_text(
+            'use strict; use warnings; use Errno qw(EACCES EPERM);\n'
+            'my ($flag, $output, $oracle, $token, $plan) = @ARGV;\n'
+            'die "incorrect CLI flag" unless $flag eq "--ephemeral";\n'
+            'my $prompt = do { local $/; <STDIN> };\n'
+            'die "fixture missing" unless index($prompt, $token) >= 0;\n'
+            'die "oracle opened" if open(my $secret, "<", $oracle);\n'
+            'die "oracle lookup did not fail with permission denied" '
+            'unless $! == EACCES || $! == EPERM;\n'
+            'open(my $reply, ">", $output) or die "cannot write proposal";\n'
+            'print {$reply} $plan;\n'
+        )
+
+        class CanaryCLI:
+            executable = "/usr/bin/perl"
+            hosts: tuple[str, ...] = ()
+
+            def __init__(self, *, isolation):
+                assert isolation == "required"
+
+            def check(self):
+                pass
+
+            def argv(self, workdir, schema, output, model):
+                return [self.executable, str(stand_in), str(output), str(oracle),
+                        challenge.decode("ascii"), plan.decode("ascii")]
+
+            def environment(self):
+                return {}
+
+            def protected_roots(self, temp_root):
+                # Prove the oracle-specific rule even when defaults omit this path.
+                return []
+
+        monkeypatch.setattr(workflow_model_trial, "CodexCLI", CanaryCLI)
+        monkeypatch.setattr(workflow_model_trial, "native_codex",
+                            lambda executable: (executable, canary_dir))
+        monkeypatch.setattr(workflow_model_trial, "default_codex_home",
+                            lambda: tmp_path / "empty-codex-home")
+        monkeypatch.setattr(workflow_model_trial, "upstream_proxy", lambda: None)
+    else:
+        def proposer(payload):
+            assert payload == challenge
+            return plan
+
+    database = tmp_path / "run-workspace" / "state.sqlite"
+    report = run_external_fixture_trial(
+        database, image=os.environ["METIS_TEST_SANDBOX_IMAGE"],
+        platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"),
+        fixture=fixture, oracle=oracle, proposer=proposer,
+    )
+    assert report["ok"] and report["reproducible"] and report["oracle_match"]
+    assert set(report) == {"fixture", "run_id", "selected_steps", "reproducible",
+                           "oracle_match", "ok", "fixture_sha256"}
+    session = CodexSession(database)
+    run_id = report["run_id"]
+    events = session.store.export_jsonl(run_id)
+    artifact_root = session.artifact_root(run_id)
+    assert artifact_root is not None
+    artifacts = list(artifact_root.iterdir())
+    assert sorted(path.name for path in artifacts) == ["00-challenge.txt", "01-workflow.json"]
+    visible = (json.dumps(report) + events).encode() + b"".join(path.read_bytes() for path in artifacts)
+    for private_value in (message, expected_sha256.encode(), os.fsencode(oracle)):
+        if private_value in visible:
+            pytest.fail("private fixture data escaped into an output surface", pytrace=False)
