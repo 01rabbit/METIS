@@ -21,10 +21,13 @@ The only review-gated capability currently implemented is the fixed built-in
 
 To repeat a declared workflow in the isolated sandbox, use
 `metis workflow --database PATH replay RUN_ID --target INPUT_ARTIFACT --workflow-artifact PLAN_ARTIFACT`.
-The command runs the same plan twice against the original input and reports
-only whether the bounded outputs and sandbox identity match. Optionally pass
+Before decoding, the sandbox checks the staged plan against the exact bytes
+validated by the controller. Replay compares the digests of the input bytes
+actually read, the plan, and both bounded outputs, along with the sandbox
+identity and platform. Optionally pass
 `--oracle-sha256-file PRIVATE_FILE` to compare both outputs with a controller-
-held commitment; neither the commitment nor output digests are printed.
+held commitment. The command omits the commitment and all digests from its
+result.
 Each replay consumes two bounded sandbox actions and registers two untrusted
 derived artifacts. A failed or mismatched run does not certify a solve.
 
