@@ -238,7 +238,11 @@ def _run_claim(
     except OSError:
         return TokenLaunchOutcome(status="launch_failed")
     try:
-        control_parent, control_child = socket.socketpair()
+        try:
+            control_parent, control_child = socket.socketpair()
+        except OSError:
+            os.close(write_fd)
+            return TokenLaunchOutcome(status="launch_failed")
         try:
             process = subprocess.Popen(
                 [sys.executable, "-I", str(Path(__file__).with_name("_fixture_guardian.py")), str(write_fd),

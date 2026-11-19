@@ -316,6 +316,35 @@ def test_failed_spawn_keeps_claim_and_records_terminal_failure(tmp_path, monkeyp
     with pytest.raises(ValueError, match="already claimed"):
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
+
+def test_control_socketpair_failure_closes_pipe_and_records_launch_failure(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    descriptors = []
+    original_pipe = fixture.os.pipe
+
+    def tracked_pipe():
+        pair = original_pipe()
+        descriptors.extend(pair)
+        return pair
+
+    def fail_socketpair():
+        raise OSError(errno.EMFILE, "synthetic descriptor exhaustion")
+
+    monkeypatch.setattr(fixture.os, "pipe", tracked_pipe)
+    monkeypatch.setattr(fixture.socket, "socketpair", fail_socketpair)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+
+    assert outcome.status == "launch_failed"
+    assert len(descriptors) == 2
+    for descriptor in descriptors:
+        with pytest.raises(OSError) as error:
+            os.fstat(descriptor)
+        assert error.value.errno == errno.EBADF
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchall() == [("launch_failed",)]
+    with pytest.raises(ValueError, match="already claimed"):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+
 def test_public_native_fixture_cap_matrix(tmp_path):
     binary_file = os.environ.get("METIS_NATIVE_FIXTURE_BINARY")
     model_file = os.environ.get("METIS_NATIVE_FIXTURE_MODEL")
