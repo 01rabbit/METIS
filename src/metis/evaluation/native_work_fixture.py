@@ -310,8 +310,8 @@ def qualify_native_launch(
         # file layouts, including split GGUFs, cannot reach launch.
         _stage(model, staged_model, FIXTURE_MODEL_SHA256, limit=2 * 1024**2)
         verify_native_runtime(approved, binary=staged_binary, model=staged_model)
-        claim = admission.claim_for_launch(receipt)
-        outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
-        outcome = outcome.model_copy(update={"native_manifest_sha256": expected_manifest_sha256})
-        admission.record_outcome(claim, outcome)
-        return outcome
+        with admission.claim_fixture_launch(receipt) as claim:
+            outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
+            outcome = outcome.model_copy(update={"native_manifest_sha256": expected_manifest_sha256})
+            admission.record_outcome(claim, outcome)
+            return outcome

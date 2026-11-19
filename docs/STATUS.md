@@ -1,5 +1,25 @@
 # METIS implementation status
 
+## Issue #9 artifact registration audit (2026-11-20)
+
+`metis audit` now reports bounded, count-only artifact registrations from the
+current run's manifest in its existing SQLite snapshot. Derived, added and other
+registration counts omit paths and contents and always report
+`filesystem_verified: false`. The audit does not inspect artifact files,
+initialize a session, acquire METIS locks or remove data. Missing legacy schema
+is unavailable; malformed, duplicate, unrecognized-path or oversized manifests
+make only the inventory unavailable. Existing valid manifest shapes outside the
+inventory's recognition rules keep their event-chain and other audit output;
+the persistence contract is unchanged. SQLite errors propagate if the original
+read transaction is no longer active, preserving the audit's snapshot boundary.
+All 95 focused audit/CLI/evidence tests and standard static/content checks passed.
+The current head also completed the full test suite with exit code 0; pytest
+collection reported 1,603 tests. The quiet run did not expose pass/skip counts.
+This adds local visibility without proving file
+existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
+P7/#8 dependency remain open. See
+[`issue9-artifact-inventory-audit-2026-11-20.md`](reports/issue9-artifact-inventory-audit-2026-11-20.md).
+
 ## Codex-native solve workflow
 
 The active implementation is on `metis-full-implementation`. Codex supplies the
@@ -605,12 +625,16 @@ with an explicit timing limit, not production acceptance. Private snapshots
 were retained outside Git and disposable VMs removed. See
 [`issue9-host-reboot-recovery-2026-11-19.md`](reports/issue9-host-reboot-recovery-2026-11-19.md).
 
-A local read-only operator view now serves the existing count-only audit over
-`127.0.0.1` with an in-memory bearer token supplied by environment variable.
-It rejects non-loopback Host headers and Origin-bearing requests, exposes no
-write route, and never logs tokens or event details. Local HTTP tests passed.
-This is monitoring only; pause/resume, HTTP cancellation, host reboot, secure
-retention and release acceptance remain open.
+A local operator view serves the existing count-only audit over `127.0.0.1`
+with a bearer token supplied by environment variable. Its authenticated
+`POST /api/runs/{run_id}/cancel` delegates to the existing run-locked
+`CodexSession.cancel` path and returns only run status and worker-teardown
+status; unknown teardown remains visible as HTTP 202. It rejects non-loopback
+Host headers and foreign Origin values, rejects request bodies, and never
+logs tokens or event details. Local HTTP tests cover authorization, active-run
+cancellation, idempotency, and unknown teardown. This is a bounded local
+operator control, not host-reboot recovery, secure retention, or release
+acceptance.
 
 A new read-only `metis audit RUN_ID --database PATH` command projects lifecycle
 status, sequence bounds, event timestamps, status counts, and validated chain
@@ -824,8 +848,16 @@ official #39 verdict remain open.
 selection and requires `--apply` for deletion. It reuses the locked per-run
 generated-artifact purge and reports blocked resumable runs. Only terminal
 `solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
-`planning` and extendable `exhausted` runs are preserved. This is a manual
-local retention control, not secure erasure or a complete P8 release gate. See
+`planning` and extendable `exhausted` runs are preserved. Each run is capped at
+100 registered derived artifacts; the run-locked writer refuses the 101st
+before creating it. Apply preflights the whole bounded batch under all selected
+run locks and skips deletion if any run exceeds the cap. Overflow
+reports counts and limits without artifact paths; directory enumeration stops
+at the per-run bound. Apply derives lock capacity from `RLIMIT_NOFILE`, open
+FDs, a 16-FD reserve, and two FDs per run, and returns before locking if the
+batch exceeds capacity. It filters resumable runs before lock acquisition and
+uses a 15-second batch lock deadline. This is a manual local retention control,
+not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
 
 ## Held-out protocol preparation (2026-11-19)

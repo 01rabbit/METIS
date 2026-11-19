@@ -4,10 +4,17 @@ import os
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
-from metis.core.codex_session import CodexSession, transform
+from metis.core.codex_session import (
+    MAX_DERIVED_ARTIFACTS_PER_RUN,
+    CodexSession,
+    DerivedArtifactLimitError,
+    transform,
+)
 from metis.core.contracts import ChallengeManifest, RunStatus
 from metis.core.runtime import ToolRequest
 
@@ -144,6 +151,60 @@ def test_purge_derived_keeps_original_and_user_added_artifacts(tmp_path):
     assert repeated["manifest_entries_removed"] == 0
 
 
+def test_store_artifact_caps_derived_entries_and_keeps_purge_recoverable(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="derived-cap", description="fixture", paths=[source])["run_id"]
+    derived = [session.store_artifact(run_id, b"generated")
+               for _ in range(MAX_DERIVED_ARTIFACTS_PER_RUN)]
+    other = session.store_artifact(run_id, b"other", directory_name=".metis-other")
+    with pytest.raises(DerivedArtifactLimitError) as error:
+        session.store_artifact(run_id, b"one too many")
+    assert error.value.count == MAX_DERIVED_ARTIFACTS_PER_RUN + 1
+
+    root = session.artifact_root(run_id)
+    assert root is not None
+    assert len(list((root / ".metis-derived").iterdir())) == MAX_DERIVED_ARTIFACTS_PER_RUN
+    manifest = session.context(run_id)["challenge"]["artifacts"]
+    assert sum(path.startswith(".metis-derived/") for path in manifest) == 100
+    assert other in manifest
+
+    session._emit(run_id, RunStatus.CANCELLED)
+    result = session.purge_derived(run_id, apply=True)
+    assert len(result["files"]) == MAX_DERIVED_ARTIFACTS_PER_RUN
+    assert all(not (root / path).exists() for path in derived)
+    assert (root / other).read_bytes() == b"other"
+    assert session.context(run_id)["challenge"]["artifacts"] == ["00-source.txt", other]
+
+
+def test_concurrent_derived_stores_serialize_at_per_run_cap(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="concurrent-cap", description="fixture", paths=[source])["run_id"]
+    for _ in range(MAX_DERIVED_ARTIFACTS_PER_RUN - 1):
+        session.store_artifact(run_id, b"generated")
+
+    def attempt_store(index):
+        try:
+            return session.store_artifact(run_id, f"writer-{index}".encode())
+        except DerivedArtifactLimitError:
+            return "limit"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(attempt_store, range(2)))
+    assert outcomes.count("limit") == 1
+    assert sum(outcome != "limit" for outcome in outcomes) == 1
+    manifest = session.context(run_id)["challenge"]["artifacts"]
+    assert sum(path.startswith(".metis-derived/") for path in manifest) == 100
+    root = session.artifact_root(run_id)
+    assert root is not None
+    assert len(list((root / ".metis-derived").iterdir())) == 100
+
+
 def test_purge_derived_refuses_active_runs_and_registered_workers(tmp_path):
     database = tmp_path / "sessions.sqlite"
     source = tmp_path / "source.txt"
@@ -238,6 +299,43 @@ def test_purge_derived_rejects_unregistered_directory_entries(tmp_path):
         session.purge_derived(run_id, apply=True)
     assert registered.read_bytes() == b"registered"
     assert unexpected.read_text() == "leave untouched"
+
+
+def test_purge_derived_bounds_directory_scan_before_unlink(tmp_path, monkeypatch):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="overfull", description="fixture", paths=[source])["run_id"]
+    registered = [session.store_artifact(run_id, b"generated")
+                  for _ in range(MAX_DERIVED_ARTIFACTS_PER_RUN)]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    derived_dir = root / ".metis-derived"
+    for index in range(MAX_DERIVED_ARTIFACTS_PER_RUN + 1):
+        (derived_dir / f"unregistered-{index:03d}.bin").write_bytes(b"leave")
+
+    original_scandir = os.scandir
+    examined = 0
+
+    @contextmanager
+    def counted_scandir(directory):
+        with original_scandir(directory) as entries:
+            def observed_entries():
+                nonlocal examined
+                for entry in entries:
+                    examined += 1
+                    yield entry
+            yield observed_entries()
+
+    monkeypatch.setattr(os, "scandir", counted_scandir)
+    with pytest.raises(ValueError, match="derived directory"):
+        session.purge_derived(run_id, apply=True)
+
+    assert 1 <= examined <= MAX_DERIVED_ARTIFACTS_PER_RUN + 1
+    assert all((root / path).is_file() for path in registered)
+    assert len(list(derived_dir.glob("unregistered-*.bin"))) == MAX_DERIVED_ARTIFACTS_PER_RUN + 1
 
 
 def test_codex_cli_across_processes(tmp_path):
