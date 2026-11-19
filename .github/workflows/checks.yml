@@ -42,6 +42,7 @@ jobs:
           tests/test_ctf_sandbox.py::test_real_engine_timeout_removes_process_group
           tests/test_ctf_sandbox.py::test_real_engine_separate_controller_recovers_orphaned_sandbox
           tests/test_ctf_workflow.py
+          tests/test_workflow_model_trial.py::test_external_fixture_real_docker_replay_keeps_oracle_private
           tests/test_ctf_zipcrypto.py::test_zipcrypto_worker_enforces_container_deadline
           tests/test_ctf_zipcrypto.py::test_zipcrypto_real_low_memory_container_reports_memory_limit
           tests/test_ctf_zipcrypto.py::test_zipcrypto_production_profile_oom_classification_and_cleanup
