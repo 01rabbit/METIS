@@ -11,6 +11,9 @@ from system configuration, user configuration, and the environment. The
 launcher rejects runtime environment overrides. The launch profile disables
 warmup, context shift, multimodal loading, speculation, and the web UI.
 
+The build requires Git, CMake, a native C/C++ toolchain, and Python 3.12 or
+newer. The script checks Python before fetching or compiling.
+
 ```sh
 scripts/build_llama_work_budget.sh /tmp/metis-llama-guard-build
 ```
@@ -165,3 +168,39 @@ The stop and EOS profiles also deny work at admission 24. This qualification
 depends on the fixed fixture and does not establish a general-provider token
 ceiling. Trusted build and model registration and scheduler/protocol binding
 are still required before enabling the METIS capability.
+
+## Offline build identity
+
+The build script also leaves `native-build.json` and the applied patch at
+the top level of the build directory. The sidecar records the upstream
+commit, patch and executable SHA-256 digests, the checked CMake options,
+and the CMake-reported target and compiler. It contains observations from
+the build and carries no independent approval.
+
+Verify the sidecar by supplying the expected digest from separately reviewed
+release evidence. A digest computed from the candidate sidecar itself only
+checks the candidate against its own claims.
+
+```python
+from pathlib import Path
+
+from metis.evaluation.native_build_identity import verify_native_build
+
+root = Path("/tmp/metis-llama-guard-build")
+identity = verify_native_build(
+    root / "native-build.json",
+    expected_manifest_sha256=approved_manifest_sha256,
+    binary=root / "build/bin/llama-server",
+    patch=root / "llama-server.patch",
+    model=Path("/absolute/path/to/stories260K.gguf"),
+    target_os="Darwin",
+    target_arch="arm64",
+)
+```
+
+The verifier opens bounded regular files to compare their bytes and accepts
+the registered single-file public fixture. It launches no processes. These
+checks rely on the independently approved digest and the build system's target
+metadata. Production still needs trusted publication of that digest and
+binding checked bytes to the actual launched artifact. Verification alone
+supplies no evidence about the backend's runtime token accounting.
