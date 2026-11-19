@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import atexit
+import fcntl
 import json
 import os
 import random
-import shutil
 import sqlite3
-import tempfile
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -33,6 +32,7 @@ ARMS = ("single", "owner_falsifier")
 CALLS = 14
 ACTIONS = 9
 OUTPUT = Path("docs/reports/data/issue6-owner-falsifier-2026-11-19.json")
+STATE = Path.home() / ".local/state/metis/issue6-owner-falsifier-2026-11-19"
 
 
 class PinnedCodexCLI(CodexCLI):
@@ -125,7 +125,8 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
     proposal = _parse_order(raw, task)
     witness_valid = False
     repair_attempted = False
-    if arm == "owner_falsifier" and proposal is not None and owner_complete:
+    if (arm == "owner_falsifier" and proposal is not None and owner_complete
+            and owner_result.get("job_state") == "completed"):
         try:
             check_plan = _wave(scheduler.ledger, run_id, refs[0], "forensics-specialist", 3,
                                reason="Fresh-context search for a concrete public constraint violation")
@@ -147,7 +148,8 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
                 witness_valid = validate_counterexample(task, proposal, claim).valid
             except ValidationError:
                 claim = None
-            if witness_valid and claim is not None and check_complete:
+            if (witness_valid and claim is not None and check_complete
+                    and check_result.get("job_state") == "completed"):
                 try:
                     repair_plan = _wave(scheduler.ledger, run_id, refs[0], "crypto-specialist", 3,
                                         reason="Repair only the independently validated public constraint witness")
@@ -164,28 +166,107 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
                     results.append(repair_result)
                     complete.append(repair_complete)
                     repaired = _parse_order(repaired_raw, task)
-                    if repaired is not None and repair_complete:
+                    if (repaired is not None and repair_complete
+                            and repair_result.get("job_state") == "completed"):
                         proposal = repaired
     # Both arms pass through this identical finalizer. Only the controller sees the answer.
-    verified = bool(proposal == answer)
-    public_constraints_valid = bool(proposal is not None and len(set(proposal)) == len(task.symbols)
+    required_stages_present = bool(arm == "single" or len(results) >= 2)
+    if witness_valid:
+        required_stages_present = required_stages_present and repair_attempted and len(results) == 3
+    workflow_complete = bool(required_stages_present and all(complete)
+                             and all(result.get("job_state") == "completed" for result in results))
+    verified = bool(workflow_complete and proposal == answer)
+    public_constraints_valid = bool(workflow_complete and proposal is not None
+                                    and len(set(proposal)) == len(task.symbols)
                                     and set(proposal) == set(task.symbols)
                                     and all(proposal.index(a) < proposal.index(b)
                                             for a, b in task.precedences))
     turns = [turn for result in results for turn in result.get("codex_turns", [])]
     budget = scheduler.model_turn_budget(run_id)
     scheduler.candidates(run_id, purge="all")
-    return {"case": case_id, "arm": arm, "oracle_verified": verified,
-            "workflow_verified": bool(verified and all(complete)
-                                      and all(result.get("job_state") == "completed" for result in results)),
+    usage_reported = sum(turn.get("usage") is not None for turn in turns)
+    return {"case": case_id, "arm": arm, "run_id": run_id,
+            "oracle_verified": verified,
+            "workflow_verified": verified,
             "public_constraints_valid": public_constraints_valid,
             "witness_valid": witness_valid, "repair_attempted": repair_attempted,
-            "synthesis_complete": all(complete),
-            "job_states": [result.get("job_state") for result in results],
+            "synthesis_complete": all(complete), "workflow_complete": workflow_complete,
+            "job_states": [job["state"] for job in scheduler.jobs(run_id)],
+            "stage_states": [result.get("job_state") for result in results],
             "calls_observed": len(turns), "calls_reserved": budget["reserved"] if budget else 0,
             "elapsed_seconds": round(time.monotonic() - started, 3),
-            "usage_complete": bool(turns) and all(turn.get("usage") is not None for turn in turns),
+            "usage_reported_turns": usage_reported, "usage_total_turns": len(turns),
+            "usage_complete": bool(turns) and usage_reported == len(turns),
             "model": MODEL, "cli": CLI, "reasoning_effort": "low"}
+
+
+def _write_private(path: Path, value: dict[str, Any]) -> None:
+    temporary = path.with_suffix(".tmp")
+    descriptor = os.open(temporary, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(value, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _trial_order() -> list[tuple[str, str]]:
+    order_rng = random.Random(SEED ^ 0x6A09E667)
+    ordered: list[tuple[str, str]] = []
+    for index in range(30):
+        arms = list(ARMS)
+        order_rng.shuffle(arms)
+        ordered.extend((f"task-{index:02d}", arm) for arm in arms)
+    return ordered
+
+
+def _dataset(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"study": STUDY, "seed": SEED, "model": MODEL, "cli": CLI,
+            "arms": list(ARMS), "records": records,
+            "retained_content": "answer-free counts and verdicts only"}
+
+
+def _audit_turn_counts(database: Path, run_id: str) -> tuple[int, int]:
+    with sqlite3.connect(database) as db:
+        row = db.execute("SELECT turns_reserved FROM agent_run_turn_budgets WHERE run_id=?",
+                         (run_id,)).fetchone()
+        observed = db.execute(
+            "SELECT COUNT(*) FROM agent_job_log l JOIN agent_jobs j USING(assignment_id) "
+            "WHERE j.run_id=? AND l.event='codex_turn'", (run_id,)).fetchone()[0]
+    if row is None:
+        raise ValueError("completed arm has no durable model-call budget")
+    return row[0], observed
+
+
+def _validate_checkpoint(manifest: dict[str, Any], scheduler: AgentScheduler) -> list[dict[str, Any]]:
+    if manifest.get("study") != STUDY or manifest.get("seed") != SEED or manifest.get("active") is not None:
+        raise ValueError("checkpoint identity mismatch or interrupted arm; manual audit required")
+    records = manifest.get("records")
+    if not isinstance(records, list) or len(records) > 60:
+        raise ValueError("invalid checkpoint record list")
+    if [(row.get("case"), row.get("arm")) for row in records] != _trial_order()[:len(records)]:
+        raise ValueError("checkpoint trial order differs from frozen order")
+    if OUTPUT.exists() and json.loads(OUTPUT.read_text(encoding="utf-8")) != _dataset(records):
+        raise ValueError("retained output differs from private checkpoint")
+    with sqlite3.connect(scheduler.database) as db:
+        durable_runs = {item[0] for item in db.execute(
+            "SELECT run_id FROM agent_run_turn_budgets").fetchall()}
+    if durable_runs != {row.get("run_id") for row in records}:
+        raise ValueError("durable scheduler contains unrecorded or missing run")
+    for row in records:
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("completed arm has no run id")
+        budget = scheduler.model_turn_budget(run_id)
+        if budget is None or budget["reserved"] != row.get("calls_reserved"):
+            raise ValueError("checkpoint call accounting differs from durable scheduler")
+        reserved, observed = _audit_turn_counts(scheduler.database, run_id)
+        if reserved != row.get("calls_reserved") or observed != row.get("calls_observed"):
+            raise ValueError("checkpoint observed call log differs from durable scheduler")
+        jobs = scheduler.jobs(run_id)
+        if sorted(job["state"] for job in jobs) != sorted(row.get("job_states", [])):
+            raise ValueError("checkpoint jobs differ from durable scheduler")
+    return records
 
 
 def main() -> None:
@@ -194,31 +275,42 @@ def main() -> None:
     args = parser.parse_args()
     if not args.execute:
         raise SystemExit("refusing real-model execution without --execute and prior review")
-    if OUTPUT.exists():
-        raise SystemExit(f"refusing to overwrite retained data: {OUTPUT}")
     runner = PinnedCodexCLI()
     if (version := runner.check()) != CLI:
         raise SystemExit(f"Codex CLI version mismatch: {version}")
-    root = Path(tempfile.mkdtemp(prefix="metis-issue6-owner-falsifier-"))
-    atexit.register(shutil.rmtree, root, ignore_errors=True)
-    session = CodexSession(root / "state" / "metis.sqlite")
-    scheduler = AgentScheduler(session.database, BridgeHost(max_parallel=1))
-    order_rng = random.Random(SEED ^ 0x6A09E667)
-    records: list[dict[str, Any]] = []
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    for index in range(30):
-        case_id = f"task-{index:02d}"
-        task, answer = make_task(SEED + index, size=20)
-        arms = list(ARMS)
-        order_rng.shuffle(arms)
-        for arm in arms:
-            records.append(run_arm(session, scheduler, runner, root, case_id, task, answer, arm))
-            payload = {"study": STUDY, "seed": SEED, "model": MODEL, "cli": CLI,
-                       "arms": list(ARMS), "records": records,
-                       "retained_content": "answer-free counts and verdicts only"}
-            temporary = OUTPUT.with_suffix(".tmp")
-            temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-            os.replace(temporary, OUTPUT)
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state_mode = STATE.lstat().st_mode
+    if not stat.S_ISDIR(state_mode) or state_mode & 0o077:
+        raise SystemExit("private checkpoint directory is not a private real directory")
+    with (STATE / "run.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        manifest_path = STATE / "checkpoint.json"
+        if not manifest_path.exists() and OUTPUT.exists():
+            raise SystemExit("retained output exists without private checkpoint; manual audit required")
+        session = CodexSession(STATE / "metis.sqlite")
+        scheduler = AgentScheduler(session.database, BridgeHost(max_parallel=1))
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            records = _validate_checkpoint(manifest, scheduler)
+        else:
+            records = []
+            manifest = {"study": STUDY, "seed": SEED, "active": None, "records": records}
+            _write_private(manifest_path, manifest)
+        OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+        if not OUTPUT.exists() and records:
+            _write_private(OUTPUT, _dataset(records))
+            print("restored answer-free output from validated private checkpoint", flush=True)
+        for case_id, arm in _trial_order()[len(records):]:
+            manifest["active"] = {"case": case_id, "arm": arm}
+            _write_private(manifest_path, manifest)
+            index = int(case_id.rsplit("-", 1)[1])
+            task, answer = make_task(SEED + index, size=20)
+            row = run_arm(session, scheduler, runner, STATE, case_id, task, answer, arm)
+            records.append(row)
+            manifest["records"] = records
+            manifest["active"] = None
+            _write_private(manifest_path, manifest)
+            _write_private(OUTPUT, _dataset(records))
             print(json.dumps({"case": case_id, "arm": arm, "completed_records": len(records)}), flush=True)
 
 
