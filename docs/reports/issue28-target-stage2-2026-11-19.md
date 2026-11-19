@@ -86,12 +86,15 @@ local database and private checkpoint are not committed. This is a cross-check
 of METIS's recorded official response, not a cryptographically signed receipt
 from ksnctf.
 
-For reviewers without access to that local database, a restricted export is
-included at `docs/evidence/issue28-ksnctf39/`. It contains the original event
-chain and nonsecret verdict metadata plus a redacted checkpoint and the public
-encrypted archive. Run the same verifier with `--public-bundle` as described in
-the export README. The verifier checks the complete ordered Stage 2 window
-sequence from hash-chained event payloads, so its coverage conclusion does not
-depend only on the redacted checkpoint. The export does not turn the official
-response into a server-signed receipt; it makes the locally recorded evidence
-inspectable.
+For reviewers without access to that local database, a restricted export was
+prepared outside Git at
+`/Users/mao/Developer/GitHub/METIS-review-evidence-issue28/issue28-ksnctf39-review.tar.gz`
+(SHA-256 `50dee9bd2810e3e12063a038ac2575e18b4ceabb2f6409c65cb627bd322201c4`).
+Repository policy forbids committing SQLite and artifact directories. The
+archive contains the original event chain, nonsecret verdict metadata, a
+redacted checkpoint and the public encrypted ZIP. After an authorized local
+transfer, extract it and run the verifier with `--public-bundle` against its
+`evidence.sqlite`. The verifier checks the ordered Stage 2 windows from the
+hash-chained event payloads, so its coverage conclusion does not depend only
+on the redacted checkpoint. The export does not turn the official response
+into a server-signed receipt.
