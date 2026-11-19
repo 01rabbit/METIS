@@ -215,6 +215,7 @@ class StudyTokenAdmission:
         if (not isinstance(binding, dict) or binding.get("measurement") != "real_model"
                 or not isinstance(binding.get("study_id"), str)):
             raise ValueError("held-out admission requires a committed real-model binding")
+        self._require_active_run_state(db, run_id)
         if (not isinstance(binding.get("protocol_sha256"), str)
                 or len(binding["protocol_sha256"]) != 64
                 or any(char not in "0123456789abcdef" for char in binding["protocol_sha256"])):
@@ -393,22 +394,25 @@ class StudyTokenAdmission:
         ).fetchone()
         if job != (slot.run_id, "running", attempt.attempt_id):
             raise ValueError("scheduler job is no longer the claimed running attempt")
-        from metis.core.contracts import RunStatus
-        from metis.core.store import RunStore
-
-        events = RunStore(self.database, read_only=True).read(slot.run_id, connection=db)
-        active_statuses = {
-            RunStatus.PLANNING, RunStatus.EXECUTING, RunStatus.OBSERVING,
-            RunStatus.REPLANNING, RunStatus.VERIFYING,
-        }
-        if not events or events[-1].status not in active_statuses:
-            raise ValueError("scheduler run is missing or not active")
+        self._require_active_run_state(db, slot.run_id)
         reservation = db.execute(
             "SELECT run_id,assignment_id,attempt_id FROM agent_turn_reservations WHERE id=?",
             (attempt.turn_reservation_id,),
         ).fetchone()
         if reservation != (slot.run_id, attempt.assignment_id, attempt.attempt_id):
             raise ValueError("scheduler turn reservation no longer matches the claim")
+
+    def _require_active_run_state(self, db: sqlite3.Connection, run_id: str) -> None:
+        from metis.core.contracts import RunStatus
+        from metis.core.store import RunStore
+
+        events = RunStore(self.database, read_only=True).read(run_id, connection=db)
+        active_statuses = {
+            RunStatus.PLANNING, RunStatus.EXECUTING, RunStatus.OBSERVING,
+            RunStatus.REPLANNING, RunStatus.VERIFYING,
+        }
+        if not events or events[-1].status not in active_statuses:
+            raise ValueError("scheduler run is missing or not active")
 
     def reserve(
         self, study: StudyTokenPin, slot: SlotTokenPin, attempt: TokenAttempt,

@@ -96,6 +96,18 @@ def _running_slot(tmp_path: Path, *, protocol: Protocol | None = None):
     return database, scheduler, selected_protocol, run["run_id"], job
 
 
+def _terminalize(session: CodexSession, run_id: str, status: RunStatus) -> None:
+    if status == RunStatus.SOLVED:
+        session._emit(run_id, RunStatus.EXECUTING)
+        session._emit(run_id, RunStatus.OBSERVING)
+        session._emit(run_id, RunStatus.VERIFYING)
+        session._emit(run_id, RunStatus.SOLVED)
+    elif status == RunStatus.EXHAUSTED:
+        session._emit(run_id, RunStatus.EXHAUSTED, reason="budget_limit")
+    else:
+        raise AssertionError(f"unsupported test terminal status: {status}")
+
+
 class AdmittedFakeRunner(LlamaSpecialist):
 
     def __init__(self, database: Path, *, fail: bool = False):
@@ -379,18 +391,39 @@ def test_scheduler_claim_refuses_consumption_after_run_terminalization(tmp_path,
     )
     claim = claims[0]
     session = CodexSession(database)
-    if terminal_status == RunStatus.SOLVED:
-        session._emit(run_id, RunStatus.EXECUTING)
-        session._emit(run_id, RunStatus.OBSERVING)
-        session._emit(run_id, RunStatus.VERIFYING)
-        session._emit(run_id, RunStatus.SOLVED)
-    else:
-        session._emit(run_id, RunStatus.EXHAUSTED, reason="budget_limit")
+    _terminalize(session, run_id, terminal_status)
     with pytest.raises(ValueError, match="run is missing or not active"):
         admission.consume_scheduler_launch_claim(claim)
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone()[0] == 4098
+
+
+@pytest.mark.parametrize("terminal_status", [RunStatus.SOLVED, RunStatus.EXHAUSTED])
+def test_scheduler_reservation_refuses_terminal_run_without_charging(tmp_path, terminal_status):
+    database, scheduler, _protocol, run_id, job = _running_slot(tmp_path)
+    _terminalize(CodexSession(database), run_id, terminal_status)
+    admission = StudyTokenAdmission(database)
+    claims = []
+
+    def persist(db, reservation_id):
+        claims.append(admission.reserve_and_claim_scheduler_turn(
+            db, run_id=run_id, assignment_id=job["assignment_id"],
+            attempt_id=job["attempt_id"], reservation_id=reservation_id,
+            prompt=PROMPT_PREFIX + "\n\nsynthetic task",
+        ))
+
+    with pytest.raises(ValueError, match="run is missing or not active"):
+        scheduler.reserve_model_turn(
+            run_id, job["assignment_id"], job["attempt_id"], persist_receipt=persist,
+        )
+    assert claims == []
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 0
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?",
+                          (run_id,)).fetchone()[0] == 0
+        assert _count_if_table_exists(db, "study_token_attempts") == 0
+        assert _count_if_table_exists(db, "study_token_launches") == 0
 
 
 def test_scheduler_claim_rejects_slot_with_mismatched_study_id(tmp_path):
