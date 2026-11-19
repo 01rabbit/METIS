@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -113,6 +114,10 @@ def plan_agent_wave(context: dict[str, Any], *, force_mode: ExecutionMode | None
     }
 
 
+class WaveBudgetExhausted(ValueError):
+    """No run budget remains to create the next wave."""
+
+
 class AgentLedger:
     """Persist bounded subagent waves and evidence-backed compact reports."""
 
@@ -133,7 +138,8 @@ class AgentLedger:
                     db.execute(f"ALTER TABLE ctf_agent_reports ADD COLUMN {name} TEXT")
 
     def create_wave(self, run_id: str, *, mode: ExecutionMode | None = None,
-                    reason: str | None = None) -> dict[str, Any]:
+                    reason: str | None = None,
+                    plan_policy: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> dict[str, Any]:
         """Plan a wave. A further wave needs the previous one ready for synthesis, budget
         left, and a stated, materially different hypothesis (``reason``)."""
         context = self.session.context(run_id)
@@ -146,10 +152,10 @@ class AgentLedger:
                 raise ValueError("previous wave still has unresolved required assignments; collect, cancel "
                                  "or time them out first")
             if not context["actions_remaining"] or not context["seconds_remaining"]:
-                raise ValueError("no budget left for another wave")
+                raise WaveBudgetExhausted("no budget left for another wave")
             turn_budget = self._specialist_turn_budget(run_id)
             if turn_budget is not None and turn_budget["remaining"] <= 0:
-                raise ValueError("no specialist model turns left for another wave")
+                raise WaveBudgetExhausted("no specialist model turns left for another wave")
             if not reason or len(reason.strip()) < 10:
                 raise ValueError("a new wave needs --reason naming the unresolved, different hypothesis")
             abstract_text(reason)
@@ -161,6 +167,8 @@ class AgentLedger:
                    for plan in prior_plans):
                 raise ValueError("a new wave needs a distinct reason; this rationale was already used")
         plan = plan_agent_wave(context, force_mode=mode)
+        if plan_policy is not None:
+            plan = plan_policy(plan)
         wave_id = uuid4().hex
         plan["wave_id"] = wave_id
         if reason:

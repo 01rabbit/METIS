@@ -307,6 +307,7 @@ class CodexCLI:
         # The CLI executable can be updated or replaced while a specialist run is
         # alive. Revalidate before every turn instead of trusting a process-wide
         # cached version check.
+        deadline = time.monotonic() + timeout
         self.check()
         with tempfile.TemporaryDirectory(prefix="metis-codex-") as temporary, ExitStack() as stack:
             base = Path(temporary).resolve()
@@ -342,15 +343,16 @@ class CodexCLI:
                                     readable=[package], protected=self.protected_roots(base.parent),
                                     workdir=workdir, executable=Path(binary))
                 isolation = {"mode": backend, "proxy_hosts": sorted(self.hosts)}
+            if time.monotonic() >= deadline or (should_stop is not None and should_stop()):
+                return CodexTurn(returncode=-1, message=None, stopped=True, isolation=isolation)
             process = subprocess.Popen(command, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        cwd=workdir, env=env, start_new_session=True)
             timed_out = stopped = False
-            deadline = time.monotonic() + max(5.0, timeout)
             pending: str | None = prompt
             while True:
                 try:
-                    stdout, stderr = process.communicate(pending, timeout=STOP_POLL)
+                    stdout, stderr = process.communicate(pending, timeout=min(STOP_POLL, max(0, deadline - time.monotonic())))
                     break
                 except subprocess.TimeoutExpired:
                     pending = None  # already being written; communicate() resumes it

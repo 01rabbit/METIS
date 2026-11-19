@@ -990,7 +990,7 @@ class AgentScheduler:
         """List candidates for Daybreak (paths and digests only). ``purge`` deletes one or 'all'."""
         with self._db() as db:
             db.row_factory = sqlite3.Row
-            rows = [dict(row) for row in db.execute("SELECT * FROM agent_candidates WHERE run_id=? ORDER BY created",
+            rows = [dict(row) for row in db.execute("SELECT * FROM agent_candidates WHERE run_id=? ORDER BY rowid",
                                                      (run_id,))]
             for row in rows:
                 if purge in {"all", row["candidate_id"]} and row["state"] != "purged":

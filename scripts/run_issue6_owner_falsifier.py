@@ -10,6 +10,7 @@ import random
 import sqlite3
 import stat
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,8 @@ from pydantic import ValidationError
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
-from metis.core.codex_specialist import CodexCLI, run_assignment
-from metis.core.ctf_orchestration import AgentLedger
+from metis.core.codex_specialist import CodexCLI, CodexRunner, CodexTurn, run_assignment
+from metis.core.ctf_orchestration import AgentLedger, WaveBudgetExhausted
 from metis.evaluation.issue6_owner_falsifier import (
     Counterexample,
     Reconstruction,
@@ -34,51 +35,95 @@ CLI = "0.169.0"
 ARMS = ("single", "owner_falsifier")
 CALLS = 14
 ACTIONS = 9
-OUTPUT = Path("docs/reports/data/issue6-owner-falsifier-2026-11-19.json")
+WALL_SECONDS = 600
+OUTPUT = Path(__file__).resolve().parents[1] / "docs/reports/data/issue6-owner-falsifier-2026-11-19.json"
 STATE = Path.home() / ".local/state/metis/issue6-owner-falsifier-2026-11-19"
 
 
 class PinnedCodexCLI(CodexCLI):
+    def check(self) -> str | None:
+        try:
+            version = super().check()
+        except RuntimeError as exc:
+            raise ArmIntegrityError("Codex runtime failed preflight") from exc
+        if version != CLI:
+            raise ArmIntegrityError(f"Codex CLI version mismatch: {version}")
+        return version
+
     def argv(self, workdir: Path, schema: Path, output: Path, model: str | None) -> list[str]:
         command = super().argv(workdir, schema, output, model)
         return [*command[:-1], "-c", 'model_reasoning_effort="low"', command[-1]]
 
 
-def _wave(ledger: AgentLedger, run_id: str, artifact: str, role: str, max_turns: int,
+class ArmIntegrityError(RuntimeError):
+    """The arm cannot be safely recorded or resumed."""
+
+
+class ArmDeadline(RuntimeError):
+    """The monotonic deadline prohibits another model invocation."""
+
+
+class DeadlineRunner:
+    model_turn_budget_enforced = True
+    hard_token_budget_enforced = False
+
+    def __init__(self, runner: CodexRunner, deadline: float) -> None:
+        self.runner = runner
+        self.deadline = deadline
+        self.turns: list[CodexTurn] = []
+
+    def run(self, prompt: str, *, model: str | None, timeout: float,
+            should_stop: Callable[[], bool] | None = None,
+            images: list[tuple[str, bytes]] | None = None) -> CodexTurn:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise ArmDeadline()
+
+        def stopped() -> bool:
+            return time.monotonic() >= self.deadline or bool(should_stop and should_stop())
+
+        turn = self.runner.run(prompt, model=model, timeout=min(timeout, remaining),
+                               should_stop=stopped, images=images)
+        self.turns.append(turn)
+        return turn
+
+
+def _wave(ledger: AgentLedger, run_id: str, artifact: str, max_turns: int,
           *, reason: str | None = None) -> dict[str, Any]:
-    plan = ledger.create_wave(run_id, mode="delegated", reason=reason)
-    assignments = plan["assignments"]
-    chosen = next((dict(item) for item in assignments if item["role"] == role), None)
-    if chosen is None:
-        chosen = dict(assignments[0])
-        chosen["role"] = role
-    chosen["inputs"] = {"artifacts": [artifact]}
-    chosen["max_turns"] = max_turns
-    chosen["objective"] = "Reconstruct or check an ordering using only the assigned public constraints."
-    plan["assignments"] = [chosen]
-    plan["decision"]["required_roles"] = [role]
-    plan["daybreak_covers"] = []
-    with sqlite3.connect(ledger.database) as db:
-        db.execute("UPDATE ctf_agent_waves SET plan=? WHERE wave_id=?",
-                   (json.dumps(plan, sort_keys=True), plan["wave_id"]))
-    return plan
+    role = "artifact-triage"
+
+    def study_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        chosen = next((item for item in plan["assignments"] if item["role"] == role), None)
+        if chosen is None:
+            raise ArmIntegrityError("planner omitted the study's actual artifact profile")
+        chosen["inputs"] = {"artifacts": [artifact]}
+        chosen["max_turns"] = max_turns
+        chosen["objective"] = "Reconstruct or check an ordering using only the assigned public constraints."
+        plan["assignments"] = [chosen]
+        plan["decision"]["required_roles"] = [role]
+        plan["daybreak_covers"] = []
+        return plan
+
+    return ledger.create_wave(run_id, mode="delegated", reason=reason, plan_policy=study_plan)
 
 
 def _candidate(scheduler: AgentScheduler, run_id: str, assignment_id: str) -> str | None:
-    rows = scheduler.candidates(run_id)
-    matches = [row for row in rows if row["assignment_id"] == assignment_id
-               and row["state"] == "pending" and row.get("candidate_file")]
-    if len(matches) != 1:
-        return None
-    return Path(matches[0]["candidate_file"]).read_text(encoding="utf-8").strip()
+    for row in reversed(scheduler.candidates(run_id)):
+        if row["assignment_id"] == assignment_id and row["state"] == "pending":
+            if not row["candidate_file"]:
+                raise ArmIntegrityError("pending candidate has no private file")
+            return Path(row["candidate_file"]).read_text(encoding="utf-8").strip()
+    return None
 
 
-def _run_wave(scheduler: AgentScheduler, runner: PinnedCodexCLI, run_id: str,
+def _run_wave(scheduler: AgentScheduler, runner: DeadlineRunner, run_id: str,
               plan: dict[str, Any], note: str) -> tuple[dict[str, Any], str | None, bool]:
     scheduler.enqueue(run_id, plan["wave_id"])
+    if time.monotonic() >= runner.deadline:
+        raise ArmDeadline()
     jobs = scheduler.dispatch(run_id)["started"]
-    if len(jobs) != 1:
-        return {"job_state": "not_dispatched", "codex_turns": []}, None, False
+    if len(jobs) != 1 or jobs[0]["assignment_id"] != plan["assignments"][0]["assignment_id"]:
+        raise ArmIntegrityError("scheduler did not start precisely the assigned study job")
     job = jobs[0]
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
                             runner, model=MODEL, turn_timeout=180, note=note)
@@ -99,84 +144,106 @@ def _parse_order(raw: str | None, task: Reconstruction) -> tuple[str, ...] | Non
     return tuple(value)
 
 
-def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCodexCLI,
+def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: CodexRunner,
             root: Path, case_id: str, task: Reconstruction, answer: tuple[str, ...],
             arm: str) -> dict[str, Any]:
     started = time.monotonic()
+    bounded_runner = DeadlineRunner(runner, started + WALL_SECONDS)
     artifact = root / f"{case_id}-{arm}.json"
     artifact.write_text(task.model_dump_json(), encoding="utf-8")
     run_id = session.intake(
         title=f"Synthetic ordering reconstruction {case_id}",
         description=("Reconstruct a permutation of the listed symbols satisfying every directed "
                      "precedence pair. Submit a JSON string array privately. Use only the supplied artifact."),
-        paths=[artifact], categories=["misc"], max_actions=ACTIONS, wall_seconds=600,
+        paths=[artifact], categories=["misc"], max_actions=ACTIONS, wall_seconds=WALL_SECONDS,
         evaluation_split="heldout")["run_id"]
     scheduler.configure(global_slots=1, per_run_slots=1, specialist_turn_budget=CALLS,
                         catalog=[{"id": MODEL, "tier": "standard"}], current_model=MODEL,
                         memory_retrieval=False)
-    refs = session.context(run_id)["challenge"]["artifacts"]
     results: list[dict[str, Any]] = []
     complete: list[bool] = []
-    owner_plan = _wave(scheduler.ledger, run_id, refs[0], "crypto-specialist",
-                       12 if arm == "single" else 6)
-    owner_note = ("Return one private JSON array containing each symbol exactly once in an order "
-                  "satisfying all precedence pairs. Check constraints before candidate_report; "
-                  "do not include the array in report text.")
-    owner_result, raw, owner_complete = _run_wave(scheduler, runner, run_id, owner_plan, owner_note)
-    results.append(owner_result)
-    complete.append(owner_complete)
-    proposal = _parse_order(raw, task)
+    proposal = None
     witness_valid = False
     repair_attempted = False
-    if (arm == "owner_falsifier" and proposal is not None and owner_complete
-            and owner_result.get("job_state") == "completed"):
-        try:
-            check_plan = _wave(scheduler.ledger, run_id, refs[0], "forensics-specialist", 3,
-                               reason="Fresh-context search for a concrete public constraint violation")
-        except ValueError:
-            check_plan = None
-        if check_plan is not None:
-            check_note = ("Inspect the public constraints and this provisional order: "
-                          + json.dumps(proposal) + ". Find one concrete violated input constraint. "
-                          "Never use an oracle. Return a private JSON object with kind missing, duplicate, "
-                          "unknown, or precedence and the corresponding symbol or before/after fields. "
-                          "If no violation exists, report completion without a candidate. Do not copy the "
-                          "provisional order into report text.")
-            check_result, raw_witness, check_complete = _run_wave(
-                scheduler, runner, run_id, check_plan, check_note)
-            results.append(check_result)
-            complete.append(check_complete)
+    failure = None
+    try:
+        refs = session.context(run_id)["challenge"]["artifacts"]
+        owner_plan = _wave(scheduler.ledger, run_id, refs[0],
+                           12 if arm == "single" else 6)
+        owner_note = ("Return one private JSON array containing each symbol exactly once in an order "
+                      "satisfying all precedence pairs. Check constraints before candidate_report; "
+                      "do not include the array in report text.")
+        owner_result, raw, owner_complete = _run_wave(scheduler, bounded_runner, run_id, owner_plan, owner_note)
+        results.append(owner_result)
+        complete.append(owner_complete)
+        proposal = _parse_order(raw, task)
+        if (arm == "owner_falsifier" and proposal is not None and owner_complete
+                and owner_result.get("job_state") == "completed"):
             try:
-                claim = Counterexample.model_validate_json(raw_witness or "")
-                witness_valid = validate_counterexample(task, proposal, claim).valid
-            except ValidationError:
-                claim = None
-            if (witness_valid and claim is not None and check_complete
-                    and check_result.get("job_state") == "completed"):
+                check_plan = _wave(scheduler.ledger, run_id, refs[0], 3,
+                                   reason="Fresh-context search for a concrete public constraint violation")
+            except WaveBudgetExhausted:
+                check_plan = None
+            if check_plan is not None:
+                check_note = ("Inspect the public constraints and this provisional order: "
+                              + json.dumps(proposal) + ". Find one concrete violated input constraint. "
+                              "Never use an oracle. As the candidate value, provide a JSON object matching this schema: "
+                              + json.dumps(Counterexample.model_json_schema(), separators=(",", ":"))
+                              + ". For missing, duplicate, or unknown, set symbol; for precedence, set "
+                              "before and after to the directed input pair. Omit unused fields. "
+                              "If no violation exists, report completion without a candidate. Do not copy the "
+                              "provisional order into report text.")
+                check_result, raw_witness, check_complete = _run_wave(
+                    scheduler, bounded_runner, run_id, check_plan, check_note)
+                results.append(check_result)
+                complete.append(check_complete)
                 try:
-                    repair_plan = _wave(scheduler.ledger, run_id, refs[0], "crypto-specialist", 3,
-                                        reason="Repair only the independently validated public constraint witness")
-                except ValueError:
-                    repair_plan = None
-                if repair_plan is not None:
-                    repair_attempted = True
-                    repair_note = ("Repair your provisional JSON order " + json.dumps(proposal)
-                                   + " using this independently validated input-constraint witness "
-                                   + claim.model_dump_json() + ". Return the entire corrected order privately "
-                                   "using candidate_report; do not place the order in report text.")
-                    repair_result, repaired_raw, repair_complete = _run_wave(
-                        scheduler, runner, run_id, repair_plan, repair_note)
-                    results.append(repair_result)
-                    complete.append(repair_complete)
-                    repaired = _parse_order(repaired_raw, task)
-                    if (repaired is not None and repair_complete
-                            and repair_result.get("job_state") == "completed"):
-                        proposal = repaired
+                    claim = Counterexample.model_validate_json(raw_witness or "")
+                    witness_valid = validate_counterexample(task, proposal, claim).valid
+                except ValidationError:
+                    claim = None
+                if (witness_valid and claim is not None and check_complete
+                        and check_result.get("job_state") == "completed"):
+                    try:
+                        repair_plan = _wave(scheduler.ledger, run_id, refs[0], 3,
+                                            reason="Repair only the independently validated public constraint witness")
+                    except WaveBudgetExhausted:
+                        repair_plan = None
+                    if repair_plan is not None:
+                        repair_attempted = True
+                        repair_note = ("Repair your provisional JSON order " + json.dumps(proposal)
+                                       + " using this independently validated input-constraint witness "
+                                       + claim.model_dump_json() + ". Return the entire corrected order privately "
+                                       "using candidate_report; do not place the order in report text.")
+                        repair_result, repaired_raw, repair_complete = _run_wave(
+                            scheduler, bounded_runner, run_id, repair_plan, repair_note)
+                        results.append(repair_result)
+                        complete.append(repair_complete)
+                        repaired = _parse_order(repaired_raw, task)
+                        if (repaired is not None and repair_complete
+                                and repair_result.get("job_state") == "completed"):
+                            proposal = repaired
+    except (ArmIntegrityError, OSError, sqlite3.Error, KeyError, ValueError):
+        raise
+    except Exception as exc:  # noqa: BLE001 -- score ordinary arm failures, subject to durable audit
+        failure = "deadline" if isinstance(exc, ArmDeadline) else "workflow_exception"
+    finally:
+        purged = scheduler.candidates(run_id, purge="all")
+        if any(row["state"] != "purged" for row in purged):
+            raise ArmIntegrityError("candidate purge could not be confirmed")
+        directory = scheduler.candidate_dir(run_id)
+        if directory.exists() and any(directory.iterdir()):
+            raise ArmIntegrityError("untracked entries remain in the candidate directory")
+    if time.monotonic() >= bounded_runner.deadline:
+        failure = "deadline"
+    if failure:
+        session.cancel(run_id)
+        scheduler.cancel_run(run_id)
     # Both arms pass through this identical finalizer. Only the controller sees the answer.
     required_stages_present = bool(arm == "single" or len(results) >= 2)
     if witness_valid:
         required_stages_present = required_stages_present and repair_attempted and len(results) == 3
-    workflow_complete = bool(required_stages_present and all(complete)
+    workflow_complete = bool(failure is None and required_stages_present and all(complete)
                              and all(result.get("job_state") == "completed" for result in results))
     verified = bool(workflow_complete and proposal == answer)
     public_constraints_valid = bool(workflow_complete and proposal is not None
@@ -184,19 +251,26 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
                                     and set(proposal) == set(task.symbols)
                                     and all(proposal.index(a) < proposal.index(b)
                                             for a, b in task.precedences))
-    turns = [turn for result in results for turn in result.get("codex_turns", [])]
+    turns = bounded_runner.turns
     budget = scheduler.model_turn_budget(run_id)
-    scheduler.candidates(run_id, purge="all")
-    usage_reported = sum(turn.get("usage") is not None for turn in turns)
+    reserved, observed = _audit_turn_counts(scheduler.database, run_id)
+    if (budget is None or budget["limit"] != CALLS or reserved != budget["reserved"]
+            or observed != len(turns) or not 0 <= observed <= reserved <= CALLS):
+        raise ArmIntegrityError("arm call accounting differs from the durable scheduler")
+    jobs = scheduler.jobs(run_id)
+    if any(job["state"] in {"queued", "running", "unknown"} for job in jobs):
+        raise ArmIntegrityError("arm ended without confirming that all jobs stopped")
+    usage_reported = sum(turn.usage is not None for turn in turns)
     return {"case": case_id, "arm": arm, "run_id": run_id,
             "oracle_verified": verified,
             "workflow_verified": verified,
             "public_constraints_valid": public_constraints_valid,
             "witness_valid": witness_valid, "repair_attempted": repair_attempted,
-            "synthesis_complete": all(complete), "workflow_complete": workflow_complete,
-            "job_states": [job["state"] for job in scheduler.jobs(run_id)],
+            "synthesis_complete": bool(complete) and all(complete), "workflow_complete": workflow_complete,
+            "failure": failure,
+            "job_states": [job["state"] for job in jobs],
             "stage_states": [result.get("job_state") for result in results],
-            "calls_observed": len(turns), "calls_reserved": budget["reserved"] if budget else 0,
+            "calls_observed": len(turns), "calls_reserved": reserved,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "usage_reported_turns": usage_reported, "usage_total_turns": len(turns),
             "usage_complete": bool(turns) and usage_reported == len(turns),
@@ -279,8 +353,7 @@ def main() -> None:
     if not args.execute:
         raise SystemExit("refusing real-model execution without --execute and prior review")
     runner = PinnedCodexCLI()
-    if (version := runner.check()) != CLI:
-        raise SystemExit(f"Codex CLI version mismatch: {version}")
+    runner.check()
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_mode = STATE.lstat().st_mode
     if not stat.S_ISDIR(state_mode) or state_mode & 0o077:
