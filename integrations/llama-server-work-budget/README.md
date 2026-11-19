@@ -135,7 +135,10 @@ patch and current host target, and matches the approved binary digest to the
 committed runtime pin. It stages the executable and model in a private
 directory and verifies those copies before claiming the launch. Each
 persisted outcome carries that manifest digest. Earlier admissions retain
-their charges and need a separately committed study to run this fixture.
+their charges in the original ledger. An unpinned study reserves its unique
+protocol digest there. A separately approved study for the same fixture
+profile therefore needs a fresh dedicated ledger. A genuinely distinct
+profile can be separately committed in the existing ledger.
 
 The private directory protects against other operating system users. A
 process with the same user identity can replace a staged path between
