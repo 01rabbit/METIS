@@ -17,11 +17,12 @@ checksum manifest.
 
 ## Validation
 
-Environment: Python 3.12 virtual environment; synthetic wheel/sdist bundles.
+Environment: isolated worktree, `uv sync --locked --extra dev --python 3.12`,
+Python 3.12.13; synthetic wheel/sdist bundles.
 Commands and observed results:
 
 ```text
-PYTHONPATH=src .venv/bin/python -m pytest -o addopts='' -q tests/test_validate_release_artifacts.py
+.venv/bin/python -m pytest -o addopts='' -q tests/test_validate_release_artifacts.py
 42 passed
 .venv/bin/ruff check src/metis/release_artifacts.py tests/test_validate_release_artifacts.py
 All checks passed!
@@ -39,19 +40,23 @@ The exact staged-bundle command also passed on an actual locally built wheel
 and sdist after generating their checksum manifest:
 
 ```text
-PYTHONPATH=src .venv/bin/python -m build --outdir "$BUNDLE_DIR"
-Successfully built metis_ctf-0.5.0.tar.gz and metis_ctf-0.5.0-py3-none-any.whl
-PYTHONPATH=src .venv/bin/python -m metis.release_artifacts --dist-dir "$BUNDLE_DIR" --tag v0.5.0 --project-name metis-ctf --project-version 0.5.0 --write-checksums
+uv build --clear --no-create-gitignore --out-dir "$BUNDLE_DIR"
+Successfully built "$BUNDLE_DIR"/metis_ctf-0.5.0.tar.gz
+Successfully built "$BUNDLE_DIR"/metis_ctf-0.5.0-py3-none-any.whl
+.venv/bin/python -m metis.release_artifacts --dist-dir "$BUNDLE_DIR" --tag v0.5.0 --project-name metis-ctf --project-version 0.5.0 --write-checksums
 Validated release distributions:
 metis_ctf-0.5.0-py3-none-any.whl
 metis_ctf-0.5.0.tar.gz
-PYTHONPATH=src .venv/bin/python -m metis.release_artifacts --dist-dir "$BUNDLE_DIR" --tag v0.5.0 --project-name metis-ctf --project-version 0.5.0 --verify-checksums
+.venv/bin/python -m metis.release_artifacts --dist-dir "$BUNDLE_DIR" --tag v0.5.0 --project-name metis-ctf --project-version 0.5.0 --verify-checksums
 Validated release distributions:
 metis_ctf-0.5.0-py3-none-any.whl
 metis_ctf-0.5.0.tar.gz
 ```
 
-`BUNDLE_DIR` was a temporary directory. No tag or release was created.
+After this successful check, a test entry was appended to the built wheel
+without updating `SHA256SUMS`. Verification rejected the bundle with a checksum
+mismatch and left the manifest unchanged. The local build used a temporary
+directory; no tag or release was created.
 
 No tag, GitHub release, OIDC token, attestation or publication was requested
 or performed. Exact-head GitHub CI will be reported separately if available.

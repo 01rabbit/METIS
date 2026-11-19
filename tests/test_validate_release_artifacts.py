@@ -82,6 +82,9 @@ def test_release_workflow_verifies_staged_bundle_before_attestation_and_publicat
     assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
     assert "if:" not in verify_step
     assert "continue-on-error:" not in verify_step
+    assert workflow[step_end:].startswith("      - name: Attest package archives and checksums\n")
+    assert "continue-on-error:" not in workflow
+    assert "always()" not in workflow
 
 
 def test_attestation_drill_is_main_only_and_cannot_publish():
