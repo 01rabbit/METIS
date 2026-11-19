@@ -96,6 +96,12 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           for artifact in dist/*.whl dist/*.tar.gz dist/SHA256SUMS; do
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
           done
           gh release create "$TAG_NAME" dist/* --verify-tag --generate-notes

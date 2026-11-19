@@ -115,6 +115,27 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
     assert "continue-on-error:" not in workflow
 
 
+@pytest.mark.parametrize(("workflow_file", "workflow_name"), [
+    ("release.yml", "release.yml"),
+    ("release-attestation-drill.yml", "release-attestation-drill.yml"),
+])
+def test_attestation_verification_pins_repository_workflow_source_and_runner(
+    workflow_file, workflow_name,
+):
+    workflow = (Path(__file__).parents[1] / ".github/workflows" / workflow_file).read_text()
+    command_start = workflow.index('gh attestation verify "$artifact"')
+    command_end = workflow.index("done", command_start)
+    command = workflow[command_start:command_end]
+
+    assert '--repo "$GITHUB_REPOSITORY"' in command
+    assert (f'--cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/'
+            f'{workflow_name}@$GITHUB_REF"' in command)
+    assert '--cert-oidc-issuer "https://token.actions.githubusercontent.com"' in command
+    assert '--source-ref "$GITHUB_REF"' in command
+    assert '--source-digest "$GITHUB_SHA"' in command
+    assert "--deny-self-hosted-runners" in command
+
+
 def test_release_and_drill_share_checksum_generation_path():
     workflows = Path(__file__).parents[1] / ".github/workflows"
     release = (workflows / "release.yml").read_text()

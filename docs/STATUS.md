@@ -902,3 +902,14 @@ The local regression checks recreate the workflow object over the same
 database after forgetting; they do not exercise a fresh process or reboot.
 This remains best-effort local retirement, not physical erasure, automatic
 provider revocation, a retention policy, or completion of Issue #9.
+
+## Issue #9 release attestation identity pins (2026-11-20)
+
+The tag release workflow and nonpublishing main-branch attestation drill now
+require GitHub CLI verification to match the expected repository, exact signer
+certificate identity and OIDC issuer, source ref and source commit; both also
+reject self-hosted runners. This replaces the previous repository-only
+identity check with an exact SAN match. The change is code and workflow
+validation only; it does not produce a release or independently validate a
+newly generated GitHub attestation. Issue #9 remains open for release execution,
+host recovery, retention/secret controls, and the Issue #8 dependency.
