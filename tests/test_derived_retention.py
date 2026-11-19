@@ -293,12 +293,15 @@ print(json.dumps(retain_derived(Path(sys.argv[1]), older_than_days=30,
     statuses = [row["status"] for row in report["results"]]
     assert report["selected_runs"] == 100
     assert len(statuses) == 100
-    if report["batch_lock_capacity"] == 100:
-        assert set(statuses) == {"applied"}
-        assert all(not artifact.is_file() for artifact, _relative, _run_id in artifacts)
-    else:
-        assert set(statuses) in ({"capacity_exceeded"}, {"capacity_unavailable"})
+    capacity = report["batch_lock_capacity"]
+    if capacity is None or capacity < 100:
+        expected_status = "capacity_unavailable" if capacity is None else "capacity_exceeded"
+        assert set(statuses) == {expected_status}
         for artifact, relative, run_id in artifacts:
             assert artifact.is_file()
             manifest = json.loads(session._session(run_id)[0])
             assert relative in manifest["artifacts"]
+        pytest.skip("available file descriptors cannot safely exercise a 100-run batch")
+    assert capacity == 100
+    assert set(statuses) == {"applied"}
+    assert all(not artifact.is_file() for artifact, _relative, _run_id in artifacts)

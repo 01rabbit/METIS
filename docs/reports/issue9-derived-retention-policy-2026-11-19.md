@@ -14,7 +14,10 @@ eligible runs, and an apply with any blocked run exits nonzero. The operation
 is retryable: already removed derived files are reconciled with the manifest.
 Original inputs and user-added artifacts are excluded.
 
-Each run is capped at 100 registered derived artifacts. Preview reports the
+Each run is capped at 100 registered derived artifacts. The run-locked
+`store_artifact` path refuses entry 101 before creating a file, and concurrent
+writers serialize against that count. Other `.metis-*` directories are outside
+the cap. Preview reports the
 per-run limit and marks an over-limit run `overflow` with its count and limit,
 without listing its file paths. Apply holds the selected runs' operation and
 state locks, checks the entire bounded batch before deletion, and skips all
@@ -43,13 +46,13 @@ Local validation (Python 3.12 virtual environment, synthetic local fixtures):
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -q tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
-45 passed
+47 passed
 /Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py tests/test_derived_retention.py tests/test_codex_session.py tests/test_cli.py
 All checks passed!
 /Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis/core/derived_retention.py src/metis/core/codex_session.py src/metis/cli.py
 Success: no issues found in 3 source files
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -ra
-1530 passed, 37 skipped, 45 subtests passed in 212.08s
+1532 passed, 37 skipped, 45 subtests passed in 212.86s
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python scripts/check_repo.py
 {"status": "passed", "findings": 0}
 git diff --check

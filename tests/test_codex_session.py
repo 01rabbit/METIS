@@ -4,11 +4,17 @@ import os
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import pytest
 
-from metis.core.codex_session import MAX_DERIVED_ARTIFACTS_PER_RUN, CodexSession, transform
+from metis.core.codex_session import (
+    MAX_DERIVED_ARTIFACTS_PER_RUN,
+    CodexSession,
+    DerivedArtifactLimitError,
+    transform,
+)
 from metis.core.contracts import ChallengeManifest, RunStatus
 from metis.core.runtime import ToolRequest
 
@@ -143,6 +149,60 @@ def test_purge_derived_keeps_original_and_user_added_artifacts(tmp_path):
     repeated = session.purge_derived(run_id, apply=True)
     assert repeated["files"] == []
     assert repeated["manifest_entries_removed"] == 0
+
+
+def test_store_artifact_caps_derived_entries_and_keeps_purge_recoverable(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="derived-cap", description="fixture", paths=[source])["run_id"]
+    derived = [session.store_artifact(run_id, b"generated")
+               for _ in range(MAX_DERIVED_ARTIFACTS_PER_RUN)]
+    other = session.store_artifact(run_id, b"other", directory_name=".metis-other")
+    with pytest.raises(DerivedArtifactLimitError) as error:
+        session.store_artifact(run_id, b"one too many")
+    assert error.value.count == MAX_DERIVED_ARTIFACTS_PER_RUN + 1
+
+    root = session.artifact_root(run_id)
+    assert root is not None
+    assert len(list((root / ".metis-derived").iterdir())) == MAX_DERIVED_ARTIFACTS_PER_RUN
+    manifest = session.context(run_id)["challenge"]["artifacts"]
+    assert sum(path.startswith(".metis-derived/") for path in manifest) == 100
+    assert other in manifest
+
+    session._emit(run_id, RunStatus.CANCELLED)
+    result = session.purge_derived(run_id, apply=True)
+    assert len(result["files"]) == MAX_DERIVED_ARTIFACTS_PER_RUN
+    assert all(not (root / path).exists() for path in derived)
+    assert (root / other).read_bytes() == b"other"
+    assert session.context(run_id)["challenge"]["artifacts"] == ["00-source.txt", other]
+
+
+def test_concurrent_derived_stores_serialize_at_per_run_cap(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "source.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="concurrent-cap", description="fixture", paths=[source])["run_id"]
+    for _ in range(MAX_DERIVED_ARTIFACTS_PER_RUN - 1):
+        session.store_artifact(run_id, b"generated")
+
+    def attempt_store(index):
+        try:
+            return session.store_artifact(run_id, f"writer-{index}".encode())
+        except DerivedArtifactLimitError:
+            return "limit"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(attempt_store, range(2)))
+    assert outcomes.count("limit") == 1
+    assert sum(outcome != "limit" for outcome in outcomes) == 1
+    manifest = session.context(run_id)["challenge"]["artifacts"]
+    assert sum(path.startswith(".metis-derived/") for path in manifest) == 100
+    root = session.artifact_root(run_id)
+    assert root is not None
+    assert len(list((root / ".metis-derived").iterdir())) == 100
 
 
 def test_purge_derived_refuses_active_runs_and_registered_workers(tmp_path):

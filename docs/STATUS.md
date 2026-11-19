@@ -811,8 +811,9 @@ selection and requires `--apply` for deletion. It reuses the locked per-run
 generated-artifact purge and reports blocked resumable runs. Only terminal
 `solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
 `planning` and extendable `exhausted` runs are preserved. Each run is capped at
-100 registered derived artifacts; apply preflights the whole bounded batch under
-all selected run locks and skips deletion if any run exceeds the cap. Overflow
+100 registered derived artifacts; the run-locked writer refuses the 101st
+before creating it. Apply preflights the whole bounded batch under all selected
+run locks and skips deletion if any run exceeds the cap. Overflow
 reports counts and limits without artifact paths; directory enumeration stops
 at the per-run bound. Apply derives lock capacity from `RLIMIT_NOFILE`, open
 FDs, a 16-FD reserve, and two FDs per run, and returns before locking if the

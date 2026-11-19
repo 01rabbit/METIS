@@ -491,6 +491,11 @@ class CodexSession:
         if len(content) > MAX_FILE or not re.fullmatch(r"\.metis-[a-z]{1,16}", directory_name) \
                 or not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
             raise ValueError("invalid controller artifact")
+        if directory_name == ".metis-derived":
+            manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
+            derived_count = sum(path.startswith(".metis-derived/") for path in manifest.artifacts)
+            if derived_count >= MAX_DERIVED_ARTIFACTS_PER_RUN:
+                raise DerivedArtifactLimitError(derived_count + 1)
         root = self.artifact_root(run_id)
         if root is None:
             raise ValueError("no artifact root registered")
