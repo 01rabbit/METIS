@@ -586,6 +586,18 @@ sandbox suite includes the real-Docker cross-controller test.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
+On 2026-11-19, a disposable Mac host-reboot drill observed an active sandbox
+run persisted across a changed boot UUID. The first 300-second worker timed
+out before reboot and was inconclusive. In a second attempt, a successor
+worker started before reboot and the run remained `executing` afterward with
+both actions charged. Manual `codex recover` returned `planning`, confirmed
+worker teardown, and was idempotent on a second call; no solve was recorded.
+The prepared script's stricter pre-reboot worker-identity condition did not
+pass because the first worker expired, so this is bounded recovery evidence
+with an explicit timing limit, not production acceptance. Private snapshots
+were retained outside Git and disposable VMs removed. See
+[`issue9-host-reboot-recovery-2026-11-19.md`](reports/issue9-host-reboot-recovery-2026-11-19.md).
+
 A local read-only operator view now serves the existing count-only audit over
 `127.0.0.1` with an in-memory bearer token supplied by environment variable.
 It rejects non-loopback Host headers and Origin-bearing requests, exposes no
