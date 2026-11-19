@@ -292,6 +292,9 @@ def qualify_native_launch(
     if not 0 < seconds <= 30:
         raise ValueError("fixture deadline is outside its bound")
 
+    if (receipt.study.native_manifest_sha256 is None
+            or expected_manifest_sha256 != receipt.study.native_manifest_sha256):
+        raise ValueError("native manifest approval does not match committed study pin")
     approved = read_approved_native_build(
         manifest, expected_manifest_sha256=expected_manifest_sha256, patch=patch,
         target_os=platform.system(), target_arch=platform.machine(),
@@ -309,5 +312,6 @@ def qualify_native_launch(
         verify_native_runtime(approved, binary=staged_binary, model=staged_model)
         claim = admission.claim_for_launch(receipt)
         outcome = _run_claim(claim, staged_binary, staged_model, root / "server.sock", seconds, request, native_cap)
+        outcome = outcome.model_copy(update={"native_manifest_sha256": expected_manifest_sha256})
         admission.record_outcome(claim, outcome)
         return outcome

@@ -178,6 +178,7 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
         study_id="fixture", protocol_sha256=fixture.fixture_protocol_sha256(n_predict, end=end),
         runtime_sha256=binary_digest,
         model_sha256=model_digest, token_limit=cap,
+        native_manifest_sha256=approval["expected_manifest_sha256"],
     )
     slot = SlotTokenPin(run_id="run", task_id="fixture", repetition=0, arm="test", token_limit=cap)
     attempt = TokenAttempt(assignment_id="assignment", attempt_id="attempt", turn_reservation_id=1,
@@ -217,8 +218,10 @@ def test_private_launch_verifies_terminal_receipt_and_keeps_full_charge(tmp_path
     )
     assert (outcome.status, outcome.exit_status, outcome.observed_work) == (status, exit_status, work)
     with closing(sqlite3.connect(admission.database)) as db:
-        assert db.execute("SELECT status, exit_status, observed_work FROM study_token_outcomes").fetchall() == [
-            (status, exit_status, work),
+        assert db.execute(
+            "SELECT status, exit_status, observed_work, native_manifest_sha256 FROM study_token_outcomes"
+        ).fetchall() == [
+            (status, exit_status, work, approval["expected_manifest_sha256"]),
         ]
     extra_attempt = receipt.attempt.model_copy(update={"turn_reservation_id": 2, "tokens": 1})
     with pytest.raises(ValueError, match="study token budget exhausted"):
@@ -323,6 +326,7 @@ def test_public_native_fixture_cap_matrix(tmp_path):
         study = StudyTokenPin(
             study_id="native_fixture", protocol_sha256=fixture.fixture_protocol_sha256(limit, end=end),
             runtime_sha256=runtime_sha256, model_sha256=fixture.FIXTURE_MODEL_SHA256, token_limit=cap,
+            native_manifest_sha256=expected,
         )
         slot = SlotTokenPin(run_id="public_fixture", task_id="native_fixture", repetition=0,
                             arm="test", token_limit=cap)
@@ -367,7 +371,9 @@ def test_startup_retry_denial_keeps_admission_charged(tmp_path, monkeypatch):
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
 
-@pytest.mark.parametrize("kind", ["foreign_manifest", "changed_patch", "wrong_target", "runtime_pin"])
+@pytest.mark.parametrize("kind", [
+    "foreign_manifest", "changed_patch", "wrong_target", "runtime_pin", "forged_provenance", "missing_pin",
+])
 def test_unapproved_build_stops_before_staging_or_launch(tmp_path, monkeypatch, kind):
     admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
     if kind == "foreign_manifest":
@@ -384,8 +390,14 @@ def test_unapproved_build_stops_before_staging_or_launch(tmp_path, monkeypatch, 
         manifest["target_os"], manifest["target_arch"] = target
         path.write_text(json.dumps(manifest))
         approval["expected_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        changed = receipt.study.model_copy(update={"native_manifest_sha256": approval["expected_manifest_sha256"]})
+        receipt = receipt.model_copy(update={"study": changed})
+    elif kind == "forged_provenance":
+        _make_foreign_provenance(approval)
     else:
-        changed = receipt.study.model_copy(update={"runtime_sha256": "f" * 64})
+        changed = receipt.study.model_copy(update=(
+            {"runtime_sha256": "f" * 64} if kind == "runtime_pin" else {"native_manifest_sha256": None}
+        ))
         receipt = receipt.model_copy(update={"study": changed})
 
     def unexpected(*args, **kwargs):
@@ -432,3 +444,28 @@ def test_controller_uses_approved_copies_after_original_paths_change(tmp_path, m
     monkeypatch.setattr(fixture, "_stage", replace_original)
     outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     assert outcome.status == "completed"
+
+
+def _make_foreign_provenance(approval):
+    manifest_path, patch_path = approval["manifest"], approval["patch"]
+    patch_path.write_bytes(b"different but internally consistent patch")
+    document = json.loads(manifest_path.read_bytes())
+    document["patch_sha256"] = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(document))
+    approval["expected_manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_mutated_receipt_cannot_self_approve_foreign_provenance(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    _make_foreign_provenance(approval)
+    changed = receipt.study.model_copy(update={"native_manifest_sha256": approval["expected_manifest_sha256"]})
+    forged_receipt = receipt.model_copy(update={"study": changed})
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("forged receipt reached Popen")
+
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    with pytest.raises(ValueError, match="committed reservation"):
+        fixture.qualify_native_launch(admission, forged_receipt, binary=binary, model=model, **approval)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
