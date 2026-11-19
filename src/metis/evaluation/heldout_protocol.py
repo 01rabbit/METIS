@@ -189,11 +189,11 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                 "budget": protocol.budgets[assignment.arm].model_dump(mode="json"),
             }:
                 raise ValueError("held-out arm binding mismatch")
-            jobs = db.execute("SELECT assignment_id FROM agent_jobs WHERE run_id=?",
+            jobs = db.execute("SELECT assignment_id,state FROM agent_jobs WHERE run_id=?",
                               (assignment.run_id,)).fetchall()
             if not jobs:
                 raise ValueError("held-out dispatch evidence missing")
-            for (assignment_id,) in jobs:
+            for assignment_id, state in jobs:
                 rows = db.execute("SELECT detail FROM agent_job_log WHERE assignment_id=? "
                                   "AND event='heldout_arm_applied'", (assignment_id,)).fetchall()
                 if not rows:
@@ -202,8 +202,13 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                                          "AND event='heldout_prompt_applied'", (assignment_id,)).fetchall()
                 calls = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE assignment_id=?",
                                    (assignment_id,)).fetchone()[0]
-                if len(prompt_rows) != calls or any(json.loads(row[0]).get("prefix_sha256") != (
-                        protocol.arm_config[assignment.arm].prompt_sha256) for row in prompt_rows):
+                completed_calls = db.execute("SELECT COUNT(*) FROM agent_job_log WHERE assignment_id=? "
+                                             "AND event='codex_turn'", (assignment_id,)).fetchone()[0]
+                if (len(prompt_rows) > calls or len(prompt_rows) < completed_calls
+                        or (state == "completed" and calls > 0 and not prompt_rows)
+                        or any(json.loads(row[0]).get("prefix_sha256") !=
+                               protocol.arm_config[assignment.arm].prompt_sha256
+                               for row in prompt_rows)):
                     raise ValueError("held-out prompt dispatch mismatch")
                 expected_cards = len(protocol.memory_card_digests) if protocol.arm_config[assignment.arm].memory_enabled else 0
                 for (detail,) in rows:
