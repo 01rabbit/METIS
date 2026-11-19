@@ -102,11 +102,11 @@ def _record(raw: bytes) -> NativeBuildIdentity:
     return record
 
 
-def verify_native_build(
-    manifest: Path, *, expected_manifest_sha256: str, binary: Path, patch: Path, model: Path,
+def read_approved_native_build(
+    manifest: Path, *, expected_manifest_sha256: str, patch: Path,
     target_os: str, target_arch: str,
 ) -> NativeBuildIdentity:
-    """Verify against an expected manifest digest supplied from trusted evidence."""
+    """Check a build record and patch against independently supplied approval."""
     if not _HEX256.fullmatch(expected_manifest_sha256):
         raise ValueError("invalid expected manifest digest")
     raw = _read(manifest, _METADATA_LIMIT)
@@ -115,12 +115,29 @@ def verify_native_build(
     record = _record(raw)
     if (record.target_os, record.target_arch) != (target_os, target_arch):
         raise ValueError("native build target does not match requested environment")
-    if _hash(binary, _BINARY_LIMIT) != record.binary_sha256:
-        raise ValueError("native binary digest mismatch")
     if _hash(patch, _METADATA_LIMIT) != record.patch_sha256:
         raise ValueError("native patch digest mismatch")
+    return record
+
+
+def verify_native_runtime(record: NativeBuildIdentity, *, binary: Path, model: Path) -> None:
+    """Check executable and model bytes against an already verified record."""
+    if _hash(binary, _BINARY_LIMIT) != record.binary_sha256:
+        raise ValueError("native binary digest mismatch")
     if _hash(model, 2 * 1024**2) != _PUBLIC_MODEL_SHA256:
         raise ValueError("model is outside the registered single-file public fixture")
+
+
+def verify_native_build(
+    manifest: Path, *, expected_manifest_sha256: str, binary: Path, patch: Path, model: Path,
+    target_os: str, target_arch: str,
+) -> NativeBuildIdentity:
+    """Verify artifacts against a manifest digest supplied from trusted evidence."""
+    record = read_approved_native_build(
+        manifest, expected_manifest_sha256=expected_manifest_sha256, patch=patch,
+        target_os=target_os, target_arch=target_arch,
+    )
+    verify_native_runtime(record, binary=binary, model=model)
     return record
 
 
