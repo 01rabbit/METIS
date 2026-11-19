@@ -325,13 +325,14 @@ def test_list_audit_summaries_bounds_run_discovery_scan(tmp_path, monkeypatch):
     assert truncated is True
 
 
-def test_list_audit_summaries_rejects_non_integer_sequence_storage(tmp_path):
+@pytest.mark.parametrize("invalid_sequence", ["not-an-integer", 1.5])
+def test_list_audit_summaries_rejects_non_integer_sequence_storage(tmp_path, invalid_sequence):
     database = tmp_path / "runs.sqlite"
     run_id = start(CodexSession(database))
     with sqlite3.connect(database) as db:
         db.execute("DROP TRIGGER deny_update")
         db.execute("UPDATE events SET sequence=? WHERE run_id=? AND sequence=0",
-                   ("not-an-integer", run_id))
+                   (invalid_sequence, run_id))
     with pytest.raises(ValueError, match="sequence"):
         RunStore(database, read_only=True).list_audit_summaries(limit=1)
 

@@ -27,7 +27,7 @@ comparison.
 
 Validation on macOS arm64:
 
-- `PYTHONPATH=/private/tmp/metis-issue9-operator-run-board/src:/private/tmp/metis-issue9-operator-run-board /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest tests/test_run_audit.py tests/test_operator_ui.py` — 44 passed.
+- `PYTHONPATH=/private/tmp/metis-issue9-operator-run-board/src:/private/tmp/metis-issue9-operator-run-board /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest tests/test_run_audit.py tests/test_operator_ui.py` — 45 passed.
 - Ruff, mypy, `scripts/check_repo.py`, and `git diff --check` passed.
 - Playwright against a disposable local SQLite database loaded two synthetic
   runs, selected the newest, and displayed its audit summary with a valid
