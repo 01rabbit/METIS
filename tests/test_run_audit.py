@@ -380,16 +380,32 @@ def test_inventory_zero_and_item_limit(tmp_path):
     json.dumps({"artifacts": [], "private-sentinel": "x" * MAX_AUDIT_MANIFEST_BYTES}),
     json.dumps({"artifacts": [], "private-sentinel": "\u3042" * (MAX_AUDIT_MANIFEST_BYTES // 2)}, ensure_ascii=False),
 ], ids=lambda raw: type(raw).__name__)
-def test_inventory_rejects_malformed_or_oversized_manifest_safely(tmp_path, raw):
+def test_inventory_unavailable_for_malformed_or_oversized_manifest(tmp_path, raw):
     database = inventory_fixture(tmp_path, raw)
     before = database.read_bytes()
-    result = audit(database, "inventory")
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert result.stderr == "run audit unavailable or corrupt\n"
+    assert_inventory_unavailable(database)
     assert database.read_bytes() == before
-    with pytest.raises(ValueError, match="^artifact inventory unavailable or corrupt$"):
-        RunStore(database, read_only=True).audit_summary("inventory")
+
+
+def assert_inventory_unavailable(database):
+    result = audit(database, "inventory")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert "private-sentinel" not in result.stdout
+    summary = json.loads(result.stdout)
+    assert summary["chain_valid"] is True
+    assert summary["status"] == "new"
+    assert summary["codex_budget"]["actions_remaining"] == 2
+    assert summary["operational_state"]["artifact_inventory"] == {"available": False}
+    assert RunStore(database, read_only=True).audit_summary("inventory") == summary
+    return summary
+
+
+def test_inventory_sqlite_text_decode_failure_does_not_discard_audit(tmp_path):
+    database = inventory_fixture(tmp_path, '{"artifacts": []}')
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=CAST(X'80' AS TEXT)")
+    assert_inventory_unavailable(database)
 
 
 @pytest.mark.parametrize("path", [
@@ -401,12 +417,30 @@ def test_inventory_rejects_malformed_or_oversized_manifest_safely(tmp_path, raw)
     ".metis-derived/" + "A" * 32 + ".bin", ".metis-derived/" + "a" * 32 + ".BIN",
     ".metis-added", ".metis-added/nested/private-sentinel",
 ])
-def test_inventory_rejects_unexpected_paths_without_disclosing_them(tmp_path, path):
+def test_inventory_unavailable_for_unrecognized_paths_without_disclosure(tmp_path, path):
     database = inventory_fixture(tmp_path, json.dumps({"artifacts": [path]}))
-    result = audit(database, "inventory")
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert result.stderr == "run audit unavailable or corrupt\n"
+    assert_inventory_unavailable(database)
+
+
+@pytest.mark.parametrize("paths", [
+    ["./a.bin"], ["a/./b"], ["dir/"], ["a.bin", "a.bin"],
+    [".metis-added/nested/a.bin"], [".metis-derived/x.bin"],
+])
+def test_existing_valid_manifest_shapes_preserve_other_audit_output(tmp_path, paths):
+    manifest = ChallengeManifest.model_validate({
+        "challenge_id": "inventory-compatibility", "title": "private-sentinel-title",
+        "description": "private-sentinel-description", "artifacts": paths,
+        "scope": {"authorized": True, "granted_by": "synthetic-test",
+                  "challenge_id": "inventory-compatibility"},
+    })
+    database = inventory_fixture(tmp_path, manifest.model_dump_json())
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE agent_jobs (run_id TEXT, state TEXT)")
+        db.execute("INSERT INTO agent_jobs VALUES ('inventory', 'completed')")
+    before = database.read_bytes()
+    summary = assert_inventory_unavailable(database)
+    assert summary["operational_state"]["agent_job_states"]["counts"]["completed"] == 1
+    assert database.read_bytes() == before
 
 
 def test_inventory_byte_bound_includes_exact_limit(tmp_path):
@@ -419,7 +453,7 @@ def test_inventory_byte_bound_includes_exact_limit(tmp_path):
                                                       ensure_ascii=False))
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT length(CAST(manifest AS BLOB)) FROM codex_sessions").fetchone()[0] < MAX_AUDIT_MANIFEST_BYTES
-    assert audit(database, "inventory").returncode == 2
+    assert_inventory_unavailable(database)
     raw = '{"artifacts": [], "padding": ""}'
     raw = raw.replace('"padding": ""', '"padding": "' + "x" * (MAX_AUDIT_MANIFEST_BYTES - len(raw)) + '"')
     assert len(raw.encode()) == MAX_AUDIT_MANIFEST_BYTES
@@ -430,7 +464,7 @@ def test_inventory_byte_bound_includes_exact_limit(tmp_path):
     assert audit(database, "inventory").returncode == 0
     with sqlite3.connect(database) as db:
         db.execute("UPDATE codex_sessions SET manifest=?", (raw + " ",))
-    assert audit(database, "inventory").returncode == 2
+    assert_inventory_unavailable(database)
 
 
 def test_inventory_depth_bound_respects_quoted_brackets_and_escapes(tmp_path):
@@ -442,9 +476,7 @@ def test_inventory_depth_bound_respects_quoted_brackets_and_escapes(tmp_path):
     assert audit(database, "inventory").returncode == 0
     with sqlite3.connect(database) as db:
         db.execute("UPDATE codex_sessions SET manifest=?", (raw.replace('"nested": ', '"nested": [').removesuffix('}') + ']}',))
-    result = audit(database, "inventory")
-    assert result.returncode == 2
-    assert result.stderr == "run audit unavailable or corrupt\n"
+    assert_inventory_unavailable(database)
 
 
 def test_inventory_legacy_schema_and_missing_session_are_unavailable(tmp_path):

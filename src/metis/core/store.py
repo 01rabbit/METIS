@@ -99,20 +99,18 @@ def _check_manifest_depth(raw: str) -> None:
 
 
 def _artifact_inventory(db: sqlite3.Connection, run_id: str) -> dict[str, object]:
-    """Count bounded manifest registrations without touching artifact paths."""
-    columns = {row[1] for row in db.execute("PRAGMA table_info(codex_sessions)")}
-    if "manifest" not in columns:
-        return {"available": False}
-    # Bound stored bytes before transfer to Python, including embedded NULs.
-    # The second check below also bounds UTF-8 when a legacy DB uses UTF-16.
-    rows = db.execute(
-        "SELECT CASE WHEN typeof(manifest)='text' "
-        "AND length(CAST(manifest AS BLOB)) <= ? THEN manifest END "
-        "FROM codex_sessions WHERE run_id=? LIMIT 2", (MAX_AUDIT_MANIFEST_BYTES, run_id),
-    ).fetchall()
-    if not rows:
-        return {"available": False}
+    """Count recognized registrations; optional inventory never invalidates the audit."""
     try:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(codex_sessions)")}
+        if "manifest" not in columns:
+            return {"available": False}
+        # Bound stored bytes before transfer to Python, including embedded NULs.
+        # The second check below also bounds UTF-8 when a legacy DB uses UTF-16.
+        rows = db.execute(
+            "SELECT CASE WHEN typeof(manifest)='text' "
+            "AND length(CAST(manifest AS BLOB)) <= ? THEN manifest END "
+            "FROM codex_sessions WHERE run_id=? LIMIT 2", (MAX_AUDIT_MANIFEST_BYTES, run_id),
+        ).fetchall()
         if len(rows) != 1 or not isinstance(rows[0][0], str):
             raise ValueError("invalid manifest")
         if len(rows[0][0].encode("utf-8")) > MAX_AUDIT_MANIFEST_BYTES:
@@ -138,8 +136,8 @@ def _artifact_inventory(db: sqlite3.Connection, run_id: str) -> dict[str, object
                 if len(parts) != 2:
                     raise ValueError("invalid added path")
                 added += 1
-    except (ValueError, TypeError, RecursionError):
-        raise ValueError("artifact inventory unavailable or corrupt") from None
+    except (ValueError, TypeError, RecursionError, sqlite3.Error):
+        return {"available": False}
     return {"available": True, "registered_artifacts": len(seen),
             "registered_derived": derived, "registered_added": added,
             "registered_other": len(seen) - derived - added, "filesystem_verified": False}

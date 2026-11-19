@@ -46,7 +46,7 @@ def recorded_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         db.execute("CREATE TABLE web_attempts (run_id TEXT, verdict TEXT, "
                    "created REAL, attempts INTEGER)")
         db.execute("INSERT INTO codex_sessions VALUES (?,?,?,?,?)", (
-            evidence.RUN_ID, json.dumps({"artifacts": [evidence.ARCHIVE]}),
+            evidence.RUN_ID, json.dumps({"artifacts": {evidence.ARCHIVE: {}}}),
             "artifacts", 1000, 7200))
         db.execute("INSERT INTO web_runs VALUES (?,?)", (
             evidence.RUN_ID, json.dumps({"adapter": "ksnctf", "challenge_id": 39})))

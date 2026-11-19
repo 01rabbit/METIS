@@ -7,9 +7,11 @@ current run's manifest in its existing SQLite snapshot. Derived, added and other
 registration counts omit paths and contents and always report
 `filesystem_verified: false`. The audit does not inspect artifact files,
 initialize a session, acquire METIS locks or remove data. Missing legacy schema
-is unavailable; malformed, duplicate, unexpected-path or oversized manifests
-fail with the fixed audit error. The 86 focused audit/CLI/evidence tests and
-standard static/content checks passed. The full suite passed 1,558 tests and
+is unavailable; malformed, duplicate, unrecognized-path or oversized manifests
+make only the inventory unavailable. Existing valid manifest shapes outside the
+inventory's recognition rules keep their event-chain and other audit output;
+the persistence contract is unchanged. All 93 focused audit/CLI/evidence tests
+and standard static/content checks passed. The full suite passed 1,565 tests and
 45 subtests, with 36 skipped. This adds local visibility without proving file
 existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
 P7/#8 dependency remain open. See

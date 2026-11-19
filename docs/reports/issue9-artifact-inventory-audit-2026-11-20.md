@@ -35,19 +35,27 @@ returning it to Python: text only, at most 1,048,576 stored bytes. A second
 Other manifest fields are ignored after bounded JSON decoding; this is not
 full challenge-manifest or authorization validation.
 
-Duplicate JSON keys at any nesting level, nonstandard JSON constants,
+The inventory does not publish counts for duplicate JSON keys at any nesting level, nonstandard JSON constants,
 duplicate paths, noncanonical relative paths, traversal, Windows drive/backslash
-paths, NULs, Unicode surrogates, and unexpected reserved-directory layouts are
-rejected. Derived names must match the existing 32 lowercase hexadecimal digits
+paths, NULs, Unicode surrogates, or unrecognized reserved-directory layouts.
+Recognized derived names match the existing 32 lowercase hexadecimal digits
 and one-to-eight lowercase alphanumeric extension rule. Added registrations
-must have exactly one filename component under their reserved directory.
+are recognized only with one filename component under their reserved directory.
 
-A missing session table, missing manifest column, or absent current-run session
-returns `available: false`, never an invented zero. A malformed or oversized
-current-run manifest causes the existing CLI failure: exit 2, empty stdout and
-the fixed `run audit unavailable or corrupt` message. Other runs' manifests are
-not parsed. These limits can make auditing an otherwise usable run unavailable;
-the command never silently truncates the registration set.
+A missing session table, missing manifest column, absent current-run session,
+malformed/oversized manifest, text decoding failure or unrecognized layout
+returns only `artifact_inventory: {available: false}`, never an invented zero
+or partial counts. The event chain, budget and other operational counters still
+appear in the audit, and the CLI succeeds if the rest of the audit is valid.
+Other runs' manifests are not parsed. Event-chain corruption still fails the
+audit through its existing error handling.
+
+These recognition rules are narrower than the persistence contract and do not
+replace or tighten `ChallengeManifest.check_grant`. Existing valid shapes such
+as `./a.bin`, `a/./b`, `dir/`, duplicate path entries, nested `.metis-added`
+paths and nongenerated `.metis-derived/x.bin` paths retain a valid full audit
+with inventory unavailable. The inventory never normalizes those paths,
+silently removes duplicates or infers a partial count.
 
 ## Validation
 
@@ -56,9 +64,9 @@ Commands run from this feature worktree with its `src` selected:
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest -o addopts='' -q tests/test_run_audit.py tests/test_cli.py tests/test_issue28_evidence.py
-86 passed in 13.16s
+93 passed in 14.04s
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest
-1558 passed, 36 skipped, 45 subtests passed in 212.48s (0:03:32)
+1565 passed, 36 skipped, 45 subtests passed in 220.13s (0:03:40)
 /Users/mao/Developer/GitHub/METIS/.venv/bin/ruff check src tests
 All checks passed!
 /Users/mao/Developer/GitHub/METIS/.venv/bin/mypy src/metis
@@ -76,7 +84,7 @@ Successfully built metis_ctf-0.5.0.tar.gz and metis_ctf-0.5.0-py3-none-any.whl
 
 Coverage includes classification, zero and exact count/byte/depth limits, the
 UTF-8 byte limit on a legacy UTF-16 database,
-malformed and oversized input, nested duplicate keys, unexpected paths,
+malformed and oversized input, nested duplicate keys, unrecognized paths,
 other-run isolation, legacy schema, private sentinels, unchanged database bytes,
 schema, logical dump and artifact tree, and no new lock paths. The direct audit
 test denies file opens, directory listing/scanning, non-database stats, session
@@ -94,14 +102,19 @@ subtests passed in 225.41s`. All failures were in
 `tests/test_issue28_evidence.py`: `test_synthetic_evidence_passes`,
 `test_rejects_incomplete_scan`, and
 `test_rejects_incomplete_audited_scan_with_valid_chain`. Its handcrafted
-fixture used an artifact object instead of the existing `ChallengeManifest`
-contract's string list. On unchanged baseline `b027449`, the same command
+fixture used an artifact object. On unchanged baseline `b027449`, the same command
 restricted to that file passed all seven tests in 1.09s. This was caused by the
-new validation, not an unrelated baseline failure. The fixture now uses
-`[ARCHIVE]`, and a new negative inventory case explicitly retains rejection of
-artifact objects. All seven evidence-verifier tests pass in the expanded
-focused run above; production validation was not relaxed.
-The subsequent full-suite result recorded above passed with that correction.
+new optional inventory validation, not an unrelated baseline failure. An initial
+fixture normalization let the first full rerun pass but did not address the
+broader compatibility problem identified in independent review: valid persisted
+paths can be outside the inventory's recognition rules. The original Issue #28
+fixture has now been restored. Inventory failures are isolated to its
+`available: false` result, including malformed manifests and those existing
+valid shapes. Regression tests validate the six representative shapes through
+`ChallengeManifest` first and then assert intact event-chain, budget and job
+counts through both the API and CLI. A SQLite text-decoding failure likewise
+leaves the full audit available. No persistence validation or artifact-access
+authority was changed.
 
 No CTF input, credential, provider, release, deployment, reboot or purge was
 used. Issue #9 remains open for its separate acceptance gates.
