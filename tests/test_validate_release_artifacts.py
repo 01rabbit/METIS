@@ -309,3 +309,16 @@ def test_offline_verifier_rejects_second_metadata_candidate_before_parsing(tmp_p
     monkeypatch.setattr(release_artifacts, "metadata_version", reject_unexpected_parse)
     with pytest.raises(ValueError, match=message):
         verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+
+def test_offline_verifier_rejects_recursive_tar_extensions(tmp_path):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    extension = tarfile.TarInfo("synthetic-extension")
+    extension.type = tarfile.XHDTYPE
+    raw_tar = extension.tobuf() * (sys.getrecursionlimit() + 200) + b"\0" * 1024
+    artifacts[1].write_bytes(gzip.compress(raw_tar))
+    write_checksums(artifacts)
+    with pytest.raises(ValueError, match="valid gzip tar"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")

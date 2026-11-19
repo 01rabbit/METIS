@@ -29,7 +29,9 @@ It caps each archive at 16 MiB, decompressed tar at 32 MiB, selected
 metadata at 128 KiB per entry, and accepted member counts at 4,096 per
 archive. Python's ZIP reader parses the central directory before checking
 that count. That parse is bounded by the 16 MiB archive snapshot.
-The manifest read is capped at 644 bytes.
+The tar count covers resolved members. Raw PAX and GNU extension records
+are subject to the byte limits, and parser recursion failures reject the
+bundle. The manifest read is capped at 644 bytes.
 The staged bundle is read-only for this check. Successful verification shows
 bundle consistency. Replacing both an archive and its manifest can still pass.
 Verify artifact attestations through a separate trusted provenance check.
@@ -37,10 +39,10 @@ It checks member and directory identities again before reporting success.
 The directory and its ancestors should remain under operator control. Verify
 again if the bundle is subsequently moved or changed.
 
-Thirty-five focused tests passed using synthetic archives. Cases include a
+Thirty-six focused tests passed using synthetic archives. Cases include a
 substituted wheel with unchanged package metadata, a missing manifest,
 symlink, missing or duplicate lines, extra entries, traversal text, changed
 digests, trailing content, reorder, concurrent file substitution, FIFO
 replacement, oversized input, excessive expansion, forged ZIP metadata size,
-duplicate metadata and truncated gzip. Ruff, mypy, the repository scanner
+duplicate metadata, recursive tar extensions and truncated gzip. Ruff, mypy, the repository scanner
 and diff check passed. No release was tagged, published, or downloaded.

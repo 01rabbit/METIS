@@ -110,7 +110,7 @@ def _validate_metadata(wheel: Path | BinaryIO, sdist: Path | BinaryIO,
                     if metadata_stream is not None:
                         with metadata_stream:
                             sdist_metadata.append(metadata_version(metadata_stream.read()))
-    except (OSError, tarfile.TarError) as exc:
+    except (OSError, RecursionError, tarfile.TarError) as exc:
         raise ValueError("sdist is not a valid gzip tar distribution") from exc
     if len(sdist_metadata) != 1:
         raise ValueError("sdist must contain exactly one PKG-INFO")
