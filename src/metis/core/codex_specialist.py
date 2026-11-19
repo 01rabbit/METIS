@@ -937,7 +937,10 @@ def _usage(scheduler: AgentScheduler, assignment_id: str, turns: list[dict[str, 
     ``None`` and ``unknown_fields`` names it. ``known_subtotals`` keeps the sum of what was reported
     so partial coverage stays visible without being presented as a complete total.
     """
-    totals: dict[str, Any] = {"host": "codex-exec", "model": model, "turns": len(turns), "cost": "unknown"}
+    local = bool(turns) and all((turn.get("isolation") or {}).get("mode") == "local_unix_socket"
+                                for turn in turns)
+    totals: dict[str, Any] = {"host": "llama-server" if local else "codex-exec",
+                              "model": model, "turns": len(turns), "cost": "unknown"}
     known: dict[str, int] = {}
     unknown: list[str] = []
     for key in USAGE_KEYS:
