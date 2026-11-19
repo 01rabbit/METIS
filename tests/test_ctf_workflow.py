@@ -146,6 +146,7 @@ def test_workflow_review_requires_existing_run_and_valid_operator_metadata(tmp_p
 def test_controller_validates_workflow_output_encoding_length_and_digest():
     output = b"decoded synthetic \x00\xff result"
     valid = {"schema_version": 1, "steps": 2, "output_bytes": len(output),
+             "input_sha256": hashlib.sha256(b"synthetic input").hexdigest(),
              "sha256": hashlib.sha256(output).hexdigest(),
              "output_b64": base64.b64encode(output).decode("ascii")}
     observed, decoded = _validate_workflow_output(json.dumps(valid), expected_steps=2)
@@ -167,6 +168,8 @@ def test_controller_validates_workflow_output_encoding_length_and_digest():
         _validate_workflow_output(json.dumps({**valid, "schema_version": True}), expected_steps=2)
     with pytest.raises(ValueError, match="schema validation"):
         _validate_workflow_output(json.dumps({**valid, "schema_version": 1.0}), expected_steps=2)
+    with pytest.raises(ValueError, match="schema validation"):
+        _validate_workflow_output(json.dumps({**valid, "input_sha256": "unknown"}), expected_steps=2)
 
 
 def test_corrupt_sandbox_output_is_not_registered_as_a_derived_artifact(tmp_path, monkeypatch):
@@ -196,6 +199,7 @@ def test_corrupt_sandbox_output_is_not_registered_as_a_derived_artifact(tmp_path
     output = b"plausible but not isolated output"
     valid_worker_output = json.dumps({
         "schema_version": 1, "steps": 2, "output_bytes": len(output),
+        "input_sha256": trial.challenge_sha256,
         "sha256": hashlib.sha256(output).hexdigest(),
         "output_b64": base64.b64encode(output).decode("ascii"),
     })
@@ -206,6 +210,16 @@ def test_corrupt_sandbox_output_is_not_registered_as_a_derived_artifact(tmp_path
     unisolated = run_workflow_in_sandbox(database, created["run_id"], target=artifacts_before[0],
                                          workflow_artifact=artifacts_before[1])
     assert unisolated["ok"] is False and "isolation" in unisolated["reason"]
+    assert session.context(created["run_id"])["challenge"]["artifacts"] == artifacts_before
+
+    wrong_input = {**json.loads(valid_worker_output), "input_sha256": "0" * 64}
+    monkeypatch.setattr(Sandbox, "execute", lambda *args, **kwargs: {
+        "ok": True, "stdout": {"text": json.dumps(wrong_input)},
+        "isolation": {"engine": "docker", "image": "sha256:" + "a" * 64,
+                      "network": "none", "host_mounts": False}})
+    mismatched = run_workflow_in_sandbox(database, created["run_id"], target=artifacts_before[0],
+                                         workflow_artifact=artifacts_before[1])
+    assert mismatched == {"ok": False, "reason": "sandbox workflow input digest mismatch"}
     assert session.context(created["run_id"])["challenge"]["artifacts"] == artifacts_before
 
 
@@ -226,7 +240,7 @@ def test_replay_checks_isolation_result_and_oracle_without_leaking_output(monkey
     import metis.core.ctf_workflow as workflow_module
 
     digest = hashlib.sha256(b"private result").hexdigest()
-    base = {"ok": True, "workflow_sha256": "a" * 64, "steps": 2,
+    base = {"ok": True, "workflow_sha256": "a" * 64, "input_sha256": "c" * 64, "steps": 2,
             "output_bytes": 14, "output_sha256": digest,
             "output_artifact": ".metis-derived/private.bin", "output_is_untrusted": True,
             "sandbox": {"engine": "docker", "image": "sha256:" + "b" * 64,
@@ -245,6 +259,7 @@ def test_replay_checks_isolation_result_and_oracle_without_leaking_output(monkey
     assert result == {"ok": True, "reproducible": True, "oracle_match": True,
                       "steps": 2, "output_bytes": 14, "reason": None}
     assert digest not in json.dumps(result)
+    assert base["input_sha256"] not in json.dumps(result)
     assert "private.bin" not in json.dumps(result)
     responses = iter((base, {**base, "sandbox": {**base["sandbox"], "image": "other"}}))
     monkeypatch.setattr(workflow_module, "run_workflow_in_sandbox",
@@ -253,15 +268,16 @@ def test_replay_checks_isolation_result_and_oracle_without_leaking_output(monkey
                                           target="source.txt", workflow_artifact="workflow.json")["reproducible"]
 
 
-def test_replay_rejects_mismatch_or_failed_second_run(monkeypatch, tmp_path):
+@pytest.mark.parametrize("changed_field", ["input_sha256", "output_sha256"])
+def test_replay_rejects_mismatch_or_failed_second_run(monkeypatch, tmp_path, changed_field):
     import metis.core.ctf_workflow as workflow_module
 
-    good = {"ok": True, "workflow_sha256": "a" * 64, "steps": 1,
+    good = {"ok": True, "workflow_sha256": "a" * 64, "input_sha256": "e" * 64, "steps": 1,
             "output_bytes": 3, "output_sha256": "b" * 64,
             "output_artifact": "private", "output_is_untrusted": True,
             "sandbox": {"engine": "docker", "image": "sha256:" + "c" * 64,
                         "network": "none", "host_mounts": False}}
-    responses = iter((good, {**good, "output_sha256": "d" * 64}))
+    responses = iter((good, {**good, changed_field: "d" * 64}))
     monkeypatch.setattr(workflow_module, "run_workflow_in_sandbox",
                         lambda *args, **kwargs: next(responses))
     result = replay_workflow_in_sandbox(tmp_path / "db", "a" * 32,
@@ -299,7 +315,7 @@ def test_replay_cli_oracle_exit_status(monkeypatch, tmp_path, capsys):
     from metis.cli import main
 
     output_digest = hashlib.sha256(b"private result").hexdigest()
-    result = {"ok": True, "workflow_sha256": "a" * 64, "steps": 1,
+    result = {"ok": True, "workflow_sha256": "a" * 64, "input_sha256": "c" * 64, "steps": 1,
               "output_bytes": 14, "output_sha256": output_digest,
               "output_artifact": ".metis-derived/private.bin",
               "output_is_untrusted": True,
@@ -339,7 +355,9 @@ def test_input_artifact_must_match_declared_target():
 
 @pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
                     reason="requires an immutable METIS_TEST_SANDBOX_IMAGE")
-def test_generated_workflow_runs_in_isolated_sandbox_and_passes_private_oracle(tmp_path):
+def test_generated_workflow_runs_in_isolated_sandbox_and_passes_private_oracle(tmp_path, monkeypatch):
+    from metis.core.ctf_sandbox import Sandbox
+
     database = tmp_path / "state" / "metis.sqlite"
     configure(database, engine="docker", image=os.environ["METIS_TEST_SANDBOX_IMAGE"],
               platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"))
@@ -358,6 +376,7 @@ def test_generated_workflow_runs_in_isolated_sandbox_and_passes_private_oracle(t
     result = run_workflow_in_sandbox(database, created["run_id"], target=artifacts[0],
                                      workflow_artifact=artifacts[1], timeout=20)
     assert verify_workflow_digest(result, trial.oracle_sha256)
+    assert result["input_sha256"] == trial.challenge_sha256
     root = session.artifact_root(created["run_id"])
     assert root is not None
     output = read_artifact(root, result["output_artifact"], max_bytes=MAX_WORKFLOW_OUTPUT)
@@ -376,6 +395,22 @@ def test_generated_workflow_runs_in_isolated_sandbox_and_passes_private_oracle(t
     assert trial.oracle_sha256 not in json.dumps(repeated)
     assert frozenset(ARTIFACT_TOOLS) == registry_before
     assert verify_workflow_digest.__code__.co_code == verifier_before
+
+    execute = Sandbox.execute
+
+    def execute_with_modified_plan(worker, run_id, request):
+        # The modified plan still parses and decodes the same output.
+        staged_source = root / artifacts[1]
+        staged_source.write_bytes(trial.workflow_json + b"\n")
+        return execute(worker, run_id, request)
+
+    monkeypatch.setattr(Sandbox, "execute", execute_with_modified_plan)
+    artifacts_before = session.context(created["run_id"])["challenge"]["artifacts"]
+    rejected = run_workflow_in_sandbox(database, created["run_id"], target=artifacts[0],
+                                       workflow_artifact=artifacts[1], timeout=20)
+    assert rejected["ok"] is False
+    assert "staged workflow differs from the validated plan" in rejected["sandbox"]["stderr"]["text"]
+    assert session.context(created["run_id"])["challenge"]["artifacts"] == artifacts_before
 
 
 @pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),

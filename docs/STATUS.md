@@ -459,9 +459,12 @@ run isolation, revocation, stale-version, Ruff, and mypy checks pass. This is a
 local operator gate, not authenticated maintainer identity or a plugin system.
 The workflow replay command now runs a declared plan twice through that same
 isolated route and reports reproducibility and an optional private-oracle
-comparison without emitting output bytes or digests. A real-container fixture
-replay passed. This does not establish model-proposed research or general
-workflow reuse.
+comparison without emitting output bytes or digests. Reproducibility requires
+matching input bytes read by the sandbox and matching sandbox platforms. The
+sandbox rejects a staged plan whose bytes differ from the controller-validated
+plan before applying any transform. Real-container replay and a staged-plan
+substitution test passed. Evidence for model-proposed research and general
+workflow reuse remains open.
 Issue #7 remains open because the P5 dependency (Issue #6) and broader P6
 acceptance remain unmet. See
 [`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).

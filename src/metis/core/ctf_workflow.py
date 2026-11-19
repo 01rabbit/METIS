@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 
-from metis.core.artifacts import artifact_stream
+from metis.core.artifacts import artifact_digest, read_artifact
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import Contract
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS
@@ -31,6 +31,7 @@ WorkflowTool = Literal["base32_decode", "base64_decode", "hex_decode", "rot13_de
 BASE_WORKFLOW_TOOLS = frozenset({"base32_decode", "base64_decode", "hex_decode"})
 WORKFLOW_TOOLS = BASE_WORKFLOW_TOOLS | {"rot13_decode"}
 MAX_WORKFLOW_STEPS = 4
+MAX_WORKFLOW_INPUT = 65_536
 MAX_WORKFLOW_OUTPUT = 16_384
 ROT13_IMPLEMENTATION = (
     'value = value.translate(bytes.maketrans('
@@ -214,13 +215,16 @@ def sandbox_runner_script(*, approved_tools: frozenset[str] = BASE_WORKFLOW_TOOL
 MAX_INPUT_BYTES = 65536
 MAX_OUTPUT_BYTES = 16384
 ALLOWED = __ALLOWED_TOOLS__
-if len(sys.argv) != 2:
-    raise SystemExit("expected one workflow artifact")
-workflow_name = sys.argv[1]
+if len(sys.argv) != 3:
+    raise SystemExit("expected a workflow artifact and its validated digest")
+workflow_name, workflow_sha256 = sys.argv[1:]
 if pathlib.PurePath(workflow_name).name != workflow_name or workflow_name.startswith("."):
     raise SystemExit("invalid workflow artifact name")
 workflow_path = pathlib.Path(workflow_name)
-payload = json.loads(workflow_path.read_text(encoding="utf-8"))
+workflow_bytes = workflow_path.read_bytes()
+if hashlib.sha256(workflow_bytes).hexdigest() != workflow_sha256:
+    raise SystemExit("staged workflow differs from the validated plan")
+payload = json.loads(workflow_bytes.decode("utf-8"))
 if set(payload) != {"schema_version", "input_artifact", "steps"} or payload["schema_version"] != 1:
     raise SystemExit("unsupported workflow schema")
 target_path = pathlib.Path(os.environ["METIS_TARGET"])
@@ -233,6 +237,7 @@ if not isinstance(steps, list) or not 1 <= len(steps) <= 4:
 value = target_path.read_bytes()
 if len(value) > MAX_INPUT_BYTES:
     raise SystemExit("workflow input exceeds limits")
+input_sha256 = hashlib.sha256(value).hexdigest()
 for step in steps:
     if not isinstance(step, dict) or set(step) != {"tool"} or step["tool"] not in ALLOWED:
         raise SystemExit("workflow step is not allowlisted")
@@ -249,6 +254,7 @@ for step in steps:
     if len(value) > MAX_OUTPUT_BYTES:
         raise SystemExit("workflow output exceeds limits")
 print(json.dumps({"schema_version": 1, "steps": len(steps), "output_bytes": len(value),
+                  "input_sha256": input_sha256,
                   "sha256": hashlib.sha256(value).hexdigest(),
                   "output_b64": base64.b64encode(value).decode("ascii")}, sort_keys=True))
 '''
@@ -270,8 +276,7 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     root = session.artifact_root(run_id)
     if root is None:
         raise ValueError("workflow run has no artifact directory")
-    with artifact_stream(root, workflow_artifact, max_bytes=65_536) as stream:
-        workflow_bytes = stream.read(65_537)
+    workflow_bytes = read_artifact(root, workflow_artifact, max_bytes=MAX_WORKFLOW_INPUT)
     target_visible = _visible_artifact_name(target)
     workflow_visible = _visible_artifact_name(workflow_artifact)
     if target_visible == workflow_visible or target_visible.startswith(".metis") \
@@ -280,10 +285,13 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     approved_tools = WorkflowCapabilityApprovals(database).approved_tools(run_id)
     workflow = validate_workflow(workflow_bytes, input_artifact=target_visible,
                                  approved_tools=approved_tools)
+    workflow_sha256 = artifact_digest(workflow_bytes)
+    input_sha256 = artifact_digest(read_artifact(root, target, max_bytes=MAX_WORKFLOW_INPUT))
     result = Sandbox(database).execute(
         run_id,
         SandboxRequest(target=target, mode="script", extra=[workflow_artifact],
-                       args=[workflow_visible], script=sandbox_runner_script(approved_tools=approved_tools),
+                       args=[workflow_visible, workflow_sha256],
+                       script=sandbox_runner_script(approved_tools=approved_tools),
                        interpreter="python3", timeout=timeout, emulate="off"),
     )
     if not result.get("ok"):
@@ -301,14 +309,17 @@ def run_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
         observed, output = _validate_workflow_output(stdout, expected_steps=len(workflow.steps))
     except ValueError as exc:
         return {"ok": False, "reason": str(exc), "sandbox": result}
+    if observed["input_sha256"] != input_sha256:
+        return {"ok": False, "reason": "sandbox workflow input digest mismatch"}
     output_digest = hashlib.sha256(output).hexdigest()
     output_artifact = session.store_artifact(run_id, output, directory_name=".metis-derived", suffix=".bin")
-    return {"ok": True, "workflow_sha256": hashlib.sha256(workflow_bytes).hexdigest(),
+    return {"ok": True, "workflow_sha256": workflow_sha256, "input_sha256": input_sha256,
             "steps": observed["steps"], "output_bytes": observed["output_bytes"],
             "output_sha256": output_digest, "output_artifact": output_artifact,
             "output_is_untrusted": True,
             "sandbox": {"engine": isolation["engine"], "image": isolation["image"],
-                        "network": isolation["network"], "host_mounts": isolation["host_mounts"]}}
+                        "platform": isolation.get("platform"), "network": isolation["network"],
+                        "host_mounts": isolation["host_mounts"]}}
 
 
 def _validate_workflow_output(stdout: str, *, expected_steps: int) -> tuple[dict[str, Any], bytes]:
@@ -318,12 +329,14 @@ def _validate_workflow_output(stdout: str, *, expected_steps: int) -> tuple[dict
     except (TypeError, ValueError) as exc:
         raise ValueError("sandbox workflow output was not valid JSON") from exc
     if (not isinstance(observed, dict)
-            or set(observed) != {"schema_version", "steps", "output_bytes", "sha256", "output_b64"}
+            or set(observed) != {"schema_version", "steps", "output_bytes", "input_sha256", "sha256", "output_b64"}
             or type(observed.get("schema_version")) is not int or observed["schema_version"] != 1
             or type(observed.get("steps")) is not int
             or observed["steps"] != expected_steps
             or type(observed.get("output_bytes")) is not int
             or not 0 <= observed["output_bytes"] <= MAX_WORKFLOW_OUTPUT
+            or not isinstance(observed["input_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", observed["input_sha256"])
             or not re.fullmatch(r"[0-9a-f]{64}", str(observed.get("sha256", "")))
             or not isinstance(observed.get("output_b64"), str)):
         raise ValueError("sandbox workflow result failed schema validation")
@@ -371,7 +384,7 @@ def replay_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
                                      workflow_artifact=workflow_artifact, timeout=timeout)
     if second.get("ok") is not True:
         return {"ok": False, "reproducible": False, "reason": "second sandbox run failed"}
-    comparable = ("workflow_sha256", "steps", "output_bytes", "output_sha256", "sandbox")
+    comparable = ("workflow_sha256", "input_sha256", "steps", "output_bytes", "output_sha256", "sandbox")
     reproducible = all(first.get(key) == second.get(key) for key in comparable)
     oracle_match = (None if oracle_sha256 is None else
                     reproducible and verify_workflow_digest(first, oracle_sha256)
