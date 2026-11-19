@@ -767,3 +767,12 @@ generated-artifact purge and reports blocked resumable runs. Only terminal
 `planning` and extendable `exhausted` runs are preserved. This is a manual
 local retention control, not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
+
+## Held-out protocol preparation (2026-11-19)
+
+`metis.evaluation.heldout_protocol` now freezes an answer-free benchmark
+design into a SHA-256 and deterministic slot schedule, then accepts only a
+matching run binding matrix for ledger export and analysis. It has synthetic
+tests but no real held-out comparison or independently attested cost/arm
+settings. See `docs/reports/issue8-heldout-protocol-2026-11-19.md`; Issue #8
+remains open.

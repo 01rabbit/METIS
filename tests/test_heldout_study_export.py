@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
 
 from metis.core.store import RunStore
 from metis.evaluation.heldout_analysis import reconcile_evidence
+from metis.evaluation.heldout_protocol import Bindings, Protocol, digest, finalize, main, schedule
 from metis.evaluation.heldout_study_export import ExportManifest, export
 
 
@@ -123,3 +125,116 @@ def test_verified_event_without_completed_report_does_not_score(tmp_path: Path) 
     assert trial.oracle_verified is True
     assert trial.workflow_complete is False
     assert trial.failure == "incomplete"
+
+
+def _protocol_fixture(tmp_path: Path) -> tuple[Path, Protocol, Bindings]:
+    database, manifest = fixture(tmp_path)
+    data = manifest.model_dump()
+    runs = data.pop("runs")
+    for index, task in enumerate(data["tasks"]):
+        task["source_id"] = f"local-fixture-{index}"
+        task["distribution_sha256"] = f"{index + 10:064x}"
+    data["arm_config"] = {
+        "full": {"memory_enabled": True, "planner_enabled": True,
+                 "max_specialists": 2, "prompt_sha256": "a" * 64},
+        "single_agent": {"memory_enabled": True, "planner_enabled": True,
+                         "max_specialists": 1, "prompt_sha256": "b" * 64},
+    }
+    protocol = Protocol.model_validate(data)
+    ordered = sorted(runs, key=lambda run: next(
+        index for index, slot in enumerate(schedule(protocol))
+        if (slot["task_id"], slot["repetition"], slot["arm"]) ==
+        (run["task_id"], run["repetition"], run["arm"])))
+    bindings = Bindings.model_validate({"protocol_sha256": digest(protocol), "runs": ordered})
+    return database, protocol, bindings
+
+
+def test_protocol_finalizes_frozen_matrix_with_controller_evidence(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    result = finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+    assert result["protocol_sha256"] == digest(protocol)
+    assert result["ledger_reconciliation"]["trials_reconciled"] == 8
+    assert result["analysis"]["arms"]["full"]["scored_solves"] == 4
+    assert result["analysis"]["arms"]["full"]["acceptance_eligible_solves"] == 0
+    assert "private result" not in json.dumps(result)
+
+
+def test_protocol_rejects_mutation_order_and_missing_binding(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    changed = protocol.model_copy(update={"seed": protocol.seed + 1})
+    with pytest.raises(ValueError, match="commitment"):
+        finalize(changed, bindings, database, expected_sha256=digest(protocol))
+    reversed_bindings = bindings.model_copy(update={"runs": list(reversed(bindings.runs))})
+    with pytest.raises(ValueError, match="schedule"):
+        finalize(protocol, reversed_bindings, database, expected_sha256=digest(protocol))
+    missing = bindings.model_copy(update={"runs": bindings.runs[:-1]})
+    with pytest.raises(ValueError):
+        finalize(protocol, missing, database, expected_sha256=digest(protocol))
+    changed_source = protocol.model_dump()
+    changed_source["tasks"][0]["distribution_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="commitment"):
+        finalize(Protocol.model_validate(changed_source), bindings, database,
+                 expected_sha256=digest(protocol))
+
+
+def test_protocol_rejects_mislabeled_ablation(tmp_path: Path) -> None:
+    _, protocol, _ = _protocol_fixture(tmp_path)
+    data = protocol.model_dump()
+    data["arm_config"]["single_agent"]["max_specialists"] = 2
+    with pytest.raises(ValueError, match="arm configuration"):
+        Protocol.model_validate(data)
+
+
+def test_protocol_real_model_aggregate_cap(tmp_path: Path) -> None:
+    _, protocol, _ = _protocol_fixture(tmp_path)
+    data = protocol.model_dump()
+    data["measurement"] = "real_model"
+    data["budgets"]["full"]["model_calls"] = 7
+    data["budgets"]["single_agent"]["model_calls"] = 7
+    with pytest.raises(ValueError, match="call or time cap"):
+        Protocol.model_validate(data)
+
+
+def test_protocol_rejects_observed_call_overrun(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    data = protocol.model_dump()
+    data["measurement"] = "real_model"
+    real_protocol = Protocol.model_validate(data)
+    real_bindings = bindings.model_copy(update={"protocol_sha256": digest(real_protocol)})
+    with sqlite3.connect(database) as db:
+        db.executemany("INSERT INTO agent_turn_reservations VALUES (?)",
+                       [(bindings.runs[0].run_id,)] * 50)
+    with pytest.raises(ValueError, match="observed real-model"):
+        finalize(real_protocol, real_bindings, database, expected_sha256=digest(real_protocol))
+
+
+def test_protocol_rejects_corrupt_ledger(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE events SET digest='corrupt' WHERE run_id=? AND sequence=1",
+                   (bindings.runs[0].run_id,))
+    with pytest.raises(ValueError, match="event chain"):
+        finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+
+
+def test_protocol_cli_prepare_and_finalize_fail_closed(tmp_path: Path, monkeypatch, capsys) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    design = tmp_path / "protocol.json"
+    run_map = tmp_path / "bindings.json"
+    design.write_text(protocol.model_dump_json())
+    run_map.write_text(bindings.model_dump_json())
+    monkeypatch.setattr(sys, "argv", ["heldout-protocol", "prepare", str(design)])
+    assert main() == 0
+    prepared = json.loads(capsys.readouterr().out)
+    assert prepared["protocol_sha256"] == digest(protocol)
+    assert len(prepared["schedule"]) == 8
+    args = ["heldout-protocol", "finalize", str(design), str(run_map),
+            "--database", str(database), "--expected-sha256", digest(protocol)]
+    monkeypatch.setattr(sys, "argv", args)
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["ledger_reconciliation"]["trials_reconciled"] == 8
+    monkeypatch.setattr(sys, "argv", args[:-1] + ["0" * 64])
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "held-out protocol rejected\n"
