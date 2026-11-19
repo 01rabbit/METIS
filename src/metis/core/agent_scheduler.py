@@ -250,11 +250,12 @@ class AgentScheduler:
             now = time.time()
             turn_no = used + 1
             db.execute("UPDATE agent_run_turn_budgets SET turns_reserved=? WHERE run_id=?", (turn_no, run_id))
-            db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id,attempt_id,reserved) "
-                       "VALUES (?,?,?,?)", (run_id, assignment_id, attempt_id, now))
+            cursor = db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id,attempt_id,reserved) "
+                                "VALUES (?,?,?,?)", (run_id, assignment_id, attempt_id, now))
             self._log(db, assignment_id, attempt_id, "model_turn_reserved", f"{turn_no}/{limit}")
             db.execute("COMMIT")
-            return {"turn": turn_no, "limit": limit, "remaining": limit - turn_no}
+            return {"turn": turn_no, "limit": limit, "remaining": limit - turn_no,
+                    "reservation_id": cursor.lastrowid}
         except BaseException:
             if db.in_transaction:
                 db.execute("ROLLBACK")

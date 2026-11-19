@@ -194,24 +194,51 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
             if not jobs:
                 raise ValueError("held-out dispatch evidence missing")
             for assignment_id, state in jobs:
-                rows = db.execute("SELECT detail FROM agent_job_log WHERE assignment_id=? "
+                rows = db.execute("SELECT attempt_id,detail FROM agent_job_log WHERE assignment_id=? "
                                   "AND event='heldout_arm_applied'", (assignment_id,)).fetchall()
                 if not rows:
                     raise ValueError("held-out dispatch evidence missing")
-                prompt_rows = db.execute("SELECT detail FROM agent_job_log WHERE assignment_id=? "
-                                         "AND event='heldout_prompt_applied'", (assignment_id,)).fetchall()
-                calls = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE assignment_id=?",
-                                   (assignment_id,)).fetchone()[0]
-                completed_calls = db.execute("SELECT COUNT(*) FROM agent_job_log WHERE assignment_id=? "
-                                             "AND event='codex_turn'", (assignment_id,)).fetchone()[0]
-                if (len(prompt_rows) > calls or len(prompt_rows) < completed_calls
-                        or (state == "completed" and calls > 0 and not prompt_rows)
-                        or any(json.loads(row[0]).get("prefix_sha256") !=
-                               protocol.arm_config[assignment.arm].prompt_sha256
-                               for row in prompt_rows)):
+                reservations = db.execute(
+                    "SELECT rowid,attempt_id FROM agent_turn_reservations WHERE assignment_id=?",
+                    (assignment_id,),
+                ).fetchall()
+                events = db.execute(
+                    "SELECT attempt_id,event,detail FROM agent_job_log WHERE assignment_id=? "
+                    "AND event IN ('heldout_prompt_applied','codex_turn','model_turn_abandoned')",
+                    (assignment_id,),
+                ).fetchall()
+                by_id: dict[int, list[tuple[str, str, dict[str, Any]]]] = {}
+                for attempt, event, detail in events:
+                    try:
+                        parsed = json.loads(detail)
+                    except (TypeError, json.JSONDecodeError):
+                        raise ValueError("held-out prompt dispatch mismatch") from None
+                    identity = parsed.get("reservation_id") if isinstance(parsed, dict) else None
+                    if type(identity) is not int:
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    by_id.setdefault(identity, []).append((attempt, event, parsed))
+                if set(by_id) != {identity for identity, _ in reservations}:
                     raise ValueError("held-out prompt dispatch mismatch")
+                for identity, attempt in reservations:
+                    if not any(recorded_attempt == attempt for recorded_attempt, _ in rows):
+                        raise ValueError("held-out dispatch treatment mismatch")
+                    matched = by_id[identity]
+                    if any(recorded_attempt != attempt for recorded_attempt, _, _ in matched):
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    kinds = sorted(event for _, event, _ in matched)
+                    if kinds == ["model_turn_abandoned"]:
+                        continue
+                    if kinds != ["codex_turn", "heldout_prompt_applied"]:
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    prompt = next(detail for _, event, detail in matched if event == "heldout_prompt_applied")
+                    if (prompt.get("prefix_sha256") != protocol.arm_config[assignment.arm].prompt_sha256
+                            or not isinstance(prompt.get("prompt_sha256"), str)
+                            or len(prompt["prompt_sha256"]) != 64
+                            or prompt.get("model") != protocol.model_pin
+                            or prompt.get("runtime") != protocol.runtime_pin):
+                        raise ValueError("held-out prompt dispatch mismatch")
                 expected_cards = len(protocol.memory_card_digests) if protocol.arm_config[assignment.arm].memory_enabled else 0
-                for (detail,) in rows:
+                for _, detail in rows:
                     applied = json.loads(detail)
                     if applied != {"protocol_sha256": expected_digest, "arm": assignment.arm,
                                    "memory_cards": expected_cards, "model": protocol.model_pin,

@@ -48,7 +48,8 @@ def fixture(tmp_path: Path) -> tuple[Path, ExportManifest]:
         db.execute("CREATE TABLE agent_jobs (assignment_id TEXT, run_id TEXT, state TEXT, "
                    "usage TEXT, model TEXT)")
         db.execute("CREATE TABLE ctf_agent_reports (assignment_id TEXT, run_id TEXT)")
-        db.execute("CREATE TABLE agent_turn_reservations (run_id TEXT, assignment_id TEXT)")
+        db.execute("CREATE TABLE agent_turn_reservations (run_id TEXT, assignment_id TEXT, "
+                   "attempt_id TEXT DEFAULT '-')")
         for index in range(8):
             run_id = f"{index + 1:032x}"
             db.execute("INSERT INTO codex_sessions VALUES (?,?,?)", (run_id, "heldout", 10.0))
@@ -57,7 +58,7 @@ def fixture(tmp_path: Path) -> tuple[Path, ExportManifest]:
                 assignment_id, run_id, "completed", json.dumps({"input_tokens": 3, "output_tokens": 2}),
                 "test-model"))
             db.execute("INSERT INTO ctf_agent_reports VALUES (?,?)", (assignment_id, run_id))
-            db.execute("INSERT INTO agent_turn_reservations VALUES (?,?)", (run_id, assignment_id))
+            db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)", (run_id, assignment_id))
             previous = ""
             for sequence, (status, detail) in enumerate([
                 ("new", {}), ("executing", {"tool": "text"}),
@@ -92,7 +93,8 @@ def attest_fixture(database: Path, protocol: Protocol, bindings: Bindings) -> No
     """Supply synthetic dispatch rows for exporter-specific fixtures."""
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE heldout_arm_bindings (run_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-        db.execute("CREATE TABLE agent_job_log (assignment_id TEXT, event TEXT, detail TEXT)")
+        db.execute("CREATE TABLE agent_job_log (assignment_id TEXT, event TEXT, detail TEXT, "
+                   "attempt_id TEXT DEFAULT '-')")
         for run in bindings.runs:
             config = protocol.arm_config[run.arm]
             record = {"protocol_sha256": digest(protocol), "task_id": run.task_id,
@@ -106,12 +108,19 @@ def attest_fixture(database: Path, protocol: Protocol, bindings: Bindings) -> No
             applied = {"protocol_sha256": digest(protocol), "arm": run.arm,
                        "memory_cards": len(protocol.memory_card_digests) if config.memory_enabled else 0,
                        "model": protocol.model_pin, "runtime": protocol.runtime_pin}
-            db.execute("INSERT INTO agent_job_log VALUES (?,?,?)",
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
                        (f"assignment-{int(run.run_id, 16) - 1}", "heldout_arm_applied",
                         json.dumps(applied, sort_keys=True)))
-            db.execute("INSERT INTO agent_job_log VALUES (?,?,?)",
+            identity = db.execute("SELECT rowid FROM agent_turn_reservations WHERE run_id=?",
+                                  (run.run_id,)).fetchone()[0]
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
                        (f"assignment-{int(run.run_id, 16) - 1}", "heldout_prompt_applied",
-                        json.dumps({"prefix_sha256": REAL_PROMPT_SHA256})))
+                        json.dumps({"reservation_id": identity, "prefix_sha256": REAL_PROMPT_SHA256,
+                                    "prompt_sha256": REAL_PROMPT_SHA256, "model": protocol.model_pin,
+                                    "runtime": protocol.runtime_pin})))
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       (f"assignment-{int(run.run_id, 16) - 1}", "codex_turn",
+                        json.dumps({"reservation_id": identity})))
 
 
 def test_export_derives_outcome_and_resources(tmp_path: Path) -> None:
@@ -302,6 +311,73 @@ def test_real_model_rejects_missing_or_changed_arm_dispatch(tmp_path: Path) -> N
         finalize(real, bound, database, expected_sha256=digest(real))
 
 
+def test_real_model_rejects_arm_evidence_from_other_attempt(tmp_path: Path) -> None:
+    database, original, bindings = _protocol_fixture(tmp_path)
+    real = Protocol.model_validate(real_prompt_config({**original.model_dump(), "measurement": "real_model"}))
+    bound = bindings.model_copy(update={"protocol_sha256": digest(real)})
+    attest_fixture(database, real, bound)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_job_log SET attempt_id='other' WHERE assignment_id='assignment-0' "
+                   "AND event='heldout_arm_applied'")
+    with pytest.raises(ValueError, match="dispatch treatment mismatch"):
+        finalize(real, bound, database, expected_sha256=digest(real))
+
+
+@pytest.mark.parametrize("mutation", ["missing_retry_prompt", "duplicate_prompt", "failed_missing_prompt",
+                                      "wrong_model", "unmatched_prompt"])
+def test_real_model_requires_one_prompt_for_every_dispatched_turn(tmp_path: Path, mutation: str) -> None:
+    database, original, bindings = _protocol_fixture(tmp_path)
+    real = Protocol.model_validate(real_prompt_config({**original.model_dump(), "measurement": "real_model"}))
+    bound = bindings.model_copy(update={"protocol_sha256": digest(real)})
+    attest_fixture(database, real, bound)
+    with sqlite3.connect(database) as db:
+        assignment = "assignment-0"
+        db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)",
+                   (bindings.runs[0].run_id, assignment))
+        identity = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        prompt = {"reservation_id": identity, "prefix_sha256": REAL_PROMPT_SHA256,
+                  "prompt_sha256": REAL_PROMPT_SHA256, "model": real.model_pin, "runtime": real.runtime_pin}
+        if mutation == "wrong_model":
+            prompt["model"] = "other-model"
+        if mutation not in {"missing_retry_prompt", "failed_missing_prompt"}:
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       (assignment, "heldout_prompt_applied", json.dumps(prompt)))
+        db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                   (assignment, "codex_turn", json.dumps({"reservation_id": identity})))
+        if mutation == "duplicate_prompt":
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       (assignment, "heldout_prompt_applied", json.dumps(prompt)))
+        if mutation == "failed_missing_prompt":
+            db.execute("UPDATE agent_jobs SET state='failed' WHERE assignment_id=?", (assignment,))
+        if mutation == "unmatched_prompt":
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       (assignment, "heldout_prompt_applied", json.dumps({**prompt, "reservation_id": 999999})))
+    with pytest.raises(ValueError, match="prompt dispatch mismatch"):
+        finalize(real, bound, database, expected_sha256=digest(real))
+
+
+def test_real_model_accepts_attested_retry_and_pre_dispatch_stop(tmp_path: Path) -> None:
+    database, original, bindings = _protocol_fixture(tmp_path)
+    real = Protocol.model_validate(real_prompt_config({**original.model_dump(), "measurement": "real_model"}))
+    bound = bindings.model_copy(update={"protocol_sha256": digest(real)})
+    attest_fixture(database, real, bound)
+    with sqlite3.connect(database) as db:
+        assignment = "assignment-0"
+        for event in ("codex_turn", "model_turn_abandoned"):
+            db.execute("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)",
+                       (bindings.runs[0].run_id, assignment))
+            identity = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            if event == "codex_turn":
+                prompt = {"reservation_id": identity, "prefix_sha256": REAL_PROMPT_SHA256,
+                          "prompt_sha256": REAL_PROMPT_SHA256, "model": real.model_pin,
+                          "runtime": real.runtime_pin}
+                db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                           (assignment, "heldout_prompt_applied", json.dumps(prompt)))
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       (assignment, event, json.dumps({"reservation_id": identity})))
+    assert finalize(real, bound, database, expected_sha256=digest(real))["protocol_sha256"] == digest(real)
+
+
 def test_undeclared_memory_snapshot_is_rejected(tmp_path: Path) -> None:
     database, protocol, bindings = _protocol_fixture(tmp_path)
     with sqlite3.connect(database) as db:
@@ -443,13 +519,20 @@ def test_protocol_rejects_observed_call_overrun(tmp_path: Path) -> None:
     real_protocol = Protocol.model_validate(real_prompt_config(data))
     real_bindings = bindings.model_copy(update={"protocol_sha256": digest(real_protocol)})
     with sqlite3.connect(database) as db:
-        db.executemany("INSERT INTO agent_turn_reservations VALUES (?,?)",
+        db.executemany("INSERT INTO agent_turn_reservations(run_id,assignment_id) VALUES (?,?)",
                        [(bindings.runs[0].run_id, "assignment-0")] * 50)
     attest_fixture(database, real_protocol, real_bindings)
     with sqlite3.connect(database) as db:
-        db.executemany("INSERT INTO agent_job_log VALUES (?,?,?)",
-                       [("assignment-0", "heldout_prompt_applied",
-                         json.dumps({"prefix_sha256": REAL_PROMPT_SHA256}))] * 50)
+        identities = [row[0] for row in db.execute("SELECT rowid FROM agent_turn_reservations "
+                                                   "WHERE assignment_id='assignment-0'")]
+        for identity in identities[1:]:
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       ("assignment-0", "heldout_prompt_applied",
+                        json.dumps({"reservation_id": identity, "prefix_sha256": REAL_PROMPT_SHA256,
+                                    "prompt_sha256": REAL_PROMPT_SHA256, "model": real_protocol.model_pin,
+                                    "runtime": real_protocol.runtime_pin})))
+            db.execute("INSERT INTO agent_job_log(assignment_id,event,detail) VALUES (?,?,?)",
+                       ("assignment-0", "codex_turn", json.dumps({"reservation_id": identity})))
     with pytest.raises(ValueError, match="observed real-model"):
         finalize(real_protocol, real_bindings, database, expected_sha256=digest(real_protocol))
 
