@@ -356,7 +356,7 @@ class StudyTokenAdmission:
             if scheduler_bound:
                 self._require_current_scheduler_turn(db, receipt.receipt)
             row = db.execute(
-                "SELECT p.protocol_sha256,p.runtime_sha256,p.model_sha256,p.token_limit,"
+                "SELECT p.study_id,p.protocol_sha256,p.runtime_sha256,p.model_sha256,p.token_limit,"
                 "p.native_manifest_sha256,s.task_id,s.repetition,s.arm,s.token_limit,"
                 "a.assignment_id,a.attempt_id,a.prompt_sha256,a.tokens,"
                 "l.run_id,l.turn_reservation_id,l.nonce,l.consumed "
@@ -369,12 +369,12 @@ class StudyTokenAdmission:
                 (receipt.nonce,),
             ).fetchone()
             expected = (
-                study.protocol_sha256, study.runtime_sha256, study.model_sha256, study.token_limit,
+                study.study_id, study.protocol_sha256, study.runtime_sha256, study.model_sha256, study.token_limit,
                 study.native_manifest_sha256, slot.task_id, slot.repetition, slot.arm, slot.token_limit,
                 attempt.assignment_id, attempt.attempt_id, attempt.prompt_sha256, attempt.tokens,
                 slot.run_id, attempt.turn_reservation_id, receipt.nonce,
             )
-            if row is None or row[:16] != expected or row[16] != 0:
+            if row is None or row[:17] != expected or row[17] != 0:
                 raise ValueError("native launch claim is invalid or already consumed")
             changed = db.execute(
                 "UPDATE study_token_launches SET consumed=1 WHERE run_id=? AND turn_reservation_id=? "

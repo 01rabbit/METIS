@@ -286,6 +286,10 @@ def test_launch_claim_consumption_is_atomic_and_single_use(tmp_path):
     forged_receipt = claim.receipt.model_copy(update={"attempt": forged_attempt})
     with pytest.raises(ValueError, match="invalid or already consumed"):
         admission.consume_scheduler_launch_claim(claim.model_copy(update={"receipt": forged_receipt}))
+    forged_study = claim.receipt.study.model_copy(update={"study_id": "other-study"})
+    forged_receipt = claim.receipt.model_copy(update={"study": forged_study})
+    with pytest.raises(ValueError, match="invalid or already consumed"):
+        admission.consume_scheduler_launch_claim(claim.model_copy(update={"receipt": forged_receipt}))
     barrier = Barrier(2)
 
     def consume_once() -> bool:
