@@ -9,8 +9,9 @@ not an encrypted credential store or a retention timer.
 The `forget` response states that provider revocation remains required and
 that WAL, snapshots, and backups may retain prior values. `forget-all` exposes
 the same boundary only when `--apply` is used; preview has no revocation
-action. A fresh controller over the same database is covered by the regression
-test, which confirms that retired local authentication is no longer sent.
+action. A new `WebWorkflow` instance over the same database is covered by the
+regression test, which confirms that retired local authentication is no longer
+sent. This does not exercise a fresh process or reboot.
 
 Operator follow-up for an exposed or retired token is to revoke or rotate it
 at the CTF provider, clear any user-managed environment variable, and handle

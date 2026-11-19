@@ -841,6 +841,7 @@ Credential replacement and `web forget`/`forget-all --apply` enable SQLite
 `secure_delete` on their write connections before changing saved credentials
 and run cookies. Forget responses identify provider revocation as a separate
 operator action and disclose possible WAL, snapshot, and backup remnants.
-The local regression checks exercise a fresh controller after forgetting.
+The local regression checks recreate the workflow object over the same
+database after forgetting; they do not exercise a fresh process or reboot.
 This remains best-effort local retirement, not physical erasure, automatic
 provider revocation, a retention policy, or completion of Issue #9.
