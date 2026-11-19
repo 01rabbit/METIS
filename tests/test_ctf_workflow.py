@@ -295,6 +295,42 @@ def test_replay_cli_sanitizes_private_file_error_without_creating_state(monkeypa
     assert not database.exists()
 
 
+def test_replay_cli_oracle_exit_status(monkeypatch, tmp_path, capsys):
+    from metis.cli import main
+
+    output_digest = hashlib.sha256(b"private result").hexdigest()
+    result = {"ok": True, "workflow_sha256": "a" * 64, "steps": 1,
+              "output_bytes": 14, "output_sha256": output_digest,
+              "output_artifact": ".metis-derived/private.bin",
+              "output_is_untrusted": True,
+              "sandbox": {"engine": "docker", "image": "sha256:" + "b" * 64,
+                          "network": "none", "host_mounts": False}}
+    monkeypatch.setattr(ctf_workflow, "run_workflow_in_sandbox",
+                        lambda *args, **kwargs: dict(result))
+    args = ["metis", "workflow", "--database", str(tmp_path / "state.sqlite"),
+            "replay", "a" * 32, "--target", "source.txt",
+            "--workflow-artifact", "workflow.json"]
+    monkeypatch.setattr(sys, "argv", args)
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["oracle_match"] is None
+
+    oracle = tmp_path / "private-oracle"
+    oracle.write_text("0" * 64)
+    monkeypatch.setattr(sys, "argv", args + ["--oracle-sha256-file", str(oracle)])
+    assert main() == 2
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["ok"] is False
+    assert failed["reproducible"] is True
+    assert failed["oracle_match"] is False
+    assert output_digest not in json.dumps(failed)
+
+    oracle.write_text(output_digest)
+    assert main() == 0
+    passed = json.loads(capsys.readouterr().out)
+    assert passed["ok"] is True
+    assert passed["oracle_match"] is True
+
+
 def test_input_artifact_must_match_declared_target():
     candidate = WorkflowCandidate(input_artifact="challenge.txt", steps=[{"tool": "hex_decode"}])
     with pytest.raises(ValueError, match="selected declared artifact"):

@@ -934,7 +934,8 @@ def main() -> int:
                     workflow_artifact=args.workflow_artifact,
                     timeout=args.timeout, oracle_sha256=oracle_sha256)
                 print(json.dumps(output))
-                return 0 if output["ok"] else 2
+                return 0 if (output["ok"] and
+                             (oracle_sha256 is None or output.get("oracle_match") is True)) else 2
             approvals = WorkflowCapabilityApprovals(args.database)
             if args.workflow_command == "status":
                 print(json.dumps(approvals.status(args.run_id)))

@@ -376,7 +376,8 @@ def replay_workflow_in_sandbox(database: Path, run_id: str, *, target: str,
     oracle_match = (None if oracle_sha256 is None else
                     reproducible and verify_workflow_digest(first, oracle_sha256)
                     and verify_workflow_digest(second, oracle_sha256))
-    return {"ok": reproducible, "reproducible": reproducible,
+    return {"ok": reproducible and oracle_match is not False,
+            "reproducible": reproducible,
             "oracle_match": oracle_match, "steps": first.get("steps") if reproducible else None,
             "output_bytes": first.get("output_bytes") if reproducible else None,
             "reason": None if reproducible else "sandbox runs differ"}
