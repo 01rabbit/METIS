@@ -53,6 +53,8 @@ class Protocol(Record):
     budgets: dict[Arm, Budget]
     tasks: Annotated[list[ProtocolTask], Field(min_length=2, max_length=1000)]
     arm_config: dict[Arm, ArmConfig]
+    memory_card_digests: Annotated[list[Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]],
+                                   Field(max_length=20)] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_design(self) -> Protocol:
@@ -64,6 +66,10 @@ class Protocol(Record):
             raise ValueError("unequal arm budgets")
         if set(self.arm_config) != set(self.arms):
             raise ValueError("missing arm configuration")
+        if len(set(self.memory_card_digests)) != len(self.memory_card_digests):
+            raise ValueError("duplicate memory card digest")
+        if self.measurement == "real_model" and "without_memory" in self.arms and not self.memory_card_digests:
+            raise ValueError("memory ablation requires frozen prior cards")
         for arm, config in self.arm_config.items():
             expected = {
                 "full": (True, True, False),
@@ -112,6 +118,38 @@ def schedule(protocol: Protocol) -> list[dict[str, Any]]:
     return slots
 
 
+def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database: Path) -> None:
+    """Require each bound run's frozen cards to match the committed arm treatment."""
+    if not protocol.memory_card_digests:
+        return
+    expected = sorted(protocol.memory_card_digests)
+    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='heldout_memory_snapshots'").fetchone() is None:
+            raise ValueError("held-out memory snapshots missing")
+        db.execute("BEGIN")
+        for assignment in bindings.runs:
+            rows = db.execute(
+                "SELECT card_id,payload,digest FROM heldout_memory_snapshots WHERE run_id=? ORDER BY digest",
+                (assignment.run_id,),
+            ).fetchall()
+            if any(hashlib.sha256(payload.encode()).hexdigest() != card_digest
+                   for _, payload, card_digest in rows):
+                raise ValueError("held-out memory snapshot digest mismatch")
+            actual = [card_digest for _, _, card_digest in rows]
+            if actual != (expected if protocol.arm_config[assignment.arm].memory_enabled else []):
+                raise ValueError("held-out memory snapshot conflicts with arm")
+            for card_id, payload, card_digest in rows:
+                source = db.execute(
+                    "SELECT payload,digest,source_split,created FROM munin_cards WHERE id=?",
+                    (card_id,),
+                ).fetchone()
+                run = db.execute("SELECT started FROM codex_sessions WHERE run_id=?",
+                                 (assignment.run_id,)).fetchone()
+                if (source is None or run is None or source[:2] != (payload, card_digest)
+                        or source[2] not in {"practice", "competition"} or source[3] > run[0]):
+                    raise ValueError("held-out memory snapshot lacks prior source")
+
+
 def finalize(protocol: Protocol, bindings: Bindings, database: Path,
              *, expected_sha256: str) -> dict[str, Any]:
     """Accept only the frozen protocol and exact run matrix, then analyze ledger evidence."""
@@ -127,8 +165,10 @@ def finalize(protocol: Protocol, bindings: Bindings, database: Path,
     bound = [(run.task_id, run.repetition, run.arm) for run in bindings.runs]
     if bound != planned:
         raise ValueError("run bindings do not follow the frozen schedule")
+    reconcile_memory_snapshots(protocol, bindings, database)
     data = protocol.model_dump()
     data.pop("arm_config")
+    data.pop("memory_card_digests")
     data["tasks"] = [task.model_dump(exclude={"source_id", "distribution_sha256"})
                      for task in protocol.tasks]
     data["runs"] = [run.model_dump() for run in bindings.runs]

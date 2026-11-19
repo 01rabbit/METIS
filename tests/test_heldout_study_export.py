@@ -1,6 +1,7 @@
 """Controller-derived, answer-free held-out export checks."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import sys
@@ -19,14 +20,14 @@ def fixture(tmp_path: Path) -> tuple[Path, ExportManifest]:
     with sqlite3.connect(dbpath) as db:
         db.execute("CREATE TABLE events (run_id TEXT, sequence INTEGER, payload TEXT, "
                    "timestamp TEXT, previous_hash TEXT, digest TEXT)")
-        db.execute("CREATE TABLE codex_sessions (run_id TEXT, evaluation_split TEXT)")
+        db.execute("CREATE TABLE codex_sessions (run_id TEXT, evaluation_split TEXT, started REAL)")
         db.execute("CREATE TABLE agent_jobs (assignment_id TEXT, run_id TEXT, state TEXT, "
                    "usage TEXT, model TEXT)")
         db.execute("CREATE TABLE ctf_agent_reports (assignment_id TEXT, run_id TEXT)")
         db.execute("CREATE TABLE agent_turn_reservations (run_id TEXT)")
         for index in range(8):
             run_id = f"{index + 1:032x}"
-            db.execute("INSERT INTO codex_sessions VALUES (?,?)", (run_id, "heldout"))
+            db.execute("INSERT INTO codex_sessions VALUES (?,?,?)", (run_id, "heldout", 10.0))
             assignment_id = f"assignment-{index}"
             db.execute("INSERT INTO agent_jobs VALUES (?,?,?,?,?)", (
                 assignment_id, run_id, "completed", json.dumps({"input_tokens": 3, "output_tokens": 2}),
@@ -183,6 +184,55 @@ def test_protocol_rejects_mislabeled_ablation(tmp_path: Path) -> None:
     data["arm_config"]["single_agent"]["max_specialists"] = 2
     with pytest.raises(ValueError, match="arm configuration"):
         Protocol.model_validate(data)
+
+
+def test_memory_ablation_requires_committed_cards_and_exact_arm_snapshots(tmp_path: Path) -> None:
+    database, original, original_bindings = _protocol_fixture(tmp_path)
+    data = original.model_dump()
+    data["measurement"] = "real_model"
+    data["arms"] = ["full", "without_memory"]
+    data["baseline"] = "full"
+    data["budgets"]["without_memory"] = data["budgets"].pop("single_agent")
+    data["arm_config"]["without_memory"] = {
+        "memory_enabled": False, "planner_enabled": True,
+        "max_specialists": 2, "prompt_sha256": "a" * 64,
+    }
+    data["arm_config"].pop("single_agent")
+    with pytest.raises(ValueError, match="requires frozen prior cards"):
+        Protocol.model_validate(data)
+    payload = '{"category":"crypto","source_split":"practice"}'
+    card_digest = hashlib.sha256(payload.encode()).hexdigest()
+    data["memory_card_digests"] = [card_digest]
+    protocol = Protocol.model_validate(data)
+    runs = [item.model_dump() for item in original_bindings.runs]
+    for item in runs:
+        if item["arm"] == "single_agent":
+            item["arm"] = "without_memory"
+    ordering = {(slot["task_id"], slot["repetition"], slot["arm"]): index
+                for index, slot in enumerate(schedule(protocol))}
+    runs.sort(key=lambda item: ordering[(item["task_id"], item["repetition"], item["arm"])])
+    bindings = Bindings.model_validate({"protocol_sha256": digest(protocol), "runs": runs})
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE munin_cards (id INTEGER, payload TEXT, digest TEXT, source_split TEXT, created REAL)")
+        db.execute("INSERT INTO munin_cards VALUES (?,?,?,?,?)",
+                   (1, payload, card_digest, "practice", 1.0))
+        db.execute("CREATE TABLE heldout_memory_snapshots (run_id TEXT, card_id INTEGER, payload TEXT, digest TEXT)")
+        db.executemany("INSERT INTO heldout_memory_snapshots VALUES (?,?,?,?)",
+                       [(item["run_id"], 1, payload, card_digest) for item in runs if item["arm"] == "full"])
+    assert finalize(protocol, bindings, database, expected_sha256=digest(protocol))["protocol_sha256"] == digest(protocol)
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO heldout_memory_snapshots VALUES (?,?,?,?)",
+                   (next(item["run_id"] for item in runs if item["arm"] == "without_memory"),
+                    1, payload, card_digest))
+    with pytest.raises(ValueError, match="conflicts with arm"):
+        finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+    with sqlite3.connect(database) as db:
+        db.execute("DELETE FROM heldout_memory_snapshots WHERE run_id=?",
+                   (next(item["run_id"] for item in runs if item["arm"] == "without_memory"),))
+        db.execute("UPDATE heldout_memory_snapshots SET payload='{}' WHERE run_id=?",
+                   (next(item["run_id"] for item in runs if item["arm"] == "full"),))
+    with pytest.raises(ValueError, match="digest mismatch"):
+        finalize(protocol, bindings, database, expected_sha256=digest(protocol))
 
 
 def test_protocol_real_model_aggregate_cap(tmp_path: Path) -> None:
