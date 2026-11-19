@@ -615,10 +615,11 @@ list. Aggregate history processed by one list request is capped at 4,096
 timestamp-index entries and 5 MiB of index keys during discovery, 20,000
 selected events, and 8 MiB of stored selected event fields. Discovery rejects
 index values over 512 bytes and uses a 4 KiB SQLite value limit; selected event
-fields use a 256 KiB SQLite value limit. The index is created by the writable store
-initializer and operator startup migration. A corrupt chain, inconsistent
-audit metadata, unavailable index, or oversized selected set fails the whole
-list closed.
+fields use a 256 KiB SQLite value limit. Hitting a discovery budget returns
+the runs found so far with a `truncated` marker. The index is created by the
+writable store initializer and operator startup migration. A corrupt chain,
+invalid storage fields, unavailable index, or oversized selected set fails the
+whole list closed.
 The authenticated
 `POST /api/runs/{run_id}/cancel` delegates to the existing run-locked
 `CodexSession.cancel` path and returns only run status and worker-teardown

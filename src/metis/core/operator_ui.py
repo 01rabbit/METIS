@@ -86,7 +86,9 @@ def create_server(database: Path, *, port: int, token: str,
                     self._send(400, b"invalid run list query", "text/plain; charset=utf-8")
                     return
                 try:
-                    summaries = RunStore(database, read_only=True).list_audit_summaries(limit=limit)
+                    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(
+                        limit=limit,
+                    )
                 except (OSError, ValueError, sqlite3.Error):
                     self._send(503, b"run list unavailable", "text/plain; charset=utf-8")
                     return
@@ -98,7 +100,7 @@ def create_server(database: Path, *, port: int, token: str,
                     runs.append({"run_id": run_id, "status": summary["status"],
                                  "last_timestamp": summary["last_timestamp"],
                                  "codex_budget": summary["codex_budget"]})
-                body = json.dumps({"runs": runs}, sort_keys=True).encode()
+                body = json.dumps({"runs": runs, "truncated": truncated}, sort_keys=True).encode()
                 self._send(200, body, "application/json; charset=utf-8")
                 return
             match = RUN_AUDIT.fullmatch(self.path)
@@ -201,7 +203,10 @@ _SCRIPT = b"""document.getElementById('refresh').addEventListener('click', async
       option.textContent = run.status + ' | ' + run.run_id.slice(0, 8) + timestamp + remaining;
       select.append(option);
     }
-    output.textContent = 'Loaded ' + (select.options.length - 1) + ' runs';
+    const count = select.options.length - 1;
+    output.textContent = payload.truncated
+      ? 'Loaded ' + count + ' recent runs; list is partial at the safety limit'
+      : 'Loaded ' + count + ' runs';
   } catch (_) { output.textContent = 'Run list unavailable'; }
 });
 document.getElementById('run-list').addEventListener('change', () => {

@@ -276,8 +276,9 @@ def test_list_audit_summaries_is_bounded_newest_first_redacted_and_read_only(tmp
         time.sleep(0.002)
     before = database.read_bytes()
 
-    summaries = RunStore(database, read_only=True).list_audit_summaries(limit=2)
+    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(limit=2)
 
+    assert truncated is False
     assert [item["run_id"] for item in summaries] == list(reversed(ids[-2:]))
     assert all(item["chain_valid"] is True for item in summaries)
     assert all(item["codex_budget"]["actions_remaining"] == 2 for item in summaries)
@@ -319,16 +320,29 @@ def test_list_audit_summaries_bounds_run_discovery_scan(tmp_path, monkeypatch):
         assert any("events_latest_by_timestamp" in row[3] for row in plan)
 
     monkeypatch.setattr(store_module, "_MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS", 1)
-    with pytest.raises(ValueError, match="discovery"):
-        RunStore(database, read_only=True).list_audit_summaries(limit=2)
+    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(limit=2)
+    assert len(summaries) == 1
+    assert truncated is True
+
+
+def test_list_audit_summaries_rejects_non_integer_sequence_storage(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    run_id = start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET sequence=? WHERE run_id=? AND sequence=0",
+                   ("not-an-integer", run_id))
+    with pytest.raises(ValueError, match="sequence"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=1)
 
 
 def test_list_audit_summaries_bounds_discovery_bytes(tmp_path, monkeypatch):
     database = tmp_path / "runs.sqlite"
     start(CodexSession(database))
     monkeypatch.setattr(store_module, "_MAX_RUN_AUDIT_LIST_DISCOVERY_BYTES", 1)
-    with pytest.raises(ValueError, match="byte bound"):
-        RunStore(database, read_only=True).list_audit_summaries(limit=2)
+    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(limit=2)
+    assert summaries == []
+    assert truncated is True
 
 
 def test_list_audit_summaries_rejects_oversized_legacy_field_before_materializing(tmp_path):

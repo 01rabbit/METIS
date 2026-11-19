@@ -6,8 +6,9 @@ timestamp, and validates each selected event chain in the same read-only
 SQLite snapshot. If any selected chain is corrupt, the list fails closed.
 Run discovery uses a timestamp index and scans at most 4,096 index entries
 and 5 MiB of keys per request. Index keys over 512 bytes fail closed, with a
-4 KiB SQLite value limit during discovery. Selected chains are separately
-capped at 20,000 total events and 8 MiB across all stored event fields. The
+4 KiB SQLite value limit during discovery. Hitting either discovery budget
+returns the newest discovered subset with `truncated: true`. Selected chains
+are separately capped at 20,000 total events and 8 MiB across all stored event fields. The
 list connection's SQLite value limit is 256 KiB, so a legacy oversized field
 fails closed before it can be materialized. Writable store initialization and
 operator server startup create the index, so existing databases are migrated
@@ -26,7 +27,7 @@ comparison.
 
 Validation on macOS arm64:
 
-- `PYTHONPATH=/private/tmp/metis-issue9-operator-run-board/src:/private/tmp/metis-issue9-operator-run-board /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest tests/test_run_audit.py tests/test_operator_ui.py` — 43 passed.
+- `PYTHONPATH=/private/tmp/metis-issue9-operator-run-board/src:/private/tmp/metis-issue9-operator-run-board /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest tests/test_run_audit.py tests/test_operator_ui.py` — 44 passed.
 - Ruff, mypy, `scripts/check_repo.py`, and `git diff --check` passed.
 - Playwright against a disposable local SQLite database loaded two synthetic
   runs, selected the newest, and displayed its audit summary with a valid

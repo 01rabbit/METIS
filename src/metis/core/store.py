@@ -332,7 +332,8 @@ class RunStore:
             "operational_state": operational,
         }
 
-    def list_audit_summaries(self, *, limit: int = 20) -> list[dict[str, object]]:
+    def list_audit_summaries(self, *, limit: int = 20
+                             ) -> tuple[list[dict[str, object]], bool]:
         """List newest runs in one read-only snapshot, validating every chain."""
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("run audit limit must be between 1 and 100")
@@ -354,10 +355,12 @@ class RunStore:
             run_ids = []
             seen_run_ids: set[str] = set()
             discovery_bytes = 0
+            discovery_truncated = False
             for scanned, (run_id_bytes, run_id_length, timestamp_length) in enumerate(
                     cursor, start=1):
                 if scanned > _MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS:
-                    raise ValueError("run audit discovery exceeds its event bound")
+                    discovery_truncated = True
+                    break
                 if (not isinstance(run_id_bytes, bytes) or type(run_id_length) is not int
                         or type(timestamp_length) is not int):
                     raise ValueError("run audit discovery contains invalid index fields")
@@ -366,7 +369,8 @@ class RunStore:
                     raise ValueError("run audit discovery contains oversized index fields")
                 discovery_bytes += run_id_length + timestamp_length
                 if discovery_bytes > _MAX_RUN_AUDIT_LIST_DISCOVERY_BYTES:
-                    raise ValueError("run audit discovery exceeds its byte bound")
+                    discovery_truncated = True
+                    break
                 try:
                     run_id = run_id_bytes.decode("utf-8")
                 except UnicodeDecodeError as exc:
@@ -385,7 +389,8 @@ class RunStore:
                 event_limit = _MAX_RUN_AUDIT_LIST_EVENTS - total_events
                 byte_limit = _MAX_RUN_AUDIT_LIST_BYTES - total_bytes
                 payloads = db.execute(
-                    "SELECT sequence, "
+                    "SELECT typeof(sequence), "
+                    "CASE WHEN typeof(sequence)='integer' THEN sequence ELSE NULL END, "
                     "CASE WHEN run_id IS NULL THEN NULL ELSE "
                     "COALESCE(substr(CAST(run_id AS BLOB), 1, ?), X'') END, "
                     "CASE WHEN payload IS NULL THEN NULL ELSE "
@@ -400,8 +405,10 @@ class RunStore:
                     ((byte_limit + 1,) * 5 + (run_id, event_limit + 1)),
                 )
                 run_events = 0
-                for _sequence, *field_prefixes in payloads:
+                for sequence_type, sequence, *field_prefixes in payloads:
                     run_events += 1
+                    if sequence_type != "integer" or type(sequence) is not int:
+                        raise ValueError("run audit sequence contains an invalid storage type")
                     if any(not isinstance(field, bytes) for field in field_prefixes):
                         raise ValueError("run audit event contains invalid storage fields")
                     row_bytes = sum(len(field) for field in field_prefixes)
@@ -433,4 +440,4 @@ class RunStore:
                                   "last_timestamp": last_timestamp,
                                   "chain_valid": True,
                                   "codex_budget": budget})
-            return summaries
+            return summaries, discovery_truncated

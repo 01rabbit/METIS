@@ -194,6 +194,7 @@ def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path
         assert status == 200 and headers["Cache-Control"] == "no-store"
         payload = json.loads(body)
         assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
+        assert payload["truncated"] is False
         assert all(run["status"] == "planning" for run in payload["runs"])
         assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
         assert "private" not in body.decode()
