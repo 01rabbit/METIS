@@ -27,6 +27,27 @@ TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
 }
 STOP_STATES = frozenset({RunStatus.EXHAUSTED, RunStatus.POLICY_DENIED,
                          RunStatus.ERROR, RunStatus.CANCELLED})
+_MAX_RUN_AUDIT_LIST_EVENTS = 20_000
+_MAX_RUN_AUDIT_LIST_BYTES = 8 * 1024 * 1024
+_MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS = 4_096
+_MAX_RUN_AUDIT_LIST_DISCOVERY_BYTES = 5 * 1024 * 1024
+_MAX_EVENT_FIELD_BYTES = 256 * 1024
+_MAX_RUN_INDEX_FIELD_BYTES = 512
+_MAX_SQLITE_INDEX_VALUE_BYTES = 4 * 1024
+_RUN_AUDIT_LATEST_INDEX = "events_latest_by_timestamp"
+
+
+def ensure_run_audit_list_index(path: Path) -> None:
+    """Install the bounded run-discovery index once before serving the UI."""
+    try:
+        with sqlite3.connect(path, timeout=10) as db:
+            db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_EVENT_FIELD_BYTES)
+            db.execute(
+                f"CREATE INDEX IF NOT EXISTS {_RUN_AUDIT_LATEST_INDEX} "
+                "ON events(timestamp DESC, run_id DESC)"
+            )
+    except sqlite3.Error as exc:
+        raise ValueError("operator run list index unavailable") from exc
 
 
 class _AuditBudget(BaseModel):
@@ -68,6 +89,10 @@ class RunStore:
                 payload TEXT NOT NULL, timestamp TEXT NOT NULL,
                 previous_hash TEXT NOT NULL, digest TEXT NOT NULL,
                 PRIMARY KEY (run_id, sequence))""")
+            db.execute(
+                f"CREATE INDEX IF NOT EXISTS {_RUN_AUDIT_LATEST_INDEX} "
+                "ON events(timestamp DESC, run_id DESC)"
+            )
             for operation in ("UPDATE", "DELETE"):
                 db.execute(f"""CREATE TRIGGER IF NOT EXISTS deny_{operation.lower()}
                     BEFORE {operation} ON events BEGIN
@@ -85,6 +110,15 @@ class RunStore:
         finally:
             db.close()
 
+    @contextmanager
+    def _snapshot(self, connection: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
+        if connection is not None:
+            yield connection
+            return
+        with self._connect() as db:
+            db.execute("BEGIN")
+            yield db
+
     @staticmethod
     def _digest(payload: str, timestamp: str, previous: str) -> str:
         return hashlib.sha256(json.dumps(
@@ -93,6 +127,10 @@ class RunStore:
 
     def append(self, event: RunEvent) -> None:
         payload = event.model_dump_json()
+        if len(event.run_id.encode("utf-8")) > _MAX_RUN_INDEX_FIELD_BYTES:
+            raise ValueError("run identifier exceeds its storage bound")
+        if len(payload.encode("utf-8")) > _MAX_EVENT_FIELD_BYTES:
+            raise ValueError("event payload exceeds its storage bound")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = self._read(db, event.run_id)
@@ -147,15 +185,15 @@ class RunStore:
         """Return a consistent validated export; caller chooses output destination."""
         return "".join(event.model_dump_json() + "\n" for event in self.read(run_id))
 
-    def audit_summary(self, run_id: str) -> dict[str, object] | None:
+    def audit_summary(self, run_id: str, *,
+                      connection: sqlite3.Connection | None = None) -> dict[str, object] | None:
         """Return a safe lifecycle projection after validating the complete event chain.
 
         This deliberately omits event details, which may contain free-form text.
         Read-only callers use a single SQLite snapshot and never create a schema.
         Mutable operational counters are explicitly separate from the event chain.
         """
-        with self._connect() as db:
-            db.execute("BEGIN")
+        with self._snapshot(connection) as db:
             events = self._read(db, run_id)
             if not events:
                 return None
@@ -293,3 +331,106 @@ class RunStore:
             },
             "operational_state": operational,
         }
+
+    def list_audit_summaries(self, *, limit: int = 20) -> list[dict[str, object]]:
+        """List newest runs in one read-only snapshot, validating every chain."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("run audit limit must be between 1 and 100")
+        with self._connect() as db:
+            db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_EVENT_FIELD_BYTES)
+            db.execute("BEGIN")
+            # Scan the timestamp index, not the full event table. The first row
+            # seen for a run is its latest event; cap discovery independently of
+            # the selected-run chain limits below.
+            db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SQLITE_INDEX_VALUE_BYTES)
+            cursor = db.execute(
+                f"SELECT substr(CAST(run_id AS BLOB), 1, ?), "
+                "length(CAST(run_id AS BLOB)), length(CAST(timestamp AS BLOB)) "
+                f"FROM events INDEXED BY {_RUN_AUDIT_LATEST_INDEX} "
+                "ORDER BY timestamp DESC, run_id DESC "
+                "LIMIT ?", (_MAX_RUN_INDEX_FIELD_BYTES,
+                            _MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS + 1),
+            )
+            run_ids = []
+            seen_run_ids: set[str] = set()
+            discovery_bytes = 0
+            for scanned, (run_id_bytes, run_id_length, timestamp_length) in enumerate(
+                    cursor, start=1):
+                if scanned > _MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS:
+                    raise ValueError("run audit discovery exceeds its event bound")
+                if (not isinstance(run_id_bytes, bytes) or type(run_id_length) is not int
+                        or type(timestamp_length) is not int):
+                    raise ValueError("run audit discovery contains invalid index fields")
+                if (run_id_length > _MAX_RUN_INDEX_FIELD_BYTES
+                        or timestamp_length > _MAX_RUN_INDEX_FIELD_BYTES):
+                    raise ValueError("run audit discovery contains oversized index fields")
+                discovery_bytes += run_id_length + timestamp_length
+                if discovery_bytes > _MAX_RUN_AUDIT_LIST_DISCOVERY_BYTES:
+                    raise ValueError("run audit discovery exceeds its byte bound")
+                try:
+                    run_id = run_id_bytes.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ValueError("run audit discovery contains invalid run ID") from exc
+                if run_id not in seen_run_ids:
+                    seen_run_ids.add(run_id)
+                    run_ids.append((run_id,))
+                    if len(run_ids) == limit:
+                        break
+            cursor.close()
+            db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_EVENT_FIELD_BYTES)
+            summaries = []
+            total_events = 0
+            total_bytes = 0
+            for (run_id,) in run_ids:
+                event_limit = _MAX_RUN_AUDIT_LIST_EVENTS - total_events
+                byte_limit = _MAX_RUN_AUDIT_LIST_BYTES - total_bytes
+                payloads = db.execute(
+                    "SELECT sequence, "
+                    "CASE WHEN run_id IS NULL THEN NULL ELSE "
+                    "COALESCE(substr(CAST(run_id AS BLOB), 1, ?), X'') END, "
+                    "CASE WHEN payload IS NULL THEN NULL ELSE "
+                    "COALESCE(substr(CAST(payload AS BLOB), 1, ?), X'') END, "
+                    "CASE WHEN timestamp IS NULL THEN NULL ELSE "
+                    "COALESCE(substr(CAST(timestamp AS BLOB), 1, ?), X'') END, "
+                    "CASE WHEN previous_hash IS NULL THEN NULL ELSE "
+                    "COALESCE(substr(CAST(previous_hash AS BLOB), 1, ?), X'') END, "
+                    "CASE WHEN digest IS NULL THEN NULL ELSE "
+                    "COALESCE(substr(CAST(digest AS BLOB), 1, ?), X'') END "
+                    "FROM events WHERE run_id=? ORDER BY sequence LIMIT ?",
+                    ((byte_limit + 1,) * 5 + (run_id, event_limit + 1)),
+                )
+                run_events = 0
+                for _sequence, *field_prefixes in payloads:
+                    run_events += 1
+                    if any(not isinstance(field, bytes) for field in field_prefixes):
+                        raise ValueError("run audit event contains invalid storage fields")
+                    row_bytes = sum(len(field) for field in field_prefixes)
+                    total_bytes += row_bytes
+                    if run_events > event_limit or total_bytes > _MAX_RUN_AUDIT_LIST_BYTES:
+                        raise ValueError("run audit list exceeds its event bounds")
+                total_events += run_events
+                events = self._read(db, run_id)
+                if not events:
+                    raise ValueError("run audit disappeared from snapshot")
+                last_timestamp = db.execute(
+                    "SELECT timestamp FROM events WHERE run_id=? "
+                    "ORDER BY sequence DESC LIMIT 1", (run_id,),
+                ).fetchone()[0]
+                budget = None
+                tables = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if "codex_sessions" in tables:
+                    row = db.execute(
+                        "SELECT max_actions, wall_seconds FROM codex_sessions WHERE run_id=?",
+                        (run_id,),
+                    ).fetchone()
+                    if row is not None:
+                        validated = _AuditBudget(max_actions=row[0], wall_seconds=row[1])
+                        charged = sum(event.status == RunStatus.EXECUTING for event in events)
+                        budget = {**validated.model_dump(), "actions_charged": charged,
+                                  "actions_remaining": max(0, validated.max_actions - charged)}
+                summaries.append({"run_id": run_id, "status": events[-1].status.value,
+                                  "last_timestamp": last_timestamp,
+                                  "chain_valid": True,
+                                  "codex_budget": budget})
+            return summaries

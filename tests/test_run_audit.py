@@ -2,10 +2,12 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
+import metis.core.store as store_module
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
 from metis.core.runtime import ToolRequest
@@ -263,3 +265,109 @@ def test_audit_budget_rejects_invalid_configuration_without_echo_or_write(tmp_pa
     assert "private-budget-omitted" not in result.stderr
     assert "Traceback" not in result.stderr
     assert database.read_bytes() == before
+
+
+def test_list_audit_summaries_is_bounded_newest_first_redacted_and_read_only(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    session = CodexSession(database)
+    ids = []
+    for _ in range(3):
+        ids.append(start(session))
+        time.sleep(0.002)
+    before = database.read_bytes()
+
+    summaries = RunStore(database, read_only=True).list_audit_summaries(limit=2)
+
+    assert [item["run_id"] for item in summaries] == list(reversed(ids[-2:]))
+    assert all(item["chain_valid"] is True for item in summaries)
+    assert all(item["codex_budget"]["actions_remaining"] == 2 for item in summaries)
+    encoded = json.dumps(summaries)
+    assert "private-title-omitted" not in encoded
+    assert "private-description-omitted" not in encoded
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize("limit", [0, -1, 101, True, False, 1.5])
+def test_list_audit_summaries_rejects_invalid_limits(tmp_path, limit):
+    database = tmp_path / "runs.sqlite"
+    start(CodexSession(database))
+    with pytest.raises(ValueError, match="limit"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=limit)
+
+
+def test_list_audit_summaries_fails_closed_if_any_selected_chain_is_corrupt(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    run_id = start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET digest='corrupt' WHERE run_id=? AND sequence=0", (run_id,))
+    with pytest.raises(ValueError, match="corrupt"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=100)
+
+
+def test_list_audit_summaries_bounds_run_discovery_scan(tmp_path, monkeypatch):
+    database = tmp_path / "runs.sqlite"
+    start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        indexes = {row[1] for row in db.execute("PRAGMA index_list(events)")}
+        assert "events_latest_by_timestamp" in indexes
+        plan = db.execute(
+            "EXPLAIN QUERY PLAN SELECT run_id FROM events "
+            "INDEXED BY events_latest_by_timestamp "
+            "ORDER BY timestamp DESC, run_id DESC LIMIT 2"
+        ).fetchall()
+        assert any("events_latest_by_timestamp" in row[3] for row in plan)
+
+    monkeypatch.setattr(store_module, "_MAX_RUN_AUDIT_LIST_DISCOVERY_EVENTS", 1)
+    with pytest.raises(ValueError, match="discovery"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=2)
+
+
+def test_list_audit_summaries_bounds_discovery_bytes(tmp_path, monkeypatch):
+    database = tmp_path / "runs.sqlite"
+    start(CodexSession(database))
+    monkeypatch.setattr(store_module, "_MAX_RUN_AUDIT_LIST_DISCOVERY_BYTES", 1)
+    with pytest.raises(ValueError, match="byte bound"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=2)
+
+
+def test_list_audit_summaries_rejects_oversized_legacy_field_before_materializing(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    run_id = start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET payload=? WHERE run_id=? AND sequence=0",
+                   ("x" * (store_module._MAX_EVENT_FIELD_BYTES + 1), run_id))
+    with pytest.raises((ValueError, sqlite3.Error)):
+        RunStore(database, read_only=True).list_audit_summaries(limit=100)
+
+
+def test_list_audit_summaries_rejects_oversized_legacy_index_key(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    run_id = start(CodexSession(database))
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET run_id=? WHERE run_id=?", ("x" * 513, run_id))
+    with pytest.raises(ValueError, match="oversized index fields"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=100)
+
+
+def test_event_append_rejects_payload_above_storage_field_limit(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    event = RunEvent(run_id="bounded-run", sequence=0, status=RunStatus.NEW,
+                     detail={"oversized": "x" * store_module._MAX_EVENT_FIELD_BYTES})
+    with pytest.raises(ValueError, match="storage bound"):
+        store.append(event)
+
+
+@pytest.mark.parametrize(("event_limit", "byte_limit"), [(1, 8 * 1024 * 1024),
+                                                           (20_000, 1)])
+def test_list_audit_summaries_enforces_aggregate_event_bounds(
+    tmp_path, monkeypatch, event_limit, byte_limit,
+):
+    database = tmp_path / "runs.sqlite"
+    start(CodexSession(database))
+    monkeypatch.setattr(store_module, "_MAX_RUN_AUDIT_LIST_EVENTS", event_limit)
+    monkeypatch.setattr(store_module, "_MAX_RUN_AUDIT_LIST_BYTES", byte_limit)
+    with pytest.raises(ValueError, match="event bounds"):
+        RunStore(database, read_only=True).list_audit_summaries(limit=100)
