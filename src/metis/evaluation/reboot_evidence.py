@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$")]
-Actions = Annotated[int, Field(ge=0)]
+BudgetBalance = Annotated[int, Field(ge=0)]
 
 
 class _Record(BaseModel):
@@ -32,7 +32,8 @@ class ArmedObservation(_Record):
     worker: WorkerIdentity
     execution_started_at: AwareDatetime
     deadline: AwareDatetime
-    remaining_actions: Actions
+    remaining_actions: BudgetBalance
+    remaining_seconds: BudgetBalance
 
 
 class PostBootObservation(_Record):
@@ -40,7 +41,8 @@ class PostBootObservation(_Record):
     run_id: Identifier
     run_state: Literal["executing", "planning", "other"]
     active_worker: WorkerIdentity | None
-    remaining_actions: Actions
+    remaining_actions: BudgetBalance
+    remaining_seconds: BudgetBalance
     surviving_worker: bool | None
     audit_chain_verified: bool
     armed_execution_recorded: bool | None
@@ -54,7 +56,8 @@ class RecoveryObservation(_Record):
     audit_continuity_verified: bool
     run_state: Literal["planning", "executing", "other"]
     worker_teardown: Literal["confirmed", "not_running", "unconfirmed"]
-    remaining_actions: Actions
+    remaining_actions: BudgetBalance
+    remaining_seconds: BudgetBalance
 
 
 class RebootEvidence(_Record):
@@ -75,6 +78,7 @@ class RebootVerdict(_Record):
         "container_survived", "recovery_missing", "run_mismatch", "inconsistent_worker_state",
         "budget_changed", "recovery_state_unexpected", "planning_budget_exhausted",
         "recovery_boot_mismatch", "recovery_worker_mismatch", "recovery_continuity_unverified",
+        "time_budget_increased",
     ]
 
 
@@ -128,7 +132,9 @@ def classify_reboot_evidence(evidence: RebootEvidence) -> RebootVerdict:
         return RebootVerdict(status="inconclusive", reason="recovery_continuity_unverified")
     if recovery.remaining_actions != post.remaining_actions or repeated.remaining_actions != post.remaining_actions:
         return RebootVerdict(status="failed", reason="budget_changed")
-    if post.remaining_actions == 0:
+    if not armed.remaining_seconds >= post.remaining_seconds >= recovery.remaining_seconds >= repeated.remaining_seconds:
+        return RebootVerdict(status="failed", reason="time_budget_increased")
+    if post.remaining_actions == 0 or repeated.remaining_seconds == 0:
         return RebootVerdict(status="failed", reason="planning_budget_exhausted")
     if (recovery.run_state, recovery.worker_teardown, repeated.run_state, repeated.worker_teardown) != (
         "planning", "confirmed", "planning", "not_running",

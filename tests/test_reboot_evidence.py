@@ -25,19 +25,21 @@ def complete() -> RebootEvidence:
     return RebootEvidence(
         previous_boot=BootObservation(host_id="fixture-host", boot_id=UUID(int=1), started_at=_time(0)),
         armed=ArmedObservation(captured_at=_time(20), worker=worker, execution_started_at=_time(10),
-                               deadline=_time(300), remaining_actions=28),
+                               deadline=_time(300), remaining_actions=28, remaining_seconds=500),
         next_boot=BootObservation(host_id="fixture-host", boot_id=UUID(int=2), started_at=_time(30)),
         post_boot=PostBootObservation(
             captured_at=_time(40), run_id=worker.run_id, run_state="executing", active_worker=worker,
-            remaining_actions=28, surviving_worker=False, audit_chain_verified=True,
+            remaining_actions=28, remaining_seconds=480, surviving_worker=False, audit_chain_verified=True,
             armed_execution_recorded=True, armed_operation_terminal=False,
         ),
         recovery=RecoveryObservation(captured_at=_time(50), boot_id=UUID(int=2), worker=worker,
                                      audit_continuity_verified=True, run_state="planning",
-                                     worker_teardown="confirmed", remaining_actions=28),
+                                     worker_teardown="confirmed", remaining_actions=28,
+                                     remaining_seconds=470),
         repeated_recovery=RecoveryObservation(captured_at=_time(60), boot_id=UUID(int=2), worker=worker,
                                               audit_continuity_verified=True, run_state="planning",
-                                              worker_teardown="not_running", remaining_actions=28),
+                                              worker_teardown="not_running", remaining_actions=28,
+                                              remaining_seconds=460),
     )
 
 
@@ -95,6 +97,10 @@ def test_unchanged_boot_does_not_pass(complete):
     ("post_boot", {"surviving_worker": None}, "inconclusive", "container_observation_missing"),
     ("post_boot", {"surviving_worker": True}, "failed", "container_survived"),
     ("post_boot", {"remaining_actions": 29}, "failed", "budget_changed"),
+    ("post_boot", {"remaining_seconds": 501}, "failed", "time_budget_increased"),
+    ("recovery", {"remaining_seconds": 481}, "failed", "time_budget_increased"),
+    ("repeated_recovery", {"remaining_seconds": 471}, "failed", "time_budget_increased"),
+    ("repeated_recovery", {"remaining_seconds": 0}, "failed", "planning_budget_exhausted"),
     ("recovery", {"boot_id": UUID(int=3)}, "failed", "recovery_boot_mismatch"),
     ("repeated_recovery", {"boot_id": UUID(int=3)}, "failed", "recovery_boot_mismatch"),
     ("recovery", {"audit_continuity_verified": False}, "inconclusive", "recovery_continuity_unverified"),
@@ -143,3 +149,18 @@ def test_zero_remaining_actions_is_incompatible_with_planning_recovery(complete)
     })
     verdict = classify_reboot_evidence(exhausted)
     assert (verdict.status, verdict.reason) == ("failed", "planning_budget_exhausted")
+
+
+def test_zero_seconds_in_first_and_repeated_recovery_is_incompatible_with_planning(complete):
+    exhausted = complete.model_copy(update={
+        name: getattr(complete, name).model_copy(update={"remaining_seconds": 0})
+        for name in ("recovery", "repeated_recovery")
+    })
+    verdict = classify_reboot_evidence(exhausted)
+    assert (verdict.status, verdict.reason) == ("failed", "planning_budget_exhausted")
+
+
+def test_negative_seconds_are_not_a_valid_observation(complete):
+    replacement = complete.recovery.model_copy(update={"remaining_seconds": -1})
+    with pytest.raises(ValidationError):
+        classify_reboot_evidence(complete.model_copy(update={"recovery": replacement}))
