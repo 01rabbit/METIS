@@ -122,12 +122,22 @@ failures. Completion usage remains distinct from submitted work.
 
 ## Controller qualification with the public fixture
 
-The fixture-only Python boundary binds the existing admission receipt to one
-staged binary and the registered single-file stories260K GGUF. It checks the
-fixed public prompt digest and launches only after committing a unique claim.
-The controller uses the private Unix socket for readiness and one completion
-request. It validates the native terminal receipt against the launch nonce,
-admitted cap, and observed process exit before recording a sanitized outcome.
+The fixture-only Python boundary binds the admission to one staged binary,
+the registered single-file stories260K GGUF, and the digest of the exact
+request profile. It supports output allowances of one or three tokens. Before
+launch it subtracts the entire allowance from the committed token amount and
+requires the resulting native graph cap to be positive. This leaves room for
+the last sampled token, which can be returned without entering another graph.
+
+After committing a unique claim, the controller uses the private Unix socket
+for readiness, independent tokenization, and one completion request. It
+requires the known 20 input token IDs, matching completion counters, and
+the frozen limits, stop settings, and non-speculative generation settings.
+The terminal record must match the launch nonce, the reduced graph cap, and
+the observed process exit. Observed work in the ledger counts submitted
+graph positions. The controller also checks that graph work plus sampled
+outputs fit the original admission. An EOS or stop match can reduce the
+observed output while the full requested headroom stays reserved.
 All outcomes retain the entire admission charge. An abruptly terminated
 controller may leave an orphaned process or a claim without an outcome. The
 same claim cannot be reused, and the process retains its immutable native cap.
@@ -145,6 +155,19 @@ files, including split layouts, fail staging before the process starts. The
 controller has no general-purpose model or prompt API. Its deadline covers
 readiness and the sole request, followed by bounded process shutdown and reap.
 A missing or invalid receipt yields a failed observation and zero refund.
+
+
+| Output allowance | Admission | Graph cap | Observed qualification with the public fixture |
+| --- | --- | --- | --- |
+| 1 | 23 | 22 | 22 graph positions and 1 sampled output |
+| 3 | 27 | 24 | 24 graph positions and 3 sampled outputs |
+| 3, fixed EOS or stop | 25 | 22 | 22 graph positions and 1 sampled output |
+
+The first two cases fail to complete when the admission is one token smaller.
+The stop and EOS profiles also deny work at admission 24. This qualification
+depends on the fixed fixture and does not establish a general-provider token
+ceiling. Trusted build and model registration and scheduler/protocol binding
+are still required before enabling the METIS capability.
 
 ## Offline build identity
 
