@@ -1,85 +1,156 @@
-"""Check the process-wide cap with an upstream GGUF text fixture."""
+"""Check the native cap and terminal receipt with an upstream GGUF fixture."""
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
+import secrets
+import signal
 import socket
 import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
-from http.client import RemoteDisconnected
+from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 FIXTURE_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 STARTUP_PROBE_TOKENS = 2
 PROMPT = {"prompt": "One day, a rabbit ran down the road.", "n_predict": 1, "cache_prompt": False}
 
 
-def request(base_url: str, path: str, payload: dict | None = None) -> dict:
-    data = None if payload is None else json.dumps(payload).encode()
-    http_request = Request(base_url + path, data=data, headers={"Content-Type": "application/json"})
-    with urlopen(http_request, timeout=10) as response:
-        return json.load(response)
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path: Path, timeout: float):
+        super().__init__("localhost", timeout=timeout)
+        self.path = path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(str(self.path))
+
+
+@dataclass
+class Server:
+    process: subprocess.Popen[bytes]
+    log: BinaryIO
+    receipt: BinaryIO
+    socket_path: Path
+    nonce: str
+    cap: int
+
+    def logs(self) -> bytes:
+        self.log.seek(0)
+        return self.log.read()
+
+    def request(self, path: str, payload: dict | None = None, *, timeout: float = 5) -> dict:
+        data = None if payload is None else json.dumps(payload).encode()
+        with closing(UnixConnection(self.socket_path, timeout)) as connection:
+            connection.request(
+                "GET" if payload is None else "POST", path, body=data,
+                headers={"Content-Type": "application/json"},
+            )
+            with connection.getresponse() as response:
+                return json.loads(response.read())
+
+    def expect_outcome(self, status: int, charged: int, reason: str) -> None:
+        assert self.process.wait(timeout=5) == status
+        raw = self.receipt.read(257)
+        assert len(raw) <= 256 and raw.count(b"\n") == 1 and raw.endswith(b"\n")
+        record = json.loads(raw)
+        assert record == {
+            "version": 1, "nonce": self.nonce, "cap": self.cap, "charged": charged, "reason": reason,
+        }
+
+    def expect_no_receipt(self, status: int) -> None:
+        assert self.process.wait(timeout=5) == status
+        assert self.receipt.read(257) == b""
 
 
 @contextmanager
 def running_server(
-    binary: Path, model: Path, tokens: int
-) -> Iterator[tuple[str, subprocess.Popen[bytes], BinaryIO]]:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    base_url = f"http://127.0.0.1:{port}"
-    command = [str(binary), "--metis-work-budget", str(tokens), "--model", str(model), "--port", str(port)]
-    with tempfile.TemporaryDirectory() as config_root, tempfile.TemporaryFile() as log:
-        config = Path(config_root) / "llama.cpp" / "config.ini"
+    binary: Path,
+    model: Path,
+    tokens: int,
+    *,
+    ready: bool = True,
+    private: bool = True,
+    stale_socket: bool = False,
+    abandoned_pipe: bool = False,
+) -> Iterator[Server]:
+    with tempfile.TemporaryDirectory(prefix="metis-receipt-") as root, tempfile.TemporaryFile() as log:
+        private_dir = Path(root).resolve()
+        socket_path = private_dir / "model.sock"
+        if not private:
+            private_dir.chmod(0o755)
+        if stale_socket:
+            socket_path.touch()
+
+        # A key configured this way makes /completion reject anonymous clients
+        # on the stock parser. The dedicated launch profile ignores the file.
+        config = private_dir / "llama.cpp" / "config.ini"
         config.parent.mkdir()
         config.write_text("api-key = local-config-test\n")
-        environment = {"PATH": os.defpath, "XDG_CONFIG_HOME": config_root}
-        with subprocess.Popen(command, env=environment, stdout=log, stderr=log) as server:
+        environment = {"PATH": os.defpath, "XDG_CONFIG_HOME": str(private_dir)}
+        nonce = secrets.token_hex(16)
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(read_fd, "rb") as receipt:
+            if abandoned_pipe:
+                receipt.close()
+            command = [
+                str(binary), "--metis-work-budget", str(tokens), "--model", str(model),
+                "--socket", str(socket_path), "--metis-receipt-fd", str(write_fd),
+                "--metis-launch-nonce", nonce,
+            ]
             try:
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline and server.poll() is None:
-                    try:
-                        if request(base_url, "/health")["status"] == "ok":
-                            break
-                    except URLError:
-                        time.sleep(0.1)
-                else:
-                    raise RuntimeError("server did not become ready")
-                yield base_url, server, log
-            except Exception:
-                log.seek(0)
-                print(log.read().decode(errors="replace"))
-                raise
+                process = subprocess.Popen(
+                    command, env=environment, stdout=log, stderr=log, pass_fds=(write_fd,),
+                )
             finally:
-                if server.poll() is None:
-                    server.terminate()
-                    try:
-                        server.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        server.kill()
+                os.close(write_fd)
+            with process:
+                server = Server(process, log, receipt, socket_path, nonce, tokens)
+                try:
+                    if ready:
+                        expect_ready(server)
+                    yield server
+                except Exception:
+                    print(server.logs().decode(errors="replace"))
+                    raise
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
 
 
-def expect_denial(
-    base_url: str, server: subprocess.Popen[bytes], log: BinaryIO, prompt: dict, requested: int
-) -> None:
+def expect_ready(server: Server) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and server.process.poll() is None:
+        try:
+            if server.request("/health", timeout=0.5).get("status") == "ok":
+                return
+        except (OSError, http.client.HTTPException):
+            pass
+        time.sleep(0.1)
+    raise RuntimeError("server did not become ready")
+
+
+def expect_denial(server: Server, prompt: dict, requested: int, charged: int) -> None:
     try:
-        request(base_url, "/completion", prompt)
-    except (RemoteDisconnected, ConnectionResetError):
+        server.request("/completion", prompt)
+    except (http.client.RemoteDisconnected, ConnectionResetError):
         pass
     else:
         raise AssertionError("the completion survived budget denial")
-    assert server.wait(timeout=5) == 75
-    log.seek(0)
+    server.expect_outcome(75, charged, "cap_denied")
     denial = f"METIS token work budget denied, requested={requested}\n"
-    assert denial.encode() in log.read()
+    assert denial.encode() in server.logs()
 
 
 def main() -> None:
@@ -91,46 +162,58 @@ def main() -> None:
     with model.open("rb") as weights:
         assert hashlib.file_digest(weights, "sha256").hexdigest() == FIXTURE_SHA256
 
-    with running_server(binary, model, 4096) as (base_url, _, _log):
-        prompt_tokens = request(base_url, "/completion", PROMPT)["tokens_evaluated"]
+    with running_server(binary, model, 4096) as server:
+        prompt_tokens = server.request("/completion", PROMPT)["tokens_evaluated"]
         assert prompt_tokens > 1
+        server.process.terminate()
+        server.expect_outcome(0, STARTUP_PROBE_TOKENS + prompt_tokens, "shutdown")
 
-    # common_context_can_seq_rm evaluates two positions before readiness.
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    startup = subprocess.run(
-        [str(binary), "--metis-work-budget", "1", "--model", str(model), "--port", str(port)],
-        env={"PATH": os.defpath},
-        capture_output=True,
-        timeout=10,
-        check=False,
-    )
-    assert startup.returncode == 75
-    assert b"METIS token work budget denied, requested=2" in startup.stderr
-    assert b"model loaded" not in startup.stderr
+    with running_server(binary, model, 1, ready=False) as server:
+        server.expect_outcome(75, 0, "cap_denied")
+        assert b"METIS token work budget denied, requested=2" in server.logs()
+        assert b"model loaded" not in server.logs()
 
     exact_cap = STARTUP_PROBE_TOKENS + prompt_tokens
-    with running_server(binary, model, exact_cap) as (base_url, server, log):
-        assert request(base_url, "/tokenize", {"content": PROMPT["prompt"]})["tokens"]
-        completion = request(base_url, "/completion", PROMPT)
-        assert completion["tokens_evaluated"] == prompt_tokens
-        expect_denial(base_url, server, log, PROMPT, prompt_tokens)
+    with running_server(binary, model, exact_cap) as server:
+        assert server.request("/tokenize", {"content": PROMPT["prompt"]})["tokens"]
+        assert server.request("/completion", PROMPT)["tokens_evaluated"] == prompt_tokens
+        expect_denial(server, PROMPT, prompt_tokens, exact_cap)
 
-    with running_server(binary, model, exact_cap - 1) as (base_url, server, log):
-        expect_denial(base_url, server, log, PROMPT, prompt_tokens)
+    with running_server(binary, model, exact_cap - 1) as server:
+        expect_denial(server, PROMPT, prompt_tokens, STARTUP_PROBE_TOKENS)
 
     longer_completion = {**PROMPT, "n_predict": 3, "temperature": 0, "ignore_eos": True}
-    with running_server(binary, model, exact_cap + 2) as (base_url, _server, _log):
-        completion = request(base_url, "/completion", longer_completion)
-        assert completion["tokens_predicted"] == 3
+    with running_server(binary, model, exact_cap + 2) as server:
+        assert server.request("/completion", longer_completion)["tokens_predicted"] == 3
+        server.process.terminate()
+        server.expect_outcome(0, exact_cap + 2, "shutdown")
 
-    with running_server(binary, model, exact_cap + 1) as (base_url, server, log):
-        expect_denial(base_url, server, log, longer_completion, 1)
+    with running_server(binary, model, exact_cap + 1) as server:
+        expect_denial(server, longer_completion, 1, exact_cap + 1)
 
-    print(f"Exact cap completed at {exact_cap} tokens ({STARTUP_PROBE_TOKENS} startup + {prompt_tokens} prompt).")
-    print("Startup, repeated work, and prompt/decode batches above the remaining cap exited with 75.")
-    print("The launcher ignored ambient configuration.")
+    with running_server(binary, model, exact_cap, ready=False, private=False) as server:
+        server.expect_no_receipt(2)
+
+    with running_server(binary, model, exact_cap, ready=False, stale_socket=True) as server:
+        server.expect_no_receipt(2)
+
+    with running_server(binary, model, 1, ready=False, abandoned_pipe=True) as server:
+        assert server.process.wait(timeout=5) == 74
+
+    with running_server(binary, model, exact_cap) as server:
+        server.process.send_signal(signal.SIGSTOP)
+        _, stopped = os.waitpid(server.process.pid, os.WUNTRACED)
+        assert os.WIFSTOPPED(stopped)
+        try:
+            server.request("/completion", PROMPT, timeout=0.1)
+        except TimeoutError:
+            server.process.kill()
+        else:
+            raise AssertionError("the stopped server did not time out")
+        server.expect_no_receipt(-signal.SIGKILL)
+
+    print(f"Verified work receipts on Unix socket shutdown and denial at prompt/decode cap {exact_cap}.")
+    print("Verified stale/public socket refusal, broken receipt pipe refusal, and missing receipt after a deadline and SIGKILL.")
 
 
 if __name__ == "__main__":
