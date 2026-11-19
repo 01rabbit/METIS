@@ -15,6 +15,11 @@ CLI coverage creates a valid bundle, accepts it, substitutes archive bytes,
 and confirms verification rejects the tampered bundle without rewriting its
 checksum manifest.
 
+The main-only, non-publishing attestation drill now applies the same verifier
+after the wheel smoke test and before creating attestations. Tests require
+this order and the expected version/name arguments, while preserving the
+drill's no-publication boundary.
+
 ## Validation
 
 Environment: isolated worktree, `uv sync --locked --extra dev --python 3.12`,

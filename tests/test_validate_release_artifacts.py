@@ -99,6 +99,19 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
     assert "gh attestation verify" in workflow
     assert "gh release create" not in workflow
     assert "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
+    checksum = workflow.index("--write-checksums")
+    smoke = workflow.index("- name: Install wheel with locked dependencies and smoke test")
+    verify = workflow.index("--verify-checksums")
+    attest = workflow.index("uses: actions/attest@")
+    assert checksum < smoke < verify < attest
+    verify_step_start = workflow.rindex("      - name: ", 0, verify)
+    verify_step_end = workflow.find("      - name: ", verify)
+    verify_step = workflow[verify_step_start:verify_step_end]
+    assert "- name: Verify exact staged release candidate" in verify_step
+    assert '--dist-dir dist --tag "v$project_version"' in verify_step
+    assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
+    assert "if:" not in verify_step
+    assert "continue-on-error:" not in workflow
 
 
 def test_release_and_drill_share_checksum_generation_path():
@@ -110,9 +123,9 @@ def test_release_and_drill_share_checksum_generation_path():
     assert "sha256sum dist/" not in release
 
     drill = (workflows / "release-attestation-drill.yml").read_text()
-    assert drill.count(".venv/bin/python -m metis.release_artifacts") == 1
+    assert drill.count(".venv/bin/python -m metis.release_artifacts") == 2
     assert drill.count("--write-checksums") == 1
-    assert "--verify-checksums" not in drill
+    assert drill.count("--verify-checksums") == 1
     assert "sha256sum dist/" not in drill
 
 
