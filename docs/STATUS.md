@@ -341,6 +341,16 @@ retained. Issue #6 and dependent #7 stay open. See
 [`issue6-handoff-diagnostic-results-2026-11-18.md`](reports/issue6-handoff-diagnostic-results-2026-11-18.md),
 and [`issue6-handoff-diagnostic-preregistration-2026-11-18.md`](reports/issue6-handoff-diagnostic-preregistration-2026-11-18.md).
 
+On 2026-11-19, a fresh preregistered 30-cluster diagnostic tested a fourth,
+report-only final specialist call against the existing combined handoff and a
+single specialist. All 90 runs completed. Workflow-complete, oracle-verified
+outcomes were 13/30 for final-call multi, 18/30 for current multi, and 28/30
+for single. The primary paired final-minus-single difference was −50 points
+(95% cluster bootstrap interval [−66.67, −33.33]); the Issue #6 gain gate
+failed again. The answer-free data and analysis are retained; Issue #6 and
+dependent #7 remain open. See
+[`issue6-final-handoff-result-2026-11-19.md`](reports/issue6-final-handoff-result-2026-11-19.md).
+
 Issue #8 now has a strict answer-free retained-metrics schema and analysis CLI
 with matched cap checks, complete paired repetitions, contamination exclusions,
 independent-verifier provenance filtering, task-cluster intervals and explicit

@@ -1,0 +1,142 @@
+{
+  "arms": {
+    "multi_combined": {
+      "candidate_ready_call_ceiling_failures": 6,
+      "candidate_ready_jobs_at_termination": 53,
+      "candidate_ready_per_specialist_call_ceiling_failures": 4,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 59,
+        "intent": 162,
+        "report": 2
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 7.433,
+      "mean_calls_reserved": 7.433,
+      "mean_elapsed_seconds": 30.366,
+      "mean_input_tokens": 79341.9,
+      "mean_output_tokens": 1049.8,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 20,
+      "per_specialist_call_ceiling_failures": 9,
+      "report_rejections": 10,
+      "token_usage_complete": true,
+      "trials": 30,
+      "workflow_complete": 21,
+      "workflow_complete_oracle_verified": 18
+    },
+    "multi_final_handoff": {
+      "candidate_ready_call_ceiling_failures": 7,
+      "candidate_ready_jobs_at_termination": 53,
+      "candidate_ready_per_specialist_call_ceiling_failures": 6,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 53,
+        "intent": 175,
+        "report": 7
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 7.833,
+      "mean_calls_reserved": 7.833,
+      "mean_elapsed_seconds": 31.34,
+      "mean_input_tokens": 83686.3,
+      "mean_output_tokens": 1198.4,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 16,
+      "per_specialist_call_ceiling_failures": 7,
+      "report_rejections": 7,
+      "token_usage_complete": true,
+      "trials": 30,
+      "workflow_complete": 23,
+      "workflow_complete_oracle_verified": 13
+    },
+    "single": {
+      "candidate_ready_call_ceiling_failures": 0,
+      "candidate_ready_jobs_at_termination": 29,
+      "candidate_ready_per_specialist_call_ceiling_failures": 0,
+      "cost_usd": "unknown",
+      "decision_counts": {
+        "candidate_report": 29,
+        "intent": 145,
+        "report": 1
+      },
+      "mean_actions": 4,
+      "mean_calls_observed": 5.833,
+      "mean_calls_reserved": 5.833,
+      "mean_elapsed_seconds": 39.588,
+      "mean_input_tokens": 62872.9,
+      "mean_output_tokens": 736.5,
+      "model_turn_budget_denials": 0,
+      "oracle_verified": 28,
+      "per_specialist_call_ceiling_failures": 0,
+      "report_rejections": 0,
+      "token_usage_complete": true,
+      "trials": 30,
+      "workflow_complete": 30,
+      "workflow_complete_oracle_verified": 28
+    }
+  },
+  "bootstrap": {
+    "resampling_unit": "task_id",
+    "samples": 10000,
+    "seed": 20261120
+  },
+  "cli": "0.169.0",
+  "contrasts": {
+    "mechanism_final_minus_current_multi": {
+      "cluster_bootstrap_95_interval": [
+        -0.3667,
+        0.0333
+      ],
+      "completion_cluster_bootstrap_95_interval": [
+        -0.1333,
+        0.2667
+      ],
+      "completion_difference": 0.0667,
+      "difference": -0.1667,
+      "discordant_pairs": {
+        "both": 10,
+        "left_only": 3,
+        "neither": 9,
+        "right_only": 8
+      },
+      "raw_oracle_cluster_bootstrap_95_interval": [
+        -0.3333,
+        0.0667
+      ],
+      "raw_oracle_difference": -0.1333
+    },
+    "primary_final_minus_single": {
+      "cluster_bootstrap_95_interval": [
+        -0.6667,
+        -0.3333
+      ],
+      "completion_cluster_bootstrap_95_interval": [
+        -0.4,
+        -0.1
+      ],
+      "completion_difference": -0.2333,
+      "difference": -0.5,
+      "discordant_pairs": {
+        "both": 13,
+        "left_only": 0,
+        "neither": 2,
+        "right_only": 15
+      },
+      "raw_oracle_cluster_bootstrap_95_interval": [
+        -0.5667,
+        -0.2333
+      ],
+      "raw_oracle_difference": -0.4
+    }
+  },
+  "distinct_task_clusters": 30,
+  "limitations": [
+    "One trial per synthetic task cluster.",
+    "Synthetic encoding tasks do not establish general CTF performance.",
+    "Provider cost is unknown."
+  ],
+  "model": "gpt-6.1-sol",
+  "primary_gain_gate_met": false,
+  "study": "issue6-final-handoff-diagnostic-2026-11-19"
+}
