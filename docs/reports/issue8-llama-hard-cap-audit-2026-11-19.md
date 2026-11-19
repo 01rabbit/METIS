@@ -26,6 +26,14 @@ strict cap, a pinned real runtime must show that context re-evaluation and
 any internal prompt replay cannot make its count exceed the 4096-token
 reservation. The cap needs an explicit mapping to the study budget.
 
+A local smoke run used the Homebrew `llama-server` 1.0.0 executable and the
+specified 1.9 GB Shisa GGUF, both SHA-256 checked at startup. With
+`context_reservation=True`, `n_predict=2`, and a shared 16,392-token cap,
+the ASCII, Japanese, and special-token-like prompts returned input/output
+counts of 4/2, 11/2, and 14/2. All three calls completed. This checks only
+those short prompt classes and this local binary; it is not a proof of the
+worst-case context accounting semantics.
+
 The held-out protocol currently binds string `model_pin` and `runtime_pin`.
 The specialist accepts a matching model ID, while its binary and model SHA-256
 values and SQLite `budget_key`/`token_limit` are independent constructor
