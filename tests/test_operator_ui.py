@@ -5,6 +5,7 @@ import http.client
 import json
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,7 @@ def test_loopback_view_requires_token_and_omits_event_details(tmp_path: Path) ->
         assert headers["Content-Security-Policy"].startswith("default-src 'none'")
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit")[0] == 401
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit", token="wrong")[0] == 401
+        assert request(port, "GET", f"/api/runs/{RUN_ID}/audit", token="é" * 32)[0] == 401
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit",
                        token=TOKEN, host="evil.example")[0] == 403
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit",
@@ -95,6 +97,8 @@ def test_short_token_and_invalid_port_are_rejected(tmp_path: Path) -> None:
     database = fixture_database(tmp_path)
     with pytest.raises(ValueError, match="token"):
         create_server(database, port=0, token="short")
+    with pytest.raises(ValueError, match="ASCII"):
+        create_server(database, port=0, token="é" * 32)
     with pytest.raises(ValueError, match="port"):
         create_server(database, port=65536, token=TOKEN)
 
@@ -171,3 +175,55 @@ def test_cancel_unknown_run_and_unavailable_handler_fail_closed(tmp_path: Path) 
         assert request(port, "POST", f"/api/runs/{'b' * 32}/cancel", token=TOKEN)[0] == 404
     with server_for(database) as port:
         assert request(port, "POST", f"/api/runs/{RUN_ID}/cancel", token=TOKEN)[0] == 503
+
+
+def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    session, first_id = _start_run(database)
+    time.sleep(0.002)
+    _session, second_id = _start_run(database)
+    before = database.read_bytes()
+
+    with server_for(database, cancel_run=session.cancel) as port:
+        assert request(port, "GET", "/api/runs")[0] == 401
+        assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/runs?limit=101", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/runs?limit=2&extra=1", token=TOKEN)[0] == 400
+        status, headers, body = request(port, "GET", "/api/runs?limit=2", token=TOKEN)
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        payload = json.loads(body)
+        assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
+        assert payload["truncated"] is False
+        assert all(run["status"] == "planning" for run in payload["runs"])
+        assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
+        assert "private" not in body.decode()
+    assert database.read_bytes() == before
+
+
+def test_run_list_fails_closed_on_corrupt_selected_chain(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    _session, run_id = _start_run(database)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET digest='corrupt' WHERE run_id=? AND sequence=0", (run_id,))
+    with server_for(database) as port:
+        status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
+        assert status == 503
+        assert b"unavailable" in body
+        assert b"private" not in body
+
+
+def test_server_startup_migrates_legacy_run_discovery_index(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    _session, run_id = _start_run(database)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP INDEX events_latest_by_timestamp")
+
+    with server_for(database) as port:
+        status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
+        assert status == 200
+        assert json.loads(body)["runs"][0]["run_id"] == run_id
+    with sqlite3.connect(database) as db:
+        indexes = {row[1] for row in db.execute("PRAGMA index_list(events)")}
+    assert "events_latest_by_timestamp" in indexes
