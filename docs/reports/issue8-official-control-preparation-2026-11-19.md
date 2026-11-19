@@ -23,7 +23,7 @@ showed a disabled `Solved` control after one submission per task. METIS recorded
 `web attest` with `correct`, `official_browser_observed`, and final `solved` in
 each run. The browser observations were made by a human operator; they are not
 signed platform API verdicts. The two private per-problem write-ups retain the
-method and answer reference outside this repository.
+methods and official verdicts without answer values.
 
 ## MUNIN starting state
 
