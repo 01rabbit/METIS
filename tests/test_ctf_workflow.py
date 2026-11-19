@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 
 import pytest
 
@@ -21,6 +22,7 @@ from metis.core.ctf_workflow import (
     _validate_workflow_output,
     capability_digest,
     generate_seeded_workflow,
+    replay_workflow_in_sandbox,
     run_workflow_in_sandbox,
     sandbox_runner_script,
     validate_workflow,
@@ -220,6 +222,115 @@ def test_external_digest_verifier_accepts_only_successful_matching_result():
         verify_workflow_digest({"ok": True}, "not-a-digest")
 
 
+def test_replay_checks_isolation_result_and_oracle_without_leaking_output(monkeypatch, tmp_path):
+    import metis.core.ctf_workflow as workflow_module
+
+    digest = hashlib.sha256(b"private result").hexdigest()
+    base = {"ok": True, "workflow_sha256": "a" * 64, "steps": 2,
+            "output_bytes": 14, "output_sha256": digest,
+            "output_artifact": ".metis-derived/private.bin", "output_is_untrusted": True,
+            "sandbox": {"engine": "docker", "image": "sha256:" + "b" * 64,
+                        "network": "none", "host_mounts": False}}
+    calls = []
+
+    def runner(*args, **kwargs):
+        calls.append((args, kwargs))
+        return dict(base)
+
+    monkeypatch.setattr(workflow_module, "run_workflow_in_sandbox", runner)
+    result = replay_workflow_in_sandbox(tmp_path / "db", "a" * 32,
+                                        target="source.txt", workflow_artifact="workflow.json",
+                                        oracle_sha256=digest)
+    assert len(calls) == 2
+    assert result == {"ok": True, "reproducible": True, "oracle_match": True,
+                      "steps": 2, "output_bytes": 14, "reason": None}
+    assert digest not in json.dumps(result)
+    assert "private.bin" not in json.dumps(result)
+    responses = iter((base, {**base, "sandbox": {**base["sandbox"], "image": "other"}}))
+    monkeypatch.setattr(workflow_module, "run_workflow_in_sandbox",
+                        lambda *args, **kwargs: next(responses))
+    assert not replay_workflow_in_sandbox(tmp_path / "db", "a" * 32,
+                                          target="source.txt", workflow_artifact="workflow.json")["reproducible"]
+
+
+def test_replay_rejects_mismatch_or_failed_second_run(monkeypatch, tmp_path):
+    import metis.core.ctf_workflow as workflow_module
+
+    good = {"ok": True, "workflow_sha256": "a" * 64, "steps": 1,
+            "output_bytes": 3, "output_sha256": "b" * 64,
+            "output_artifact": "private", "output_is_untrusted": True,
+            "sandbox": {"engine": "docker", "image": "sha256:" + "c" * 64,
+                        "network": "none", "host_mounts": False}}
+    responses = iter((good, {**good, "output_sha256": "d" * 64}))
+    monkeypatch.setattr(workflow_module, "run_workflow_in_sandbox",
+                        lambda *args, **kwargs: next(responses))
+    result = replay_workflow_in_sandbox(tmp_path / "db", "a" * 32,
+                                        target="source.txt", workflow_artifact="workflow.json")
+    assert result["ok"] is False and result["reason"] == "sandbox runs differ"
+    assert "output_sha256" not in result
+    responses = iter((good, {"ok": False, "reason": "private worker detail"}))
+    result = replay_workflow_in_sandbox(tmp_path / "db", "a" * 32,
+                                        target="source.txt", workflow_artifact="workflow.json")
+    assert result["reason"] == "second sandbox run failed"
+    with pytest.raises(ValueError, match="oracle commitment"):
+        replay_workflow_in_sandbox(tmp_path / "db", "a" * 32,
+                                   target="source.txt", workflow_artifact="workflow.json",
+                                   oracle_sha256="invalid")
+
+
+def test_replay_cli_sanitizes_private_file_error_without_creating_state(monkeypatch, tmp_path, capsys):
+    from metis.cli import main
+
+    database = tmp_path / "missing.sqlite"
+    private_path = tmp_path / "private-oracle-canary"
+    monkeypatch.setattr(sys, "argv", ["metis", "workflow", "--database", str(database),
+                                      "replay", "a" * 32, "--target", "source.txt",
+                                      "--workflow-artifact", "workflow.json",
+                                      "--oracle-sha256-file", str(private_path)])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert "private-oracle-canary" not in captured.err
+    assert not database.exists()
+
+
+def test_replay_cli_oracle_exit_status(monkeypatch, tmp_path, capsys):
+    from metis.cli import main
+
+    output_digest = hashlib.sha256(b"private result").hexdigest()
+    result = {"ok": True, "workflow_sha256": "a" * 64, "steps": 1,
+              "output_bytes": 14, "output_sha256": output_digest,
+              "output_artifact": ".metis-derived/private.bin",
+              "output_is_untrusted": True,
+              "sandbox": {"engine": "docker", "image": "sha256:" + "b" * 64,
+                          "network": "none", "host_mounts": False}}
+    monkeypatch.setattr(ctf_workflow, "run_workflow_in_sandbox",
+                        lambda *args, **kwargs: dict(result))
+    args = ["metis", "workflow", "--database", str(tmp_path / "state.sqlite"),
+            "replay", "a" * 32, "--target", "source.txt",
+            "--workflow-artifact", "workflow.json"]
+    monkeypatch.setattr(sys, "argv", args)
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out)["oracle_match"] is None
+
+    oracle = tmp_path / "private-oracle"
+    oracle.write_text("0" * 64)
+    monkeypatch.setattr(sys, "argv", args + ["--oracle-sha256-file", str(oracle)])
+    assert main() == 2
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["ok"] is False
+    assert failed["reproducible"] is True
+    assert failed["oracle_match"] is False
+    assert output_digest not in json.dumps(failed)
+
+    oracle.write_text(output_digest)
+    assert main() == 0
+    passed = json.loads(capsys.readouterr().out)
+    assert passed["ok"] is True
+    assert passed["oracle_match"] is True
+
+
 def test_input_artifact_must_match_declared_target():
     candidate = WorkflowCandidate(input_artifact="challenge.txt", steps=[{"tool": "hex_decode"}])
     with pytest.raises(ValueError, match="selected declared artifact"):
@@ -257,6 +368,12 @@ def test_generated_workflow_runs_in_isolated_sandbox_and_passes_private_oracle(t
     assert trial.oracle_sha256 not in session.store.export_jsonl(created["run_id"])
     assert result["sandbox"]["network"] == "none"
     assert result["sandbox"]["host_mounts"] is False
+    repeated = replay_workflow_in_sandbox(database, created["run_id"], target=artifacts[0],
+                                           workflow_artifact=artifacts[1],
+                                           oracle_sha256=trial.oracle_sha256)
+    assert repeated["ok"] is True and repeated["oracle_match"] is True
+    assert repeated["output_bytes"] == 29
+    assert trial.oracle_sha256 not in json.dumps(repeated)
     assert frozenset(ARTIFACT_TOOLS) == registry_before
     assert verify_workflow_digest.__code__.co_code == verifier_before
 
