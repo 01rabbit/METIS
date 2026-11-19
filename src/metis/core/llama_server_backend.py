@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Self
@@ -128,6 +129,34 @@ class LlamaServerBackend:
         finally:
             connection.close()
 
+    def _request_before(self, route: str, payload: dict[str, Any] | None,
+                        *, deadline: float) -> dict[str, Any]:
+        """Enforce one monotonic deadline even if a peer trickles bytes forever."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self.close()
+            raise LlamaBackendError("model call deadline exceeded")
+        result: list[dict[str, Any]] = []
+        errors: list[BaseException] = []
+
+        def invoke() -> None:
+            try:
+                result.append(self._request(route, payload, timeout=remaining))
+            except (LlamaBackendError, OSError, TimeoutError, ValueError) as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=invoke, name="metis-llama-request", daemon=True)
+        worker.start()
+        worker.join(timeout=max(0, deadline - time.monotonic()))
+        if worker.is_alive():
+            self.close()
+            raise LlamaBackendError("model call deadline exceeded")
+        if errors:
+            raise errors[0]
+        if not result:
+            raise LlamaBackendError("server request produced no result")
+        return result[0]
+
     def _reserve(self, amount: int) -> None:
         with sqlite3.connect(self.database, timeout=10, isolation_level=None) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -152,8 +181,9 @@ class LlamaServerBackend:
             raise ValueError("prompt exceeds input boundary")
         if not 1 <= n_predict <= self.max_output_tokens or not 0 < timeout_seconds <= 120:
             raise ValueError("call exceeds configured boundary")
-        tokenized = self._request("/tokenize", {"content": prompt, "add_special": True},
-                                  timeout=timeout_seconds)
+        deadline = time.monotonic() + timeout_seconds
+        tokenized = self._request_before("/tokenize",
+                                         {"content": prompt, "add_special": True}, deadline=deadline)
         tokens = tokenized.get("tokens")
         if not isinstance(tokens, list) or not tokens or len(tokens) > self.token_limit:
             raise LlamaBackendError("unusable prompt token count")
@@ -161,8 +191,8 @@ class LlamaServerBackend:
         self._reserve(prompt_count + n_predict)
         # Reservation is permanent from here, even when the request is interrupted.
         try:
-            result = self._request("/completion", {"prompt": prompt, "n_predict": n_predict,
-                               "temperature": 0, "cache_prompt": False}, timeout=timeout_seconds)
+            result = self._request_before("/completion", {"prompt": prompt, "n_predict": n_predict,
+                               "temperature": 0, "cache_prompt": False}, deadline=deadline)
         except BaseException:
             self.close()
             raise

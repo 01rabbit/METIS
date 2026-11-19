@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,11 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/tokenize': out={'tokens':[1]*len(data['content'].split())}
   else:
    n=data['n_predict']; out={'content':'x'*n,'tokens_evaluated':len(data['prompt'].split()),'tokens_predicted':n,'model':model,'generation_settings':{'n_predict':n}}
-  raw=json.dumps(out).encode(); self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+  raw=json.dumps(out).encode(); self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers()
+  if (self.path=='/completion' and data['prompt']=='slow trickle') or (self.path=='/tokenize' and data['content']=='slow tokenize'):
+   for byte in raw:
+    self.wfile.write(bytes([byte])); self.wfile.flush(); __import__('time').sleep(.05)
+  else: self.wfile.write(raw)
 UnixStreamServer(sock,Handler).serve_forever()
 ''')
     binary.chmod(0o700)
@@ -126,3 +131,25 @@ def test_reentry_refused_without_losing_original_process(backend_files):
         with pytest.raises(LlamaBackendError):
             backend.__enter__()
         assert backend._process is original and original.poll() is None
+
+
+def test_whole_call_deadline_stops_slow_trickle_and_keeps_charge(backend_files):
+    with LlamaServerBackend(**backend_files) as backend:
+        started = time.monotonic()
+        with pytest.raises(LlamaBackendError, match="deadline"):
+            backend.complete("slow trickle", n_predict=2, timeout_seconds=.25)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2
+        assert backend._process is None
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4,)
+
+
+def test_whole_call_deadline_during_tokenize_stops_without_charge(backend_files):
+    with LlamaServerBackend(**backend_files) as backend:
+        started = time.monotonic()
+        with pytest.raises(LlamaBackendError, match="deadline"):
+            backend.complete("slow tokenize", n_predict=2, timeout_seconds=.25)
+        assert time.monotonic() - started < 2
+        assert backend._process is None
+    assert not backend_files["database"].exists()
