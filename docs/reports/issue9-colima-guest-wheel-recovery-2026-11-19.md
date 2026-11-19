@@ -43,8 +43,11 @@ The result was `1 passed in 0.99s`. The test confirmed that the sleeping
 worker stayed alive after controller A was killed. Controller B recovered
 the run to `planning`, confirmed teardown, and preserved the charged action.
 A second recovery returned `not_running`, and the audit chain had no `solved`
-event. A post-test check found 79 of 80 actions remaining, zero worker and
-active-operation rows, and no containers on the disposable daemon.
+event. The first post-test database glob returned the same database twice
+through a pytest symlink. A separate command deduplicated the paths and
+confirmed `planning`, 79 of 80 actions remaining, zero worker and
+active-operation rows, and no containers on the disposable daemon. The
+pytest result was already recorded before the readback error.
 
 The disposable Colima profile was stopped and deleted. Colima left its
 unused Lima disk, which was deleted separately. The profile, disk, and
