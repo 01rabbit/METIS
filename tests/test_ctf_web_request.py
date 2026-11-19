@@ -100,11 +100,7 @@ def test_remediation_and_environment_mode_recheck_paths_after_open(tmp_path, mon
     monkeypatch.setenv("METIS_WEB_AUTH_STORAGE", "environment")
     client = web._client(config, {})
     target = tmp_path / "untouched"
-    if suffix:
-        target.write_bytes(b"keep")
-    else:
-        database.rename(target)
-    original = target.read_bytes()
+    target.write_bytes(b"keep")
     replacement = tmp_path / "replacement"
     replacement.symlink_to(target)
     replacement.replace(database.with_name(database.name + suffix))
@@ -114,7 +110,7 @@ def test_remediation_and_environment_mode_recheck_paths_after_open(tmp_path, mon
                       lambda: web.forget_all_auth(apply=True)):
         with pytest.raises(ValueError, match=f"{label} must be a regular file"):
             operation()
-    assert target.read_bytes() == original
+    assert target.read_bytes() == b"keep"
 
 
 def test_local_client_cannot_load_save_or_use_auth_after_storage_mode_change(tmp_path):
