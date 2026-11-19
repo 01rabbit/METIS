@@ -55,6 +55,7 @@ from metis.core.ctf_writeup import WriteupBook, WriteupInput
 from metis.core.fixtures import generate_fixtures
 from metis.core.models import FixtureProvider, ModelProvider
 from metis.core.openai_provider import OpenAIProvider
+from metis.core.operator_ui import create_server
 from metis.core.runner import Runner
 from metis.core.runtime import FixtureRuntime, ToolRequest
 from metis.core.store import RunStore
@@ -583,6 +584,9 @@ def main() -> int:
     audit = sub.add_parser("audit", help="show a safe read-only lifecycle summary for one run")
     audit.add_argument("run_id")
     audit.add_argument("--database", type=Path, required=True)
+    operator = sub.add_parser("operator", help="serve a local read-only operator audit view")
+    operator.add_argument("--database", type=Path, required=True)
+    operator.add_argument("--port", type=int, default=0)
     generate = sub.add_parser("generate-fixtures", help="generate two synthetic local puzzles")
     generate.add_argument("directory", type=Path)
     generate.add_argument("--oracle", type=Path, required=True)
@@ -1195,6 +1199,20 @@ def main() -> int:
         if audit_result is None:
             parser.exit(2, "run not found\n")
         print(json.dumps(audit_result, sort_keys=True))
+        return 0
+    if args.command == "operator":
+        token = os.environ.get("METIS_OPERATOR_TOKEN", "")
+        try:
+            server = create_server(args.database, port=args.port, token=token)
+        except (OSError, ValueError):
+            parser.exit(2, "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n")
+        print(f"METIS operator view: http://127.0.0.1:{server.server_port}/", flush=True)
+        try:
+            server.serve_forever(poll_interval=0.2)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
         return 0
     return 2
 
