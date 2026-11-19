@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
+from metis.core.ctf_knowledge import validate_heldout_snapshot_source
 from metis.evaluation.heldout_analysis import (
     Arm,
     Budget,
@@ -156,15 +157,7 @@ def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database:
             if actual != (expected if protocol.arm_config[assignment.arm].memory_enabled else []):
                 raise ValueError("held-out memory snapshot conflicts with arm")
             for card_id, payload, card_digest in rows:
-                source = db.execute(
-                    "SELECT payload,digest,source_split,created FROM munin_cards WHERE id=?",
-                    (card_id,),
-                ).fetchone()
-                run = db.execute("SELECT started FROM codex_sessions WHERE run_id=?",
-                                 (assignment.run_id,)).fetchone()
-                if (source is None or run is None or source[:2] != (payload, card_digest)
-                        or source[2] not in {"practice", "competition"} or source[3] > run[0]):
-                    raise ValueError("held-out memory snapshot lacks prior source")
+                validate_heldout_snapshot_source(db, assignment.run_id, card_id, payload, card_digest)
 
 
 def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Path) -> None:
