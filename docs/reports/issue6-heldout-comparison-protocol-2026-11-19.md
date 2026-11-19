@@ -50,6 +50,8 @@ therefore marks those evidence classes unavailable and never returns a
 qualified or verified cohort. Caller-added receipt fields are rejected by the
 strict existing trial schema. A `consistency_only` result is not evidence of
 execution, provider-limit enforcement, or measured gain.
+The command reads at most 1 MiB from each input file and suppresses file and
+validation details on failure.
 
 ```sh
 python -m metis.evaluation.issue6_cohort_audit registration.json outcomes.json

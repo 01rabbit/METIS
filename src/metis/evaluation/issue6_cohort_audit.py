@@ -16,6 +16,8 @@ from pathlib import Path
 from .issue6_heldout_comparison import ARMS, OutcomeExport, Registration
 from .issue6_heldout_comparison import analyze as analyze_outcomes
 
+MAX_INPUT_BYTES = 1024 * 1024
+
 UNAVAILABLE_EVIDENCE = {
     "execution_receipts": "not present in Registration or OutcomeExport",
     "source_provenance": "not authenticated by the current packet schema",
@@ -83,14 +85,23 @@ def audit(registration: Registration, outcomes: OutcomeExport) -> dict[str, obje
     }
 
 
+def _read_bounded(path: Path) -> bytes:
+    """Read one CLI input with a fixed cap before parsing or retaining it."""
+    with path.open("rb") as source:
+        payload = source.read(MAX_INPUT_BYTES + 1)
+    if len(payload) > MAX_INPUT_BYTES:
+        raise ValueError("cohort input exceeds the size limit")
+    return payload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("registration", type=Path)
     parser.add_argument("outcomes", type=Path)
     args = parser.parse_args()
     try:
-        registration = Registration.model_validate_json(args.registration.read_bytes())
-        outcomes = OutcomeExport.model_validate_json(args.outcomes.read_bytes())
+        registration = Registration.model_validate_json(_read_bounded(args.registration))
+        outcomes = OutcomeExport.model_validate_json(_read_bounded(args.outcomes))
         result = audit(registration, outcomes)
     except (OSError, ValueError):
         parser.exit(2, "Issue #6 cohort consistency audit failed; input details were suppressed.\n")

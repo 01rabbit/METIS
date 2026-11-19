@@ -5,7 +5,7 @@ from itertools import product
 import pytest
 from pydantic import ValidationError
 
-from metis.evaluation.issue6_cohort_audit import audit
+from metis.evaluation.issue6_cohort_audit import MAX_INPUT_BYTES, audit
 from metis.evaluation.issue6_cohort_audit import main as audit_main
 from metis.evaluation.issue6_heldout_comparison import (
     ARMS,
@@ -127,6 +127,17 @@ def test_cli_suppresses_private_input_and_path_details(cohort, tmp_path, monkeyp
     outcomes_path.write_text(json.dumps(private_payload), encoding="utf-8")
     monkeypatch.setattr(
         sys, "argv", ["issue6-cohort-audit", str(registration_path), str(outcomes_path)]
+    )
+    with pytest.raises(SystemExit) as raised:
+        audit_main()
+    captured = capsys.readouterr()
+    assert raised.value.code == 2
+    assert secret not in captured.out + captured.err
+
+    oversized_path = tmp_path / "oversized.json"
+    oversized_path.write_bytes(secret.encode() + b" " * MAX_INPUT_BYTES)
+    monkeypatch.setattr(
+        sys, "argv", ["issue6-cohort-audit", str(registration_path), str(oversized_path)]
     )
     with pytest.raises(SystemExit) as raised:
         audit_main()
