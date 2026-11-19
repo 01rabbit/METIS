@@ -29,11 +29,13 @@ class ScriptedRunner:
         self.prompts: list[str] = []
         self.models: list[str | None] = []
 
-    def run(self, prompt, *, model, timeout, should_stop=None, images=None):
+    def run(self, prompt, *, model, timeout, should_stop=None, images=None, output_schema=None):
         self.images = getattr(self, "images", [])
         self.images.append(images)
         self.prompts.append(prompt)
         self.models.append(model)
+        self.schemas = getattr(self, "schemas", [])
+        self.schemas.append(output_schema)
         turn = self.turns.pop(0)
         return turn(self.prompts) if callable(turn) else turn
 
@@ -102,6 +104,66 @@ def test_intent_then_report_completes_the_attempt(setup):
                                                (job["assignment_id"],))]
     assert events == ["started", "model_turn_reserved", "codex_turn", "intent_started",
                       "model_turn_reserved", "codex_turn", "completed"]
+
+
+def test_final_handoff_last_call_has_report_only_schema(setup):
+    _database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    runner = ScriptedRunner([
+        _say(_intent("artifact", "text", artifact=artifact)),
+        lambda prompts: _say(_report(json.loads(prompts[-1].split(
+            "STEPS SO FAR (intent -> controller result):\n")[1])[0]["result"]["event_sequence"])),
+    ])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            final_handoff_call_limit=2)
+    assert result["job_state"] == "completed"
+    assert "intent" in runner.schemas[0]["properties"]["action"]["enum"]
+    assert runner.schemas[1]["properties"]["action"]["enum"] == ["candidate_report", "report", "fail"]
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 2
+
+
+def test_final_handoff_refuses_extra_calls_after_bad_final_decision(setup):
+    _database, scheduler, run_id, _wave, started, artifact = setup
+    job = started[0]
+    runner = ScriptedRunner([_say(_intent("artifact", "text", artifact=artifact)),
+                             _say(_intent("artifact", "text", artifact=artifact))])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            final_handoff_call_limit=2)
+    assert result["job_state"] == "failed"
+    assert len(runner.prompts) == 2
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 2
+
+
+def test_final_handoff_cancellation_discards_turn(setup, monkeypatch):
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    cancelled = False
+    original = scheduler.run_cancelled
+    monkeypatch.setattr(scheduler, "run_cancelled", lambda rid: cancelled or original(rid))
+    def cancel(_prompts):
+        nonlocal cancelled
+        cancelled = True
+        return _say(_report(1))
+    runner = ScriptedRunner([cancel])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            final_handoff_call_limit=2)
+    assert result["outcome"]["reason"] == "run cancelled during a Codex turn; result discarded"
+    assert len(runner.prompts) == 1
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+
+
+def test_final_handoff_transient_failure_does_not_retry_past_cap(setup, monkeypatch):
+    import metis.core.codex_specialist as driver
+
+    monkeypatch.setattr(driver, "TRANSIENT_BACKOFF", 0.0)
+    _database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    runner = ScriptedRunner([CodexTurn(returncode=1, message=None, stderr_tail="503")])
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            final_handoff_call_limit=1)
+    assert result["job_state"] == "failed"
+    assert len(runner.prompts) == 1
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
 
 
 def test_exhausted_run_turn_budget_stops_before_provider_call(setup):

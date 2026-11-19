@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import argparse
 import base64
 import hashlib
 import json
@@ -82,7 +83,7 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
                  'with keys "component0_hex" and "component1_hex", each the exact decoded bytes in '
                  'lowercase hex. Use candidate_report when the candidate and report are both ready; otherwise '
                  'use the separate candidate/report sequence. Never return plaintext or compute the final digest.'}
-    elif arm in {"multi_separate", "multi_combined", "multi_fixed", "multi_borrow"}:
+    elif arm in {"multi_separate", "multi_combined", "multi_final_handoff", "multi_fixed", "multi_borrow"}:
         assignments = [dict(by_role["crypto-specialist"]), dict(by_role["forensics-specialist"])]
         notes = {}
         for index, assignment in enumerate(assignments):
@@ -92,6 +93,9 @@ def make_plan(ledger: AgentLedger, run_id: str, arm: str) -> dict[str, Any]:
             if arm == "multi_separate":
                 handoff = ("Use the separate handoff: first send the exact decoded bytes privately using action "
                            "candidate, then submit your compact report in a later turn. Do not use candidate_report.")
+            elif arm == "multi_final_handoff":
+                handoff = ("The controller reserves your fourth call for candidate_report, report, or fail. "
+                           "Complete analysis before that call and send the candidate and report together when ready.")
             else:
                 handoff = ("Use candidate_report to send the exact decoded bytes privately and the compact report "
                            "in the same turn when both are ready. The separate handoff remains available.")
@@ -200,7 +204,8 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
         result = run_assignment(scheduler, run_id, assignment_id, job["attempt_id"], runner,
                                 model=MODEL, turn_timeout=180,
                                 note=setup["notes"][assignment_id],
-                                allow_candidate_report=arm != "multi_separate")
+                                allow_candidate_report=arm != "multi_separate",
+                                final_handoff_call_limit=4 if arm == "multi_final_handoff" else None)
         return assignment_id, result
 
     if len(started_jobs) == 1:
@@ -329,6 +334,16 @@ def run_arm(session: CodexSession, scheduler: AgentScheduler, runner: PinnedCode
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--final-handoff-diagnostic", action="store_true",
+                        help="fresh symmetric single/current multi/final-handoff multi study")
+    args = parser.parse_args()
+    global STUDY_ID, SEED, ORDER_SEED, OUTPUT
+    if args.final_handoff_diagnostic:
+        STUDY_ID = "issue6-final-handoff-diagnostic-2026-11-19"
+        SEED = 20261120
+        ORDER_SEED = SEED ^ 0x6A09E667
+        OUTPUT = Path("docs/reports/data/issue6-final-handoff-diagnostic-2026-11-19.json")
     if OUTPUT.exists():
         raise SystemExit(f"refusing to rerun or overwrite retained study data: {OUTPUT}")
     runner = PinnedCodexCLI()
@@ -368,7 +383,8 @@ def main() -> None:
     order_rng = random.Random(ORDER_SEED)
     trial_order = {}
     for case_id, *_ in cases:
-        arms = ["single", "multi_separate", "multi_combined"]
+        arms = (["single", "multi_combined", "multi_final_handoff"]
+                if args.final_handoff_diagnostic else ["single", "multi_separate", "multi_combined"])
         order_rng.shuffle(arms)
         trial_order[case_id] = arms
     session = CodexSession(root / "state" / "metis.sqlite")
@@ -380,14 +396,16 @@ def main() -> None:
         for arm in trial_order[case_id]:
             record = run_arm(session, scheduler, runner, root, case_id, components, case_family, arm)
             records.append(record)
-            dataset = build_dataset(records, task_families, trial_order)
+            dataset = build_dataset(records, task_families, trial_order, arms=tuple(arms),
+                                    study=STUDY_ID, seed=SEED, order_seed=ORDER_SEED)
             temporary = OUTPUT.with_suffix(".tmp")
             temporary.write_text(json.dumps(dataset, separators=(",", ":")), encoding="utf-8")
             temporary.replace(OUTPUT)
             print(json.dumps({"case": case_id, "arm": arm, "verified": record["oracle_verified"],
                               "completed_records": len(records), "elapsed_seconds": record["elapsed_seconds"],
                               "calls": record["calls_observed"]}, separators=(",", ":")), flush=True)
-    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order),
+    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order, arms=tuple(arms),
+                                               study=STUDY_ID, seed=SEED, order_seed=ORDER_SEED),
                                  sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 

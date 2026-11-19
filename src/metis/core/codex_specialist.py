@@ -28,6 +28,8 @@ Daybreak's own commands.
 from __future__ import annotations
 
 import hashlib
+import copy
+import inspect
 import json
 import os
 import shutil
@@ -167,6 +169,13 @@ DECISION_SCHEMA: dict[str, Any] = {
         "reason": {"type": ["string", "null"]},
     },
 }
+
+
+def final_handoff_schema() -> dict[str, Any]:
+    """Strict final-call schema: no new tool work or candidate-only handoff."""
+    schema = copy.deepcopy(DECISION_SCHEMA)
+    schema["properties"]["action"]["enum"] = ["candidate_report", "report", "fail"]
+    return schema
 
 
 @dataclass
@@ -552,7 +561,8 @@ def _truncate(value: Any) -> Any:
 def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, attempt_id: str,
                    runner: CodexRunner, *, model: str | None = None, turn_timeout: float = 300.0,
                    clock: Callable[[], float] = time.time, note: str | None = None,
-                   allow_candidate_report: bool = True) -> dict[str, Any]:
+                   allow_candidate_report: bool = True,
+                   final_handoff_call_limit: int | None = None) -> dict[str, Any]:
     """Drive one running attempt to a report, a failure or a stop. Returns a summary.
 
     ``note`` is Daybreak's focus for this attempt (a hypothesis to test, a step to take). It is
@@ -560,6 +570,11 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     job = _job(scheduler, assignment_id)
     if job["run_id"] != run_id or job["attempt_id"] != attempt_id or job["state"] != "running":
         raise ValueError("attempt is not the running attempt of this assignment")
+    if final_handoff_call_limit is not None:
+        if final_handoff_call_limit < 1 or not allow_candidate_report:
+            raise ValueError("final handoff requires a positive call limit and combined handoff")
+        if "output_schema" not in inspect.signature(runner.run).parameters:
+            raise ValueError("final handoff requires a runner supporting output_schema")
     allowed = {entry["id"] for entry in scheduler.config()["catalog"]}
     selected = model or (job["model"] or {}).get("model") or scheduler.config()["current_model"]
     from metis.evaluation.heldout_arm import binding
@@ -601,14 +616,21 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     def invoke(reservation: dict[str, Any], timeout: float) -> CodexTurn:
         prompt = bound_prompt()
         reservation_id = reservation["reservation_id"]
+        final_call = final_handoff_call_limit is not None and len(turns) + 1 >= final_handoff_call_limit
+        if final_call:
+            prompt = ("FINAL SPECIALIST CALL: return candidate_report if you have a candidate, "
+                      "otherwise report or fail. No intent or candidate-only action is available.\n\n" + prompt)
         if heldout is not None:
             detail = {"reservation_id": reservation_id, "prefix_sha256":
                       hashlib.sha256(heldout["prompt_text"].encode()).hexdigest(),
                       "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                       "model": selected, "runtime": job["host"]}
             _log(scheduler, assignment_id, attempt_id, "heldout_prompt_applied", json.dumps(detail, sort_keys=True))
+        kwargs: dict[str, Any] = {}
+        if final_handoff_call_limit is not None:
+            kwargs["output_schema"] = final_handoff_schema() if final_call else DECISION_SCHEMA
         turn = runner.run(prompt, model=selected, timeout=timeout,
-                          should_stop=stopped, images=list(attached.values()) or None)
+                          should_stop=stopped, images=list(attached.values()) or None, **kwargs)
         record_turn(turn, reservation_id)
         return turn
 
@@ -630,6 +652,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     budget_calls = int(job["max_turns"]) + 3  # intents plus report corrections
     outcome: dict[str, Any] = {"state": "running"}
     for _ in range(budget_calls):
+        if final_handoff_call_limit is not None and len(turns) >= final_handoff_call_limit:
+            outcome = scheduler.fail(assignment_id, attempt_id, "final handoff call did not complete the assignment")
+            break
         if scheduler.run_cancelled(run_id):
             outcome = stop_outcome("run cancelled before the next turn")
             break
@@ -667,6 +692,10 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         if (not turn.stopped and turn.returncode != 0 and not turn.timed_out
                 and any(marker in turn.stderr_tail.lower() for marker in TRANSIENT_MARKERS)):
             _log(scheduler, assignment_id, attempt_id, "codex_turn_retry", turn.stderr_tail[-160:])
+            if final_handoff_call_limit is not None and len(turns) >= final_handoff_call_limit:
+                outcome = scheduler.fail(assignment_id, attempt_id,
+                                         "final handoff call failed transiently; per-specialist cap exhausted")
+                break
             time.sleep(TRANSIENT_BACKOFF)
             latest = _job(scheduler, assignment_id)
             if latest["attempt_id"] != attempt_id or latest["state"] != "running":
@@ -715,6 +744,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             continue
         action = decision["action"]
         decision_counts[action] = decision_counts.get(action, 0) + 1
+        if final_handoff_call_limit is not None and len(turns) >= final_handoff_call_limit and action in {"intent", "candidate"}:
+            outcome = scheduler.fail(assignment_id, attempt_id, "final handoff call returned a prohibited action")
+            break
         if action == "candidate_report" and not allow_candidate_report:
             value = str((decision.get("candidate") or {}).get("value", ""))
             if value:
