@@ -413,6 +413,8 @@ def main() -> int:
     forget.add_argument("url")
     forget_all = web_commands.add_parser("forget-all", help="preview or forget all saved platform credentials")
     forget_all.add_argument("--apply", action="store_true", help="apply the bounded bulk forgetting operation")
+    forget_all.add_argument("--include-run-cookies", action="store_true",
+                            help="also retire saved cookies from every origin in the selected runs")
     web_context = web_commands.add_parser("context")
     web_context.add_argument("run_id")
     web_grant = web_commands.add_parser("grant", help="add a user-authorized challenge origin to a run")
@@ -623,7 +625,7 @@ def main() -> int:
     audit = sub.add_parser("audit", help="show a safe read-only lifecycle summary for one run")
     audit.add_argument("run_id")
     audit.add_argument("--database", type=Path, required=True)
-    operator = sub.add_parser("operator", help="serve a local read-only operator audit view")
+    operator = sub.add_parser("operator", help="serve an authenticated local operator audit and cancel view")
     operator.add_argument("--database", type=Path, required=True)
     operator.add_argument("--port", type=int, default=0)
     generate = sub.add_parser("generate-fixtures", help="generate two synthetic local puzzles")
@@ -914,7 +916,7 @@ def main() -> int:
             elif args.web_command == "forget":
                 output = workflow.forget_auth(args.url)
             elif args.web_command == "forget-all":
-                output = workflow.forget_all_auth(apply=args.apply)
+                output = workflow.forget_all_auth(apply=args.apply, include_run_cookies=args.include_run_cookies)
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
             elif args.web_command == "prepare-browser":
@@ -1153,7 +1155,7 @@ def main() -> int:
                                                   older_than_days=args.older_than_days,
                                                   apply=args.apply)
                 print(json.dumps(retention_result))
-                return (2 if args.apply and any(row["status"] == "blocked"
+                return (2 if args.apply and any(row["status"] in {"blocked", "overflow", "capacity_exceeded", "capacity_unavailable"}
                                                  for row in retention_result["results"]) else 0)
             elif args.codex_command == "extend":
                 output = session.extend(args.run_id, actions=args.actions, seconds=args.seconds)
@@ -1256,7 +1258,10 @@ def main() -> int:
     if args.command == "operator":
         token = os.environ.get("METIS_OPERATOR_TOKEN", "")
         try:
-            server = create_server(args.database, port=args.port, token=token)
+            if args.database.is_symlink() or not args.database.is_file():
+                raise ValueError("operator database unavailable")
+            server = create_server(args.database, port=args.port, token=token,
+                                   cancel_run=lambda run_id: CodexSession(args.database).cancel(run_id))
         except (OSError, ValueError):
             parser.exit(2, "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n")
         print(f"METIS operator view: http://127.0.0.1:{server.server_port}/", flush=True)

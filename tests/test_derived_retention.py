@@ -1,15 +1,19 @@
 """Age-based removal never touches original inputs or active runs."""
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from metis.cli import main
+from metis.core import derived_retention
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
-from metis.core.derived_retention import retain_derived
+from metis.core.derived_retention import retain_derived, safe_lock_batch_capacity
 
 
 def test_retention_preview_apply_and_active_run_block(tmp_path, monkeypatch, capsys):
@@ -78,6 +82,10 @@ def test_retention_blocks_old_planning_and_extendable_exhausted(tmp_path, monkey
     with sqlite3.connect(database) as db:
         db.execute("UPDATE codex_sessions SET started=? WHERE run_id IN (?, ?)",
                    (time.time() - 31 * 86_400, planning, exhausted))
+    monkeypatch.setattr(derived_retention, "operation_lock",
+                        lambda *args, **kwargs: pytest.fail("resumable run lock attempted"))
+    monkeypatch.setattr(derived_retention, "run_lock",
+                        lambda *args, **kwargs: pytest.fail("resumable run lock attempted"))
     monkeypatch.setattr(sys, "argv", ["metis", "codex", "--database", str(database),
                                       "retention-derived", "--older-than-days", "30", "--apply"])
     assert main() == 2
@@ -103,3 +111,197 @@ def test_retention_rejects_oversized_selection_before_purge(tmp_path, monkeypatc
                         lambda *args, **kwargs: pytest.fail("purge called before limit check"))
     with pytest.raises(ValueError, match="exceeds 100"):
         retain_derived(database, older_than_days=30, apply=True, now=100 * 86_400)
+
+
+def _aged_run_with_derived_count(database, count, started):
+    from uuid import uuid4
+
+    source = database.parent / f"input-{count}-{started}.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    run_id = session.intake(title="bounded retention", description="fixture",
+                            paths=[source])["run_id"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    derived_dir = root / ".metis-derived"
+    derived_dir.mkdir(mode=0o700)
+    paths = [f".metis-derived/{uuid4().hex}.bin" for _ in range(count)]
+    for relative in paths:
+        (root / relative).write_bytes(b"generated")
+    manifest = session.context(run_id)["challenge"]
+    manifest["artifacts"].extend(paths)
+    from metis.core.contracts import ChallengeManifest
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=?, started=? WHERE run_id=?",
+                   (ChallengeManifest.model_validate(manifest).model_dump_json(), started, run_id))
+    return session, run_id, root, paths
+
+
+def test_retention_artifact_count_boundary_is_previewable(tmp_path):
+    database = tmp_path / "state.sqlite"
+    now = 100 * 86_400
+    _session, run_id, _root, _paths = _aged_run_with_derived_count(
+        database, 100, now - 31 * 86_400)
+
+    preview = retain_derived(database, older_than_days=30, now=now)
+    result = next(row for row in preview["results"] if row["run_id"] == run_id)
+    assert preview["artifact_limit_per_run"] == 100
+    assert result["status"] == "preview"
+    assert len(result["files"]) == 100
+
+
+def test_retention_overflow_apply_preflights_batch_and_never_unlinks(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "state.sqlite"
+    now = 100 * 86_400
+    first_session, first_run, first_root, first_paths = _aged_run_with_derived_count(
+        database, 1, now - 32 * 86_400)
+    _session, overflow_run, overflow_root, overflow_paths = _aged_run_with_derived_count(
+        database, 101, now - 31 * 86_400)
+    before_manifest = first_session._session(first_run)[0]
+    overflow_session = CodexSession(database)
+    before_overflow_manifest = overflow_session._session(overflow_run)[0]
+
+    monkeypatch.setattr(sys, "argv", ["metis", "codex", "--database", str(database),
+                                      "retention-derived", "--older-than-days", "30", "--apply"])
+    assert main() == 2
+    report = json.loads(capsys.readouterr().out)
+    rows = {row["run_id"]: row for row in report["results"]}
+    assert report["artifact_limit_per_run"] == 100
+    assert rows[first_run]["status"] == "not_applied"
+    assert rows[first_run]["artifact_count"] == 1
+    assert rows[overflow_run]["status"] == "overflow"
+    assert rows[overflow_run]["artifact_count"] == 101
+    assert rows[overflow_run]["artifact_limit"] == 100
+    assert "files" not in rows[overflow_run]
+    assert not any(path in json.dumps(rows[overflow_run]) for path in overflow_paths)
+    assert first_session._session(first_run)[0] == before_manifest
+    assert overflow_session._session(overflow_run)[0] == before_overflow_manifest
+    assert all((first_root / path).is_file() for path in first_paths)
+    assert all((overflow_root / path).is_file() for path in overflow_paths)
+
+
+
+def test_retention_fd_capacity_blocks_before_locking_or_unlinking(tmp_path, monkeypatch):
+    database = tmp_path / "state.sqlite"
+    now = 100 * 86_400
+    session, first_run, root, paths = _aged_run_with_derived_count(
+        database, 1, now - 32 * 86_400)
+    run_ids = [first_run]
+    for index in range(59):
+        run_id = session.intake(title=f"run-{index}", description="fixture", paths=[])["run_id"]
+        session._emit(run_id, RunStatus.CANCELLED)
+        run_ids.append(run_id)
+    with sqlite3.connect(database) as db:
+        db.executemany("UPDATE codex_sessions SET started=? WHERE run_id=?",
+                       [(now - 31 * 86_400, run_id) for run_id in run_ids[1:]])
+
+    monkeypatch.setattr(derived_retention.resource, "getrlimit", lambda _resource: (256, 256))
+    monkeypatch.setattr(derived_retention, "_open_fd_count", lambda: 128)
+    monkeypatch.setattr(derived_retention, "operation_lock",
+                        lambda *args, **kwargs: pytest.fail("lock attempted above capacity"))
+    monkeypatch.setattr(derived_retention, "run_lock",
+                        lambda *args, **kwargs: pytest.fail("lock attempted above capacity"))
+
+    result = retain_derived(database, older_than_days=30, apply=True, now=now)
+    assert safe_lock_batch_capacity(256, 128) == 56
+    assert result["batch_lock_capacity"] == 56
+    assert result["selected_runs"] == 60
+    assert {row["status"] for row in result["results"]} == {"capacity_exceeded"}
+    assert (root / paths[0]).is_file()
+    assert session._session(first_run)[0]
+
+
+def test_retention_100_run_batch_fits_256_descriptor_limit(tmp_path, monkeypatch):
+    database = tmp_path / "state.sqlite"
+    session = CodexSession(database)
+    now = 100 * 86_400
+    run_ids = []
+    for index in range(100):
+        run_id = session.intake(title=f"run-{index}", description="fixture", paths=[])["run_id"]
+        session._emit(run_id, RunStatus.CANCELLED)
+        run_ids.append(run_id)
+    with sqlite3.connect(database) as db:
+        db.executemany("UPDATE codex_sessions SET started=? WHERE run_id=?",
+                       [(now - 31 * 86_400, run_id) for run_id in run_ids])
+
+    monkeypatch.setattr(derived_retention.resource, "getrlimit", lambda _resource: (256, 256))
+    monkeypatch.setattr(derived_retention, "_open_fd_count", lambda: 32)
+    result = retain_derived(database, older_than_days=30, apply=True, now=now)
+
+    assert safe_lock_batch_capacity(256, 32) == 100
+    assert result["batch_lock_capacity"] == 100
+    assert result["selected_runs"] == 100
+    assert all(row["status"] == "applied" for row in result["results"])
+
+
+def test_retention_capacity_unavailable_exits_nonzero(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "state.sqlite"
+    now = 100 * 86_400
+    session, run_id, _root, _paths = _aged_run_with_derived_count(
+        database, 1, now - 31 * 86_400)
+
+    def unavailable():
+        raise OSError("descriptor count unavailable")
+
+    monkeypatch.setattr(derived_retention, "_retention_lock_capacity", unavailable)
+    monkeypatch.setattr(sys, "argv", ["metis", "codex", "--database", str(database),
+                                      "retention-derived", "--older-than-days", "30", "--apply"])
+    assert main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["batch_lock_capacity"] is None
+    assert report["results"] == [{"run_id": run_id, "status": "capacity_unavailable"}]
+    assert session._session(run_id)[0]
+
+
+def test_retention_100_runs_under_real_256_fd_limit_in_subprocess(tmp_path):
+    database = tmp_path / "state.sqlite"
+    source = tmp_path / "input.txt"
+    source.write_text("fixture")
+    session = CodexSession(database)
+    now = 100 * 86_400
+    artifacts = []
+    run_ids = []
+    for index in range(100):
+        run_id = session.intake(title=f"limited-{index}", description="fixture",
+                                paths=[source])["run_id"]
+        relative = session.store_artifact(run_id, b"generated")
+        session._emit(run_id, RunStatus.CANCELLED)
+        root = session.artifact_root(run_id)
+        assert root is not None
+        artifacts.append((root / relative, relative, run_id))
+        run_ids.append(run_id)
+    with sqlite3.connect(database) as db:
+        db.executemany("UPDATE codex_sessions SET started=? WHERE run_id=?",
+                       [(now - 31 * 86_400, run_id) for run_id in run_ids])
+
+    script = '''
+import json
+import resource
+import sys
+from pathlib import Path
+resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+from metis.core.derived_retention import retain_derived
+print(json.dumps(retain_derived(Path(sys.argv[1]), older_than_days=30,
+                                apply=True, now=float(sys.argv[2]))))
+'''
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    completed = subprocess.run([sys.executable, "-c", script, str(database), str(now)],
+                               capture_output=True, text=True, check=True, env=environment)
+    report = json.loads(completed.stdout)
+    statuses = [row["status"] for row in report["results"]]
+    assert report["selected_runs"] == 100
+    assert len(statuses) == 100
+    capacity = report["batch_lock_capacity"]
+    if capacity is None or capacity < 100:
+        expected_status = "capacity_unavailable" if capacity is None else "capacity_exceeded"
+        assert set(statuses) == {expected_status}
+        for artifact, relative, run_id in artifacts:
+            assert artifact.is_file()
+            manifest = json.loads(session._session(run_id)[0])
+            assert relative in manifest["artifacts"]
+        pytest.skip("available file descriptors cannot safely exercise a 100-run batch")
+    assert capacity == 100
+    assert set(statuses) == {"applied"}
+    assert all(not artifact.is_file() for artifact, _relative, _run_id in artifacts)
