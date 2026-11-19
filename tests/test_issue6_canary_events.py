@@ -18,7 +18,8 @@ from metis.evaluation.issue6_canary_events import (
 THREAD_ID = "01234567-89ab-cdef-0123-456789abcdef"
 PRIVATE_REASONING = "sensitive payload must not persist"
 ANSWER = b'{"ok":true}'
-BOUNDARY = TurnBoundary(exit_code=0, reaped_at=2, scrubbed_at=3, finalized_at=4, deadline=5)
+BOUNDARY = TurnBoundary(exit_code=0, reaped_at=2, scrubbed_at=3, finalized_at=4, deadline=5,
+                        last_message_was_fresh=True)
 KEY, SCOPE = bytes(range(32)), b"s" * 32
 USAGE = {
     "input_tokens": 15, "cached_input_tokens": 3, "cache_write_input_tokens": 2,
@@ -133,8 +134,18 @@ def test_zero_renderer_defaults_and_missing_usage_are_not_measurements():
     ({"scrubbed_at": None}, Outcome.UNCERTAIN_CLEANUP),
     ({"scrubbed_at": 1}, Outcome.UNCERTAIN_CLEANUP),
     ({"finalized_at": float("inf")}, Outcome.UNCERTAIN_CLEANUP),
+    ({"reaped_at": float("nan")}, Outcome.UNCERTAIN_CLEANUP),
+    ({"deadline": -1}, Outcome.UNCERTAIN_CLEANUP),
+    ({"reaped_at": True}, Outcome.UNCERTAIN_CLEANUP),
+    ({"scrubbed_at": "3"}, Outcome.UNCERTAIN_CLEANUP),
+    ({"finalized_at": 10**400}, Outcome.UNCERTAIN_CLEANUP),
+    ({"deadline": "5"}, Outcome.UNCERTAIN_CLEANUP),
+    ({"cancelled": "false"}, Outcome.UNCERTAIN_CLEANUP),
+    ({"cancelled": 0}, Outcome.UNCERTAIN_CLEANUP),
     ({"finalized_at": 5}, Outcome.DEADLINE),
     ({"cancelled": True}, Outcome.CANCELLED),
+    ({"last_message_was_fresh": False}, Outcome.INVALID_RESPONSE),
+    ({"last_message_was_fresh": 1}, Outcome.INVALID_RESPONSE),
 ])
 def test_requires_bounded_reaped_scrubbed_success(updates, expected):
     receipt = finalize(boundary=replace(BOUNDARY, **updates))
@@ -159,3 +170,10 @@ def test_source_limits_apply_before_retaining_evidence():
     assert finalize(b"\n" * (MAX_EVENTS + 1)).outcome == Outcome.CAPTURE_LIMIT
     assert finalize(stderr=b"x" * (MAX_STDERR_BYTES + 1)).outcome == Outcome.CAPTURE_LIMIT
     assert finalize(last_message=b"x" * (MAX_MESSAGE_BYTES + 1)).outcome == Outcome.CAPTURE_LIMIT
+
+
+
+def test_captures_must_be_exact_bytes():
+    assert finalize(good().decode()).outcome == Outcome.MALFORMED
+    assert finalize(stderr="").outcome == Outcome.MALFORMED
+    assert finalize(last_message=bytearray(ANSWER)).outcome == Outcome.MALFORMED

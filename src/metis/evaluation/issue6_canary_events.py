@@ -1,14 +1,17 @@
 """Offline, fail-closed evidence projection for Codex 0.169.0 exec --json.
 
-The caller captures the bounded streams and supplies verified process/cleanup
-observations. This module cannot launch a turn or attest a provider identity.
+The caller uses MAX+1 capture on each stream and last-message file, never
+truncates an overflow to MAX, and supplies verified process/cleanup observations.
+Every launched reservation stays charged, whichever outcome this function returns.
+Launch-side tool restrictions and isolation must be checked independently. The
+pinned renderer can omit tool/cooperation notifications and cannot attest account
+identity, provider request count or absence of retries.
 """
 
 from __future__ import annotations
 
 import hmac
 import json
-import math
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,6 +24,7 @@ MAX_MESSAGE_BYTES = 1024
 MAX_EVENTS = 256
 _MAX_JSON_DEPTH = 8
 _I64_MAX = 2**63 - 1
+_MAX_TIMESTAMP = 2**53 - 1
 _THREAD_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _ITEM_ID = re.compile(r"item_[0-9]{1,10}")
 
@@ -43,6 +47,8 @@ class Outcome(StrEnum):
 
 @dataclass(frozen=True)
 class CliUsage:
+    """Counts from the last cumulative thread-usage notification rendered by CLI."""
+
     input_tokens: int
     cached_input_tokens: int
     cache_write_input_tokens: int
@@ -52,11 +58,15 @@ class CliUsage:
 
 @dataclass(frozen=True)
 class TurnBoundary:
+    """Verified caller observations on one monotonic clock and fresh output file."""
+
     exit_code: int | None
     reaped_at: float | None
     scrubbed_at: float | None
     finalized_at: float
     deadline: float
+    # The controller must create an exclusive empty file in this turn's private workspace.
+    last_message_was_fresh: bool
     cancelled: bool = False
 
 
@@ -197,22 +207,34 @@ def _parse(stdout: bytes) -> tuple[str, bytes, CliUsage]:
     return thread, answer, usage
 
 
+def _valid_timestamp(value: object) -> bool:
+    if type(value) is not int and type(value) is not float:
+        return False
+    return 0 <= value <= _MAX_TIMESTAMP
+
+
 def finalize_canary(stdout: bytes, stderr: bytes, last_message: bytes, boundary: TurnBoundary, *,
                     commitment_key: bytes, reservation_scope: bytes) -> CanaryEvidence:
     """Recognize only a single successful public canary response and emit sanitized evidence."""
-    if len(commitment_key) != 32 or len(reservation_scope) != 32:
+    if (type(commitment_key) is not bytes or type(reservation_scope) is not bytes
+            or len(commitment_key) != 32 or len(reservation_scope) != 32):
         raise ValueError("commitment key and opaque reservation scope must each be 32 bytes")
     reaped = boundary.reaped_at
     scrubbed = boundary.scrubbed_at
     if reaped is None or scrubbed is None:
         return CanaryEvidence(Outcome.UNCERTAIN_CLEANUP)
-    if (not all(math.isfinite(stamp) for stamp in (reaped, scrubbed, boundary.finalized_at, boundary.deadline))
-            or not 0 <= reaped <= scrubbed <= boundary.finalized_at):
+    if (type(boundary.cancelled) is not bool or not all(
+        _valid_timestamp(stamp) for stamp in (reaped, scrubbed, boundary.finalized_at, boundary.deadline)
+    ) or not reaped <= scrubbed <= boundary.finalized_at):
         return CanaryEvidence(Outcome.UNCERTAIN_CLEANUP)
     if boundary.finalized_at >= boundary.deadline:
         return CanaryEvidence(Outcome.DEADLINE)
     if boundary.cancelled:
         return CanaryEvidence(Outcome.CANCELLED)
+    if boundary.last_message_was_fresh is not True:
+        return CanaryEvidence(Outcome.INVALID_RESPONSE)
+    if any(type(stream) is not bytes for stream in (stdout, stderr, last_message)):
+        return CanaryEvidence(Outcome.MALFORMED)
     if (len(stdout) > MAX_STDOUT_BYTES or len(stderr) > MAX_STDERR_BYTES
             or len(last_message) > MAX_MESSAGE_BYTES):
         return CanaryEvidence(Outcome.CAPTURE_LIMIT)
