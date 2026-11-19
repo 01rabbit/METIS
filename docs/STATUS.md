@@ -13,9 +13,9 @@ inventory's recognition rules keep their event-chain and other audit output;
 the persistence contract is unchanged. SQLite errors propagate if the original
 read transaction is no longer active, preserving the audit's snapshot boundary.
 All 95 focused audit/CLI/evidence tests and standard static/content checks passed.
-The preceding head passed the full suite (1,565 tests and 45 subtests, 36 skipped);
-the small transaction guard change received focused validation without another
-full run. This adds local visibility without proving file
+The current head also completed the full test suite with exit code 0; pytest
+collection reported 1,603 tests. The quiet run did not expose pass/skip counts.
+This adds local visibility without proving file
 existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
 P7/#8 dependency remain open. See
 [`issue9-artifact-inventory-audit-2026-11-20.md`](reports/issue9-artifact-inventory-audit-2026-11-20.md).

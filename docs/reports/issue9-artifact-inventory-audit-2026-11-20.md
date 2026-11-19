@@ -83,9 +83,20 @@ git diff --check
 ```
 
 The final change only guards the SQLite error fallback and expands its focused
-regressions. The full suite was not rerun for that small change. These results
-were observed on the preceding head
-`2d0dd30540de025b23a3d395408c4769daeeefb8`, before the transaction guard:
+regressions. The latest head `41da49916fe5c4419cc33e0a5b341354df8c7b05`
+also completed the full suite successfully. The repository's quiet pytest
+configuration suppressed the pass/skip summary; a separate collection run
+reported 1,603 tests. No pass/skip breakdown is claimed for this run.
+
+```text
+PYTHONPATH=src:. /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest -q
+exit code 0
+PYTHONPATH=src:. /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest --collect-only -q
+1,603 collected tests
+```
+
+The preceding head `2d0dd30540de025b23a3d395408c4769daeeefb8`, before the
+transaction guard, had this recorded full-suite result:
 
 ```text
 PYTHONPATH=src /Users/mao/Developer/GitHub/METIS/.venv/bin/python -m pytest
