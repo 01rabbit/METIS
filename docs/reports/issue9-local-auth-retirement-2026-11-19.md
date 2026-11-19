@@ -37,6 +37,10 @@ file modes.
 Environment-only authentication and explicit local forgetting still work with
 regular files whose permissions are broader. On such files, environment-only
 mode discards cookies from every origin when loading or saving run state.
+`forget` and `forget-all` remove authentication-origin cookies. Existing
+alternate-origin cookies can remain in plaintext on a broadly accessible
+database until the run state is saved again in environment-only mode. That
+save cannot undo prior exposure.
 Browser routing checks the stored generation, so a mode switch does not
 guarantee cancellation of an already prepared or in-flight browser request.
 
