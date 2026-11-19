@@ -65,6 +65,25 @@ prints only step names, run IDs, reproducibility, and match booleans. A model
 proposal cannot request a new tool, policy, verifier, executable, path, or
 endpoint. This is a bounded local pilot, not general CTF evidence.
 
+## Externally prepared benign encoding fixture
+
+Supply `--fixture` and `--oracle` together to `scripts/issue7_unseen_trial.py` to
+evaluate one operator-authorized offline encoding fixture. Use a single ASCII
+encoding token of at most 65,536 bytes, with no trailing newline. A separate
+reviewer should choose a fixture outside the seeded generator and compute the
+SHA-256 of the exact expected decoded bytes before the trial, independently of
+the proposer and METIS replay. Store the lowercase digest on its own line in
+an owner-only regular file outside Git checkouts. Supply only file paths and
+keep the run database and its artifacts in a private directory outside Git.
+
+The intake snapshots both inputs in memory before calling the proposer. The
+proposer receives only the encoded token. METIS reuses the pilot's three base
+transforms and digest-only replay. The report adds the encoded fixture's
+SHA-256 for identification. The expected digest and source paths stay out of
+the report and run events. A missing or mismatched replay verdict fails the
+trial. Independent preparation and whether the material is new to the model
+depend on the reviewer; the intake checks file shape and bounds.
+
 ## Evidence
 
 The sandbox-backed test procedure and exact environment are in

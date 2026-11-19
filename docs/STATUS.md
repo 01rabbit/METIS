@@ -489,6 +489,10 @@ replays were reproducible and matched the
 private oracle; rejected tool, policy, verifier, and code proposals have tests.
 General workflow reuse and the Issue #6 dependency remain open. See
 [`issue7-unseen-model-workflow-2026-11-19.md`](reports/issue7-unseen-model-workflow-2026-11-19.md).
+The local trial also accepts a separately prepared benign encoding fixture
+and a private SHA-256 commitment. Intake freezes both inputs before proposal
+and reuses digest-only replay. Tests cover input rejection, snapshot
+immutability, and outcome projection with a stub proposer and replay.
 Issue #7 remains open because the P5 dependency (Issue #6) and broader P6
 acceptance remain unmet. See
 [`issue7-seeded-workflow-2026-11-17.md`](reports/issue7-seeded-workflow-2026-11-17.md).
