@@ -255,3 +255,40 @@ def test_migrate_legacy_ledger_and_reconcile_separate_pinned_fixture_without_ref
             ("lost", new_study.native_manifest_sha256),
         ]
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (30,)
+
+
+def test_hardlink_alias_cannot_reconcile_a_live_controller(reserved, tmp_path):
+    admission, receipt = reserved
+    context = get_context("spawn")
+    ready, release = context.Event(), context.Event()
+    process = context.Process(target=_finish_with_lock, args=(admission.database, receipt, ready, release))
+    process.start()
+    try:
+        assert ready.wait(timeout=10)
+        alias = tmp_path / "alias.sqlite"
+        os.link(admission.database, alias)
+        alternate = StudyTokenAdmission(alias)
+        with pytest.raises(ValueError, match="singly linked"):
+            alternate.reconcile_lost_fixture_claim(receipt)
+        with pytest.raises(ValueError, match="singly linked"):
+            admission.reconcile_lost_fixture_claim(receipt)
+        assert not (tmp_path / ".alias.sqlite.fixture-locks").exists()
+    finally:
+        release.set()
+        process.join(timeout=12)
+    assert process.exitcode == 0
+    process.close()
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT status FROM study_token_outcomes").fetchall() == [("launch_failed",)]
+
+
+@pytest.mark.parametrize("precreated", [False, True])
+def test_unavailable_ledger_fails_closed_without_creating_lock_paths(reserved, tmp_path, precreated):
+    _, receipt = reserved
+    path = tmp_path / "unavailable.sqlite"
+    if precreated:
+        path.touch()
+    admission = StudyTokenAdmission(path)
+    with pytest.raises(ValueError, match="ledger is missing|ledger unavailable"):
+        admission.reconcile_lost_fixture_claim(receipt)
+    assert not (tmp_path / ".unavailable.sqlite.fixture-locks").exists()

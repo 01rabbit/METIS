@@ -277,8 +277,17 @@ class StudyTokenAdmission:
     def _preflight_fixture_receipt(self, receipt: TokenAdmissionReceipt) -> None:
         if receipt.study.native_manifest_sha256 is None:
             raise ValueError("fixture claim requires a committed native manifest")
-        with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
-            self._require_committed_receipt(db, receipt)
+        try:
+            metadata = self.database.lstat()
+        except FileNotFoundError:
+            raise ValueError("fixture reservation ledger is missing") from None
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("fixture reservation ledger must be a singly linked regular file")
+        try:
+            with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
+                self._require_committed_receipt(db, receipt)
+        except sqlite3.OperationalError:
+            raise ValueError("fixture reservation ledger unavailable for verification") from None
 
     @contextmanager
     def _fixture_lock(self, receipt: TokenAdmissionReceipt) -> Iterator[None]:

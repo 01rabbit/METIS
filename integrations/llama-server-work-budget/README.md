@@ -162,9 +162,10 @@ After that lock releases,
 `StudyTokenAdmission.reconcile_lost_fixture_claim(receipt)` can close a matching
 pending fixture claim once as `lost` and retain its committed manifest digest.
 A live owner, an earlier terminal record, or a claim created without fixture
-locking blocks reconciliation. The
-operator must preserve the trusted ledger and its lock directory at their
-original paths.
+locking blocks reconciliation. Use a
+trusted, local filesystem and one canonical path for the ledger and its
+lock directory. Hardlinked ledgers are rejected. Keep both paths stable
+for the lifetime of the study.
 
 A lost outcome leaves the child state unknown. An abruptly terminated
 controller may leave an orphaned process, which retains its immutable native
