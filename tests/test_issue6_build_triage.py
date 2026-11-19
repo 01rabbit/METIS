@@ -1,7 +1,14 @@
+import json
 from dataclasses import asdict, replace
 
 import pytest
 
+from metis.evaluation.issue6_build_artifact import (
+    canonical_artifact,
+    fixture_digest,
+    fixture_labels,
+    parse_proposal,
+)
 from metis.evaluation.issue6_build_generator import FAMILIES, _events, make_fixture
 from metis.evaluation.issue6_build_oracle import (
     BuildFixture,
@@ -94,3 +101,54 @@ def test_ambiguity_rejection_is_bounded_and_defective_generator_halts(monkeypatc
     monkeypatch.setattr(generator, "matching_causes", lambda fixture: ())
     with pytest.raises(ValueError, match="generator and oracle disagree"):
         make_fixture(1, "small", "worker_loss")
+
+
+def test_simultaneous_completion_releases_cross_pool_dependency_before_lexical_dispatch() -> None:
+    jobs = (
+        Job("app", "build", 2),
+        Job("lib", "build", 2),
+        Job("reserve", "test", 5),
+        Job("a-integration", "test", 2, ("app", "lib")),
+        Job("z-unit", "test", 2, ("app",)),
+    )
+    options = (Cause("late_artifact", "lib", 1), Cause("slow_job", "reserve", 1))
+    observed = (
+        Observation("app", "finish", 2), Observation("lib", "finish", 2),
+        Observation("a-integration", "start", 2), Observation("z-unit", "start", 4),
+        Observation("reserve", "finish", 6),
+    )
+    fixture = BuildFixture(jobs, options, observed)
+    schedule = _events(jobs, options[1])
+    assert all(schedule[(row.job, row.event)] == row.tick for row in observed)
+    assert matching_causes(fixture) == (options[1],)
+
+
+def test_canonical_artifact_normalizes_order_without_exposing_admission_metadata() -> None:
+    admitted = make_fixture(12, "small", "worker_loss")
+    fixture = admitted.fixture
+    reordered = replace(
+        fixture,
+        jobs=tuple(replace(job, deps=job.deps[::-1]) for job in fixture.jobs[::-1]),
+        options=fixture.options[::-1],
+        observations=fixture.observations[::-1],
+    )
+    artifact = canonical_artifact(fixture)
+    assert artifact == canonical_artifact(reordered)
+    assert fixture_digest(fixture) == fixture_digest(reordered)
+    assert set(json.loads(artifact)) == {"version", "rules", "jobs", "options", "observations"}
+    assert len(fixture_labels((fixture,))) == 1
+    with pytest.raises(ValueError, match="duplicate canonical"):
+        fixture_labels((fixture, reordered))
+
+
+def test_structured_option_requires_one_exact_string_id() -> None:
+    job = Job("app", "build", 2)
+    options = (Cause("slow_job", "app", 4), Cause("slow_job", "app", 2))
+    fixture = BuildFixture((job,), options, (Observation("app", "finish", 4),))
+    assert parse_proposal('{"option_id":"option-001"}', fixture) == options[1]
+    for raw in (
+        '{"option_id":2.0}', '{"option_id":true}', '{"option_id":"option-100"}',
+        '{"option_id":"option-001","option_id":"option-002"}', '{"amount":2.0}', '{}',
+        '["option-001"]', '{"option_id":"option-001","reason":"extra"}', " " * 129,
+    ):
+        assert parse_proposal(raw, fixture) is None

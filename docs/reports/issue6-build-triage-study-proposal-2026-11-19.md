@@ -24,20 +24,21 @@ Use one active specialist slot. Each arm has an owner phase and a review phase.
 Use the same diagnosis instruction and the same instruction to check and, if
 needed, revise the diagnosis. Pass the same model and reasoning settings to
 both phases in both arms. Give both arms the same two per-phase hard call
-limits, private candidates/actions, completion criteria, prompt window, provider
-token limits if enforceable, monotonic deadline, and finalization path. Proposed
-limits are one model call and one combined candidate/report action per phase,
-60 seconds per phase including setup and finalization, and no retries. The
-provider's observed token use is diagnostic. An arm-level hard token ceiling may
-be advertised only after it is proved enforceable before and during calls.
-Before execution freeze actual model/runtime identifiers, exact decoded input
-and output caps enforceable by the selected backend, and tokenizer and settings
-pins. Stop at preflight if the selected backend cannot enforce the registered
-limits. Freeze charge semantics for failed launches and missing usage; record
+limits, private candidates/actions, completion criteria, prompt window and
+monotonic deadline. Proposed limits are one model call and one combined
+candidate/report action per phase, 60 seconds per phase including setup and
+finalization, and no retries. CodexCLI is eligible for this synthetic Issue #6
+comparison if the runner enforces those limits and proves matched settings
+before the pilot. Report observed provider usage and missing usage; this
+design does not claim a hard provider token ceiling. The hard-token and
+trial-admission requirements for real held-out CTF studies such as Issue #8
+are separate. Freeze the actual model/runtime pins, prompt size and output
+schema, and charge semantics for failed launches and missing usage. Record
 charges from the actual ledger.
 
 Use a preloaded public artifact and enforce the structured diagnosis schema
-before the first call. Stage one also returns a bounded private work note in
+before the first call. The proposal contains one string-valued opaque option ID and no extra fields.
+Stage one also returns a bounded private work note in
 both arms. This note is visible to the owner reviewing its answer and is
 excluded from the fresh reviewer's context. Its schema, byte cap, and lifetime
 are identical in both arms. No system-validated witness or correctness feedback,
@@ -77,7 +78,9 @@ schedule. A fixture qualifies only if there is exactly one matching cause and
 it agrees with the injected cause. Fixed-seed continuation is allowed for
 ambiguous or observation-free proposals. Generator/oracle disagreement or
 exhaustion halts. Validate known hand schedules independently, including
-worker-loss boundaries, delayed artifacts, ambiguity, and mutated observations.
+worker-loss boundaries, delayed artifacts, ambiguity, and mutated observations. Send only the canonical fixture artifact to either
+workflow. Its normalized hash is used for deduplication, while solver inputs
+omit the seed, latent family, identity label and admission counters.
 
 The selected task population is thus uniquely diagnosable under the declared
 model. Admission can favor highly diagnostic observations, especially when
@@ -99,18 +102,19 @@ If no tier qualifies, stop and report. A low solve rate produced by orchestratio
 failure cannot qualify a tier. The pilot is calibration only and all results
 are recorded.
 
-After calibration, obtain two independently sampled private seed sets from an
-independent custodian. Freeze an opaque commitment, disjointness check, fixed 60
-fixture IDs and cause-family schedule (20 each) for each cohort, admitted input
-manifest, and paired arm order. Pilot, first cohort, and replication have
-disjoint seed sets and public fixture identities, with no duplicate fixture
-under a canonical field ordering. The custodian freezes both manifests before
-the first cohort's launch. Use no seed substitutions except the generator's
-registered admission procedure. Run each pair adjacently, with order balanced
-by family and fixed independently of the task generator. Preserve actual
-execution order, including failures. Both cohorts use the same chosen tier,
-model settings and code, so the second cohort tests independent draws from the
-same family. A family-wide claim needs further evidence across task domains.
+If the runner preflight and calibration qualify, prepare a fresh disjoint
+60-pair evaluation cohort with 20 per cause family. Freeze the seed-set
+commitment, case IDs, family schedule, canonical fixture manifest,
+analysis code and randomized arm order before the first model call in that
+cohort. Check pilot/evaluation disjointness by seed and canonical fixture
+identity. A delegate independent of execution can inspect the frozen
+commitment. Use no seed substitutions except the registered admission
+procedure. Run paired arms adjacently, with order balanced by family and
+fixed independently of generation. Preserve actual execution order including
+failures. A positive primary result permits a separately committed fresh
+replication under the same frozen settings if time allows. An independent
+replication is required before counting the result as Issue #6 acceptance.
+A family-wide claim needs further evidence across task domains.
 
 ## Decision and budget
 
@@ -127,18 +131,15 @@ input/output tokens, and provisional-to-final transitions computed only after
 model stages have finished. The common single comparator receives both phases.
 A gain can arise from correction, avoiding degradation, or both.
 
-The maximum is 72 pilot calls plus 480 evaluation calls (552 total). At two
-minutes per arm, serial model-and-arm hard wall ceilings total 9 h 12 min, of
-which 72 minutes is calibration. This excludes setup, independent review and
-teardown. Timing from PR #84 (roughly 8.6 seconds per observed call including
-workflow operations) would suggest roughly 80 minutes of model/arm time for
-552 calls, but is not a forecast for a new backend and harder tasks. Use the
-pilot's wall-time measurement and reserve time for post-run audit. If the
-remaining window cannot accommodate the registered execution and audit, disclose
-that the evidence will be late. A late result must use the frozen design.
-Sixty pairs per cohort can detect large, reasonably one-sided shifts and can
-miss modest gains. Treat the two-cohort requirement as a narrow replication
-gate and report the observed interval even on failure.
+The proposed calibration is up to 36 arms and 72 calls, with a 72-minute
+serial hard wall cap. Launch calibration only after symmetric runner
+preflight. A subsequent one-cohort comparison is 120 arms and at most 240
+calls, with a four-hour serial hard wall cap. These stages exclude setup
+and audit. Use the pilot's measured wall time to assess whether the first
+cohort and audit fit. If not, report calibration and keep the gate open.
+Replication is separately scheduled and budgeted only after a positive first
+cohort. Sixty pairs can identify large, reasonably one-sided shifts and can
+miss modest gains. Report the interval even when a cohort fails the gate.
 
 ## Retention
 
