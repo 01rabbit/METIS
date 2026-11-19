@@ -181,6 +181,45 @@ class WebWorkflow:
                 "limit": ("Local stored credentials only; environment variables and provider credentials "
                           "are unchanged, and an in-flight request may already have sent authentication")}
 
+    def forget_all_auth(self, *, apply: bool = False) -> dict:
+        """Preview or fence all saved platform authentication in one bounded transaction."""
+        with sqlite3.connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
+            credentials = db.execute("SELECT origin FROM web_credentials LIMIT 101").fetchall()
+            runs = db.execute("SELECT run_id,config,state FROM web_runs LIMIT 1001").fetchall()
+            if len(credentials) > 100 or len(runs) > 1000:
+                raise ValueError("bulk auth forgetting exceeds 100 origins or 1000 runs; use web forget URL per origin")
+            origins = {row[0] for row in credentials}
+            selected: list[tuple[str, str, dict]] = []
+            for run_id, raw_config, raw_state in runs:
+                config, state = json.loads(raw_config), json.loads(raw_state)
+                key = config.get("auth_origin") if isinstance(config, dict) else None
+                if (not isinstance(key, str) or not isinstance(state, dict)
+                        or not isinstance(state.get("cookies", {}), dict)):
+                    raise TypeError("stored web authentication state is invalid")
+                origins.add(key)
+                selected.append((run_id, key, state))
+            if len(origins) > 100:
+                raise ValueError("bulk auth forgetting exceeds 100 origins")
+            if apply:
+                generations: dict[str, int] = {}
+                for key in sorted(origins):
+                    db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                               "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+                    generations[key] = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                                  (key,)).fetchone()[0]
+                db.execute("DELETE FROM web_credentials")
+                for run_id, key, state in selected:
+                    state.get("cookies", {}).pop(key, None)
+                    state.pop("cookie_fingerprint", None)
+                    state[self._AUTH_GENERATION_STATE_KEY] = generations[key]
+                    db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
+        return {"applied": apply, "origins": len(origins), "stored_credentials": len(credentials),
+                "selected_runs": len(runs),
+                "limit": ("Local platform-authentication state only; environment variables, "
+                          "challenge-origin cookies, provider credentials, in-flight requests or intake, "
+                          "SQLite history and backups are unchanged")}
+
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")

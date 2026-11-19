@@ -375,6 +375,8 @@ def main() -> int:
     auth.add_argument("--scheme", choices=("Token", "Bearer"), default="Token")
     forget = web_commands.add_parser("forget", help="remove the stored credential for a CTF origin")
     forget.add_argument("url")
+    forget_all = web_commands.add_parser("forget-all", help="preview or forget all saved platform credentials")
+    forget_all.add_argument("--apply", action="store_true", help="apply the bounded bulk forgetting operation")
     web_context = web_commands.add_parser("context")
     web_context.add_argument("run_id")
     web_grant = web_commands.add_parser("grant", help="add a user-authorized challenge origin to a run")
@@ -873,6 +875,8 @@ def main() -> int:
                     output = workflow.auth(args.url, kind=args.kind, value=private_value, scheme=args.scheme)
             elif args.web_command == "forget":
                 output = workflow.forget_auth(args.url)
+            elif args.web_command == "forget-all":
+                output = workflow.forget_all_auth(apply=args.apply)
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
             elif args.web_command == "prepare-browser":
