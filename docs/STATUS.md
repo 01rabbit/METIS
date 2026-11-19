@@ -550,6 +550,13 @@ sandbox suite includes the real-Docker cross-controller test.
 See `docs/reports/issue9-emergency-stop-recovery-2026-11-17.md`. Issue #9 and
 its P7 dependency remain open.
 
+A local read-only operator view now serves the existing count-only audit over
+`127.0.0.1` with an in-memory bearer token supplied by environment variable.
+It rejects non-loopback Host headers and Origin-bearing requests, exposes no
+write route, and never logs tokens or event details. Local HTTP tests passed.
+This is monitoring only; pause/resume, HTTP cancellation, host reboot, secure
+retention and release acceptance remain open.
+
 A new read-only `metis audit RUN_ID --database PATH` command projects lifecycle
 status, sequence bounds, event timestamps, status counts, and validated chain
 integrity without exposing free-form event details. Local CLI checks confirm
