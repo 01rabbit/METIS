@@ -244,6 +244,8 @@ def _check_raw_tar(data: bytes) -> None:
         if offset > len(data):
             raise ValueError("truncated tar member")
         if member.type in _TAR_EXTENSION_TYPES:
+            if any(data[payload_start + member.size:offset]):
+                raise ValueError("nonzero tar extension padding is unsupported")
             chain += 1
             extension_bytes += member.size
             if chain > _MAX_TAR_EXTENSION_CHAIN or extension_bytes > _MAX_TAR_EXTENSION_BYTES:

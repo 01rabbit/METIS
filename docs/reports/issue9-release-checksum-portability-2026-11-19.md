@@ -34,8 +34,9 @@ at 8,192, extension chains at eight, cumulative extension payload at
 256 KiB, and PAX records at 64 per extension and 64 global records per
 archive. The resolved member count is checked separately. The read-only
 verifier rejects sparse encodings and PAX size overrides so no extension
-can shift the raw walk's member boundaries. The manifest read is capped at
-644 bytes.
+can shift the raw walk's member boundaries. Nonzero extension padding is
+rejected because tarfile would otherwise parse it as additional PAX data.
+The manifest read is capped at 644 bytes.
 The staged bundle is read-only for this check. Successful verification shows
 bundle consistency. Replacing both an archive and its manifest can still pass.
 Verify artifact attestations through a separate trusted provenance check.
@@ -43,12 +44,13 @@ It checks member and directory identities again before reporting success.
 The directory and its ancestors should remain under operator control. Verify
 again if the bundle is subsequently moved or changed.
 
-Thirty-eight focused tests passed using synthetic archives. Cases include a
+Forty-one focused tests passed using synthetic archives. Cases include a
 substituted wheel with unchanged package metadata, a missing manifest,
 symlink, missing or duplicate lines, extra entries, traversal text, changed
 digests, trailing content, reorder, concurrent file substitution, FIFO
 replacement, oversized input, excessive expansion, forged ZIP metadata size,
 duplicate metadata, recursive tar extensions, PAX dictionary amplification
-and truncated gzip. A PAX-formatted synthetic sdist and the local wheel and
-sdist produced by an offline build passed. Ruff, mypy, the repository scanner
-and diff check passed. No release was tagged, published, or downloaded.
+nonzero PAX padding, and truncated gzip. A PAX-formatted synthetic sdist and
+the local wheel and sdist produced by an offline build passed. Ruff, mypy,
+the repository scanner and diff check passed. No release was tagged,
+published, or downloaded.

@@ -360,3 +360,78 @@ def test_offline_verifier_accepts_setuptools_style_pax_sdist(tmp_path):
         archive.addfile(package, io.BytesIO(data))
     write_checksums(artifacts)
     assert verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0") == artifacts
+
+
+def _pax_record(key: bytes, value: bytes) -> bytes:
+    body = b" " + key + b"=" + value + b"\n"
+    length = len(body) + 1
+    while len(str(length)) + len(body) != length:
+        length = len(str(length)) + len(body)
+    return str(length).encode("ascii") + body
+
+
+def _pax_header_with_nonzero_padding(kind: bytes, padding_records: bytes) -> bytes:
+    declared = b"6 a=b\n"
+    header = tarfile.TarInfo("pax-padding")
+    header.type = kind
+    header.size = len(declared)
+    payload = declared + padding_records
+    assert len(payload) < tarfile.BLOCKSIZE
+    return header.tobuf() + payload + bytes(tarfile.BLOCKSIZE - len(payload))
+
+
+@pytest.mark.parametrize("kind", [tarfile.XHDTYPE, tarfile.XGLTYPE])
+def test_offline_verifier_rejects_pax_records_hidden_in_block_padding(
+    tmp_path, monkeypatch, kind
+):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    raw_tar = gzip.decompress(artifacts[1].read_bytes())
+    hidden_records = b"".join(_pax_record(b"x", b"y") for _ in range(70))
+    artifacts[1].write_bytes(gzip.compress(
+        _pax_header_with_nonzero_padding(kind, hidden_records) + raw_tar
+    ))
+    write_checksums(artifacts)
+
+    def must_not_normalize(*args, **kwargs):
+        pytest.fail("padded PAX records reached metadata normalization")
+
+    monkeypatch.setattr(release_artifacts, "_validate_metadata", must_not_normalize)
+    with pytest.raises(ValueError, match="nonzero tar extension padding"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
+
+
+def test_offline_verifier_rejects_padded_size_override_before_tarfile(
+    tmp_path, monkeypatch
+):
+    dist = write_distributions(tmp_path)
+    artifacts = validate_release(dist, "v0.5.0", "metis-ctf", "0.5.0")
+    original_tar = gzip.decompress(artifacts[1].read_bytes())
+    global_pax = tarfile.TarInfo.create_pax_global_header(
+        {f"x{index}": "v" for index in range(100)}
+    )
+    local_headers = tarfile.TarInfo("local")
+    local_headers.type = tarfile.XHDTYPE
+    hidden_tar = global_pax + local_headers.tobuf() * 9 + original_tar
+    local_header = tarfile.TarInfo("carrier")
+    local_header.type = tarfile.XHDTYPE
+    local_header.size = len(b"6 a=b\n")
+    header = local_header.tobuf()
+    override = b"10 size=0\n"
+    padding_payload = b"6 a=b\n" + override
+    assert len(padding_payload) < tarfile.BLOCKSIZE
+    padding = padding_payload + bytes(tarfile.BLOCKSIZE - len(padding_payload))
+    carrier = tarfile.TarInfo("carrier-data")
+    carrier.size = len(hidden_tar)
+    raw_tar = (
+        header + padding + carrier.tobuf() + hidden_tar + bytes(tarfile.BLOCKSIZE * 2)
+    )
+    artifacts[1].write_bytes(gzip.compress(raw_tar))
+    write_checksums(artifacts)
+
+    def must_not_normalize(*args, **kwargs):
+        pytest.fail("padded size override reached metadata normalization")
+
+    monkeypatch.setattr(release_artifacts, "_validate_metadata", must_not_normalize)
+    with pytest.raises(ValueError, match="nonzero tar extension padding"):
+        verify_release_bundle(dist, "v0.5.0", "metis-ctf", "0.5.0")
