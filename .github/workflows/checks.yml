@@ -52,6 +52,7 @@ jobs:
         run: |
           project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           cd "$RUNNER_TEMP"
+          unset PYTHONPATH
           python -m venv metis-install-venv
           metis_python="$RUNNER_TEMP/metis-install-venv/bin/python"
           metis_cli="$RUNNER_TEMP/metis-install-venv/bin/metis"
@@ -59,6 +60,7 @@ jobs:
             --require-hashes --requirement runtime-requirements.txt
           "$metis_python" -m pip install --no-index --no-deps metis-dist/*.whl
           "$metis_python" -m pip check
+          "$metis_python" -c 'from pathlib import Path; import metis, sys; assert Path(metis.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())'
           actual_version=$("$metis_cli" --version)
           printf '%s\n' "$actual_version"
           test "$actual_version" = "METIS $project_version"
