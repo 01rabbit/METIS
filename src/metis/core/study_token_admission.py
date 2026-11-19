@@ -77,9 +77,13 @@ _SCHEMA = (
 class StudyTokenAdmission:
     """Atomically charge both ceilings from append-only receipts.
 
-    The controller supplies pins from its committed protocol and bound run.
-    A successful receipt is single-use. A timeout, error or retry never refunds
-    its charge. All workers must use the same trusted SQLite database.
+    The trusted caller supplies study and slot pins, which this ledger records
+    on the first accepted reservation. It validates the shape of the supplied
+    turn reservation ID and rejects a second receipt for the same run and turn.
+    This standalone ledger has no integration with the held-out protocol or the
+    scheduler's turn reservations. Receipts are records of charges and have no
+    consumption path. A timeout, error or retry never refunds a charge. All
+    workers must use the same trusted SQLite database.
     """
 
     def __init__(self, database: Path):
