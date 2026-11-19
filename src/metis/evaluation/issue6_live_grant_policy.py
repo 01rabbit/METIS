@@ -1,7 +1,11 @@
 """Offline verification and one-shot review of signed Issue #6 calibration grants.
 
 The deployment supplies a trusted Ed25519 operator public key and a private
-canonical ledger. An external operator signs grants. This module neither issues
+canonical ledger. Before grants are signed, the operator provisions that ledger
+at issue6-live-reviews.sqlite using LEDGER_SCHEMA. The singleton identity row
+holds a fresh random 32-byte generation encoded as lowercase hex. The operator
+must guard the ledger against rollback and use a new generation on replacement.
+An external operator signs grants. This module neither issues
 grants nor exposes an execution capability.
 """
 
@@ -35,6 +39,14 @@ from .issue6_pilot_admission import (
 
 _DOMAIN = b"METIS Issue #6 live build-triage calibration grant v1\x00"
 _DB = "issue6-live-reviews.sqlite"
+LEDGER_SCHEMA = (
+    """CREATE TABLE offline_live_ledger_identity (
+        id INTEGER PRIMARY KEY CHECK (id=1), generation TEXT NOT NULL
+    )""",
+    """CREATE TABLE offline_live_grant_reviews (
+        grant_id TEXT PRIMARY KEY, grant_sha256 TEXT NOT NULL, reviewed_at REAL NOT NULL
+    )""",
+)
 GrantId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 UnixSeconds = Annotated[int, Field(gt=0, le=2**53 - 1)]
 
@@ -79,6 +91,7 @@ class LiveCalibrationGrant(_Record):
     grant_id: GrantId
     mode: Literal["live_calibration"]
     ledger_binding: Digest
+    ledger_generation: Digest
     plan: LiveCalibrationPlan
     issued_at: UnixSeconds
     expires_at: UnixSeconds
@@ -112,30 +125,48 @@ class LiveGrantReview:
         info = directory.stat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("live approval requires a private operator-owned state directory")
+        for ancestor in directory.parents:
+            parent = ancestor.lstat()
+            unsafe_writes = parent.st_mode & 0o022 and not (parent.st_uid == 0 and parent.st_mode & stat.S_ISVTX)
+            if not stat.S_ISDIR(parent.st_mode) or parent.st_uid not in (0, os.getuid()) or unsafe_writes:
+                raise ValueError("live approval ledger has an untrusted path ancestor")
         self._database = directory / _DB
         self._operator = trusted_operator_key
         self._clock = clock
         self.ledger_binding = hashlib.sha256(os.fsencode(self._database)).hexdigest()
+        with closing(self._open()) as db:
+            self.ledger_generation = self._generation(db)
 
     def _open(self) -> sqlite3.Connection:
         path = self._database
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            os.close(fd)
-        info = path.lstat()
+            info = path.lstat()
+        except FileNotFoundError:
+            raise ValueError("live approval ledger must be provisioned before review") from None
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
             raise ValueError("live approval ledger must be a private operator-owned regular file")
         return sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, isolation_level=None)
+
+    @staticmethod
+    def _generation(db: sqlite3.Connection) -> str:
+        tables = db.execute("""
+            SELECT name FROM sqlite_master WHERE type='table'
+            AND name IN ('offline_live_ledger_identity', 'offline_live_grant_reviews')
+        """).fetchall()
+        if len(tables) != 2:
+            raise ValueError("live approval ledger must be provisioned before review")
+        row = db.execute("SELECT generation FROM offline_live_ledger_identity WHERE id=1").fetchone()
+        if row is None or not isinstance(row[0], str) or len(row[0]) != 64 or set(row[0]) - set("0123456789abcdef"):
+            raise ValueError("live approval ledger requires a provisioned generation")
+        return row[0]
 
     def consume_for_review(self, grant: LiveCalibrationGrant, signature: bytes,
                            expected: LiveCalibrationPlan) -> None:
         """Record a single offline use after authenticating the exact calibration plan."""
         grant = LiveCalibrationGrant.model_validate(grant)
         expected = LiveCalibrationPlan.model_validate(expected)
-        if grant.ledger_binding != self.ledger_binding or grant.plan != expected:
+        if (grant.ledger_binding != self.ledger_binding or grant.ledger_generation != self.ledger_generation
+                or grant.plan != expected):
             raise ValueError("live grant does not match the trusted ledger or calibration plan")
         payload = grant.signing_bytes()
         try:
@@ -148,12 +179,11 @@ class LiveGrantReview:
             path = next(path for _, name, path in db.execute("PRAGMA database_list") if name == "main")
             if Path(path) != self._database:
                 raise ValueError("opened live ledger does not match grant binding")
+            if self._generation(db) != grant.ledger_generation:
+                raise ValueError("opened live ledger generation does not match grant binding")
             now = self._clock()
             if not math.isfinite(now) or not grant.issued_at <= now < grant.expires_at:
                 raise ValueError("live grant is expired, not yet valid, or clock unavailable")
-            db.execute("""CREATE TABLE IF NOT EXISTS offline_live_grant_reviews (
-                grant_id TEXT PRIMARY KEY, grant_sha256 TEXT NOT NULL, reviewed_at REAL NOT NULL
-            )""")
             written = db.execute(
                 "INSERT INTO offline_live_grant_reviews VALUES (?, ?, ?) ON CONFLICT(grant_id) DO NOTHING",
                 (grant.grant_id, hashlib.sha256(payload).hexdigest(), now),
