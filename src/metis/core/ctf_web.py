@@ -162,9 +162,8 @@ class WebWorkflow:
             if private and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
                 raise ValueError(f"web authentication state {label} must be private and owned by the current user")
 
-    def _require_local_auth_storage(self) -> None:
-        if not self._environment_auth_only():
-            self._check_auth_storage(private=True)
+    def _check_web_storage(self) -> None:
+        self._check_auth_storage(private=not self._environment_auth_only())
 
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
         if self._environment_auth_only():
@@ -203,6 +202,7 @@ class WebWorkflow:
     def forget_auth(self, url: str) -> dict:
         """Forget locally stored credentials and cookies for one authentication origin."""
         key = origin(url)
+        self._check_auth_storage(private=False)
         with sqlite3.connect(self.database) as db:
             db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
@@ -229,6 +229,7 @@ class WebWorkflow:
 
     def forget_all_auth(self, *, apply: bool = False) -> dict:
         """Preview or fence all saved platform authentication in one bounded transaction."""
+        self._check_auth_storage(private=False)
         with sqlite3.connect(self.database) as db:
             if apply:
                 db.execute("PRAGMA secure_delete=ON")
@@ -270,7 +271,7 @@ class WebWorkflow:
                           "SQLite WAL, snapshots and backups may retain prior values")}
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
-        self._require_local_auth_storage()
+        self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
@@ -294,8 +295,7 @@ class WebWorkflow:
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
         environment_only = self._environment_auth_only()
-        if not environment_only:
-            self._check_auth_storage(private=True)
+        self._check_auth_storage(private=not environment_only)
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = None if environment_only else db.execute(
@@ -319,14 +319,14 @@ class WebWorkflow:
         return client
 
     def _auth_generation_matches(self, auth_origin: str, expected: int) -> bool:
-        self._require_local_auth_storage()
+        self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                              (auth_origin,)).fetchone()
         return (row[0] if row else 0) == expected
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
-        self._require_local_auth_storage()
+        self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             config_row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -614,7 +614,7 @@ class WebWorkflow:
                                            categories=categories, max_actions=120, wall_seconds=7200,
                                            evaluation_split=evaluation["split"])
         run_id = context["run_id"]
-        self._require_local_auth_storage()
+        self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",

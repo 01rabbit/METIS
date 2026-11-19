@@ -28,10 +28,11 @@ provider revocation, P7, reboot, and release gates require separate evidence.
 
 Local web authentication now requires a regular SQLite database owned by the
 current user with no group or other permissions. The same checks apply to
-existing WAL and SHM files. METIS refuses symbolic links and other nonregular
-state files before opening the web workflow. A database restored with broader
-permissions needs operator review before local credentials can be used or
-stored again. The checks do not change existing file modes.
+existing WAL and SHM files. METIS checks for symbolic links and other nonregular
+files at workflow initialization and before authentication or forgetting.
+A database restored with broader permissions needs operator review before local
+credentials can be used or stored again. The checks do not change existing
+file modes.
 
 Environment-only authentication and explicit local forgetting still work with
 regular files whose permissions are broader. The check inspects POSIX mode
