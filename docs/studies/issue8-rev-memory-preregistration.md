@@ -13,6 +13,13 @@ hash and a new record before model execution.
 - Tasks: official AlpacaHack Daily `misdirection` and `read-a-binary`, both Rev.
   Distribution SHA-256 values are in the protocol. The authenticated `mr-rabbit`
   account showed enabled submission controls for both on 2026-11-19.
+  Each run receives the official ELF and the same answer-free task brief for
+  its arm. The brief SHA-256 values are `30f9f9116aa59fb56941ee30f5ea2ef64b1f81539c3c72d7903e01d632b96dad`
+  for `misdirection` and `bb45d30b87922b15080f5c75cc8a7b2cf951319356af0da3fe5cbc169cbe229e`
+  for `read-a-binary`. They reproduce the official statement and source URL.
+  Two scoped artifacts make the standard METIS plan delegated (artifact triage,
+  Rev specialist, independent critic) in both arms; no artificial category is
+  added.
 - Independent controls: each official ELF was solved separately without public
   writeups, and its candidate was accepted by the challenge binary in a METIS
   no-network/no-host-mount sandbox. Exact candidates and commitments are in
