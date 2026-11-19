@@ -53,6 +53,17 @@ built-in implementation, a versioned descriptor, sandbox enforcement, and
 tests before the capability can be exposed to the approval CLI. This gate is
 for reviewed built-ins; it is not a plugin loader or self-extension mechanism.
 
+## Unseen local model pilot
+
+`scripts/issue7_unseen_trial.py` draws one private seed from each encoding
+family. A real Codex session sees only encoded input and a schema restricted
+to the three base transforms. Its proposed JSON is validated before intake.
+METIS replays the plan twice through the pinned, network-free sandbox and
+checks both results against a private in-memory SHA-256 commitment. The trial
+prints only step names, run IDs, reproducibility, and match booleans. A model
+proposal cannot request a new tool, policy, verifier, executable, path, or
+endpoint. This is a bounded local pilot, not general CTF evidence.
+
 ## Evidence
 
 The sandbox-backed test procedure and exact environment are in
