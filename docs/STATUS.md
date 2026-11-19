@@ -1,5 +1,25 @@
 # METIS implementation status
 
+## Issue #9 artifact registration audit (2026-11-20)
+
+`metis audit` now reports bounded, count-only artifact registrations from the
+current run's manifest in its existing SQLite snapshot. Derived, added and other
+registration counts omit paths and contents and always report
+`filesystem_verified: false`. The audit does not inspect artifact files,
+initialize a session, acquire METIS locks or remove data. Missing legacy schema
+is unavailable; malformed, duplicate, unrecognized-path or oversized manifests
+make only the inventory unavailable. Existing valid manifest shapes outside the
+inventory's recognition rules keep their event-chain and other audit output;
+the persistence contract is unchanged. SQLite errors propagate if the original
+read transaction is no longer active, preserving the audit's snapshot boundary.
+All 95 focused audit/CLI/evidence tests and standard static/content checks passed.
+The current head also completed the full test suite with exit code 0; pytest
+collection reported 1,603 tests. The quiet run did not expose pass/skip counts.
+This adds local visibility without proving file
+existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
+P7/#8 dependency remain open. See
+[`issue9-artifact-inventory-audit-2026-11-20.md`](reports/issue9-artifact-inventory-audit-2026-11-20.md).
+
 ## Codex-native solve workflow
 
 The active implementation is on `metis-full-implementation`. Codex supplies the
