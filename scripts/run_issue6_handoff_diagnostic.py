@@ -2,8 +2,8 @@
 """Run the preregistered symmetric Issue #6 synthetic replication."""
 from __future__ import annotations
 
-import atexit
 import argparse
+import atexit
 import base64
 import hashlib
 import json
@@ -382,9 +382,10 @@ def main() -> None:
         json.dump(answers, stream, sort_keys=True)
     order_rng = random.Random(ORDER_SEED)
     trial_order = {}
+    study_arms = (("single", "multi_combined", "multi_final_handoff")
+                  if args.final_handoff_diagnostic else ("single", "multi_separate", "multi_combined"))
     for case_id, *_ in cases:
-        arms = (["single", "multi_combined", "multi_final_handoff"]
-                if args.final_handoff_diagnostic else ["single", "multi_separate", "multi_combined"])
+        arms = list(study_arms)
         order_rng.shuffle(arms)
         trial_order[case_id] = arms
     session = CodexSession(root / "state" / "metis.sqlite")
@@ -396,7 +397,7 @@ def main() -> None:
         for arm in trial_order[case_id]:
             record = run_arm(session, scheduler, runner, root, case_id, components, case_family, arm)
             records.append(record)
-            dataset = build_dataset(records, task_families, trial_order, arms=tuple(arms),
+            dataset = build_dataset(records, task_families, trial_order, arms=study_arms,
                                     study=STUDY_ID, seed=SEED, order_seed=ORDER_SEED)
             temporary = OUTPUT.with_suffix(".tmp")
             temporary.write_text(json.dumps(dataset, separators=(",", ":")), encoding="utf-8")
@@ -404,7 +405,7 @@ def main() -> None:
             print(json.dumps({"case": case_id, "arm": arm, "verified": record["oracle_verified"],
                               "completed_records": len(records), "elapsed_seconds": record["elapsed_seconds"],
                               "calls": record["calls_observed"]}, separators=(",", ":")), flush=True)
-    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order, arms=tuple(arms),
+    OUTPUT.write_text(json.dumps(build_dataset(records, task_families, trial_order, arms=study_arms,
                                                study=STUDY_ID, seed=SEED, order_seed=ORDER_SEED),
                                  sort_keys=True, indent=2) + "\n", encoding="utf-8")
 

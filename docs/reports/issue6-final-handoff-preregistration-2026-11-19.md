@@ -17,3 +17,12 @@ Does reserving each multi specialist's fourth and final model call for a compact
 The primary Issue #6 contrast is `multi_final_handoff` minus `single` on workflow-complete and oracle-verified tasks. Treat the 30 task IDs as paired clusters and use 10,000 deterministic bootstrap resamples. Issue #6's measured-gain condition passes only if the paired 95% interval is wholly above zero. Compare `multi_final_handoff` with `multi_combined` for the narrower handoff mechanism, reporting discordant pairs, raw oracle correctness, report rejections, call-ceiling failures with candidates ready, calls, tokens, and latency. Fewer calls or better workflow completion alone do not satisfy Issue #6. The synthetic study does not establish broad CTF performance or itself complete review and merge gates.
 
 Do not claim an outcome from this preregistration. Real-model execution is separately scheduled after reviewing this change.
+
+After the run, analyze the retained answer-free file with:
+
+```sh
+.venv/bin/python -m metis.evaluation.issue6_final_handoff_diagnostic \
+  docs/reports/data/issue6-final-handoff-diagnostic-2026-11-19.json
+```
+
+The analyzer rejects incomplete arm sets, a changed seeded trial order, mismatched cached comparisons, and task families outside the frozen 30-cluster design.
