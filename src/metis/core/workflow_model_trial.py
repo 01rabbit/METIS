@@ -120,7 +120,8 @@ def codex_proposer(challenge: bytes, *, oracle_directory: Path | None = None) ->
         if oracle_directory is not None:
             readable = [package, root]
             if backend == "bwrap":
-                readable.extend(Path(path) for path in (*SYSTEM_RO, *python_roots()))
+                readable.extend(Path(path) for path in SYSTEM_RO)
+                readable.extend(python_roots())
             if any(oracle_directory.is_relative_to(path.resolve()) for path in readable):
                 raise ValueError("oracle directory overlaps a model-readable mount")
             protected = [*protected, oracle_directory]
