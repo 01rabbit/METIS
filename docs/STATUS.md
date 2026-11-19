@@ -757,3 +757,13 @@ timeout. These are synthetic measurements. A bounded private recovery route reco
 the planted key state in synthetic tests, including independent traversal of
 all 33 products for a 16-header vector. Complete target-space recovery and an
 official #39 verdict remain open.
+
+## Age-based derived-artifact retention (2026-11-19)
+
+`metis codex retention-derived --older-than-days N` now previews a bounded age
+selection and requires `--apply` for deletion. It reuses the locked per-run
+generated-artifact purge and reports blocked resumable runs. Only terminal
+`solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
+`planning` and extendable `exhausted` runs are preserved. This is a manual
+local retention control, not secure erasure or a complete P8 release gate. See
+`docs/reports/issue9-derived-retention-policy-2026-11-19.md`.

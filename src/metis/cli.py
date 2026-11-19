@@ -52,6 +52,7 @@ from metis.core.ctf_workflow import (
     replay_workflow_in_sandbox,
 )
 from metis.core.ctf_writeup import WriteupBook, WriteupInput
+from metis.core.derived_retention import retain_derived
 from metis.core.fixtures import generate_fixtures
 from metis.core.models import FixtureProvider, ModelProvider
 from metis.core.openai_provider import OpenAIProvider
@@ -654,6 +655,9 @@ def main() -> int:
     purge_derived = commands.add_parser("purge-derived", help="dry-run removal of generated run artifacts")
     purge_derived.add_argument("run_id")
     purge_derived.add_argument("--apply", action="store_true", help="unlink registered .metis-derived files")
+    retention = commands.add_parser("retention-derived", help="preview age-based generated-artifact removal")
+    retention.add_argument("--older-than-days", type=int, required=True)
+    retention.add_argument("--apply", action="store_true", help="purge eligible inactive runs")
     extend = commands.add_parser("extend", help="operator budget extension; resumes a budget-exhausted run")
     extend.add_argument("run_id")
     extend.add_argument("--actions", type=int, default=0)
@@ -1102,6 +1106,13 @@ def main() -> int:
                 output = session.add_file(args.run_id, args.path)
             elif args.codex_command == "purge-derived":
                 output = session.purge_derived(args.run_id, apply=args.apply)
+            elif args.codex_command == "retention-derived":
+                retention_result = retain_derived(args.database,
+                                                  older_than_days=args.older_than_days,
+                                                  apply=args.apply)
+                print(json.dumps(retention_result))
+                return (2 if args.apply and any(row["status"] == "blocked"
+                                                 for row in retention_result["results"]) else 0)
             elif args.codex_command == "extend":
                 output = session.extend(args.run_id, actions=args.actions, seconds=args.seconds)
             elif args.codex_command == "cancel":
