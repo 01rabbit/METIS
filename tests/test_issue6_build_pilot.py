@@ -3,9 +3,13 @@ import json
 import sqlite3
 import subprocess
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
+from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexTurn
 from metis.evaluation import issue6_build_preflight as preflight
 from metis.evaluation.issue6_build_artifact import canonical_artifact
@@ -13,6 +17,7 @@ from metis.evaluation.issue6_build_oracle import BuildFixture, Cause, Job, Obser
 from metis.evaluation.issue6_build_pilot import (
     ScriptedTurns,
     _diagnosis,
+    _dispatch_phase,
     _mac,
     _reconcile,
     _run_arm,
@@ -40,12 +45,30 @@ def test_matched_phases_share_public_input_and_only_owner_receives_private_note(
         assert row.complete and row.verified and row.actions == row.calls_reserved == 2
         assert row.oracle_checks == 1
         assert all(0 < timeout <= 60 for timeout in runner.timeouts)
-        assert row.phases[0].prompt_hmac == _mac(KEY, b"prompt", runner.prompts[0].encode())
-        assert row.phases[1].artifact_hmac == _mac(KEY, b"artifact", canonical_artifact(FIXTURE, include_submission_rule=False))
+        assert [item.phase for item in row.phases] == [1, 2]
+        assert all(item.assignment_id and item.attempt_id and item.reservation for item in row.phases)
+        for receipt, prompt in zip(row.phases, runner.prompts, strict=True):
+            assert receipt.prompt_hmac == _mac(KEY, b"prompt", prompt.encode())
+            assert receipt.artifact_hmac == _mac(
+                KEY, b"artifact", canonical_artifact(FIXTURE, include_submission_rule=False))
         with sqlite3.connect(root / "ledger.sqlite") as db:
             assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (2,)
             assert db.execute("SELECT COUNT(*) FROM issue6_build_pilot_receipts").fetchone() == (2,)
             assert db.execute("SELECT COUNT(*) FROM ctf_agent_reports").fetchone() == (2,)
+            joined = db.execute("""
+                SELECT turns.id, turns.assignment_id, turns.attempt_id,
+                    receipts.assignment_id, receipts.attempt_id, receipts.phase
+                FROM agent_turn_reservations turns
+                JOIN issue6_build_pilot_receipts receipts
+                    ON receipts.run_id=turns.run_id AND receipts.reservation=turns.id
+                    AND receipts.assignment_id=turns.assignment_id AND receipts.attempt_id=turns.attempt_id
+                WHERE turns.run_id=? ORDER BY turns.id
+            """, (row.run_id,)).fetchall()
+        assert joined == [
+            (item.reservation, item.assignment_id, item.attempt_id,
+             item.assignment_id, item.attempt_id, item.phase)
+            for item in row.phases
+        ]
         for artifact in root.rglob("*"):
             if artifact.is_file():
                 assert NOTE.encode() not in artifact.read_bytes()
@@ -163,15 +186,79 @@ def test_phase_output_contract_is_absent_from_common_artifact(tmp_path):
     assert "private work_note" in runner.prompts[0]
 
 
-def test_receipt_reconciliation_refuses_equal_count_wrong_reservation(tmp_path):
+@pytest.mark.parametrize("tamper", ["reservation", "assignment", "attempt", "delete"])
+def test_receipt_reconciliation_refuses_wrong_or_missing_join(tmp_path, tamper):
     root = tmp_path / "arm"
     row = _run_arm(root, "opaque", FIXTURE, ScriptedTurns(INITIAL, FINAL), "scripted", KEY, "owner_note")
     database = root / "ledger.sqlite"
     _reconcile(database, row.run_id, list(row.phases), row.actions)
     with sqlite3.connect(database) as db:
-        db.execute("UPDATE issue6_build_pilot_receipts SET reservation = 77 WHERE phase = 1")
+        if tamper == "reservation":
+            db.execute("UPDATE issue6_build_pilot_receipts SET reservation = 77 WHERE phase = 1")
+        elif tamper == "assignment":
+            db.execute("UPDATE issue6_build_pilot_receipts SET assignment_id = 'wrong' WHERE phase = 1")
+        elif tamper == "attempt":
+            db.execute("UPDATE issue6_build_pilot_receipts SET attempt_id = 'wrong' WHERE phase = 1")
+        else:
+            db.execute("DELETE FROM issue6_build_pilot_receipts WHERE phase = 1")
     with pytest.raises(RuntimeError, match="does not reconcile"):
         _reconcile(database, row.run_id, list(row.phases), row.actions)
+
+
+def _queued_scheduler_run(scheduler, session, artifact: Path, title: str):
+    run_id = session.intake(title=title, description="Public synthetic fixture.", paths=[artifact],
+                            categories=["misc"], max_actions=2, wall_seconds=120,
+                            evaluation_split="practice")["run_id"]
+    wave = scheduler.ledger.create_wave(run_id, mode="delegated", plan_policy=_one_artifact_plan)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    return run_id
+
+
+def _one_artifact_plan(plan):
+    assignments = [item for item in plan["assignments"] if item["role"] == "artifact-triage"]
+    assignments = assignments[:1]
+    if not assignments:
+        raise RuntimeError("missing artifact-triage assignment")
+    assignments[0]["max_turns"] = 1
+    plan["assignments"] = assignments
+    plan["decision"]["required_roles"] = ["artifact-triage"]
+    plan["daybreak_covers"] = []
+    return plan
+
+
+def test_dispatch_preflight_refuses_when_model_call_budget_is_short(tmp_path):
+    host = FakeHost(max_parallel=1)
+    scheduler = AgentScheduler(tmp_path / "ledger.sqlite", host)
+    scheduler.configure(global_slots=1, per_run_slots=1, specialist_turn_budget=1,
+                        catalog=[{"id": "scripted", "tier": "standard"}], current_model="scripted",
+                        memory_retrieval=False)
+    source = tmp_path / "fixture.json"
+    source.write_bytes(canonical_artifact(FIXTURE, include_submission_rule=False))
+    session = CodexSession(scheduler.database)
+    run_id = _queued_scheduler_run(scheduler, session, source, "Budget refusal")
+    with pytest.raises(ValueError, match="insufficient model-call budget"):
+        _dispatch_phase(scheduler, run_id, required_calls=2)
+    assert host.spawned == []
+    assert all(job["state"] == "queued" for job in scheduler.jobs(run_id))
+
+
+def test_dispatch_preflight_refuses_when_global_slot_is_busy(tmp_path):
+    host = FakeHost(max_parallel=1)
+    scheduler = AgentScheduler(tmp_path / "ledger.sqlite", host)
+    scheduler.configure(global_slots=1, per_run_slots=1, specialist_turn_budget=2,
+                        catalog=[{"id": "scripted", "tier": "standard"}], current_model="scripted",
+                        memory_retrieval=False)
+    session = CodexSession(scheduler.database)
+    source = tmp_path / "fixture.json"
+    source.write_bytes(canonical_artifact(FIXTURE, include_submission_rule=False))
+    active_run = _queued_scheduler_run(scheduler, session, source, "Occupying run")
+    assert len(scheduler.dispatch(active_run)["started"]) == 1
+    spawned_before = list(host.spawned)
+    queued_run = _queued_scheduler_run(scheduler, session, source, "Queued run")
+    with pytest.raises(ValueError, match="no dispatch slot"):
+        _dispatch_phase(scheduler, queued_run, required_calls=1)
+    assert host.spawned == spawned_before
+    assert all(job["state"] == "queued" for job in scheduler.jobs(queued_run))
 
 
 def test_unpinned_executable_is_never_invoked(tmp_path, monkeypatch):
