@@ -28,12 +28,19 @@ gain a nullable column during schema migration; their age remains unknown and
 they are preserved until an operator reauthenticates or explicitly forgets
 them. Environment credentials are not modified. The operation makes no
 provider calls and does not claim provider revocation, physical erasure from
-WAL/snapshots/backups, encrypted storage, or compliance with a retention
-policy. Issue #9 remains open.
+snapshots/backups, encrypted storage, or compliance with a retention policy.
+After storing, forgetting, or applying retention, METIS closes the transaction
+connection and attempts a bounded `wal_checkpoint(TRUNCATE)`. The result includes
+`wal_cleanup_complete`; a concurrent reader can prevent truncation, and false
+is reported without undoing an already committed deletion. A successful
+checkpoint covers the active SQLite database only; it does not erase copies in
+snapshots, backups or storage media, nor values already loaded by other
+processes. Issue #9 remains open.
 
 Synthetic local tests cover the exact cutoff, read-only preview, legacy
 unknown-age migration, reauthentication timestamps, selective cookie removal,
 stale-client fencing, rollback, CLI preview/apply behavior, and both operation
 bounds. Additional CLI regression cases verify that previews leave missing and
 legacy databases untouched, accept relative paths, and coexist with concurrent
-schema migration.
+schema migration. WAL tests cover successful truncation after retirement and a
+busy reader, which leaves the deletion committed but reports cleanup incomplete.

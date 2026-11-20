@@ -15,6 +15,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.parse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,16 @@ ATTACHMENTS = {".apk", ".dex", ".jar", ".so", ".dll", ".out", ".pyc", ".wasm", "
                ".enc", ".key", ".pem", ".pub", ".cap", ".py", ".rb", ".go", ".rs", ".java", ".s", ".asm",
                ".zip", ".tar", ".gz", ".xz", ".bz2", ".7z", ".rar", ".bin", ".elf", ".exe",
                ".png", ".jpg", ".jpeg", ".wav", ".pcap", ".pcapng", ".pdf", ".txt", ".c", ".cpp", ".class"}
+
+
+@contextmanager
+def _closed_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Commit or roll back a SQLite transaction and always close its handle."""
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 class WebRequest(BaseModel):
@@ -176,6 +188,23 @@ class WebWorkflow:
                 owner_private = False
         return owner_private
 
+    def _truncate_credential_wal(self) -> bool:
+        """Checkpoint retired credential pages and truncate the local WAL if possible."""
+        try:
+            self._check_auth_storage(private=False)
+            connection = sqlite3.connect(self.database, timeout=1.0)
+            try:
+                mode = connection.execute("PRAGMA journal_mode").fetchone()
+                if not mode or str(mode[0]).lower() != "wal":
+                    return True
+                result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                return bool(result is not None and result[0] == 0 and result[1] == 0
+                            and result[2] == 0)
+            finally:
+                connection.close()
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+
     def _check_web_storage(self) -> bool:
         return self._check_auth_storage(private=not self._environment_auth_only())
 
@@ -211,9 +240,9 @@ class WebWorkflow:
             raise ValueError("invalid private CTF credential")
         if scheme not in {"Token", "Bearer"}:
             raise ValueError("invalid credential scheme")
-        with sqlite3.connect(self.database) as db:
-            # Best effort for deleted/updated cells in the main database. This
-            # does not erase WAL frames, snapshots, backups, or provider state.
+        with _closed_transaction(sqlite3.connect(self.database)) as db:
+            # Zero replaced/deleted cells in the active database. The bounded
+            # post-commit checkpoint handles old WAL frames when no reader blocks it.
             db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             # One origin has one active stored credential. A replacement also
@@ -234,14 +263,16 @@ class WebWorkflow:
                 state.pop("cookie_fingerprint", None)
                 state[self._AUTH_GENERATION_STATE_KEY] = generation
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
+        wal_clean = self._truncate_credential_wal()
         return {"origin": key, "credential_stored": True, "kind": kind,
-                "storage": "private local state; excluded from Git"}
+                "storage": "private local state; excluded from Git",
+                "wal_cleanup_complete": wal_clean}
 
     def forget_auth(self, url: str) -> dict:
         """Forget locally stored credentials and cookies for one authentication origin."""
         key = origin(url)
         self._check_auth_storage(private=False)
-        with sqlite3.connect(self.database) as db:
+        with _closed_transaction(sqlite3.connect(self.database)) as db:
             db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
@@ -259,16 +290,19 @@ class WebWorkflow:
                 state[self._AUTH_GENERATION_STATE_KEY] = generation
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed
+        wal_clean = self._truncate_credential_wal()
         return {"origin": key, "credential_removed": removed,
                 "provider_revocation_required": True,
+                "wal_cleanup_complete": wal_clean,
                 "limit": ("Local stored credentials only; environment variables and provider credentials "
                           "are unchanged, an in-flight request may already have sent authentication, "
-                          "and SQLite WAL, snapshots and backups may retain prior values")}
+                          f"and snapshots or backups may retain prior values; WAL cleanup "
+                          f"{'completed' if wal_clean else 'could not be confirmed'}")}
 
     def forget_all_auth(self, *, apply: bool = False, include_run_cookies: bool = False) -> dict:
         """Preview or retire saved platform authentication and optionally all cookie jars."""
         self._check_auth_storage(private=False)
-        with sqlite3.connect(self.database) as db:
+        with _closed_transaction(sqlite3.connect(self.database)) as db:
             if apply:
                 db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
@@ -304,15 +338,19 @@ class WebWorkflow:
                     self._discard_auth_cookies(state, key, not include_run_cookies)
                     state[self._AUTH_GENERATION_STATE_KEY] = generations[key]
                     db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
+        wal_clean = self._truncate_credential_wal() if apply else None
         result = {"applied": apply, "origins": len(origins), "stored_credentials": len(credentials),
                   "selected_runs": len(runs), "provider_revocation_required": apply,
+                  "wal_cleanup_complete": wal_clean,
                   "limit": ("Local platform-authentication state only; environment variables, "
                             "challenge-origin cookies, provider credentials, in-flight requests or intake, "
-                            "SQLite WAL, snapshots and backups may retain prior values")}
+                            f"snapshots and backups may retain prior values; WAL cleanup "
+                            f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}")}
         if include_run_cookies:
             result.update(run_cookie_jars=cookie_jars, limit=(
                 "Local authentication and all saved run cookies only. Environment variables, provider credentials, "
-                "in-flight requests, SQLite WAL, snapshots and backups may retain prior values."
+                f"in-flight requests, snapshots and backups may retain prior values; WAL cleanup "
+                f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}"
             ))
         return result
 
@@ -340,7 +378,7 @@ class WebWorkflow:
         if apply or self.database.exists():
             connection = (sqlite3.connect(self.database) if apply else
                           sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True))
-            with connection as db:
+            with _closed_transaction(connection) as db:
                 if apply:
                     db.execute("PRAGMA secure_delete=ON")
                     db.execute("BEGIN IMMEDIATE")
@@ -413,6 +451,7 @@ class WebWorkflow:
                         db.executemany("DELETE FROM web_credentials WHERE origin=?",
                                        [(key,) for key in old_origins])
 
+        wal_clean = self._truncate_credential_wal() if apply and old_origins else None
         return {
             "applied": apply,
             "older_than_days": older_than_days,
@@ -424,9 +463,11 @@ class WebWorkflow:
             "selected_runs": selected_runs,
             "cookie_jars_selected": removed_cookie_jars,
             "provider_revocation_required": bool(apply and old_origins),
+            "wal_cleanup_complete": wal_clean,
             "limit": ("Only locally stored credentials with a known timestamp are eligible. "
-                      "Environment variables, provider state, in-flight requests, SQLite WAL, "
-                      "snapshots and backups may retain prior values."),
+                      "Environment variables, provider state, in-flight requests, snapshots and backups "
+                      f"may retain prior values; WAL cleanup "
+                      f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}"),
         }
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:

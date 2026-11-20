@@ -206,6 +206,7 @@ def test_apply_retires_only_old_credentials_and_fences_linked_clients(tmp_path):
     assert result["selected_runs"] == 1
     assert result["cookie_jars_selected"] == 1
     assert result["provider_revocation_required"] is True
+    assert result["wal_cleanup_complete"] is True
     with pytest.raises(ValueError, match="authentication has been forgotten"):
         stale_client.request(old + "/after-retirement")
     with sqlite3.connect(workflow.database) as db:
@@ -275,6 +276,7 @@ def test_credential_retention_cli_previews_by_default_and_requires_apply_to_dele
     assert main() == 0
     applied = json.loads(capsys.readouterr().out)
     assert applied["applied"] is True and applied["eligible_credentials"] == 1
+    assert applied["wal_cleanup_complete"] is True
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (0,)
 
