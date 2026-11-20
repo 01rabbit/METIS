@@ -17,8 +17,10 @@ import stat
 import subprocess
 import tempfile
 import time
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from metis.evaluation.native_work_trace import (
@@ -34,6 +36,44 @@ N_PREDICT = 3
 MAX_MODEL_BYTES = 64 * 1024 * 1024
 MAX_LOG_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+class _TraceTerminated(Exception):
+    pass
+
+
+class _Termination:
+    def __init__(self) -> None:
+        self.requested = False
+        self.waiting = False
+
+    def handle(self, _signum: int, _frame: FrameType | None) -> None:
+        if not self.requested:
+            self.requested = True
+            if self.waiting:
+                raise _TraceTerminated
+
+    @contextmanager
+    def interrupt_wait(self) -> Iterator[None]:
+        try:
+            self.waiting = True
+            if self.requested:
+                raise _TraceTerminated
+            yield
+        finally:
+            self.waiting = False
+
+
+@contextmanager
+def _handle_termination() -> Iterator[_Termination]:
+    termination = _Termination()
+    previous = signal.signal(signal.SIGTERM, termination.handle)
+    try:
+        yield termination
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if termination.requested:
+        raise _TraceTerminated
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -144,7 +184,8 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
         raise ValueError("model is not the registered public trace fixture")
 
     nonce = secrets.token_hex(16)
-    with tempfile.TemporaryDirectory(prefix="metis-llama-trace-") as temp:
+    with (_handle_termination() as termination,
+          tempfile.TemporaryDirectory(prefix="metis-llama-trace-") as temp):
         root = Path(temp)
         os.chmod(root, 0o700)
         socket_path = root / "server.sock"
@@ -166,12 +207,14 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
                 close_fds=True, start_new_session=True,
             )
             try:
-                wait_ready(process, socket_path, deadline=time.monotonic() + 60)
-                status, response = request(
-                    socket_path, "/completion",
-                    {"prompt": PROMPT, "n_predict": N_PREDICT, "temperature": 0,
-                     "cache_prompt": False}, timeout=30,
-                )
+                # Defer SIGTERM while acquiring and releasing the child process.
+                with termination.interrupt_wait():
+                    wait_ready(process, socket_path, deadline=time.monotonic() + 60)
+                    status, response = request(
+                        socket_path, "/completion",
+                        {"prompt": PROMPT, "n_predict": N_PREDICT, "temperature": 0,
+                         "cache_prompt": False}, timeout=30,
+                    )
                 evaluated = response.get("tokens_evaluated")
                 predicted = response.get("tokens_predicted")
                 if (status != 200 or isinstance(evaluated, bool) or not isinstance(evaluated, int)
@@ -228,7 +271,10 @@ def main() -> int:
     parser.add_argument("--output", type=Path,
                         help="create a new 0600 JSON file with aggregate-only evidence")
     args = parser.parse_args()
-    value = run(args.binary, args.model, inject_one_retry=args.inject_one_retry)
+    try:
+        value = run(args.binary, args.model, inject_one_retry=args.inject_one_retry)
+    except _TraceTerminated:
+        return 128 + signal.SIGTERM
     data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
     if args.output is None:
         print(data.decode(), end="")

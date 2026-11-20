@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import selectors
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -187,6 +190,26 @@ def test_retry_probe_rejects_unexpected_counters_without_injection():
         validate_retry_probe(candidate, injected=False)
 
 
+@pytest.mark.parametrize("injected", [False, True])
+@pytest.mark.parametrize(("missing", "message"), [
+    ({"process_calls": 0, "process_decode_calls": 0}, "no successful request process call"),
+    ({"graph_dispatches": 0, "graph_positions": 0}, "no request graph work"),
+    ({"graph_positions": 0, "zero_position_graphs": 1}, "no request graph work"),
+    ({"zero_position_graphs": 1}, "no request graph work"),
+])
+def test_retry_probe_requires_successful_request_work(injected, missing, message):
+    requests = _counts(**missing)
+    if injected:
+        requests["process_calls"] += 1
+        requests["process_decode_calls"] += 1
+        requests.update(process_failures=1, server_batch_retries=1,
+                        injected_precompute_failures=1)
+    trace = NativeWorkTrace.model_validate(_record(requests=requests))
+
+    with pytest.raises(ValueError, match=message):
+        validate_retry_probe(trace, injected=injected)
+
+
 @pytest.mark.parametrize("field", [
     "process_failures", "server_batch_retries", "injected_precompute_failures",
     "graph_failures", "graph_pre_dispatch_failures",
@@ -222,3 +245,93 @@ def test_server_log_file_is_limited_by_child_file_size_resource(tmp_path):
         )
         process.wait(timeout=10)
     assert log_path.stat().st_size == MAX_LOG_BYTES
+
+
+@pytest.mark.parametrize("phase", ["launch", "readiness"])
+def test_sigterm_reaps_detached_server_and_removes_temp_files(tmp_path, phase):
+    runner_fixture = """
+import json
+import os
+import platform
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+from scripts import run_llama_work_trace as runner
+
+phase, fixture = sys.argv[1:]
+runner.verify_build_manifest = lambda *args, **kwargs: SimpleNamespace(
+    target_os=platform.system(), target_arch=platform.machine(),
+)
+runner.sha256_model = lambda path: runner.PUBLIC_FIXTURE_SHA256
+launch = runner._popen_with_bounded_file_size
+stop = runner._stop
+
+def launch_server(args, **kwargs):
+    socket = Path(args[args.index("--host") + 1])
+    socket.touch()
+    process = launch([sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+    if phase == "launch":
+        print(json.dumps([process.pid, str(socket.parent)]), flush=True)
+        sys.stdin.readline()
+    return process
+
+def wait_ready(process, socket, **kwargs):
+    print(json.dumps([process.pid, str(socket.parent)]), flush=True)
+    time.sleep(60)
+
+def stop_server(process):
+    print("stopping", flush=True)
+    sys.stdin.readline()
+    return stop(process)
+
+runner._popen_with_bounded_file_size = launch_server
+runner.wait_ready = wait_ready
+runner._stop = stop_server
+sys.argv = ["run_llama_work_trace.py", fixture, fixture]
+raise SystemExit(runner.main())
+"""
+    fixture = tmp_path / "fixture"
+    fixture.touch()
+    repository = Path(__file__).parents[1]
+    environment = os.environ | {"PYTHONPATH": os.pathsep.join(
+        [str(repository / "src"), str(repository)]
+    )}
+    with subprocess.Popen(
+        [sys.executable, "-c", runner_fixture, phase, str(fixture)],
+        cwd=repository, env=environment, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) as runner, selectors.DefaultSelector() as selector:
+        assert runner.stdin is not None
+        assert runner.stdout is not None
+        selector.register(runner.stdout, selectors.EVENT_READ)
+        child_pid = None
+        try:
+            assert selector.select(timeout=10), "runner did not spawn the test server"
+            child_pid, trace_root = json.loads(runner.stdout.readline())
+            assert (Path(trace_root) / "server.log").is_file()
+            assert (Path(trace_root) / "server.sock").exists()
+
+            runner.send_signal(signal.SIGTERM)
+            if phase == "launch":
+                runner.stdin.write("\n")
+                runner.stdin.flush()
+            assert selector.select(timeout=10), "runner did not enter shutdown"
+            assert runner.stdout.readline().strip() == "stopping"
+            runner.send_signal(signal.SIGTERM)
+            runner.communicate(input="\n", timeout=10)
+
+            assert runner.returncode == 128 + signal.SIGTERM
+            assert not Path(trace_root).exists()
+            with pytest.raises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            child_pid = None
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+            if child_pid is not None:
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass

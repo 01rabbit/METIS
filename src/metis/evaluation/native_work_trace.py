@@ -178,3 +178,7 @@ def validate_retry_probe(trace: NativeWorkTrace, *, injected: bool) -> None:
         raise ValueError("synthetic retry probe counters do not match the selected mode")
     if counts.graph_failures != 0 or counts.graph_pre_dispatch_failures != 0:
         raise ValueError("synthetic retry probe included a non-injected graph failure")
+    if counts.process_calls == counts.process_failures:
+        raise ValueError("retry probe recorded no successful request process call")
+    if counts.graph_dispatches == counts.zero_position_graphs or counts.graph_positions == 0:
+        raise ValueError("retry probe recorded no request graph work with positive positions")

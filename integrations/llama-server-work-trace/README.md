@@ -56,7 +56,8 @@ then stops the server and validates its single aggregate record. It accepts no
 arbitrary prompt argument. Hashing and later execution/model loading use paths,
 so a concurrent same-user replacement between those steps is outside this
 probe's protection. The build disables llama.cpp subprocess support; shutdown
-waits for the server process group and reaps the server process.
+signals the server process group and reaps the server process. On SIGTERM the
+runner stops the server, removes the private socket and log, and exits with 143.
 
 ```sh
 scripts/run_llama_work_trace.py \
@@ -68,8 +69,9 @@ To exercise the server's batch-retry control-flow path, a test-only environment
 switch injects one synthetic precompute refusal after readiness and before
 graph submission. The probe requires exactly one injected refusal, one failed
 process call, and one server retry, with no graph failure. The following attempt
-runs normally, and the startup phase must contain no failed process, retry, or
-graph failure. Startup graph work is recorded separately:
+runs normally. Both modes require a successful request process call and a graph
+dispatch with positive positions. The startup phase must contain no failed
+process, retry, or graph failure. Startup graph work is recorded separately:
 
 ```sh
 scripts/run_llama_work_trace.py --inject-one-retry \
