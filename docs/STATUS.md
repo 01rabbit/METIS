@@ -877,10 +877,10 @@ measured-gain gate and dependent P6 remain open. See
 `failure_category` for completion, deadlines, cancellation, policy/provider
 failures, budget exhaustion, invalid output, abstention,
 infrastructure/configuration failures, unconfirmed termination, and other
-failures. The autopilot currently discards per-assignment return values, so this
-change does not persist categories for autopilot runs or reconstruct them for
-historical sanitized runs. Prior scores are unchanged; Issue #6's measured-gain
-gate remains unmet.
+failures. Autopilot records counts of those categories per invocation and
+counts driver exceptions and missing or invalid categories separately.
+Historical invocations lack these counts. Issue #6's measured-gain gate remains
+unmet. See [autopilot outcome metrics](reports/issue6-autopilot-outcomes-2026-11-20.md).
 
 The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
 across compatible Stage 1 intervals and checks the deadline inside one guess.

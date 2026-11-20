@@ -10,14 +10,17 @@ import json
 import sqlite3
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, get_args
 
 from metis.core.agent_scheduler import MAX_ATTEMPTS, AgentScheduler
-from metis.core.codex_specialist import CodexRunner, run_assignment
+from metis.core.codex_specialist import CodexRunner, FailureCategory, run_assignment
 from metis.core.run_lock import run_lock
 from metis.core.study_token_admission import StudyTokenAdmission
+
+_FAILURE_CATEGORIES = frozenset(get_args(FailureCategory))
 
 
 def autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, max_waves: int,
@@ -27,15 +30,18 @@ def autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, ma
     lock_id = "autopilot-" + hashlib.sha256(run_id.encode()).hexdigest()
     with run_lock(scheduler.database, lock_id, timeout=0):
         started = time.time()
+        specialist_outcomes: Counter[str] = Counter()
         result = _autopilot(scheduler, run_id, runner, max_waves=max_waves, drive=drive,
-                            continuations=continuations, study_token_admission=study_token_admission)
-        result["metrics"] = _record_metrics(scheduler, run_id, max_waves, started, result)
+                            continuations=continuations, study_token_admission=study_token_admission,
+                            specialist_outcomes=specialist_outcomes)
+        result["metrics"] = _record_metrics(scheduler, run_id, max_waves, started, result,
+                                            dict(specialist_outcomes))
         return result
 
 
 def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, started: float,
-                    result: dict[str, Any]) -> dict[str, Any]:
-    """Persist bounded, answer-free per-invocation operations and usage metrics."""
+                    result: dict[str, Any], specialist_outcomes: dict[str, int]) -> dict[str, Any]:
+    """Persist bounded, answer-free per-invocation operations, outcomes and usage."""
     finished = time.time()
     wave_ids = {wave["wave_id"] for wave in result["waves"] if isinstance(wave.get("wave_id"), str)}
     jobs = [job for job in scheduler.jobs(run_id)
@@ -73,24 +79,33 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
                "specialist_turns": (reserved_turns if reserved_turns is not None else
                                     sum(job["usage"].get("turns", job["turns_used"]) for job in jobs
                                         if isinstance(job["usage"].get("turns", job["turns_used"]), int))),
-               "tokens": tokens, "cost": "unknown"}
+               "tokens": tokens, "cost": "unknown", "specialist_outcomes": specialist_outcomes}
     with sqlite3.connect(scheduler.database) as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("""CREATE TABLE IF NOT EXISTS agent_autopilot_runs (
             invocation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, started REAL NOT NULL, finished REAL NOT NULL,
             elapsed_seconds REAL NOT NULL, max_waves INTEGER NOT NULL, waves_inspected INTEGER NOT NULL,
             stop_reason TEXT NOT NULL, daybreak_handoffs INTEGER NOT NULL, operations TEXT NOT NULL,
-            specialist_turns INTEGER NOT NULL, tokens TEXT NOT NULL, cost TEXT NOT NULL)""")
-        db.execute("INSERT INTO agent_autopilot_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            specialist_turns INTEGER NOT NULL, tokens TEXT NOT NULL, cost TEXT NOT NULL,
+            specialist_outcomes TEXT)""")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(agent_autopilot_runs)")}
+        if "specialist_outcomes" not in columns:
+            db.execute("ALTER TABLE agent_autopilot_runs ADD COLUMN specialist_outcomes TEXT")
+        db.execute("""INSERT INTO agent_autopilot_runs (
+                    invocation_id, run_id, started, finished, elapsed_seconds, max_waves, waves_inspected,
+                    stop_reason, daybreak_handoffs, operations, specialist_turns, tokens, cost, specialist_outcomes
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                    (metrics["invocation_id"], run_id, started, finished, metrics["elapsed_seconds"], max_waves,
                     metrics["waves_inspected"], stop, metrics["daybreak_handoffs"],
                     json.dumps(metrics["operations"], sort_keys=True), metrics["specialist_turns"],
-                    json.dumps(tokens, sort_keys=True), metrics["cost"]))
+                    json.dumps(tokens, sort_keys=True), metrics["cost"], json.dumps(specialist_outcomes, sort_keys=True)))
     return metrics
 
 
 def _autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, max_waves: int,
                drive: Callable[..., dict[str, Any]], continuations: list[dict[str, str]] | None,
-               study_token_admission: StudyTokenAdmission | None) -> dict[str, Any]:
+               study_token_admission: StudyTokenAdmission | None,
+               specialist_outcomes: Counter[str]) -> dict[str, Any]:
     if not 1 <= max_waves <= 10:
         raise ValueError("max-waves must be 1..10")
     continuations = continuations or []
@@ -172,9 +187,16 @@ def _autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, m
                 driver_failed = False
                 for future in futures:
                     try:
-                        future.result()
+                        summary = future.result()
                     except Exception:  # noqa: BLE001 -- preserve attempt for operator reconciliation
                         driver_failed = True
+                        specialist_outcomes["driver_exception"] += 1
+                    else:
+                        category = summary.get("failure_category") if isinstance(summary, dict) else None
+                        if isinstance(category, str) and category in _FAILURE_CATEGORIES:
+                            specialist_outcomes[category] += 1
+                        else:
+                            specialist_outcomes["missing_or_invalid_category"] += 1
                 if driver_failed:
                     # A driver exception does not prove that its external worker stopped.
                     # Leave scheduler attempts untouched and persist an answer-free handoff.
