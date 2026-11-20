@@ -1280,9 +1280,19 @@ def main() -> int:
         try:
             if args.database.is_symlink() or not args.database.is_file():
                 raise ValueError("operator database unavailable")
+            from metis.core.agent_host import BridgeHost
+            from metis.core.agent_scheduler import AgentScheduler
+
+            scheduler = AgentScheduler(args.database, BridgeHost())
             server = create_server(args.database, port=args.port, token=token,
-                                   cancel_run=lambda run_id: CodexSession(args.database).cancel(run_id))
-        except (OSError, ValueError):
+                                   cancel_run=lambda run_id: CodexSession(args.database).cancel(run_id),
+                                   dispatch_control=scheduler.set_dispatch_paused,
+                                   dispatch_status=scheduler.dispatch_control,
+                                   credential_retention_preview=lambda older_than_days:
+                                   WebWorkflow.preview_credential_retention(
+                                       args.database, older_than_days=older_than_days,
+                                   ))
+        except (OSError, ValueError, sqlite3.Error):
             parser.exit(2, "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n")
         print(f"METIS operator view: http://127.0.0.1:{server.server_port}/", flush=True)
         try:

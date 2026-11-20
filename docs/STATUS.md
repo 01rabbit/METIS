@@ -1,5 +1,29 @@
 # METIS implementation status
 
+## Issue #9 queued specialist dispatch pause/resume (2026-11-20)
+
+The authenticated loopback operator view can pause or resume queued specialist
+dispatch for one run. The state persists in SQLite across scheduler recreation;
+the scheduler checks it under the run lock before reservation and before host
+spawn. A pause that wins after reservation returns that job to the queue without
+starting it or consuming an attempt. Running specialists continue, and run
+cancellation remains available. A per-run transition log records pause/resume
+actions and timestamps without tokens or secret values; the operator can inspect
+the current state and latest 20 transitions after reload. This does not stop
+in-flight work or satisfy the remaining Issue #9 operational gates. See
+[`issue9-queued-specialist-dispatch-pause-2026-11-20.md`](reports/issue9-queued-specialist-dispatch-pause-2026-11-20.md).
+
+## Issue #9 operator credential retention preview (2026-11-20)
+
+The authenticated loopback operator view now exposes a bounded preview of the
+existing credential-age retention policy. It accepts only a canonical age in
+1..36500 days and returns aggregate counts, with no origin or credential values;
+the route cannot apply deletion. The UI invalidates stale responses after age
+or token edits. A WAL-mode SQLite read can create/update coordination sidecars.
+This improves visibility but does not establish secure erasure, provider-side
+revocation, or full retention-policy compliance. Issue #9 remains open. See
+[`issue9-operator-credential-retention-preview-2026-11-20.md`](reports/issue9-operator-credential-retention-preview-2026-11-20.md).
+
 ## Issue #9 user-added artifact purge (2026-11-20)
 
 `metis codex purge-added RUN_ID` now previews removal of registered `.metis-added`
