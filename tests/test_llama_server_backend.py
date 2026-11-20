@@ -300,35 +300,83 @@ def test_close_kills_and_reaps_after_wait_is_interrupted(backend_files, monkeypa
     class InterruptedProcess:
         pid = 123
         returncode = None
-        wait_calls = 0
-
-        def wait(self, *, timeout):
-            self.wait_calls += 1
-            if self.wait_calls == 1:
-                raise KeyboardInterrupt
-            if self.returncode is None:
-                raise module.subprocess.TimeoutExpired("fake-server", timeout)
-            return self.returncode
 
         def poll(self):
             return self.returncode
 
     process = InterruptedProcess()
     signals = []
+    group_alive = True
 
     def killpg(_pid, value):
+        nonlocal group_alive
         signals.append(value)
+        if value == 0:
+            if group_alive:
+                return
+            raise ProcessLookupError
+        if value == signal.SIGTERM:
+            process.returncode = -signal.SIGTERM
         if value == signal.SIGKILL:
+            group_alive = False
             process.returncode = -signal.SIGKILL
 
+    def interrupt_sleep(_seconds):
+        raise KeyboardInterrupt
+
     monkeypatch.setattr(module.os, "killpg", killpg)
+    monkeypatch.setattr(module.time, "sleep", interrupt_sleep)
     backend = LlamaServerBackend(**backend_files)
     backend._process = process
     with pytest.raises(KeyboardInterrupt):
         backend.close()
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-    assert process.wait_calls == 2 and backend._process is None
+    assert signals == [signal.SIGTERM, 0, signal.SIGKILL, 0]
+    assert backend._process is None and not group_alive
     backend.close()
+
+
+def test_close_kills_descendant_that_outlives_wrapper(backend_files, monkeypatch, tmp_path):
+    from metis.core import llama_server_backend as module
+
+    class WrapperProcess:
+        pid = 456
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    process = WrapperProcess()
+    group_alive = True
+    signals = []
+
+    def killpg(_pid, value):
+        nonlocal group_alive
+        signals.append(value)
+        if value == 0:
+            if group_alive:
+                return
+            raise ProcessLookupError
+        if value == signal.SIGTERM:
+            # Model a wrapper that exits while a descendant ignores SIGTERM.
+            process.returncode = -signal.SIGTERM
+        if value == signal.SIGKILL:
+            group_alive = False
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    monkeypatch.setattr(module, "_PROCESS_TERMINATION_GRACE_SECONDS", .01)
+    monkeypatch.setattr(module, "_PROCESS_GROUP_POLL_INTERVAL_SECONDS", .001)
+    backend = LlamaServerBackend(**backend_files)
+    backend._process = process
+    private = module.tempfile.TemporaryDirectory(dir=tmp_path)
+    private_path = Path(private.name)
+    backend._private = private
+    backend._socket = str(private_path / "server.sock")
+
+    backend.close()
+
+    assert signals[0] == signal.SIGTERM and signal.SIGKILL in signals
+    assert not group_alive and backend._process is None
+    assert not private_path.exists()
 
 
 def test_shared_concurrent_reservation(backend_files):

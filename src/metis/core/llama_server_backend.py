@@ -22,6 +22,10 @@ from typing import Any, Self, TypeGuard
 
 from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
 
+_PROCESS_TERMINATION_GRACE_SECONDS = 5.0
+_PROCESS_KILL_REAP_TIMEOUT_SECONDS = 5.0
+_PROCESS_GROUP_POLL_INTERVAL_SECONDS = 0.05
+
 
 class LlamaBackendError(RuntimeError):
     """Sanitized backend failure; never includes prompts or model output."""
@@ -373,22 +377,34 @@ class LlamaServerBackend:
             deadline = time.monotonic() + timeout
             while True:
                 try:
-                    process.wait(timeout=max(0, deadline - time.monotonic()))
-                    return True
+                    process_reaped = process.poll() is not None
+                    try:
+                        os.killpg(process.pid, 0)
+                        group_alive = True
+                    except ProcessLookupError:
+                        group_alive = False
+                    if process_reaped and not group_alive:
+                        return True
                 except KeyboardInterrupt:
                     interrupted = True
                     return False
-                except subprocess.TimeoutExpired:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                try:
+                    time.sleep(min(_PROCESS_GROUP_POLL_INTERVAL_SECONDS, remaining))
+                except KeyboardInterrupt:
+                    interrupted = True
                     return False
 
         try:
             if process is not None:
                 # The group can outlive a wrapper parent; signal it regardless of poll().
                 signal_group(signal.SIGTERM)
-                reaped = wait_for(5)
+                reaped = wait_for(_PROCESS_TERMINATION_GRACE_SECONDS)
                 if not reaped:
                     signal_group(signal.SIGKILL)
-                    reaped = wait_for(5)
+                    reaped = wait_for(_PROCESS_KILL_REAP_TIMEOUT_SECONDS)
         finally:
             if process is not None and process.poll() is not None:
                 reaped = True
