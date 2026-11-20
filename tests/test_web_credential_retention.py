@@ -219,6 +219,8 @@ def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_
         assert [row[1] for row in db.execute("PRAGMA table_info(web_credentials)")] == [
             "origin", "payload", "updated_at",
         ]
+        session_columns = {row[1] for row in db.execute("PRAGMA table_info(codex_sessions)")}
+        assert {"artifact_root", "activated", "evaluation_split"} <= session_columns
 
 
 def test_apply_retires_only_old_credentials_and_fences_linked_clients(tmp_path):
