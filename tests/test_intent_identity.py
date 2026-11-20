@@ -308,6 +308,13 @@ def test_concurrent_intents_cannot_exceed_turn_cap(env, monkeypatch):
     actual = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])
     assert actual["turns_used"] == 1
     assert actual["state"] == "running"
+    with sqlite3.connect(scheduler.database) as db:
+        rejected = db.execute(
+            "SELECT COUNT(*) FROM agent_job_log WHERE assignment_id=? AND attempt_id=? "
+            "AND event='intent_turn_cap_refused' AND detail='intent in flight'",
+            (job["assignment_id"], job["attempt_id"]),
+        ).fetchone()[0]
+    assert rejected == 1
 
 
 def test_derived_persistence_and_scope_commit_precede_concurrent_cancel(tmp_path, monkeypatch):

@@ -812,6 +812,8 @@ class AgentScheduler:
                         "SELECT 1 FROM agent_action_reservations WHERE assignment_id=? AND attempt_id=? LIMIT 1",
                         (assignment_id, attempt_id),
                     ).fetchone()
+                    if inflight:
+                        self._log(db, assignment_id, attempt_id, "intent_turn_cap_refused", "intent in flight")
                 if inflight:
                     # A concurrent request cannot consume another turn, but the already
                     # admitted intent owns its reservation and must be allowed to finish.
