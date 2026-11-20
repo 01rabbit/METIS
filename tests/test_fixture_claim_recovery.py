@@ -138,6 +138,28 @@ def test_crashed_controller_reconciles_once_with_full_charge(reserved, tmp_path,
     process.close()
 
 
+def test_reconciles_fixture_claim_lost_before_consumption(reserved):
+    admission, receipt = reserved
+    with admission.claim_fixture_launch(receipt) as claim:
+        pass
+
+    outcome = admission.reconcile_lost_fixture_claim(receipt)
+
+    assert (outcome.status, outcome.exit_status, outcome.observed_work) == ("lost", None, None)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute(
+            "SELECT consumed FROM study_token_launches WHERE nonce=?", (claim.nonce,),
+        ).fetchone() == (0,)
+        assert db.execute(
+            "SELECT status FROM study_token_outcomes WHERE nonce=?", (claim.nonce,),
+        ).fetchone() == ("lost",)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (15,)
+    with pytest.raises(ValueError, match="invalid or already consumed"):
+        admission.consume_launch_claim(claim)
+    with pytest.raises(ValueError, match="outcome already recorded"):
+        admission.reconcile_lost_fixture_claim(receipt)
+
+
 def test_reconcile_refuses_a_live_controller_and_keeps_its_terminal_outcome(reserved):
     admission, receipt = reserved
     context = get_context("spawn")

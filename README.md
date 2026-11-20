@@ -79,6 +79,22 @@ rCTF events use `metis web auth URL --kind rctf-team-token` once, then
 be opened with `--render` (optional scoped headless Chromium:
 `python3 scripts/setup.py --browser`).
 
+Stored local platform credentials can be reviewed and retired by age. Preview
+first, then add `--apply` to delete eligible credentials and their matching
+authentication-origin cookies:
+
+```sh
+metis web credential-retention --older-than-days 90
+metis web credential-retention --older-than-days 90 --apply
+```
+
+Credentials whose age is unknown are retained. A checkpointed WAL preview uses
+immutable read-only mode and creates no sidecars. With uncheckpointed WAL
+frames, SQLite may create/update `-wal`/`-shm` coordination sidecars, so the
+database directory must be writable; a pending rollback journal is refused.
+This local operation does not revoke credentials at the CTF provider or erase
+snapshots or backups.
+
 Services announced as `nc host port` are reached with `metis remote`: `suggest`
 lists candidates from the statement, `grant` records the endpoint the user
 authorized, `exchange` runs a bounded JSON send/receive script, `pipe`

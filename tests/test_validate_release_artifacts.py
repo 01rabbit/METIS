@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -53,6 +54,7 @@ def test_release_workflow_uses_installed_module_cli(tmp_path):
     assert ".venv/bin/python -m metis.release_artifacts" in workflow
     assert "scripts/validate_release_artifacts.py" not in workflow
     assert "--write-checksums" in workflow
+    assert "--verify-checksums" in workflow
     dist = write_distributions(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "metis.release_artifacts", "--dist-dir",
@@ -62,6 +64,28 @@ def test_release_workflow_uses_installed_module_cli(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert (dist / "SHA256SUMS").is_file()
+
+
+def test_release_workflow_verifies_staged_bundle_before_attestation_and_publication():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
+    checksum = workflow.index("--write-checksums")
+    smoke = workflow.index("- name: Install the built wheel with locked dependencies and smoke test")
+    verify = workflow.index("--verify-checksums")
+    attest = workflow.index("uses: actions/attest@")
+    publish = workflow.index("gh release create ")
+    assert checksum < smoke < verify < attest < publish
+
+    step_start = workflow.rindex("      - name: ", 0, verify)
+    step_end = workflow.find("      - name: ", verify)
+    verify_step = workflow[step_start:step_end]
+    assert "- name: Verify exact staged release bundle" in verify_step
+    assert "--dist-dir dist --tag \"$RELEASE_TAG\"" in verify_step
+    assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
+    assert "if:" not in verify_step
+    assert "continue-on-error:" not in verify_step
+    assert workflow[step_end:].startswith("      - name: Attest package archives and checksums\n")
+    assert "continue-on-error:" not in workflow
+    assert "always()" not in workflow
 
 
 def test_attestation_drill_is_main_only_and_cannot_publish():
@@ -76,15 +100,111 @@ def test_attestation_drill_is_main_only_and_cannot_publish():
     assert "gh attestation verify" in workflow
     assert "gh release create" not in workflow
     assert "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
+    checksum = workflow.index("--write-checksums")
+    smoke = workflow.index("- name: Install wheel with locked dependencies and smoke test")
+    verify = workflow.index("--verify-checksums")
+    attest = workflow.index("uses: actions/attest@")
+    assert checksum < smoke < verify < attest
+    verify_step_start = workflow.rindex("      - name: ", 0, verify)
+    verify_step_end = workflow.find("      - name: ", verify)
+    verify_step = workflow[verify_step_start:verify_step_end]
+    assert "- name: Verify exact staged release candidate" in verify_step
+    assert '--dist-dir dist --tag "v$project_version"' in verify_step
+    assert "--project-name \"$project_name\" --project-version \"$project_version\"" in verify_step
+    assert "if:" not in verify_step
+    assert workflow[verify_step_end:].startswith("      - name: Attest candidate archives and checksums\n")
+    assert "continue-on-error:" not in workflow
+
+
+@pytest.mark.parametrize(("workflow_file", "workflow_name"), [
+    ("release.yml", "release.yml"),
+    ("release-attestation-drill.yml", "release-attestation-drill.yml"),
+])
+def test_attestation_verification_pins_repository_workflow_source_and_runner(
+    workflow_file, workflow_name,
+):
+    workflow = (Path(__file__).parents[1] / ".github/workflows" / workflow_file).read_text()
+    command_start = workflow.index('gh attestation verify "$artifact"')
+    command_end = workflow.index("done", command_start)
+    command = workflow[command_start:command_end]
+
+    assert '--repo "$GITHUB_REPOSITORY"' in command
+    assert (f'--cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/'
+            f'{workflow_name}@$GITHUB_REF"' in command)
+    assert '--cert-oidc-issuer "https://token.actions.githubusercontent.com"' in command
+    assert '--source-ref "$GITHUB_REF"' in command
+    assert '--source-digest "$GITHUB_SHA"' in command
+    assert "--deny-self-hosted-runners" in command
+
+
+@pytest.mark.parametrize(("workflow_file", "publish_command"), [
+    ("release.yml", "gh release create "),
+    ("release-attestation-drill.yml", None),
+])
+def test_attestation_verification_fails_closed_for_every_release_artifact(
+    workflow_file, publish_command,
+):
+    workflow = (Path(__file__).parents[1] / ".github/workflows" / workflow_file).read_text()
+    verify = workflow.index('gh attestation verify "$artifact"')
+    step_start = workflow.rindex("      - name: ", 0, verify)
+    step_end = workflow.find("      - name: ", verify)
+    step = workflow[step_start:] if step_end < 0 else workflow[step_start:step_end]
+
+    assert 'for artifact in dist/*.whl dist/*.tar.gz dist/SHA256SUMS; do' in step
+    assert step.count('gh attestation verify "$artifact"') == 1
+    assert "||" not in step
+    assert "set +e" not in step
+    assert "if gh attestation verify" not in step
+    assert "continue-on-error:" not in step
+    assert "--cert-identity-regex" not in step
+    assert "--signer-repo" not in step
+    if publish_command is not None:
+        assert publish_command in step
+        assert verify < workflow.index(publish_command)
+    else:
+        assert "gh release create " not in step
+
+
+def test_release_workflow_contract_covers_attestation_permissions_and_action_pins():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
+
+    attest_start = workflow.index("      - name: Attest package archives and checksums")
+    verify_start = workflow.index("      - name: Verify package attestations before publishing")
+    attest_step = workflow[attest_start:verify_start]
+    assert "uses: actions/attest@" in attest_step
+    assert "subject-path: 'dist/*'" in attest_step
+
+    publish = workflow.index("gh release create ", verify_start)
+    verify_step = workflow[verify_start:publish]
+    assert "for artifact in dist/*.whl dist/*.tar.gz dist/SHA256SUMS; do" in verify_step
+    assert 'gh attestation verify "$artifact" \\\n' in verify_step
+    assert '--repo "$GITHUB_REPOSITORY"' in verify_step
+    assert verify_start < publish
+
+    top_level_permissions = workflow.split("permissions:\n", 1)[1].split("concurrency:\n", 1)[0]
+    assert top_level_permissions == "  contents: read\n"
+    release_job = workflow.split("  release:\n", 1)[1]
+    job_permissions = release_job.split("    permissions:\n", 1)[1].split("    steps:\n", 1)[0]
+    assert job_permissions == "      contents: write\n      attestations: write\n      id-token: write\n"
+
+    action_uses = re.findall(r"(?m)^\s+uses:\s*([^\s#]+)", workflow)
+    assert action_uses
+    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in action_uses)
 
 
 def test_release_and_drill_share_checksum_generation_path():
     workflows = Path(__file__).parents[1] / ".github/workflows"
-    for name in ("release.yml", "release-attestation-drill.yml"):
-        workflow = (workflows / name).read_text()
-        assert workflow.count(".venv/bin/python -m metis.release_artifacts") == 1
-        assert workflow.count("--write-checksums") == 1
-        assert "sha256sum dist/" not in workflow
+    release = (workflows / "release.yml").read_text()
+    assert release.count(".venv/bin/python -m metis.release_artifacts") == 2
+    assert release.count("--write-checksums") == 1
+    assert release.count("--verify-checksums") == 1
+    assert "sha256sum dist/" not in release
+
+    drill = (workflows / "release-attestation-drill.yml").read_text()
+    assert drill.count(".venv/bin/python -m metis.release_artifacts") == 2
+    assert drill.count("--write-checksums") == 1
+    assert drill.count("--verify-checksums") == 1
+    assert "sha256sum dist/" not in drill
 
 
 @pytest.mark.parametrize("tag,project_version", [("v0.5.1", "0.5.0"), ("0.5.0", "0.5.0"),

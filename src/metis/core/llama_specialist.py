@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 import sqlite3
 import time
@@ -38,7 +39,7 @@ class _BackendConfig(TypedDict):
 
 def _timed_out(error: LlamaBackendError) -> bool:
     reason = str(error).lower()
-    return "deadline" in reason or reason == "server startup timed out"
+    return "deadline" in reason
 
 
 class LlamaSpecialist:
@@ -119,8 +120,8 @@ class LlamaSpecialist:
         # independently below. No tool affordance is passed to the native server.
         request = self.build_native_request(prompt, output_schema)
         try:
-            with LlamaServerBackend(**self.backend_config, startup_deadline=call_deadline,
-                                    startup_should_stop=should_stop) as backend:
+            with LlamaServerBackend(**self.backend_config, deadline_monotonic=call_deadline,
+                                    should_stop=should_stop) as backend:
                 remaining = call_deadline - time.monotonic()
                 if remaining <= 0:
                     raise LlamaBackendError("model call deadline exceeded during server startup")
@@ -179,7 +180,9 @@ class LlamaSpecialist:
                 consumed = False
                 raise ValueError("admitted claim is not persisted as consumed")
             if (model != self.model_id or images or not isinstance(prompt, str)
-                    or len(prompt.encode()) > 65_536 or timeout <= 0):
+                    or len(prompt.encode()) > 65_536 or isinstance(timeout, bool)
+                    or not isinstance(timeout, (int, float)) or not math.isfinite(timeout)
+                    or timeout <= 0):
                 raise ValueError("admitted input refused")
             call_deadline = started + min(timeout, 120)
             digest = hashlib.sha256(prompt.encode()).hexdigest()
@@ -213,8 +216,8 @@ class LlamaSpecialist:
                 raise LlamaBackendStopped("model call cancelled before server startup")
             if time.monotonic() >= call_deadline:
                 raise LlamaBackendError("model call deadline exceeded before server startup")
-            with LlamaServerBackend(**self.backend_config, startup_deadline=call_deadline,
-                                    startup_should_stop=should_stop) as backend:
+            with LlamaServerBackend(**self.backend_config, deadline_monotonic=call_deadline,
+                                    should_stop=should_stop) as backend:
                 backend_entered = True
                 remaining = call_deadline - time.monotonic()
                 if remaining <= 0:
@@ -222,7 +225,7 @@ class LlamaSpecialist:
                 content, input_tokens, output_tokens = backend.complete_admitted(
                     prompt, n_predict=self.max_output_tokens,
                     token_cap=receipt.attempt.tokens, timeout_seconds=remaining,
-                    should_stop=should_stop, call_deadline=call_deadline)
+                    should_stop=should_stop, deadline_monotonic=call_deadline)
             if should_stop is not None and should_stop():
                 raise LlamaBackendStopped("model call cancelled")
             outcome = TokenLaunchOutcome(status="completed", exit_status=0,
