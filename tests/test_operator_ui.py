@@ -14,19 +14,24 @@ from typing import Any
 
 import pytest
 
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
 from metis.core.ctf_web import WebWorkflow
 from metis.core.operator_ui import create_server
-from metis.core.store import RunStore
+from metis.core.store import RunStore, ensure_run_audit_list_index
 
 RUN_ID = "a" * 32
 TOKEN = "secret-operator-token-with-32-chars-minimum"
 
 
 @contextmanager
-def server_for(database: Path, *, cancel_run=None, credential_retention_preview=None):
+def server_for(database: Path, *, cancel_run=None, dispatch_control=None, dispatch_status=None,
+               credential_retention_preview=None):
     server = create_server(database, port=0, token=TOKEN, cancel_run=cancel_run,
+                           dispatch_control=dispatch_control,
+                           dispatch_status=dispatch_status,
                            credential_retention_preview=credential_retention_preview)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -181,11 +186,98 @@ def test_cancel_unknown_run_and_unavailable_handler_fail_closed(tmp_path: Path) 
         assert request(port, "POST", f"/api/runs/{RUN_ID}/cancel", token=TOKEN)[0] == 503
 
 
+def test_dispatch_pause_resume_routes_require_auth_origin_and_empty_body(tmp_path: Path, monkeypatch) -> None:
+    database = tmp_path / "state.sqlite"
+    session, run_id = _start_run(database)
+    scheduler = AgentScheduler(database, FakeHost())
+    monkeypatch.setattr("metis.core.ctf_sandbox.cancel_registered_worker",
+                        lambda *_args: {"status": "not_running"})
+    path = f"/api/runs/{run_id}/dispatch/pause"
+    with server_for(database, dispatch_control=scheduler.set_dispatch_paused,
+                    dispatch_status=scheduler.dispatch_control,
+                    cancel_run=session.cancel) as port:
+        assert request(port, "POST", path)[0] == 401
+        assert request(port, "POST", path, token="wrong")[0] == 401
+        assert request(port, "POST", path, token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "POST", path, token=TOKEN, origin="https://evil.example")[0] == 403
+        assert request(port, "POST", path + "?extra=1", token=TOKEN)[0] == 404
+        assert request(port, "POST", f"/api/runs/{'b' * 32}/dispatch/pause", token=TOKEN)[0] == 404
+        assert request(port, "POST", path, token=TOKEN, body=b"unexpected")[0] == 400
+        status, headers, body = request(port, "POST", path, token=TOKEN,
+                                        origin=f"http://127.0.0.1:{port}")
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        paused_payload = json.loads(body)
+        assert paused_payload["run_id"] == run_id and paused_payload["dispatch_paused"] is True
+        assert paused_payload["scope"] == "queued_specialist_dispatch_only"
+        assert [event["action"] for event in paused_payload["history"]] == ["pause"]
+        assert AgentScheduler(database, FakeHost()).dispatch_control(run_id)["dispatch_paused"] is True
+
+        status_path = f"/api/runs/{run_id}/dispatch"
+        assert request(port, "GET", status_path)[0] == 401
+        assert request(port, "GET", status_path, token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "GET", status_path, token=TOKEN,
+                       origin="https://evil.example")[0] == 403
+        assert request(port, "GET", f"/api/runs/{'b' * 32}/dispatch", token=TOKEN)[0] == 404
+
+        cancel_status, _headers, cancel_body = request(
+            port, "POST", f"/api/runs/{run_id}/cancel", token=TOKEN,
+        )
+        assert cancel_status == 200 and json.loads(cancel_body)["status"] == "cancelled"
+        resume_status, _headers, resume_body = request(
+            port, "POST", f"/api/runs/{run_id}/dispatch/resume", token=TOKEN,
+        )
+        assert resume_status == 200
+        assert [event["action"] for event in json.loads(resume_body)["history"]] == ["pause", "resume"]
+        status, _headers, body = request(port, "GET", status_path, token=TOKEN)
+        assert status == 200
+        status_payload = json.loads(body)
+        assert status_payload["dispatch_paused"] is False
+        assert [event["action"] for event in status_payload["history"]] == ["pause", "resume"]
+
+    with server_for(database) as port:
+        status, _headers, body = request(port, "POST", path, token=TOKEN)
+        assert status == 503 and body == b"dispatch control unavailable"
+        status, _headers, body = request(port, "GET", f"/api/runs/{run_id}/dispatch", token=TOKEN)
+        assert status == 503 and body == b"dispatch status unavailable"
+
+    with server_for(database, dispatch_control=lambda candidate, paused: {
+        "run_id": candidate, "dispatch_paused": not paused,
+    }) as port:
+        status, _headers, body = request(port, "POST", path, token=TOKEN)
+        assert status == 503 and body == b"dispatch control status unavailable"
+
+    with server_for(database, dispatch_status=lambda candidate: {
+        "run_id": candidate, "dispatch_paused": False,
+        "scope": "queued_specialist_dispatch_only", "history": [{"action": "secret", "updated": 1.0}],
+    }) as port:
+        status, _headers, body = request(port, "GET", f"/api/runs/{run_id}/dispatch", token=TOKEN)
+        assert status == 503 and body == b"dispatch status unavailable"
+
+
+def test_malformed_dispatch_control_history_fails_closed_and_is_redacted(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    _session, run_id = _start_run(database)
+    scheduler = AgentScheduler(database, FakeHost())
+    scheduler.set_dispatch_paused(run_id, True)
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA ignore_check_constraints=ON")
+        db.execute("UPDATE agent_run_control_log SET action=? WHERE run_id=?", (
+            "secret-audit-corruption-sentinel", run_id,
+        ))
+    with pytest.raises(ValueError, match="history"):
+        scheduler.dispatch_control(run_id)
+    with server_for(database, dispatch_status=scheduler.dispatch_control) as port:
+        status, _headers, body = request(port, "GET", f"/api/runs/{run_id}/dispatch", token=TOKEN)
+        assert status == 503 and body == b"dispatch status unavailable"
+        assert b"secret-audit-corruption-sentinel" not in body
+
 def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path) -> None:
     database = tmp_path / "state.sqlite"
     session, first_id = _start_run(database)
     time.sleep(0.002)
     _session, second_id = _start_run(database)
+    # Server construction prepares this lookup index before it starts serving.
+    ensure_run_audit_list_index(database)
     before = database.read_bytes()
 
     with server_for(database, cancel_run=session.cancel) as port:
@@ -390,7 +482,9 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
         }
 
         const elements = Object.fromEntries(
-          ['token', 'run', 'result', 'run-list', 'refresh', 'inspect', 'cancel',
+          ['token', 'run', 'result', 'dispatch-result', 'run-list', 'refresh', 'inspect',
+           'dispatch-status', 'cancel',
+           'pause-dispatch', 'resume-dispatch',
            'retention-age', 'retention-preview']
             .map(id => [id, new Element()])
         );
@@ -420,6 +514,9 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
         const success = () => ({ok: true, status: 200, json: async () => payload});
         const refresh = () => elements.refresh.fire('click');
         const inspect = () => elements.inspect.fire('click');
+        const dispatchStatus = () => elements['dispatch-status'].fire('click');
+        const pauseDispatch = () => elements['pause-dispatch'].fire('click');
+        const resumeDispatch = () => elements['resume-dispatch'].fire('click');
         const retentionPreview = () => elements['retention-preview'].fire('click');
         const deny = status => { mockFetch = async () => ({ok: false, status}); };
 
@@ -519,6 +616,71 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           await refresh();
           assert.equal(select.value, '');
           assert.equal(elements.run.value, '');
+        });
+
+        test('dispatch pause and resume are scoped to the selected run and disclose their limit', async () => {
+          await loadAndSelect();
+          elements.token.value = 'operator-secret';
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/dispatch');
+            assert.equal(options.method, 'GET');
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: false,
+              scope: 'queued_specialist_dispatch_only', history: [],
+            })};
+          };
+          await dispatchStatus();
+          assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, false);
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/dispatch/pause');
+            assert.equal(options.method, 'POST');
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+            })};
+          };
+          await pauseDispatch();
+          assert.equal(confirmations.at(-1),
+            'Pause new specialist dispatch for run ' + runId + '? Running specialists continue.');
+          assert.equal(JSON.parse(elements.result.textContent).dispatch_paused, true);
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/dispatch/resume');
+            assert.equal(options.method, 'POST');
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
+            })};
+          };
+          await resumeDispatch();
+          assert.equal(JSON.parse(elements.result.textContent).dispatch_paused, false);
+          mockFetch = async path => ({ok: true, status: 200, json: async () => ({
+            run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
+            history: [{action: 'pause', updated: 1}, {action: 'resume', updated: 2}],
+          })});
+          await dispatchStatus();
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
+            ['pause', 'resume']);
+        });
+
+        test('selected dispatch state and control history reload on selection and refresh', async () => {
+          const calls = [];
+          mockFetch = async path => {
+            calls.push(path);
+            if (path === '/api/runs?limit=20') return success();
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true,
+              scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 10}, {action: 'resume', updated: 20}],
+            })};
+          };
+          await refresh();
+          select.value = runId;
+          select.fire('change');
+          await dispatchStatus();
+          assert.equal(calls.at(-1), '/api/runs/' + runId + '/dispatch');
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
+            ['pause', 'resume']);
+          await refresh();
+          assert.equal(calls.at(-1), '/api/runs/' + runId + '/dispatch');
+          assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, true);
         });
 
         test('a delayed cancellation result cannot replace another run audit', async () => {

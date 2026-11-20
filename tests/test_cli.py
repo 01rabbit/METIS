@@ -6,7 +6,7 @@ from pathlib import Path
 
 from metis.core import ctf_workflow
 from metis.core.codex_session import CodexSession
-from metis.core.contracts import RunStatus
+from metis.core.contracts import ChallengeManifest, RunStatus
 from metis.core.ctf_web import WebWorkflow
 from metis.core.ctf_workflow import WorkflowCapabilityApprovals
 
@@ -44,9 +44,17 @@ def test_inspect_does_not_create_missing_database(tmp_path):
 
 def test_operator_wires_preview_only_credential_retention_callback(tmp_path, monkeypatch, capsys):
     from metis.cli import main
+    from metis.core.agent_host import BridgeHost
+    from metis.core.agent_scheduler import AgentScheduler
 
     database = tmp_path / "state.sqlite"
     WebWorkflow(database)
+    manifest = ChallengeManifest.model_validate({
+        "challenge_id": "operator-control-test", "title": "operator control",
+        "description": "synthetic", "scope": {"authorized": True, "granted_by": "test",
+                                                  "challenge_id": "operator-control-test"},
+    })
+    run_id = CodexSession(database).start(manifest)["run_id"]
     captured = {}
 
     class Server:
@@ -70,8 +78,15 @@ def test_operator_wires_preview_only_credential_retention_callback(tmp_path, mon
     assert main() == 0
     assert captured["database"] == database
     assert callable(captured["credential_retention_preview"])
+    assert callable(captured["dispatch_control"])
+    assert callable(captured["dispatch_status"])
     result = captured["credential_retention_preview"](30)
     assert result["applied"] is False and result["older_than_days"] == 30
+    control = captured["dispatch_control"](run_id, True)
+    assert control["dispatch_paused"] is True
+    state = AgentScheduler(database, BridgeHost()).dispatch_control(run_id)
+    assert state["dispatch_paused"] is True
+    assert [event["action"] for event in state["history"]] == ["pause"]
     assert "METIS operator view: http://127.0.0.1:45678/" in capsys.readouterr().out
 
 

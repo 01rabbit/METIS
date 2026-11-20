@@ -10,7 +10,7 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
 | P1 契約・policy | `core/agent_contracts.py` | `SpecialistProfile` `Assignment` `ModelSelection` `ExecutionRecord` `CompactReport` `WaveDecision`（すべて `extra=forbid`、有限値、schema_version 2）。`decide_wave` と `select_model` は純粋関数 |
 | 計画・台帳 | `core/ctf_orchestration.py` | `plan_agent_wave(context, force_mode=)` は決定的。`AgentLedger` は wave と compact report の台帳 |
 | P2 ホスト | `core/agent_host.py` | `capabilities / spawn / poll / send / cancel / collect`。`BridgeHost`（既定）、`SequentialHost`、テスト用 `FakeHost` |
-| P3 scheduler | `core/agent_scheduler.py` | slot予約、run固定のCodex model-turn予約、attempt、deadline・intent上限、cancel/retry/release、tool intent の仲介 |
+| P3 scheduler | `core/agent_scheduler.py` | slot予約、run固定のCodex model-turn予約、attempt、deadline・intent上限、pause/cancel/retry/release、tool intent の仲介 |
 | 単一writer | `core/run_lock.py` | run ごとの短い状態ロックと、キャンセルを妨げないtool-operation lock。intent予約・状態遷移・event追記・公式提出を直列化する |
 | P5 大会 | `core/ctf_contest.py` | run と問題の同一性検査、dispatch の timebox 強制 |
 
@@ -41,6 +41,9 @@ P1〜P5 を実装した結果と、使い方・互換性・残る制約をまと
   run固定のmodel-turn予算（既定24、`metis agent slots --specialist-turn-budget N`）をSQLiteで予約する。
   失敗・timeout・retryも予約消費に数え、run間の設定変更や再起動で上限は増えない。
   `codex cancel RUN_ID` 後は enqueue・retry・dispatch・model-turn予約を拒否する。
+  operator pause はSQLiteにrun単位で保存し、queued specialistの予約を止め、host起動直前にもrun lock内で再確認する。
+  一時停止中も実行中workerは継続し、cancelは引き続き使える。pause/resumeの遷移は資格情報を含まない操作履歴として保存し、
+  認証済みoperatorの状態取得routeから現在状態と直近20件を参照できる。
   dispatchのslot予約とhost起動の間にもrun状態を再確認し、host起動はrun lock内で行う。
   schedulerのtickとspecialist driverはrunのcancel状態をjob状態とは独立に確認し、
   queued jobを取消し、実行中jobを停止する。停止未確認は`unknown`としてslotを保持する。
@@ -192,6 +195,7 @@ runの最初のwaveをqueueした時点で上限をsnapshotし、後からの設
 | 公式検証 | 既存 `test_ctf_web.py`（CTFd/ksnctf/HTML の correct/incorrect/unknown/429/auth/redirect） |
 | 修正 | 既存 `test_ctfd_intake_wrong_answer_replan_correct_answer_and_reopen` |
 | 再起動・並行 | `test_deadlines_turns_and_stale_attempts`（別 scheduler で tick）、`test_concurrent_intents_respect_the_run_budget`、`test_parallel_submissions_are_serialized_and_pending_sends_are_kept`、`test_cancel_without_confirmation_keeps_the_slot_until_released` |
+| operator dispatch制御 | `test_dispatch_pause_persists_blocks_queued_work_and_resume_dispatches`、`test_pause_winning_between_reservation_and_spawn_requeues_without_host_call`、`test_dispatch_winning_run_lock_admits_job_before_concurrent_pause`、`test_dispatch_pause_resume_routes_require_auth_origin_and_empty_body`、`test_malformed_dispatch_control_history_fails_closed_and_is_redacted` |
 | run wall-clock共有 | `test_assignment_deadline_is_capped_by_shared_run_wall_budget` |
 | 大会 | `test_contest_binding_and_timebox`、既存 `test_ctf_contest.py` |
 | 知識 | 既存 `test_ctf_knowledge.py`（verified 前の成功 card 拒否、失敗根拠、heldout 除外） |
