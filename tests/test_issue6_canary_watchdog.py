@@ -92,12 +92,27 @@ def live_marker(workspace):
     ("complete", 2.5, "completed"),
     ("wait_for_stop", 0.8, "deadline"),
 ])
-def test_worker_exit_and_deadline_are_reaped_and_scrubbed(tmp_path, behavior, seconds, outcome):
+def test_worker_exit_and_deadline_are_reaped_and_scrubbed(tmp_path, behavior, seconds, outcome, monkeypatch):
     database, workspace, admission, args = prepare(tmp_path)
+    # Keep the isolated guardian's traceback in the private pytest directory so
+    # CI failures identify the cause instead of exposing only exit status 1.
+    original_popen = subprocess.Popen
+    guardian_stderr = tmp_path / "guardian.stderr"
+
+    def capture_guardian(*popen_args, **popen_kwargs):
+        with guardian_stderr.open("xb") as stream:
+            popen_kwargs["stderr"] = stream
+            return original_popen(*popen_args, **popen_kwargs)
+
+    monkeypatch.setattr("metis.evaluation.issue6_canary_watchdog.subprocess.Popen", capture_guardian)
     with start_canary(admission, workspace, *args, behavior=behavior, seconds=seconds) as canary:
         if behavior == "wait_for_stop":
             eventually(lambda: live_marker(workspace))
-        assert canary.wait() == 0
+        status = canary.wait()
+    assert status == 0, (
+        f"guardian stderr: {guardian_stderr.read_text(encoding='utf-8', errors='replace')}\n"
+        f"ledger: {state(database)!r}; workspace: {sorted(path.name for path in workspace.iterdir())!r}"
+    )
     assert state(database)[1:] == ("reaped", outcome)
     assert list(workspace.iterdir()) == []
 
