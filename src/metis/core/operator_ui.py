@@ -193,7 +193,7 @@ let selectedRunId = '';
 function clearProtectedView() {
   authorizationGeneration++;
   select.replaceChildren(new Option('Select a run', ''));
-  if (runInput.value === selectedRunId) runInput.value = '';
+  runInput.value = '';
   selectedRunId = '';
   output.textContent = '';
 }

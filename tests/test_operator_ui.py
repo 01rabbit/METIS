@@ -292,6 +292,13 @@ def test_script_clears_protected_view_after_auth_failure(tmp_path: Path) -> None
 
         test('authorization failures clear the view and ignore earlier successes', async () => {
           await loadAndSelect();
+          elements.run.value = 'b'.repeat(32);
+          elements.run.fire('input');
+          deny(401);
+          await elements.inspect.fire('click');
+          assertCleared('Audit unavailable (401)');
+
+          await loadAndSelect();
           let resolveBody;
           const bodyPending = new Promise(resolve => { resolveBody = resolve; });
           mockFetch = async () => ({ok: true, status: 200, json: () => bodyPending});
