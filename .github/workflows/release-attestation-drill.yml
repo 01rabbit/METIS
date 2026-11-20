@@ -49,6 +49,14 @@ jobs:
             --no-index --find-links "$RUNNER_TEMP/runtime-wheelhouse" --no-deps dist/*.whl
           "$RUNNER_TEMP/metis-release-venv/bin/metis" --version
           "$RUNNER_TEMP/metis-release-venv/bin/metis" doctor
+      - name: Verify exact staged release candidate
+        run: |
+          project_name=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["name"])')
+          project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          .venv/bin/python -m metis.release_artifacts \
+            --dist-dir dist --tag "v$project_version" \
+            --project-name "$project_name" --project-version "$project_version" \
+            --verify-checksums
       - name: Attest candidate archives and checksums
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -58,5 +66,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for artifact in dist/*.whl dist/*.tar.gz dist/SHA256SUMS; do
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release-attestation-drill.yml@$GITHUB_REF" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
           done

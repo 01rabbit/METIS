@@ -213,6 +213,11 @@ def test_outcome_requires_exact_nonce_and_receipt_and_can_only_be_written_once(t
         admission.record_outcome(invented, outcome)
 
     claim = admission.claim_for_launch(receipt)
+    with pytest.raises(ValueError, match="has not been consumed"):
+        admission.record_outcome(claim, outcome)
+    admission.consume_launch_claim(claim)
+    with pytest.raises(ValueError, match="already consumed"):
+        admission.consume_launch_claim(claim)
     wrong_nonce = "1" * 32 if claim.nonce == "0" * 32 else "0" * 32
     with pytest.raises(ValueError, match="match committed nonce"):
         admission.record_outcome(claim.model_copy(update={"nonce": wrong_nonce}), outcome)
@@ -241,7 +246,8 @@ def test_outcome_requires_exact_nonce_and_receipt_and_can_only_be_written_once(t
 @pytest.mark.parametrize(("status", "exit_status", "work"), [
     ("unknown", 0, 0), ("completed", 1, 0), ("completed", 0, None),
     ("cap_denied", 0, 0), ("unsupported_graph", 75, None),
-    ("server_error", 74, 0), ("timeout", -9, 1), ("cancelled", -9, 1),
+    ("server_error", 74, 0), ("server_error", 1, None),
+    ("timeout", -9, 1), ("cancelled", -9, 1),
     ("launch_failed", -9, None), ("lost", -9, None), ("completed", False, 0),
 ])
 def test_invalid_terminal_observations_are_rejected(status, exit_status, work):
@@ -262,6 +268,7 @@ def test_only_one_parallel_controller_records_an_outcome(tmp_path):
     database = tmp_path / "state.sqlite"
     admission = StudyTokenAdmission(database)
     claim = admission.claim_for_launch(admission.reserve(STUDY, SLOT, ATTEMPT))
+    admission.consume_launch_claim(claim)
     outcome = TokenLaunchOutcome(status="timeout", exit_status=-9)
 
     context = get_context("spawn")
@@ -295,6 +302,34 @@ def test_admission_from_prior_schema_can_be_claimed(tmp_path):
     assert admission.claim_for_launch(receipt).receipt == receipt
 
 
+def test_legacy_launch_claims_are_consumed_during_schema_migration(tmp_path):
+    database = tmp_path / "state.sqlite"
+    admission = StudyTokenAdmission(database)
+    claim = admission.claim_for_launch(admission.reserve(STUDY, SLOT, ATTEMPT))
+    with closing(sqlite3.connect(database)) as db, db:
+        db.execute("ALTER TABLE study_token_launches DROP COLUMN consumed")
+        db.execute("ALTER TABLE study_token_launches DROP COLUMN launched")
+        db.execute("ALTER TABLE study_token_launches DROP COLUMN launch_owner")
+    with admission._transaction() as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
+        assert db.execute("SELECT launched FROM study_token_launches").fetchone() == (1,)
+        assert db.execute("SELECT launch_owner FROM study_token_launches").fetchone() == (None,)
+    with pytest.raises(ValueError, match="already consumed"):
+        admission.consume_launch_claim(claim)
+
+
+    new_slot = SLOT.model_copy(update={"run_id": "new-run", "task_id": "new-task"})
+    new_attempt = ATTEMPT.model_copy(update={"turn_reservation_id": 2})
+    new_study = STUDY.model_copy(update={"study_id": "new-study", "protocol_sha256": "b" * 64})
+    active = admission.claim_for_launch(admission.reserve(new_study, new_slot, new_attempt))
+    with admission._transaction() as db:
+        assert db.execute("SELECT consumed,launched FROM study_token_launches WHERE nonce=?",
+                          (active.nonce,)).fetchone() == (0, 0)
+    with admission._transaction() as db:
+        assert db.execute("SELECT consumed,launched FROM study_token_launches WHERE nonce=?",
+                          (active.nonce,)).fetchone() == (0, 0)
+
+
 def test_committed_manifest_pin_binds_reservation_claim_and_outcome(tmp_path):
     admission = StudyTokenAdmission(tmp_path / "state.sqlite")
     pinned = STUDY.model_copy(update={"native_manifest_sha256": "1" * 64})
@@ -306,6 +341,7 @@ def test_committed_manifest_pin_binds_reservation_claim_and_outcome(tmp_path):
         admission.claim_for_launch(receipt.model_copy(update={"study": alternate}))
 
     claim = admission.claim_for_launch(receipt)
+    admission.consume_launch_claim(claim)
     with pytest.raises(ValueError, match="committed native manifest"):
         admission.record_outcome(claim, TokenLaunchOutcome(status="launch_failed"))
     admission.record_outcome(claim, TokenLaunchOutcome(status="launch_failed", native_manifest_sha256="1" * 64))

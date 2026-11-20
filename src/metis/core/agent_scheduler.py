@@ -210,6 +210,8 @@ class AgentScheduler:
             raise ValueError("run is cancelled; model-turn reservation refused")
         db = sqlite3.connect(self.database, timeout=30, isolation_level=None)
         try:
+            db.execute("PRAGMA foreign_keys = ON")
+            db.execute("PRAGMA synchronous = FULL")
             db.execute("BEGIN IMMEDIATE")
             if validate_reservation is not None:
                 validate_reservation(db)

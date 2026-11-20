@@ -105,29 +105,38 @@ python3 integrations/llama-server-work-budget/smoke.py \
     /tmp/metis-llama-guard-build/build/bin/llama-server /absolute/path/to/stories260K.gguf
 ```
 
-The smoke test on macOS arm64 checks startup refusal at cap 1, prompt refusal
-at cap 21, one completion at cap 22, and the next decode graph after 23 charged
-positions. Cap 24 allows generation of three tokens, which submits two decode
-graphs after the startup and prompt positions. Each terminal record is checked
-against the exact cap, nonce, submitted work, and reason. Additional cases
-cover a literal path containing commas and quotes, stale sockets and
-symlinks, a nonprivate directory, a broken receipt pipe, a timed-out client
-whose server is killed, and ambient config that tries to require an API key.
+The smoke test has passed on macOS arm64 and in an Ubuntu 24.04 `linux/arm64`
+container under Colima's `rosetta` profile (full run details are in
+[`issue8-native-linux-fixture-smoke-2026-11-20.md`](../../docs/reports/issue8-native-linux-fixture-smoke-2026-11-20.md)).
+The Linux run targeted aarch64 and did not exercise x86_64 translation. The
+smoke checks startup refusal at cap 1, prompt refusal at cap 21, one completion
+at cap 22, and the next decode graph after 23
+charged positions. Cap 24 allows generation of three tokens, which submits two
+decode graphs after the startup and prompt positions. Each terminal record is
+checked against the exact cap, nonce, submitted work, and reason. Additional
+cases cover a literal path containing commas and quotes whose log contains
+exactly one listening address, which is `unix://<requested-path>`; stale
+sockets and symlinks; a nonprivate directory; a broken receipt pipe; an
+API-key requirement in XDG user config that must not
+change the controlled launch, and a SIGSTOP-induced client timeout followed by
+server SIGKILL with no receipt.
 
-This builds on the native gate in METIS PR #87. Production qualification still
-requires a trusted scheduler-to-admission binding, model and executable
-registration for supported runtimes, immutable split-file identity, and tests
-for alternate models, platforms, concurrent callers, and injected backend
-failures. Completion usage remains distinct from submitted work.
+This builds on the native gate in METIS PR #87. The admitted
+`LlamaSpecialist` path now binds the scheduler-consumed claim to the cap,
+nonce, receipt pipe, process exit, and observed native work. Production
+qualification still requires trusted model and executable registration for
+supported runtimes, immutable split-file identity, and tests for alternate
+models, platforms, concurrent callers, and injected backend failures.
+Completion usage remains distinct from submitted work.
 
 ## Controller qualification with the public fixture
 
 The fixture-only Python boundary binds the admission to one staged binary,
 the registered single-file stories260K GGUF, and the digest of the exact
 request profile. It supports output allowances of one or three tokens. Before
-launch it subtracts the entire allowance from the committed token amount and
-requires the resulting native graph cap to be positive. This leaves room for
-the last sampled token, which can be returned without entering another graph.
+launch it subtracts one from the committed token amount and requires the
+resulting native graph cap to be positive. This reserves one token for the last
+sampled token, which can be returned without entering another graph.
 
 Before staging, the controller checks the manifest against an independently
 supplied expected digest committed with the study admission. It checks the
@@ -151,12 +160,27 @@ requires the known 20 input token IDs, matching completion counters, and
 the frozen limits, stop settings, and non-speculative generation settings.
 The terminal record must match the launch nonce, the reduced graph cap, and
 the observed process exit. Observed work in the ledger counts submitted
-graph positions. The controller also checks that graph work plus sampled
-outputs fit the original admission. An EOS or stop match can reduce the
-observed output while the full requested headroom stays reserved.
-All outcomes retain the entire admission charge. An abruptly terminated
-controller may leave an orphaned process or a claim without an outcome. The
-same claim cannot be reused, and the process retains its immutable native cap.
+graph positions, including positions used to evaluate earlier sampled tokens.
+The controller verifies that the receipt covers the known fixture prompt,
+startup work and all sampled tokens that entered another graph. The graph cap
+leaves one token inside the original admission for the final sampled token.
+All outcomes retain the entire admission charge. The controller holds a
+claim lock through the terminal write. The lock closes on exec and in a raw
+Python fork child. The controller compares the supplied receipt to the ledger
+read-only before creating lock paths and rechecks it in the claim transaction.
+After that lock releases,
+`StudyTokenAdmission.reconcile_lost_fixture_claim(receipt)` can close a matching
+pending fixture claim once as `lost` and retain its committed manifest digest.
+A live owner, an earlier terminal record, or a claim created without fixture
+locking blocks reconciliation. Use a
+trusted, local filesystem and one canonical path for the ledger and its
+lock directory. Hardlinked ledgers are rejected. Keep both paths stable
+for the lifetime of the study.
+
+A lost outcome leaves the child state unknown. An abruptly terminated
+controller may leave an orphaned process, which retains its immutable native
+cap. Reconciliation never signals an identified or suspected process. The
+claim remains spent.
 
 Run the optional real integration fixture against a build from the native patch.
 
@@ -176,17 +200,17 @@ readiness and the sole request, followed by bounded process shutdown and reap.
 A missing or invalid receipt yields a failed observation and zero refund.
 
 
-| Output allowance | Admission | Graph cap | Observed qualification with the public fixture |
+| Output allowance | Admission | Graph cap | Expected result for the public fixture |
 | --- | --- | --- | --- |
 | 1 | 23 | 22 | 22 graph positions and 1 sampled output |
-| 3 | 27 | 24 | 24 graph positions and 3 sampled outputs |
-| 3, fixed EOS or stop | 25 | 22 | 22 graph positions and 1 sampled output |
+| 3 | 25 | 24 | 24 graph positions and 3 sampled outputs |
+| 3, fixed EOS or stop | 23 | 22 | 22 graph positions and 1 sampled output |
 
-The first two cases fail to complete when the admission is one token smaller.
-The stop and EOS profiles also deny work at admission 24. This qualification
-depends on the fixed fixture and does not establish a general-provider token
-ceiling. Trusted build and model registration and scheduler/protocol binding
-are still required before enabling the METIS capability.
+The real-binary fixture test expects cap denial one token below each listed
+admission. These fixture-specific graph counts do not establish a provider
+token ceiling. Trusted build and model registration, plus qualification across the
+supported model, platform, concurrency, and failure profiles, remain necessary
+before enabling the METIS capability.
 
 ## Offline build identity
 

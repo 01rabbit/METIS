@@ -35,7 +35,9 @@ def _stop(lease: int, parent: int, cutoff: float, wall: float, *, wait: float = 
     remaining = _remaining(cutoff, wall)
     if remaining <= 0:
         return "deadline"
-    ready, _, _ = select.select([lease], [], [], min(wait, remaining))
+    poller = select.poll()
+    poller.register(lease, select.POLLIN | select.POLLHUP | select.POLLERR)
+    ready = poller.poll(max(0, int(min(wait, remaining) * 1000)))
     if os.getppid() != parent:
         return "lease_closed"
     if ready:

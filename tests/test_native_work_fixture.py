@@ -9,10 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
 from metis.core.study_token_admission import (
+    FixtureClaimBusy,
     SlotTokenPin,
     StudyTokenAdmission,
     StudyTokenPin,
@@ -67,6 +69,10 @@ def finish(*_):
             value["nonce"] = "0" * 32 if nonce != "0" * 32 else "1" * 32
         if mode == "wrong_cap":
             value["cap"] = cap + 1
+        if mode == "bool_version":
+            value["version"] = True
+        if mode == "float_version":
+            value["version"] = 1.0
         if mode == "over_cap":
             value["charged"] = cap + 1
         if mode == "under_work":
@@ -131,7 +137,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
             time.sleep(20)
         self.send_json({
-            "tokens_evaluated": 21 if mode == "bad_evaluated" else 20,
+            "tokens_evaluated": {"bad_evaluated": 21, "zero_evaluated": 0}.get(mode, 20),
             "tokens_predicted": limit + 1 if mode == "bad_generated" else (limit if end == "limit" else 1),
             "content": " text" if end == "limit" else "",
             "stop_type": end, "stopping_word": stop[0] if stop else "", "truncated": False,
@@ -153,7 +159,7 @@ with socketserver.UnixStreamServer(str(socket_path), Handler) as server:
 def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     binary = tmp_path / "server"
     script = (_FAKE_SERVER.replace("MODENAME", repr(mode)).replace("PROFILE_LIMIT", str(n_predict))
-              .replace("PROFILE_END", repr(end)).replace("EXPECTED_CAP", str(cap - n_predict)))
+              .replace("PROFILE_END", repr(end)).replace("EXPECTED_CAP", str(cap - 1)))
     binary.write_text(f"#!{sys.executable}\n" + script)
     model = tmp_path / "fixture.gguf"
     model.write_bytes(b"fixture test bytes")
@@ -162,13 +168,27 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     monkeypatch.setattr(identity, "_PUBLIC_MODEL_SHA256", model_digest)
     patch = tmp_path / "approved.patch"
     patch.write_bytes(b"synthetic patch")
+    dependency = tmp_path / "libfixture.so"
+    dependency.write_bytes(b"synthetic pinned dependency")
+
+    def dependency_closure(_binary, *, target_os, target_arch):
+        assert (target_os, target_arch) == ("Linux", "aarch64")
+        size, digest = identity._snapshot_hash(dependency, identity._BINARY_LIMIT)
+        return (identity.NativeDependency("libfixture.so", str(dependency), size, digest),)
+
+    monkeypatch.setattr(identity, "_dependency_closure", dependency_closure)
+    monkeypatch.setattr(fixture, "platform", SimpleNamespace(system=lambda: "Linux",
+                                                               machine=lambda: "aarch64"))
     manifest = tmp_path / "native-build.json"
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     manifest.write_text(json.dumps({
-        "version": 1, "profile": identity._PROFILE, "source_commit": identity._SOURCE_COMMIT,
-        "target_os": platform.system(), "target_arch": platform.machine(),
+        "version": 2, "profile": identity._PROFILE, "source_commit": identity._SOURCE_COMMIT,
+        "target_os": "Linux", "target_arch": "aarch64",
         "compiler_id": "fixture", "compiler_version": "1", "cmake_version": "1",
         "binary_sha256": binary_digest, "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+        "dependencies": [{"soname": "libfixture.so", "path": str(dependency),
+                          "size": dependency.stat().st_size,
+                          "sha256": hashlib.sha256(dependency.read_bytes()).hexdigest()}],
     }))
     approval = {
         "manifest": manifest, "patch": patch,
@@ -193,11 +213,14 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     ("ignore_shutdown", "receipt_invalid", -9, None),
     ("wrong_nonce", "receipt_invalid", 0, None),
     ("wrong_cap", "receipt_invalid", 0, None),
+    ("bool_version", "receipt_invalid", 0, None),
+    ("float_version", "receipt_invalid", 0, None),
     ("over_cap", "receipt_invalid", 0, None),
     ("under_work", "receipt_invalid", 0, None),
     ("bad_prompt_count", "receipt_invalid", -9, None),
     ("bad_prompt_id", "receipt_invalid", -9, None),
     ("bad_evaluated", "receipt_invalid", -9, None),
+    ("zero_evaluated", "receipt_invalid", -9, None),
     ("bad_generated", "receipt_invalid", -9, None),
     ("duplicate_http_counter", "receipt_invalid", -9, None),
     ("bad_settings", "receipt_invalid", -9, None),
@@ -218,6 +241,7 @@ def test_private_launch_verifies_terminal_receipt_and_keeps_full_charge(tmp_path
     )
     assert (outcome.status, outcome.exit_status, outcome.observed_work) == (status, exit_status, work)
     with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchall() == [(1,)]
         assert db.execute(
             "SELECT status, exit_status, observed_work, native_manifest_sha256 FROM study_token_outcomes"
         ).fetchall() == [
@@ -230,7 +254,8 @@ def test_private_launch_verifies_terminal_receipt_and_keeps_full_charge(tmp_path
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
 
-@pytest.mark.parametrize("kind", ["binary", "model", "symlink", "prompt", "unknown_model", "forged_attempt"])
+@pytest.mark.parametrize("kind", ["binary", "model", "symlink", "dependency", "prompt",
+                                  "unknown_model", "forged_attempt"])
 def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
     admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
     if kind == "binary":
@@ -241,6 +266,9 @@ def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
         alias = tmp_path / "alias"
         alias.symlink_to(model)
         model = alias
+    elif kind == "dependency":
+        dependency = Path(json.loads(approval["manifest"].read_text())["dependencies"][0]["path"])
+        dependency.write_bytes(b"substituted dynamic dependency")
     elif kind == "prompt":
         receipt = receipt.model_copy(update={"attempt": receipt.attempt.model_copy(
             update={"prompt_sha256": "a" * 64},
@@ -267,6 +295,41 @@ def test_unverified_launch_does_not_reach_popen(tmp_path, monkeypatch, kind):
         assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
 
 
+@pytest.mark.parametrize("replacement", ["changed", "unlisted", "symlink", "fifo"])
+def test_dependency_closure_failure_is_before_claim_and_launch(tmp_path, monkeypatch, replacement):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+    record = json.loads(approval["manifest"].read_text())["dependencies"][0]
+    dependency = Path(record["path"])
+    original = identity._dependency_closure
+    if replacement == "changed":
+        dependency.write_bytes(b"changed dependency")
+    elif replacement == "symlink":
+        dependency.unlink()
+        dependency.symlink_to(binary)
+    elif replacement == "fifo":
+        dependency.unlink()
+        os.mkfifo(dependency)
+    else:
+        def with_unlisted(path, *, target_os, target_arch):
+            found = original(path, target_os=target_os, target_arch=target_arch)
+            extra = tmp_path / "libunlisted.so"
+            extra.write_bytes(b"unlisted transitive dependency")
+            size, digest = identity._snapshot_hash(extra, identity._BINARY_LIMIT)
+            return (*found, identity.NativeDependency("libunlisted.so", str(extra), size, digest))
+        monkeypatch.setattr(identity, "_dependency_closure", with_unlisted)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("dependency mismatch reached Popen")
+
+    monkeypatch.setattr(admission, "claim_for_launch", unexpected)
+    monkeypatch.setattr(fixture, "_run_claim", unexpected)
+    monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
+    with pytest.raises((ValueError, OSError)):
+        fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
+
+
 def test_one_process_can_launch_for_racing_controllers(tmp_path, monkeypatch):
     admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
     barrier = Barrier(2)
@@ -276,7 +339,7 @@ def test_one_process_can_launch_for_racing_controllers(tmp_path, monkeypatch):
         try:
             return fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval).status
         except ValueError as error:
-            assert "already claimed" in str(error)
+            assert isinstance(error, FixtureClaimBusy) or "already claimed" in str(error)
             return "denied"
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -293,8 +356,30 @@ def test_failed_spawn_keeps_claim_and_records_terminal_failure(tmp_path, monkeyp
     monkeypatch.setattr(fixture.subprocess, "Popen", fail)
     outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
     assert outcome.status == "launch_failed"
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
     with pytest.raises(ValueError, match="already claimed"):
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+
+
+def test_interrupted_launch_records_cancelled_exit_without_receipt(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+
+    def interrupt(coroutine):
+        coroutine.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fixture.asyncio, "run", interrupt)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+
+    assert outcome.status == "cancelled"
+    assert outcome.exit_status == -9
+    assert outcome.observed_work is None
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
+        assert db.execute(
+            "SELECT status, exit_status, observed_work FROM study_token_outcomes",
+        ).fetchone() == ("cancelled", -9, None)
 
 def test_public_native_fixture_cap_matrix(tmp_path):
     binary_file = os.environ.get("METIS_NATIVE_FIXTURE_BINARY")
@@ -313,12 +398,12 @@ def test_public_native_fixture_cap_matrix(tmp_path):
         (1, "limit", 2, "cap_denied", 0),
         (1, "limit", 22, "cap_denied", 2),
         (1, "limit", 23, "completed", 22),
-        (3, "limit", 26, "cap_denied", 23),
-        (3, "limit", 27, "completed", 24),
-        (3, "word", 24, "cap_denied", 2),
-        (3, "word", 25, "completed", 22),
-        (3, "eos", 24, "cap_denied", 2),
-        (3, "eos", 25, "completed", 22),
+        (3, "limit", 24, "cap_denied", 23),
+        (3, "limit", 25, "completed", 24),
+        (3, "word", 22, "cap_denied", 2),
+        (3, "word", 23, "completed", 22),
+        (3, "eos", 22, "cap_denied", 2),
+        (3, "eos", 23, "completed", 22),
     ], 1):
         # Each profile is independently committed. Use a separate ledger for
         # each cap boundary to keep the test cases independent.
@@ -340,7 +425,7 @@ def test_public_native_fixture_cap_matrix(tmp_path):
             assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (cap,)
 
 @pytest.mark.parametrize(("end", "work"), [("limit", 24), ("word", 22), ("eos", 22)])
-def test_three_token_profile_reserves_full_output_headroom(tmp_path, monkeypatch, end, work):
+def test_three_token_profile_reserves_final_output_headroom(tmp_path, monkeypatch, end, work):
     admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid", n_predict=3, end=end)
     outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                            n_predict=3, end=end)
@@ -354,11 +439,20 @@ def test_budget_and_profile_mismatches_do_not_claim_or_spawn(tmp_path, monkeypat
         pytest.fail("unverified output policy reached Popen")
 
     monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
-    for limit, end, message in [(1, "limit", "sampling profile"), (3, "word", "sampling profile"),
-                                (3, "limit", "no positive native cap")]:
+    for limit, end, message in [(1, "limit", "sampling profile"), (3, "word", "sampling profile")]:
         with pytest.raises(ValueError, match=message):
             fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                           n_predict=limit, end=end)
+    low_root = tmp_path / "low"
+    low_root.mkdir()
+    low_admission, low_receipt, low_binary, low_model, low_approval = _setup(
+        low_root, monkeypatch, "valid", n_predict=1, cap=1,
+    )
+    with pytest.raises(ValueError, match="no positive native cap"):
+        fixture.qualify_native_launch(
+            low_admission, low_receipt, binary=low_binary, model=low_model, **low_approval,
+            n_predict=1,
+        )
     with closing(sqlite3.connect(admission.database)) as db:
         assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
 

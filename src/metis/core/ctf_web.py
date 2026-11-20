@@ -5,14 +5,18 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import secrets
 import sqlite3
+import stat
 import tempfile
 import time
 import urllib.error
 import urllib.parse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +43,74 @@ ATTACHMENTS = {".apk", ".dex", ".jar", ".so", ".dll", ".out", ".pyc", ".wasm", "
                ".enc", ".key", ".pem", ".pub", ".cap", ".py", ".rb", ".go", ".rs", ".java", ".s", ".asm",
                ".zip", ".tar", ".gz", ".xz", ".bz2", ".7z", ".rar", ".bin", ".elf", ".exe",
                ".png", ".jpg", ".jpeg", ".wav", ".pcap", ".pcapng", ".pdf", ".txt", ".c", ".cpp", ".class"}
+
+
+@contextmanager
+def _closed_transaction(connection: sqlite3.Connection, *, readonly_wal_preview: bool = False) -> Iterator[sqlite3.Connection]:
+    """Commit or roll back a SQLite transaction and always close its handle."""
+    try:
+        with connection:
+            yield connection
+    except sqlite3.OperationalError:
+        if readonly_wal_preview:
+            raise ValueError(
+                "read-only credential preview could not open SQLite; check database readability and, "
+                "in WAL mode, write access to the database directory for -wal/-shm sidecars"
+            ) from None
+        raise
+    finally:
+        connection.close()
+
+
+def _sqlite_file_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("credential preview database sidecars must be regular files")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _credential_preview_source(database: Path) -> tuple[str, tuple[object, ...] | None, bool]:
+    """Choose immutable mode for stable files, otherwise read a live WAL snapshot."""
+    absolute = database.absolute()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(absolute, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("credential preview database must be a regular file")
+        header = os.read(fd, 20)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+
+    def signature_from_stat(info: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    main_signature = signature_from_stat(before)
+    if signature_from_stat(after) != main_signature or _sqlite_file_signature(absolute) != main_signature:
+        raise ValueError("SQLite database changed while preparing the read-only credential preview; retry it")
+
+    uri = absolute.as_uri()
+    wal_path = absolute.with_name(absolute.name + "-wal")
+    shm_path = absolute.with_name(absolute.name + "-shm")
+    journal_path = absolute.with_name(absolute.name + "-journal")
+    wal_signature = _sqlite_file_signature(wal_path)
+    shm_signature = _sqlite_file_signature(shm_path)
+    journal_signature = _sqlite_file_signature(journal_path)
+    signature = (main_signature, wal_signature, shm_signature, journal_signature)
+    if journal_signature is not None and journal_signature[2] > 0:
+        raise ValueError("credential preview will not recover a pending SQLite journal; close the writer cleanly")
+    if header[18:20] == b"\x02\x02" and wal_signature is not None and wal_signature[2] > 0:
+        # A read-only WAL connection must coordinate through SQLite's
+        # shared-memory index. SQLite may create/recreate sidecars here.
+        return uri + "?mode=ro", None, True
+
+    # Immutable mode avoids SQLite creating lock sidecars just to read a stable
+    # snapshot. A file-signature check after the transaction detects concurrent changes.
+    return uri + "?mode=ro&immutable=1", signature, False
 
 
 class WebRequest(BaseModel):
@@ -121,6 +193,7 @@ def feedback_text(value: str, candidate: str, client: SafeHTTP) -> str:
 
 class WebWorkflow:
     _AUTH_GENERATION_STATE_KEY = "_metis_auth_generation"
+    _COOKIE_EPOCH_STATE_KEY = "_metis_cookie_epoch"
 
     @staticmethod
     def _environment_auth_only() -> bool:
@@ -130,10 +203,12 @@ class WebWorkflow:
         return mode == "environment"
 
     def __init__(self, database: Path):
-        self.session = CodexSession(database)
         self.database = database
+        self._check_auth_storage(private=False, allow_missing=True)
+        self.session = CodexSession(database)
         self.knowledge = KnowledgeBase(database)
         with sqlite3.connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS web_runs (
                 run_id TEXT PRIMARY KEY, config TEXT NOT NULL, state TEXT NOT NULL,
                 forms TEXT NOT NULL, links TEXT NOT NULL, salt TEXT NOT NULL,
@@ -145,26 +220,95 @@ class WebWorkflow:
             if "attempts" not in columns:
                 db.execute("ALTER TABLE web_attempts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1")
             db.execute("CREATE TABLE IF NOT EXISTS web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            credential_columns = {row[1] for row in db.execute("PRAGMA table_info(web_credentials)")}
+            if "updated_at" not in credential_columns:
+                # Legacy credentials have unknown age and are never auto-retired.
+                db.execute("ALTER TABLE web_credentials ADD COLUMN updated_at REAL")
             db.execute("CREATE TABLE IF NOT EXISTS web_auth_generations (origin TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
+            db.execute("""CREATE TABLE IF NOT EXISTS web_cookie_retirement (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                epoch INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch > 0))""")
+
+    def _check_auth_storage(self, *, private: bool, allow_missing: bool = False) -> bool:
+        owner_private = True
+        for suffix, label in (("", "database"), ("-wal", "WAL"), ("-shm", "SHM")):
+            try:
+                info = self.database.with_name(self.database.name + suffix).lstat()
+            except FileNotFoundError:
+                if suffix or allow_missing:
+                    continue
+                raise ValueError("web authentication state database is missing") from None
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"web authentication state {label} must be a regular file")
+            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                if private:
+                    raise ValueError(f"web authentication state {label} must be private and owned by the current user")
+                owner_private = False
+        return owner_private
+
+    def _truncate_credential_wal(self) -> bool:
+        """Checkpoint retired credential pages and truncate the local WAL if possible."""
+        try:
+            self._check_auth_storage(private=False)
+            connection = sqlite3.connect(self.database, timeout=1.0)
+            try:
+                mode = connection.execute("PRAGMA journal_mode").fetchone()
+                if not mode or str(mode[0]).lower() != "wal":
+                    return True
+                result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                return bool(result is not None and result[0] == 0 and result[1] == 0
+                            and result[2] == 0)
+            finally:
+                connection.close()
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+
+    def _check_web_storage(self) -> bool:
+        return self._check_auth_storage(private=not self._environment_auth_only())
+
+    @staticmethod
+    def _discard_auth_cookies(state: dict, auth_origin: str, private_storage: bool) -> None:
+        if private_storage:
+            state.get("cookies", {}).pop(auth_origin, None)
+        else:
+            state.pop("cookies", None)
+        state.pop("cookie_fingerprint", None)
+
+    @staticmethod
+    def _cookie_epoch(db: sqlite3.Connection) -> int:
+        row = db.execute("SELECT epoch FROM web_cookie_retirement WHERE singleton=1").fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _client_state_for_storage(self, client: SafeHTTP, auth_origin: str, generation: int,
+                                  *, private_storage: bool, cookie_epoch: int) -> dict:
+        state = client.export_state()
+        keep_run_cookies = private_storage and getattr(client, "_metis_cookie_epoch", 0) == cookie_epoch
+        if (not keep_run_cookies or self._environment_auth_only()
+                or getattr(client, "_metis_environment_only", False) or generation != client.auth_generation):
+            self._discard_auth_cookies(state, auth_origin, keep_run_cookies)
+        state[self._AUTH_GENERATION_STATE_KEY] = generation
+        return state
 
     def auth(self, url: str, *, kind: str, value: str, scheme: str = "Token") -> dict:
         if self._environment_auth_only():
             raise ValueError("stored web authentication is disabled; use --token-env or --cookie-env")
+        self._check_auth_storage(private=True)
         key = origin(url)
         if kind not in {"token", "cookie"} or not value or len(value) > 16384 or any(char in value for char in "\r\n"):
             raise ValueError("invalid private CTF credential")
         if scheme not in {"Token", "Bearer"}:
             raise ValueError("invalid credential scheme")
-        with sqlite3.connect(self.database) as db:
-            # Best effort for deleted/updated cells in the main database. This
-            # does not erase WAL frames, snapshots, backups, or provider state.
+        with _closed_transaction(sqlite3.connect(self.database)) as db:
+            # Zero replaced/deleted cells in the active database. The bounded
+            # post-commit checkpoint handles old WAL frames when no reader blocks it.
             db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             # One origin has one active stored credential. A replacement also
             # invalidates cookies derived from the previous authentication.
             values = {kind: value, "scheme": scheme}
-            db.execute("INSERT INTO web_credentials(origin,payload) VALUES (?,?) "
-                       "ON CONFLICT(origin) DO UPDATE SET payload=excluded.payload", (key, json.dumps(values)))
+            db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,?) "
+                       "ON CONFLICT(origin) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+                       (key, json.dumps(values), time.time()))
             db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
                        "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
             generation, = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
@@ -177,13 +321,16 @@ class WebWorkflow:
                 state.pop("cookie_fingerprint", None)
                 state[self._AUTH_GENERATION_STATE_KEY] = generation
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
+        wal_clean = self._truncate_credential_wal()
         return {"origin": key, "credential_stored": True, "kind": kind,
-                "storage": "private local state; excluded from Git"}
+                "storage": "private local state; excluded from Git",
+                "wal_cleanup_complete": wal_clean}
 
     def forget_auth(self, url: str) -> dict:
         """Forget locally stored credentials and cookies for one authentication origin."""
         key = origin(url)
-        with sqlite3.connect(self.database) as db:
+        self._check_auth_storage(private=False)
+        with _closed_transaction(sqlite3.connect(self.database)) as db:
             db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
@@ -201,15 +348,19 @@ class WebWorkflow:
                 state[self._AUTH_GENERATION_STATE_KEY] = generation
                 db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
             removed = cursor.rowcount > 0 or cookie_removed
+        wal_clean = self._truncate_credential_wal()
         return {"origin": key, "credential_removed": removed,
                 "provider_revocation_required": True,
+                "wal_cleanup_complete": wal_clean,
                 "limit": ("Local stored credentials only; environment variables and provider credentials "
                           "are unchanged, an in-flight request may already have sent authentication, "
-                          "and SQLite WAL, snapshots and backups may retain prior values")}
+                          f"and snapshots or backups may retain prior values; WAL cleanup "
+                          f"{'completed' if wal_clean else 'could not be confirmed'}")}
 
-    def forget_all_auth(self, *, apply: bool = False) -> dict:
-        """Preview or fence all saved platform authentication in one bounded transaction."""
-        with sqlite3.connect(self.database) as db:
+    def forget_all_auth(self, *, apply: bool = False, include_run_cookies: bool = False) -> dict:
+        """Preview or retire saved platform authentication and optionally all cookie jars."""
+        self._check_auth_storage(private=False)
+        with _closed_transaction(sqlite3.connect(self.database)) as db:
             if apply:
                 db.execute("PRAGMA secure_delete=ON")
             db.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
@@ -229,6 +380,7 @@ class WebWorkflow:
                 selected.append((run_id, key, state))
             if len(origins) > 100:
                 raise ValueError("bulk auth forgetting exceeds 100 origins")
+            cookie_jars = sum(len(state.get("cookies", {})) for _, _, state in selected) if include_run_cookies else 0
             if apply:
                 generations: dict[str, int] = {}
                 for key in sorted(origins):
@@ -237,19 +389,187 @@ class WebWorkflow:
                     generations[key] = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                                   (key,)).fetchone()[0]
                 db.execute("DELETE FROM web_credentials")
+                if include_run_cookies:
+                    db.execute("INSERT INTO web_cookie_retirement (singleton,epoch) VALUES (1,1) "
+                               "ON CONFLICT(singleton) DO UPDATE SET epoch=epoch+1")
                 for run_id, key, state in selected:
-                    state.get("cookies", {}).pop(key, None)
-                    state.pop("cookie_fingerprint", None)
+                    self._discard_auth_cookies(state, key, not include_run_cookies)
                     state[self._AUTH_GENERATION_STATE_KEY] = generations[key]
                     db.execute("UPDATE web_runs SET state=? WHERE run_id=?", (json.dumps(state), run_id))
-        return {"applied": apply, "origins": len(origins), "stored_credentials": len(credentials),
-                "selected_runs": len(runs),
-                "provider_revocation_required": apply,
-                "limit": ("Local platform-authentication state only; environment variables, "
-                          "challenge-origin cookies, provider credentials, in-flight requests or intake, "
-                          "SQLite WAL, snapshots and backups may retain prior values")}
+        wal_clean = self._truncate_credential_wal() if apply else None
+        result = {"applied": apply, "origins": len(origins), "stored_credentials": len(credentials),
+                  "selected_runs": len(runs), "provider_revocation_required": apply,
+                  "wal_cleanup_complete": wal_clean,
+                  "limit": ("Local platform-authentication state only; environment variables, "
+                            "challenge-origin cookies, provider credentials, in-flight requests or intake, "
+                            f"snapshots and backups may retain prior values; WAL cleanup "
+                            f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}")}
+        if include_run_cookies:
+            result.update(run_cookie_jars=cookie_jars, limit=(
+                "Local authentication and all saved run cookies only. Environment variables, provider credentials, "
+                f"in-flight requests, snapshots and backups may retain prior values; WAL cleanup "
+                f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}"
+            ))
+        return result
+
+    @classmethod
+    def preview_credential_retention(cls, database: Path, *, older_than_days: int,
+                                     now: float | None = None) -> dict:
+        """Run a credential-age preview without constructing or migrating workflow state."""
+        preview = cls.__new__(cls)
+        preview.database = database
+        return preview.credential_retention(older_than_days=older_than_days, now=now)
+
+    def credential_retention(self, *, older_than_days: int, apply: bool = False,
+                             now: float | None = None) -> dict:
+        """Preview or retire locally stored credentials with a known old timestamp."""
+        if type(older_than_days) is not int or not 1 <= older_than_days <= 36_500:
+            raise ValueError("credential retention age must be 1 to 36500 days")
+        current = time.time() if now is None else now
+        if isinstance(current, bool) or not isinstance(current, (int, float)) or not math.isfinite(current):
+            raise ValueError("credential retention clock must be a finite timestamp")
+        cutoff = float(current) - older_than_days * 86_400
+        self._check_auth_storage(private=False, allow_missing=not apply)
+        rows: list[tuple[str, float | None]] = []
+        old_origins: list[str] = []
+        newer = unknown = selected_runs = removed_cookie_jars = 0
+        wal_sidecars_may_be_created = False
+        if apply or self.database.exists():
+            preview_signature: tuple[object, ...] | None = None
+            try:
+                if apply:
+                    connection = sqlite3.connect(self.database)
+                else:
+                    preview_uri, preview_signature, wal_sidecars_may_be_created = _credential_preview_source(
+                        self.database,
+                    )
+                    connection = sqlite3.connect(preview_uri, uri=True)
+            except sqlite3.OperationalError:
+                if not apply:
+                    raise ValueError(
+                        "read-only credential preview could not open SQLite; check database readability and, "
+                        "in WAL mode, write access to the database directory for -wal/-shm sidecars"
+                    ) from None
+                raise
+            with _closed_transaction(connection, readonly_wal_preview=not apply) as db:
+                if apply:
+                    db.execute("PRAGMA secure_delete=ON")
+                    db.execute("BEGIN IMMEDIATE")
+                else:
+                    db.execute("PRAGMA query_only=ON")
+                    db.execute("BEGIN")
+                tables = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'",
+                )}
+                credential_columns = ({row[1] for row in db.execute("PRAGMA table_info(web_credentials)")}
+                                      if "web_credentials" in tables else set())
+                if "web_credentials" in tables:
+                    if "updated_at" in credential_columns:
+                        rows = db.execute(
+                            "SELECT origin,updated_at FROM web_credentials ORDER BY origin LIMIT 101",
+                        ).fetchall()
+                    else:
+                        rows = db.execute(
+                            "SELECT origin,NULL FROM web_credentials ORDER BY origin LIMIT 101",
+                        ).fetchall()
+                if len(rows) > 100:
+                    raise ValueError("credential retention exceeds 100 origins")
+                for key, updated_at in rows:
+                    if (updated_at is None or isinstance(updated_at, bool)
+                            or not isinstance(updated_at, (int, float))):
+                        unknown += 1
+                    else:
+                        timestamp = float(updated_at)
+                        if not math.isfinite(timestamp):
+                            unknown += 1
+                        elif timestamp <= cutoff:
+                            old_origins.append(key)
+                        else:
+                            newer += 1
+
+                if old_origins and "web_runs" in tables:
+                    if apply:
+                        for key in old_origins:
+                            generation = db.execute(
+                                "INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                                "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,),
+                            )
+                            if generation.rowcount != 1:
+                                raise sqlite3.IntegrityError("could not advance retired credential generation")
+                    placeholders = ",".join("?" for _ in old_origins)
+                    runs = db.execute(
+                        "SELECT run_id,config,state FROM web_runs "
+                        f"WHERE json_extract(config,'$.auth_origin') IN ({placeholders}) LIMIT 1001",
+                        old_origins,
+                    ).fetchall()
+                    if len(runs) > 1000:
+                        raise ValueError("credential retention exceeds 1000 linked runs")
+                    selected_runs = len(runs)
+                    generations = ({
+                        key: db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (key,)).fetchone()[0]
+                        for key in old_origins
+                    } if apply else {})
+                    for run_id, raw_config, raw_state in runs:
+                        config, state = json.loads(raw_config), json.loads(raw_state)
+                        auth_origin = config.get("auth_origin") if isinstance(config, dict) else None
+                        if (auth_origin not in old_origins or not isinstance(state, dict)
+                                or not isinstance(state.get("cookies", {}), dict)):
+                            raise TypeError("stored web authentication state is invalid")
+                        cookies = state.get("cookies", {})
+                        removed_cookie_jars += int(auth_origin in cookies)
+                        if apply:
+                            cookies.pop(auth_origin, None)
+                            state.pop("cookie_fingerprint", None)
+                            state[self._AUTH_GENERATION_STATE_KEY] = generations[auth_origin]
+                            updated = db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
+                                                 (json.dumps(state), run_id))
+                            if updated.rowcount != 1:
+                                raise sqlite3.IntegrityError("could not retire linked web run cookies")
+                    if apply:
+                        for key in old_origins:
+                            deleted = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
+                            if deleted.rowcount != 1:
+                                raise sqlite3.IntegrityError("credential retirement did not delete every selected origin")
+
+            if preview_signature is not None:
+                absolute = self.database.absolute()
+                after = (
+                    _sqlite_file_signature(absolute),
+                    _sqlite_file_signature(absolute.with_name(absolute.name + "-wal")),
+                    _sqlite_file_signature(absolute.with_name(absolute.name + "-shm")),
+                    _sqlite_file_signature(absolute.with_name(absolute.name + "-journal")),
+                )
+                if after != preview_signature:
+                    raise ValueError("SQLite database changed during read-only credential preview; retry it")
+
+        # Re-applying the same age policy also retries a previously busy WAL cleanup.
+        wal_clean = self._truncate_credential_wal() if apply else None
+        sidecar_note = ("Read-only WAL preview may create/update -wal/-shm sidecars and needs a writable "
+                        "database directory; " if wal_sidecars_may_be_created else
+                        "This preview creates no SQLite sidecars; ")
+        return {
+            "applied": apply,
+            "older_than_days": older_than_days,
+            "retire_before": cutoff,
+            "credentials_considered": len(rows),
+            "eligible_credentials": len(old_origins),
+            "newer_credentials_retained": newer,
+            "age_unknown_retained": unknown,
+            "selected_runs": selected_runs,
+            "cookie_jars_selected": removed_cookie_jars,
+            "provider_revocation_required": bool(apply and old_origins),
+            "wal_cleanup_complete": wal_clean,
+            "sqlite_wal_sidecars_may_be_created": wal_sidecars_may_be_created,
+            "limit": ("Only locally stored credentials with a known timestamp are eligible. "
+                      "Environment variables, provider state, in-flight requests, snapshots and backups "
+                      f"may retain prior values; {sidecar_note}"
+                      f"WAL cleanup "
+                      f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}"),
+        }
 
     def _load(self, run_id: str) -> tuple[dict, dict, list, list, str, float]:
+        private_storage = self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = db.execute("SELECT config,state,forms,links,salt,paused_until FROM web_runs WHERE run_id=?",
@@ -258,21 +578,19 @@ class WebWorkflow:
                 raise ValueError("web workflow not found")
             config, state = json.loads(row[0]), json.loads(row[1])
             auth_origin = config["auth_origin"]
-            if self._environment_auth_only():
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (auth_origin,)).fetchone()
             generation = generation_row[0] if generation_row else 0
             state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, generation)
-            if state_generation != generation:
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
+            if not private_storage or self._environment_auth_only() or state_generation != generation:
+                self._discard_auth_cookies(state, auth_origin, private_storage)
             state[self._AUTH_GENERATION_STATE_KEY] = generation
+            state[self._COOKIE_EPOCH_STATE_KEY] = self._cookie_epoch(db)
         return config, state, json.loads(row[2]), json.loads(row[3]), row[4], row[5]
 
     def _client(self, config: dict, state: dict) -> SafeHTTP:
         environment_only = self._environment_auth_only()
+        private_storage = self._check_auth_storage(private=not environment_only)
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN")
             row = None if environment_only else db.execute(
@@ -280,44 +598,46 @@ class WebWorkflow:
             row_generation = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (config["auth_origin"],)).fetchone()
             current_generation = row_generation[0] if row_generation else 0
+            cookie_epoch = self._cookie_epoch(db)
         state_generation = state.get(self._AUTH_GENERATION_STATE_KEY, current_generation)
-        if environment_only:
-            state.get("cookies", {}).pop(config["auth_origin"], None)
-            state.pop("cookie_fingerprint", None)
+        keep_run_cookies = private_storage and state.get(self._COOKIE_EPOCH_STATE_KEY, cookie_epoch) == cookie_epoch
+        if environment_only or not keep_run_cookies:
+            self._discard_auth_cookies(state, config["auth_origin"], keep_run_cookies)
         client = SafeHTTP(config["origins"], auth_origin=config["auth_origin"],
                         token_env=config.get("token_env"), cookie_env=config.get("cookie_env"),
                         state=state, credentials=json.loads(row[0]) if row else
                         {"scheme": "Bearer"} if config.get("adapter") == "rctf" else {}, timeout=15)
         client.auth_generation = state_generation
         client._metis_environment_only = environment_only
+        client._metis_cookie_epoch = cookie_epoch
         client.auth_generation_check = lambda expected: (
             self._environment_auth_only() == environment_only
             and self._auth_generation_matches(config["auth_origin"], expected))
         return client
 
     def _auth_generation_matches(self, auth_origin: str, expected: int) -> bool:
+        self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                              (auth_origin,)).fetchone()
         return (row[0] if row else 0) == expected
 
     def _save_client(self, run_id: str, client: SafeHTTP) -> None:
+        private_storage = self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
+            cookie_epoch = self._cookie_epoch(db)
+            if getattr(client, "_metis_cookie_epoch", 0) != cookie_epoch:
+                return
             config_row = db.execute("SELECT config FROM web_runs WHERE run_id=?", (run_id,)).fetchone()
             if config_row is None:
                 return
             auth_origin = json.loads(config_row[0])["auth_origin"]
             row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (auth_origin,)).fetchone()
             generation = row[0] if row else 0
-            state = client.export_state()
-            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
-            if generation != client.auth_generation:
-                state.get("cookies", {}).pop(auth_origin, None)
-                state.pop("cookie_fingerprint", None)
-            state[self._AUTH_GENERATION_STATE_KEY] = generation
+            state = self._client_state_for_storage(
+                client, auth_origin, generation, private_storage=private_storage, cookie_epoch=cookie_epoch,
+            )
             db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
                        (json.dumps(state), run_id))
 
@@ -325,6 +645,7 @@ class WebWorkflow:
         """Exchange an rCTF team token for an auth token and store it privately as Bearer."""
         if self._environment_auth_only():
             raise ValueError("stored web authentication is disabled; use --token-env")
+        self._check_auth_storage(private=True)
         if not team_token or len(team_token) > 4096 or any(char in team_token for char in "\r\n"):
             raise ValueError("invalid rCTF team token")
         key = origin(url)
@@ -588,19 +909,16 @@ class WebWorkflow:
                                            categories=categories, max_actions=120, wall_seconds=7200,
                                            evaluation_split=evaluation["split"])
         run_id = context["run_id"]
+        private_storage = self._check_web_storage()
         with sqlite3.connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             generation_row = db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
                                         (config["auth_origin"],)).fetchone()
             generation = generation_row[0] if generation_row else 0
-            initial_state = client.export_state()
-            if self._environment_auth_only() or getattr(client, "_metis_environment_only", False):
-                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
-                initial_state.pop("cookie_fingerprint", None)
-            if generation != client.auth_generation:
-                initial_state.get("cookies", {}).pop(config["auth_origin"], None)
-                initial_state.pop("cookie_fingerprint", None)
-            initial_state[self._AUTH_GENERATION_STATE_KEY] = generation
+            initial_state = self._client_state_for_storage(
+                client, config["auth_origin"], generation, private_storage=private_storage,
+                cookie_epoch=self._cookie_epoch(db),
+            )
             db.execute("INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
                        (run_id, json.dumps(config), json.dumps(initial_state),
                         json.dumps(page.forms), json.dumps(links), secrets.token_hex(32)))

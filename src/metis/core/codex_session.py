@@ -13,6 +13,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,6 +33,16 @@ from metis.core.runtime import ToolRequest
 from metis.core.store import RunStore
 
 NATIVE_TOOLS = DATA_TOOLS
+MAX_DERIVED_ARTIFACTS_PER_RUN = 100
+
+
+class DerivedArtifactLimitError(ValueError):
+    """Raised before mutation when a run exceeds the derived-artifact cap."""
+
+    def __init__(self, count: int):
+        self.count = count
+        self.limit = MAX_DERIVED_ARTIFACTS_PER_RUN
+        super().__init__("derived artifact count exceeds per-run limit")
 
 
 def _artifact_evidence(tool: str, output: dict) -> dict[str, str]:
@@ -99,6 +110,10 @@ class CodexSession:
             # Several swarm workers share this database; WAL lets readers and one
             # writer proceed concurrently (the setting persists in the file).
             db.execute("PRAGMA journal_mode=WAL")
+            # Serialize schema inspection and migrations. Without taking the write
+            # lock before reading table_info, concurrent workers can both observe a
+            # missing column and race to add it.
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS codex_sessions (
                 run_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, commitment TEXT,
                 started REAL NOT NULL, max_actions INTEGER NOT NULL,
@@ -166,7 +181,7 @@ class CodexSession:
         return self.context(run_id)
 
     def _session(self, run_id: str) -> tuple:
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             row = db.execute("SELECT manifest, commitment, started, max_actions, wall_seconds "
                              "FROM codex_sessions WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
@@ -465,7 +480,7 @@ class CodexSession:
     def artifact_root(self, run_id: str) -> Path | None:
         """Snapshot directory of a run; relative roots live beside the database."""
         self._session(run_id)
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             root = db.execute("SELECT artifact_root FROM codex_sessions WHERE run_id=?",
                               (run_id,)).fetchone()[0]
         if root is None:
@@ -480,6 +495,11 @@ class CodexSession:
         if len(content) > MAX_FILE or not re.fullmatch(r"\.metis-[a-z]{1,16}", directory_name) \
                 or not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
             raise ValueError("invalid controller artifact")
+        if directory_name == ".metis-derived":
+            manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
+            derived_count = sum(path.startswith(".metis-derived/") for path in manifest.artifacts)
+            if derived_count >= MAX_DERIVED_ARTIFACTS_PER_RUN:
+                raise DerivedArtifactLimitError(derived_count + 1)
         root = self.artifact_root(run_id)
         if root is None:
             raise ValueError("no artifact root registered")
@@ -529,7 +549,7 @@ class CodexSession:
                                         RunStatus.ERROR, RunStatus.POLICY_DENIED}:
                 raise ValueError("run must be terminal before derived artifact purge")
 
-            with sqlite3.connect(self.database) as db:
+            with closing(sqlite3.connect(self.database)) as db:
                 tables = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
                 active_operations = (db.execute(
@@ -549,6 +569,8 @@ class CodexSession:
             manifest = ChallengeManifest.model_validate_json(manifest_text)
             derived_paths = sorted(path for path in manifest.artifacts
                                    if path.startswith(".metis-derived/"))
+            if len(derived_paths) > MAX_DERIVED_ARTIFACTS_PER_RUN:
+                raise DerivedArtifactLimitError(len(derived_paths))
             expected_names: set[str] = set()
             for path in derived_paths:
                 name = path.removeprefix(".metis-derived/")
@@ -576,9 +598,14 @@ class CodexSession:
                     ]
                     derived_exists = False
                 else:
-                    names = set(os.listdir(derived_fd))
-                    if names - expected_names:
-                        raise ValueError("derived directory contains unregistered entries")
+                    seen_entries = 0
+                    with os.scandir(derived_fd) as directory_entries:
+                        for directory_entry in directory_entries:
+                            seen_entries += 1
+                            if seen_entries > MAX_DERIVED_ARTIFACTS_PER_RUN:
+                                raise ValueError("derived directory exceeds per-run artifact limit")
+                            if directory_entry.name not in expected_names:
+                                raise ValueError("derived directory contains unregistered entries")
                     entries = []
                     for path in derived_paths:
                         name = path.removeprefix(".metis-derived/")
@@ -608,7 +635,7 @@ class CodexSession:
                 data["artifacts"] = [path for path in manifest.artifacts
                                      if not path.startswith(".metis-derived/")]
                 updated = ChallengeManifest.model_validate(data)
-                with sqlite3.connect(self.database) as db:
+                with closing(sqlite3.connect(self.database)) as db, db:
                     db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
                                (updated.model_dump_json(), run_id))
                 return {"run_id": run_id, "applied": True, "files": entries, "bytes": total_bytes,

@@ -1,0 +1,329 @@
+diff --git a/include/llama.h b/include/llama.h
+index 181d840a6..29ea597cc 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -63,6 +63,10 @@ extern "C" {
+     struct llama_context;
+     struct llama_sampler;
+ 
++    // Test-only aggregate work trace, enabled only by the exact nonce environment variable.
++    LLAMA_API void llama_metis_trace_mark_ready(void);
++    LLAMA_API void llama_metis_trace_server_batch_retry(void);
++
+     typedef struct llama_memory_i * llama_memory_t;
+ 
+     typedef int32_t llama_pos;
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9066e061e..cbd6057a5 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -15,14 +15,167 @@
+ #include "llama.h"
+ 
+ #include <algorithm>
++#include <array>
++#include <atomic>
+ #include <cinttypes>
+ #include <cmath>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ #include <stdexcept>
+ #include <string>
+ #include <unordered_map>
+ 
++namespace {
++struct metis_trace_counts {
++    std::atomic<uint64_t> process_calls{0};
++    std::atomic<uint64_t> process_encode_calls{0};
++    std::atomic<uint64_t> process_decode_calls{0};
++    std::atomic<uint64_t> process_failures{0};
++    std::atomic<uint64_t> input_positions{0};
++    std::atomic<uint64_t> encode_calls{0};
++    std::atomic<uint64_t> decode_calls{0};
++    std::atomic<uint64_t> graph_dispatches{0};
++    std::atomic<uint64_t> graph_positions{0};
++    std::atomic<uint64_t> graph_failures{0};
++    std::atomic<uint64_t> graph_pre_dispatch_failures{0};
++    std::atomic<uint64_t> zero_position_graphs{0};
++    std::atomic<uint64_t> server_batch_retries{0};
++    std::atomic<uint64_t> injected_precompute_failures{0};
++};
++
++struct metis_trace_state {
++    std::array<char, 33> nonce{};
++    std::atomic<bool> requests_started{false};
++    std::atomic<bool> inject_retry_once{false};
++    metis_trace_counts startup;
++    metis_trace_counts requests;
++
++    metis_trace_state() {
++        const char * value = std::getenv("METIS_LLAMA_TRACE_NONCE");
++        if (value == nullptr || std::strlen(value) != nonce.size() - 1) {
++            return;
++        }
++        for (size_t i = 0; i < nonce.size() - 1; ++i) {
++            if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) {
++                return;
++            }
++        }
++        std::memcpy(nonce.data(), value, nonce.size());
++        const char * inject = std::getenv("METIS_LLAMA_TRACE_INJECT_RETRY_ONCE");
++        inject_retry_once.store(inject != nullptr && std::strcmp(inject, "1") == 0);
++    }
++
++    bool enabled() const { return nonce[0] != '\0'; }
++
++    metis_trace_counts & active() {
++        return requests_started.load(std::memory_order_relaxed) ? requests : startup;
++    }
++
++    ~metis_trace_state() {
++        if (!enabled()) {
++            return;
++        }
++        auto emit = [](const char * name, const metis_trace_counts & counts) {
++            std::fprintf(stderr,
++                "\"%s\":{\"process_calls\":%llu,\"process_encode_calls\":%llu,"
++                "\"process_decode_calls\":%llu,\"process_failures\":%llu,"
++                "\"input_positions\":%llu,\"encode_calls\":%llu,\"decode_calls\":%llu,"
++                "\"graph_dispatches\":%llu,\"graph_positions\":%llu,"
++                "\"graph_failures\":%llu,\"graph_pre_dispatch_failures\":%llu,"
++                "\"zero_position_graphs\":%llu,\"server_batch_retries\":%llu,"
++                "\"injected_precompute_failures\":%llu}",
++                name,
++                static_cast<unsigned long long>(counts.process_calls.load()),
++                static_cast<unsigned long long>(counts.process_encode_calls.load()),
++                static_cast<unsigned long long>(counts.process_decode_calls.load()),
++                static_cast<unsigned long long>(counts.process_failures.load()),
++                static_cast<unsigned long long>(counts.input_positions.load()),
++                static_cast<unsigned long long>(counts.encode_calls.load()),
++                static_cast<unsigned long long>(counts.decode_calls.load()),
++                static_cast<unsigned long long>(counts.graph_dispatches.load()),
++                static_cast<unsigned long long>(counts.graph_positions.load()),
++                static_cast<unsigned long long>(counts.graph_failures.load()),
++                static_cast<unsigned long long>(counts.graph_pre_dispatch_failures.load()),
++                static_cast<unsigned long long>(counts.zero_position_graphs.load()),
++                static_cast<unsigned long long>(counts.server_batch_retries.load()),
++                static_cast<unsigned long long>(counts.injected_precompute_failures.load()));
++        };
++        std::fputs("METIS_LLAMA_TRACE_V1 {\"version\":1,\"source_commit\":"
++                   "\"b1b770d90d94cad9e9ea5b993bdbc383a522fb28\",\"nonce\":\"",
++                   stderr);
++        std::fputs(nonce.data(), stderr);
++        std::fputs("\",", stderr);
++        emit("startup", startup);
++        std::fputc(',', stderr);
++        emit("requests", requests);
++        std::fputs("}\n", stderr);
++        std::fflush(stderr);
++    }
++};
++
++static metis_trace_state metis_trace;
++
++static void metis_trace_process_start(llama_process_type type, uint64_t n_tokens) {
++    if (!metis_trace.enabled()) return;
++    auto & counts = metis_trace.active();
++    counts.process_calls.fetch_add(1, std::memory_order_relaxed);
++    counts.input_positions.fetch_add(n_tokens, std::memory_order_relaxed);
++    if (type == LLAMA_PROCESS_TYPE_ENCODE) {
++        counts.process_encode_calls.fetch_add(1, std::memory_order_relaxed);
++    } else if (type == LLAMA_PROCESS_TYPE_DECODE) {
++        counts.process_decode_calls.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
++static void metis_trace_process_finish(int32_t status) {
++    if (metis_trace.enabled() && status != 0) {
++        metis_trace.active().process_failures.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
++static void metis_trace_graph_start(uint32_t n_tokens) {
++    if (!metis_trace.enabled()) return;
++    auto & counts = metis_trace.active();
++    counts.graph_dispatches.fetch_add(1, std::memory_order_relaxed);
++    counts.graph_positions.fetch_add(n_tokens, std::memory_order_relaxed);
++    if (n_tokens == 0) counts.zero_position_graphs.fetch_add(1, std::memory_order_relaxed);
++}
++
++static void metis_trace_graph_finish(ggml_status status) {
++    if (metis_trace.enabled() && status != GGML_STATUS_SUCCESS) {
++        metis_trace.active().graph_failures.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
++static void metis_trace_pre_dispatch_failure() {
++    if (metis_trace.enabled()) {
++        metis_trace.active().graph_pre_dispatch_failures.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
++static bool metis_trace_take_retry_injection() {
++    if (!metis_trace.enabled() || !metis_trace.requests_started.load(std::memory_order_relaxed)) {
++        return false;
++    }
++    bool expected = true;
++    return metis_trace.inject_retry_once.compare_exchange_strong(expected, false);
++}
++} // namespace
++
++void llama_metis_trace_mark_ready(void) {
++    if (metis_trace.enabled()) {
++        metis_trace.requests_started.store(true, std::memory_order_relaxed);
++    }
++}
++
++void llama_metis_trace_server_batch_retry(void) {
++    if (metis_trace.enabled()) {
++        metis_trace.active().server_batch_retries.fetch_add(1, std::memory_order_relaxed);
++    }
++}
++
+ //
+ // llama_context
+ //
+@@ -1816,6 +1969,7 @@ bool llama_context::set_adapter_cvec(
+ 
+ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+     if (mctx && !mctx->apply()) {
++        metis_trace_pre_dispatch_failure();
+         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
+         ret = GGML_STATUS_FAILED;
+         return nullptr;
+@@ -1853,12 +2007,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+ 
+         if (!gf) {
++            metis_trace_pre_dispatch_failure();
+             LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
+             ret = GGML_STATUS_FAILED;
+             return nullptr;
+         }
+ 
+         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
++            metis_trace_pre_dispatch_failure();
+             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
+             ret = GGML_STATUS_ALLOC_FAILED;
+             return nullptr;
+@@ -1877,7 +2033,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+ 
+-    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
++    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1, ubatch.n_tokens);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
+         ret = status;
+@@ -1890,6 +2046,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+ }
+ 
+ int llama_context::encode(const llama_batch_ext & batch_inp) {
++    if (metis_trace.enabled()) metis_trace.active().encode_calls.fetch_add(1, std::memory_order_relaxed);
+     if (batch_inp.tokens.empty()) {
+         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
+         return -1;
+@@ -2138,6 +2295,11 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+ }
+ 
+ int llama_context::decode(const llama_batch_ext & batch_inp) {
++    if (metis_trace.enabled()) metis_trace.active().decode_calls.fetch_add(1, std::memory_order_relaxed);
++    if (metis_trace_take_retry_injection()) {
++        metis_trace.active().injected_precompute_failures.fetch_add(1, std::memory_order_relaxed);
++        return 1; // simulate a KV-capacity refusal before any graph is submitted
++    }
+     if (!memory) {
+         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
+         return encode(batch_inp);
+@@ -3122,7 +3284,8 @@ void llama_context::sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph
+ 
+ ggml_status llama_context::graph_compute(
+             ggml_cgraph * gf,
+-                   bool   batched) {
++                   bool   batched,
++               uint32_t   n_tokens) {
+     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
+     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
+ 
+@@ -3141,7 +3304,9 @@ ggml_status llama_context::graph_compute(
+ 
+     copy_experts.reset();
+ 
++    metis_trace_graph_start(n_tokens);
+     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
++    metis_trace_graph_finish(status);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+     }
+@@ -5165,11 +5330,14 @@ void llama_opt_epoch(
+ }
+ 
+ int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_ext * batch) {
++    metis_trace_process_start(type, batch == nullptr ? 0 : batch->tokens.size());
++    int32_t result = -1;
+     switch (type) {
+-        case LLAMA_PROCESS_TYPE_ENCODE: return ctx->encode(*batch);
+-        case LLAMA_PROCESS_TYPE_DECODE: return ctx->decode(*batch);
++        case LLAMA_PROCESS_TYPE_ENCODE: result = ctx->encode(*batch); break;
++        case LLAMA_PROCESS_TYPE_DECODE: result = ctx->decode(*batch); break;
+     }
+-    return -1;
++    metis_trace_process_finish(result);
++    return result;
+ }
+ 
+ //
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 45eca4566..94d09afa5 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -277,7 +277,7 @@ public:
+     llm_graph_result * get_gf_res_reserve() const;
+ 
+     // returns the result of ggml_backend_sched_graph_compute_async execution
+-    ggml_status graph_compute(ggml_cgraph * gf, bool batched);
++    ggml_status graph_compute(ggml_cgraph * gf, bool batched, uint32_t n_tokens);
+ 
+     // reserve a graph with a dummy ubatch of the specified size
+     ggml_cgraph * graph_reserve(
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 4ec7fb89c..986896086 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -929,7 +929,7 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
+ 
+             res->set_inputs(nullptr);
+ 
+-            if (lctx->graph_compute(gf, false) != GGML_STATUS_SUCCESS) {
++            if (lctx->graph_compute(gf, false, 0) != GGML_STATUS_SUCCESS) {
+                 LLAMA_LOG_ERROR("%s: failed to compute K-shift\n", __func__);
+                 return updated;
+             }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a6059ab38..bc66d61e8 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -4767,6 +4767,8 @@ private:
+ 
+             SRV_WRN("failed to find free space in the KV cache, retrying with smaller batch size, off = %d, n_batch = %d, ret = %d\n", off, n_batch, ret);
+ 
++            llama_metis_trace_server_batch_retry();
++
+             return false; // retry with the updated n_batch
+         } else {
+             // success, apply batch metrics
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index ca3eb2dbb..14b4a169e 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -702,6 +702,8 @@ static int server_run_instance(common_params & params, server_role & role, commo
+         return 1;
+     }
+ 
++    llama_metis_trace_mark_ready();
++
+     routes.update_meta(ctx_server);
+     ctx_http.is_ready.store(true);
+ 

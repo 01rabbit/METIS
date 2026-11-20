@@ -18,6 +18,9 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import TypedDict
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from metis.core.codex_isolation import (
     SYSTEM_RO,
@@ -36,12 +39,57 @@ from metis.core.ctf_sandbox import PLATFORM_PATTERN, configure
 from metis.core.ctf_workflow import (
     BASE_WORKFLOW_TOOLS,
     MAX_WORKFLOW_INPUT,
+    WorkflowCandidate,
     generate_seeded_workflow,
     replay_workflow_in_sandbox,
     validate_workflow,
 )
 
 Proposer = Callable[[bytes], bytes]
+MAX_TRIAL_CASES = 32
+MAX_TRIAL_MANIFEST_BYTES = 65_536
+
+
+class TrialCaseSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    case_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    fixture: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
+    oracle: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
+
+
+class TrialManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: int = Field(ge=1, le=1)
+    cases: list[TrialCaseSpec] = Field(min_length=1, max_length=MAX_TRIAL_CASES)
+
+
+class TrialCaseResult(TypedDict):
+    case_id: str
+    ok: bool
+    reproducible: bool
+    oracle_match: bool
+    selected_steps: list[str]
+    failure: str | None
+
+
+class TrialBatchSummary(TypedDict):
+    total: int
+    passed: int
+    failed: int
+    pass_rate: float
+
+
+class TrialBatchReport(TypedDict):
+    cases: list[TrialCaseResult]
+    summary: TrialBatchSummary
+
+
+@dataclass(frozen=True)
+class _LoadedTrialCase:
+    case_id: str
+    fixture: _TrialFixture
 
 
 def _exchange_proposal(process: subprocess.Popen[bytes], prompt: bytes, *,
@@ -262,10 +310,154 @@ def _load_external_fixture(fixture: Path, oracle: Path) -> _TrialFixture:
     return _TrialFixture(challenge, oracle_sha256)
 
 
+def _read_private_manifest(path: Path) -> tuple[bytes, Path]:
+    """Read a bounded private manifest without following aliases or leaking its path."""
+    try:
+        parent = _directory_outside_checkout(path.parent, label="trial manifest directory")
+        info = parent.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("trial manifest directory must be owner-only")
+        descriptor = os.open(parent / path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_mode & 0o077 or before.st_nlink != 1
+                    or not 0 < before.st_size <= MAX_TRIAL_MANIFEST_BYTES):
+                raise ValueError("trial manifest must be a bounded private regular file")
+            _reject_acl_grants(source.fileno(), label="trial manifest")
+            payload = source.read(MAX_TRIAL_MANIFEST_BYTES + 1)
+            after = os.fstat(source.fileno())
+            if (len(payload) != before.st_size or after.st_mtime_ns != before.st_mtime_ns
+                    or after.st_ctime_ns != before.st_ctime_ns):
+                raise ValueError("trial manifest changed during intake")
+        return payload, parent
+    except OSError:
+        raise ValueError("trial manifest could not be read safely") from None
+
+
+def _load_trial_manifest(path: Path) -> tuple[tuple[_LoadedTrialCase, ...], Path]:
+    """Snapshot and validate every manifest input before any run or proposal starts."""
+    raw, parent = _read_private_manifest(path)
+    try:
+        manifest = TrialManifest.model_validate_json(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError("trial manifest is malformed or violates the fixed schema") from None
+    ids = [case.case_id for case in manifest.cases]
+    names = [name for case in manifest.cases for name in (case.fixture, case.oracle)]
+    if len(set(ids)) != len(ids):
+        raise ValueError("trial manifest contains duplicate case IDs")
+    if len(set(names)) != len(names):
+        raise ValueError("trial manifest contains duplicate input paths")
+    for name in names:
+        candidate = Path(name)
+        if (candidate.is_absolute() or candidate.name != name or name in {".", ".."}
+                or "\\" in name or "/" in name):
+            raise ValueError("trial manifest paths must be unique sibling filenames")
+
+    loaded: list[_LoadedTrialCase] = []
+    fixture_digests: set[str] = set()
+    for case in sorted(manifest.cases, key=lambda item: item.case_id):
+        fixture_path = parent / case.fixture
+        oracle_path = parent / case.oracle
+        snapshot = _load_external_fixture(fixture_path, oracle_path)
+        fixture_digest = hashlib.sha256(snapshot.challenge).hexdigest()
+        if fixture_digest in fixture_digests:
+            raise ValueError("trial manifest contains duplicate fixture content")
+        fixture_digests.add(fixture_digest)
+        loaded.append(_LoadedTrialCase(case_id=case.case_id, fixture=snapshot))
+    commitments = {item.fixture.oracle_sha256 for item in loaded}
+    if any(any(commitment.encode("ascii") in item.fixture.challenge
+               for commitment in commitments)
+           or hashlib.sha256(item.fixture.challenge).hexdigest() in commitments
+           for item in loaded):
+        raise ValueError("trial manifest fixture exposes a case oracle commitment or answer")
+    return tuple(loaded), parent
+
+
+def run_external_fixture_manifest_trial(database: Path, *, image: str, platform: str | None,
+                                        manifest: Path,
+                                        proposer: Proposer | None = None) -> TrialBatchReport:
+    """Run a bounded answer-free batch; intake of all cases precedes side effects."""
+    if sys.platform not in {"darwin", "linux"}:
+        raise ValueError("external fixture intake requires macOS or Linux")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+        raise ValueError("sandbox image must be an immutable SHA-256 digest")
+    if platform is not None and not PLATFORM_PATTERN.fullmatch(platform):
+        raise ValueError("unsupported platform")
+
+    cases, oracle_directory = _load_trial_manifest(manifest)
+    workspace_parent = _directory_outside_checkout(database.parent.parent,
+                                                    label="run workspace parent")
+    if database.name.casefold() in {"", "..", "sandbox.json"} or database.parent.name in {"", ".."}:
+        raise ValueError("database must name a file in a new private run directory")
+    workspace = workspace_parent / database.parent.name
+    try:
+        workspace.mkdir(mode=0o700)
+    except OSError:
+        raise ValueError("database requires a new private run directory") from None
+
+    run_database = workspace / database.name
+    try:
+        configure(run_database, engine="docker", image=image, platform=platform)
+    except Exception:  # noqa: BLE001 - configuration errors may include private paths
+        raise RuntimeError("multi-case sandbox configuration failed") from None
+    model_proposer = proposer or partial(codex_proposer,
+                                         oracle_directory=oracle_directory)
+    rows: list[TrialCaseResult] = []
+    for case in cases:
+        row: TrialCaseResult = {"case_id": case.case_id, "ok": False,
+                                "reproducible": False, "oracle_match": False,
+                                "selected_steps": [], "failure": "proposal"}
+        try:
+            proposal = model_proposer(case.fixture.challenge)
+        except Exception:  # noqa: BLE001 - provider/isolation errors can carry private data
+            raise RuntimeError("multi-case proposal infrastructure failed") from None
+        try:
+            plan = validate_workflow(proposal, input_artifact="challenge.txt")
+        except ValueError:
+            row["failure"] = "invalid_proposal"
+            rows.append(row)
+            continue
+        try:
+            result = _execute_workflow(run_database, case.fixture, plan,
+                                       index=len(rows) + 1)
+            selected_steps = result["selected_steps"]
+            if not isinstance(selected_steps, list) or not all(
+                    isinstance(step, str) for step in selected_steps):
+                raise ValueError("trial result has an invalid workflow projection")
+            ok_value = result.get("ok")
+            reproducible_value = result.get("reproducible")
+            oracle_match_value = result.get("oracle_match", False)
+            if oracle_match_value is None:
+                oracle_match_value = False
+            if (not isinstance(ok_value, bool) or not isinstance(reproducible_value, bool)
+                    or not isinstance(oracle_match_value, bool)):
+                raise TypeError("trial result has invalid status values")
+            row.update({"ok": ok_value,
+                        "reproducible": reproducible_value,
+                        "oracle_match": oracle_match_value,
+                        "selected_steps": selected_steps,
+                        "failure": None if result["ok"] else "replay"})
+        except Exception:  # noqa: BLE001 - sandbox/storage failures are not model outcomes
+            raise RuntimeError("multi-case sandbox or run infrastructure failed") from None
+        rows.append(row)
+
+    passed = sum(bool(row["ok"]) for row in rows)
+    summary: TrialBatchSummary = {"total": len(rows), "passed": passed,
+                                  "failed": len(rows) - passed,
+                                  "pass_rate": passed / len(rows)}
+    return {"cases": rows, "summary": summary}
+
+
 def _run_fixture(database: Path, fixture: _TrialFixture, *, index: int,
                  proposer: Proposer) -> dict[str, object]:
     proposal = proposer(fixture.challenge)
     plan = validate_workflow(proposal, input_artifact="challenge.txt")
+    return _execute_workflow(database, fixture, plan, index=index)
+
+
+def _execute_workflow(database: Path, fixture: _TrialFixture, plan: WorkflowCandidate, *,
+                      index: int) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="metis-unseen-fixture-") as temporary:
         root = Path(temporary)
         challenge = root / "challenge.txt"

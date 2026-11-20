@@ -1,5 +1,25 @@
 # METIS implementation status
 
+## Issue #9 artifact registration audit (2026-11-20)
+
+`metis audit` now reports bounded, count-only artifact registrations from the
+current run's manifest in its existing SQLite snapshot. Derived, added and other
+registration counts omit paths and contents and always report
+`filesystem_verified: false`. The audit does not inspect artifact files,
+initialize a session, acquire METIS locks or remove data. Missing legacy schema
+is unavailable; malformed, duplicate, unrecognized-path or oversized manifests
+make only the inventory unavailable. Existing valid manifest shapes outside the
+inventory's recognition rules keep their event-chain and other audit output;
+the persistence contract is unchanged. SQLite errors propagate if the original
+read transaction is no longer active, preserving the audit's snapshot boundary.
+All 95 focused audit/CLI/evidence tests and standard static/content checks passed.
+The current head also completed the full test suite with exit code 0; pytest
+collection reported 1,603 tests. The quiet run did not expose pass/skip counts.
+This adds local visibility without proving file
+existence, purge safety, erasure or retention/backup compliance; Issue #9 and its
+P7/#8 dependency remain open. See
+[`issue9-artifact-inventory-audit-2026-11-20.md`](reports/issue9-artifact-inventory-audit-2026-11-20.md).
+
 ## Codex-native solve workflow
 
 The active implementation is on `metis-full-implementation`. Codex supplies the
@@ -605,12 +625,30 @@ with an explicit timing limit, not production acceptance. Private snapshots
 were retained outside Git and disposable VMs removed. See
 [`issue9-host-reboot-recovery-2026-11-19.md`](reports/issue9-host-reboot-recovery-2026-11-19.md).
 
-A local read-only operator view now serves the existing count-only audit over
-`127.0.0.1` with an in-memory bearer token supplied by environment variable.
-It rejects non-loopback Host headers and Origin-bearing requests, exposes no
-write route, and never logs tokens or event details. Local HTTP tests passed.
-This is monitoring only; pause/resume, HTTP cancellation, host reboot, secure
-retention and release acceptance remain open.
+A local operator view serves the existing count-only audit over `127.0.0.1`
+with a bearer token supplied by environment variable. Its authenticated
+`GET /api/runs?limit=N` lists at most 100 newest runs from one read-only
+SQLite snapshot after validating every selected event chain. The browser loads
+the newest 20 and exposes only run ID, status, timestamp, and bounded-action
+budget for selection; challenge metadata and event details stay out of the
+list. Aggregate history processed by one list request is capped at 4,096
+timestamp-index entries and 5 MiB of index keys during discovery, 20,000
+selected events, and 8 MiB of stored selected event fields. Discovery rejects
+index values over 512 bytes and uses a 4 KiB SQLite value limit; selected event
+fields use a 256 KiB SQLite value limit. Hitting a discovery budget returns
+the runs found so far with a `truncated` marker. The index is created by the
+writable store initializer and operator startup migration. A corrupt chain,
+invalid storage fields, unavailable index, or oversized selected set fails the
+whole list closed.
+The authenticated
+`POST /api/runs/{run_id}/cancel` delegates to the existing run-locked
+`CodexSession.cancel` path and returns only run status and worker-teardown
+status; unknown teardown remains visible as HTTP 202. It rejects non-loopback
+Host headers and foreign Origin values, rejects request bodies, and never
+logs tokens or event details. Local HTTP tests cover authorization, active-run
+cancellation, idempotency, and unknown teardown. This is a bounded local
+operator control, not host-reboot recovery, secure retention, or release
+acceptance.
 
 A new read-only `metis audit RUN_ID --database PATH` command projects lifecycle
 status, sequence bounds, event timestamps, status counts, and validated chain
@@ -635,6 +673,22 @@ full operator UI. Focused validation passed: 15 audit tests, Ruff, mypy, and
 and the [unified operational audit](reports/issue9-unified-operational-audit-2026-11-18.md).
 
 A tag-triggered signed-release workflow is now prepared. It validates a strict tag against the project version and main ancestry, builds and checks wheel/sdist metadata, installs the wheel in a fresh environment from hash-locked runtime dependencies, and requires artifact attestations to verify before publishing. Local build, metadata checks, fresh-venv install, CLI version/doctor, workflow YAML invariants, and seven validator tests passed. The checksum manifest now uses release asset basenames so recipients can run `sha256sum -c SHA256SUMS` in the download directory; see `docs/reports/issue9-release-checksum-portability-2026-11-19.md` for local test evidence. The workflow has not been triggered; no tag, attestation, or release was created. This does not satisfy signed installer or end-to-end GitHub release acceptance. Host reboot, retention/secure storage, provider-side token revocation, and P7 remain open. See `docs/reports/issue9-signed-release-workflow-2026-11-18.md`.
+
+The offline release validator also checks a staged wheel, sdist and canonical
+checksum manifest as an exact bundle using `--verify-checksums`. This confirms
+local bundle consistency; signed installer and recipient provenance evidence
+remain open. See the [release bundle checks](reports/issue9-release-checksum-portability-2026-11-19.md#offline-bundle-verification).
+
+PR #111, now merged, provides the offline verifier. Main-based integration
+PR #125 applies it to the tag-triggered release and the nonpublishing
+attestation drill after checksum generation and before attestation or
+publication. Synthetic CLI coverage rejects a changed archive, and
+workflow-order tests keep verification ahead of those release steps. The
+integration commit `b71e79f` passed 46 focused tests, Ruff, repository
+validation (0 findings), and `git diff --check`; exact-head CI and review are
+pending. No tag or release was run. Bundle consistency does not authenticate
+source provenance or prove OIDC/attestation publication. See
+[`issue9-release-bundle-workflow-gate-2026-11-20.md`](reports/issue9-release-bundle-workflow-gate-2026-11-20.md).
 
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
@@ -810,8 +864,16 @@ official #39 verdict remain open.
 selection and requires `--apply` for deletion. It reuses the locked per-run
 generated-artifact purge and reports blocked resumable runs. Only terminal
 `solved`, `cancelled`, `error`, and `policy_denied` runs are eligible; old
-`planning` and extendable `exhausted` runs are preserved. This is a manual
-local retention control, not secure erasure or a complete P8 release gate. See
+`planning` and extendable `exhausted` runs are preserved. Each run is capped at
+100 registered derived artifacts; the run-locked writer refuses the 101st
+before creating it. Apply preflights the whole bounded batch under all selected
+run locks and skips deletion if any run exceeds the cap. Overflow
+reports counts and limits without artifact paths; directory enumeration stops
+at the per-run bound. Apply derives lock capacity from `RLIMIT_NOFILE`, open
+FDs, a 16-FD reserve, and two FDs per run, and returns before locking if the
+batch exceeds capacity. It filters resumable runs before lock acquisition and
+uses a 15-second batch lock deadline. This is a manual local retention control,
+not secure erasure or a complete P8 release gate. See
 `docs/reports/issue9-derived-retention-policy-2026-11-19.md`.
 
 ## Held-out protocol preparation (2026-11-19)
@@ -878,6 +940,31 @@ monitoring, not an enforced token or cost budget. See
 `docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
 remain open pending their separate evidence gates.
 
+## Pinned llama.cpp work trace probe (2026-11-20)
+
+A test-only instrumented CPU build now records aggregate `llama_process`, graph,
+and server-retry work for one fixed public model fixture. A local Darwin arm64
+probe observed 22 request graph positions; a synthetic precompute refusal
+recorded one failed process call and one retry while graph positions remained
+22. The synthetic branch is not a real KV/allocator failure, and the manifest
+does not independently prove binary provenance. This trace establishes no
+hard token budget, held-out eligibility, MUNIN gain, CTF solve, or Issue #8
+acceptance. Capability flags remain false. See
+`docs/reports/issue8-native-work-trace-2026-11-20.md`.
+
+## Linux/aarch64 native fixture smoke (2026-11-20)
+
+A native work-budget binary built from the pinned upstream commit and patch
+passed `smoke.py` in an Ubuntu 24.04 `linux/arm64` container under Colima's
+existing `rosetta` profile, using the registered public `stories260K.gguf`
+fixture. The Linux run targeted aarch64 and did not exercise x86_64 translation.
+The smoke checked cap refusals, terminal receipts, and Unix socket path and
+failure cases. This does not run the METIS controller admission or ledger,
+validate an independently approved executable pin, or establish provider token
+limits. Exact environment and test details are in the report.
+Hard-cap capability flags remain false; Issue #8 remains open. Evidence:
+[`issue8-native-linux-fixture-smoke-2026-11-20.md`](reports/issue8-native-linux-fixture-smoke-2026-11-20.md).
+
 ## Issue #9 local web credential retirement (2026-11-19)
 
 Credential replacement and `web forget`/`forget-all --apply` enable SQLite
@@ -888,3 +975,84 @@ The local regression checks recreate the workflow object over the same
 database after forgetting; they do not exercise a fresh process or reboot.
 This remains best-effort local retirement, not physical erasure, automatic
 provider revocation, a retention policy, or completion of Issue #9.
+
+## Issue #9 release attestation identity pins (2026-11-20)
+
+The tag release workflow and nonpublishing main-branch attestation drill now
+require GitHub CLI verification to match the expected repository, exact signer
+certificate identity and OIDC issuer, source ref and source commit; both also
+reject self-hosted runners. This replaces the previous repository-only
+identity check with an exact SAN match. The change is code and workflow
+validation only; it does not produce a release or independently validate a
+newly generated GitHub attestation. Issue #9 remains open for release execution,
+host recovery, retention/secret controls, and the Issue #8 dependency.
+
+## Issue #9 local credential age retention (2026-11-20)
+
+`metis web credential-retention --older-than-days N` now previews a bounded
+age-based selection; deletion requires `--apply`. New and replaced credentials
+record an update timestamp. Legacy rows migrate with unknown age and remain
+untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
+auth generations, and removes only the corresponding auth-origin cookies from
+linked runs. The command refuses more than 100 credential origins or 1,000
+linked runs, and reports counts without origin names or secret values. Preview
+leaves credential rows untouched. Checkpointed WAL state uses immutable
+read-only mode and creates no sidecars; an uncheckpointed WAL may create/update
+`-wal`/`-shm` coordination files and requires a writable DB directory. A pending
+rollback journal is refused. Credential writes and
+retirement close their write transaction and attempt a bounded WAL truncate. A
+busy reader leaves deletion committed and reports incomplete cleanup; repeating
+`--apply` retries cleanup after the reader exits. Triggers that suppress a
+required generation, cookie-state, or credential update abort the transaction.
+The expanded web credential/request suite covers these behaviors. This is local
+retention control only: provider revocation, secure physical deletion, encrypted
+credential storage and Issue #9 acceptance remain open. See
+`docs/reports/issue9-credential-age-retention-2026-11-20.md`.
+
+## Issue #8 admitted llama startup cancellation (2026-11-20)
+
+Both llama runner paths now apply one monotonic call deadline across artifact
+hashing, server startup, SQLite budget reservation, tokenization, and completion,
+and watch cancellation during health polling and budget reservation. Startup
+cancellation stops the process group and records a cancelled outcome; timeout
+before completion records a timeout and retains the consumed admitted
+reservation. The affected test suites pass, with Ruff, mypy, repository
+validation, and `git diff --check` also passing. This closes the startup
+wait-boundary gap only; `hard_token_budget_enforced` remains false and Issue #8
+remains open. Evidence:
+[`issue8-llama-admitted-startup-deadline-2026-11-20.md`](reports/issue8-llama-admitted-startup-deadline-2026-11-20.md).
+
+## Issue #8 admitted native work receipt (2026-11-20)
+
+The admitted llama path now passes a per-launch graph-work cap, fresh nonce,
+and pipe descriptor to the patched native binary, then requires a bounded
+matching terminal receipt before it records native `observed_work`. Missing,
+malformed, duplicate, oversized, or mismatched receipts fail closed and retain
+the full admission. Local fake-binary tests cover success, denial, and invalid
+receipts; they do not run the patched binary or a model. The meter covers only
+submitted graph positions for the pinned patch, not provider billing tokens or
+other models. Both hard-cap capability flags remain false; no held-out study is
+enabled and Issue #8 remains open. Evidence:
+[`issue8-admitted-native-work-receipts-2026-11-20.md`](reports/issue8-admitted-native-work-receipts-2026-11-20.md).
+
+## Issue #9 current-main release attestation drill (2026-11-20)
+
+The separate non-release `release attestation drill` workflow succeeded on
+current main `353aac7`. It built the wheel and source archive with pinned uv 0.13.5 (the
+isolated `hatchling>=1.25` build backend was not lockfile-pinned), validated
+release metadata, generated and then verified the checksum manifest, and
+installed the wheel in a fresh Python 3.12 environment. `metis doctor` exited
+0 with `ready: true` and `mode: codex-native`; the sandbox was not configured, so
+this smoke test did not exercise sandbox execution. One Build Provenance
+attestation contains all three subjects. In the same workflow job,
+`gh attestation verify` checked the repository, workflow identity, OIDC
+issuer, main ref, and source commit, and used `--deny-self-hosted-runners`.
+The loop's success is evidenced by the step's zero exit status. The attestation
+is publicly recorded in the repository and [Rekor (log index
+`4019447095`)](https://search.sigstore.dev/?logIndex=4019447095). This separate
+drill did not exercise production `release.yml`; no tag, GitHub Release or
+release assets were created. It is one non-release provenance drill, not
+release publication or P8 acceptance.
+Issue #8/P7, host reboot, credential lifecycle and retention gates remain open.
+Evidence: [run 44685127951](https://github.com/01rabbit/METIS/actions/runs/44685127951)
+and [`issue9-main-attestation-drill-2026-11-20.md`](reports/issue9-main-attestation-drill-2026-11-20.md).
