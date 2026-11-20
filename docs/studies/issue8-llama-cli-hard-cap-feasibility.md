@@ -14,13 +14,20 @@ expected four `qwen35.rope.dimension_sections` entries and found three.
 The direct CLI route therefore cannot presently establish that the separately
 counted raw prompt is the prompt actually consumed by the model. It also cannot
 reconcile actual usage after the call. The probe's `strict_cap_ready` result is
-always false. `usage_protocol_compatible` only describes whether one output
-record has an expected count shape without the observed chat wrapper; it does
-not establish trustworthy accounting, immutable routing, or token admission.
-The probe fails closed on both observed conditions.
-It hashes the model, CLI and tokenizer, tests one harmless one-token prompt,
-and emits only hashes, counts and capability booleans. It never records a model
-response or challenge data.
+always false. `usage_protocol_compatible` requires a zero exit status and exactly
+one unambiguous usage record without a chat wrapper. Its nonnegative prompt
+count must match the tokenizer's count, and its completion count must be at
+most the requested one token. The two historical observations still fail
+these checks. Neither model was rerun after tightening the probe.
+
+The probe resolves the model and both executables to absolute paths before
+hashing and uses those exact paths for both subprocesses. It checks file
+identity before and after each subprocess. Both subprocesses receive the
+fixed prompt as an argument and have stdin disconnected. The result contains
+hashes, usage counts, exit status and capability booleans, with no retained
+response or challenge data. These checks support local compatibility
+diagnostics; trustworthy accounting, immutable routing and token admission
+remain unverified.
 
 Before a hard-cap capability can be enabled, use a controlled raw completion
 route with an exact pinned model and engine binary, demonstrate tokenizer parity
