@@ -1,6 +1,7 @@
 import fcntl
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import pytest
 
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
+from metis.evaluation._issue6_canary_process import _stop
 from metis.evaluation.issue6_build_pilot import _one_assignment
 from metis.evaluation.issue6_canary_watchdog import _CANARY_TABLE, quarantine_expired, start_canary
 from metis.evaluation.issue6_pilot_admission import (
@@ -88,16 +90,51 @@ def live_marker(workspace):
     return None
 
 
+def test_guardian_stop_poll_supports_file_descriptors_above_select_limit():
+    peer, control = socket.socketpair()
+    lease = -1
+    try:
+        try:
+            lease = fcntl.fcntl(control.fileno(), fcntl.F_DUPFD, 1100)
+        except OSError:
+            pytest.skip("host descriptor limit does not permit a high-numbered fd")
+        cutoff = time.monotonic() + 2
+        wall = time.time() + 2
+        assert _stop(lease, os.getppid(), cutoff, wall, wait=0.01) is None
+        peer.send(b"C")
+        assert _stop(lease, os.getppid(), cutoff, wall, wait=0.01) == "cancelled"
+    finally:
+        if lease >= 0:
+            os.close(lease)
+        peer.close()
+        control.close()
+
+
 @pytest.mark.parametrize(("behavior", "seconds", "outcome"), [
     ("complete", 2.5, "completed"),
     ("wait_for_stop", 0.8, "deadline"),
 ])
-def test_worker_exit_and_deadline_are_reaped_and_scrubbed(tmp_path, behavior, seconds, outcome):
+def test_worker_exit_and_deadline_are_reaped_and_scrubbed(tmp_path, behavior, seconds, outcome, monkeypatch):
     database, workspace, admission, args = prepare(tmp_path)
+    # Keep the isolated guardian's traceback in the private pytest directory so
+    # CI failures identify the cause instead of exposing only exit status 1.
+    original_popen = subprocess.Popen
+    guardian_stderr = tmp_path / "guardian.stderr"
+
+    def capture_guardian(*popen_args, **popen_kwargs):
+        with guardian_stderr.open("xb") as stream:
+            popen_kwargs["stderr"] = stream
+            return original_popen(*popen_args, **popen_kwargs)
+
+    monkeypatch.setattr("metis.evaluation.issue6_canary_watchdog.subprocess.Popen", capture_guardian)
     with start_canary(admission, workspace, *args, behavior=behavior, seconds=seconds) as canary:
         if behavior == "wait_for_stop":
             eventually(lambda: live_marker(workspace))
-        assert canary.wait() == 0
+        status = canary.wait()
+    assert status == 0, (
+        f"guardian stderr: {guardian_stderr.read_text(encoding='utf-8', errors='replace')}\n"
+        f"ledger: {state(database)!r}; workspace: {sorted(path.name for path in workspace.iterdir())!r}"
+    )
     assert state(database)[1:] == ("reaped", outcome)
     assert list(workspace.iterdir()) == []
 

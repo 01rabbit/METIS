@@ -538,19 +538,74 @@ def test_auth_retirement_enables_secure_delete_on_write_connection(tmp_path, mon
     real_connect = sqlite3.connect
     connections = []
 
+    class TrackedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.secure_delete_enabled = False
+
+        def execute(self, sql, *args):
+            if sql == "PRAGMA secure_delete=ON":
+                self.secure_delete_enabled = True
+            return self.connection.execute(sql, *args)
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def close(self):
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
     def track_connect(*args, **kwargs):
-        connection = real_connect(*args, **kwargs)
+        connection = TrackedConnection(real_connect(*args, **kwargs))
         connections.append(connection)
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", track_connect)
-    workflow.auth("https://example.com", kind="token", value="synthetic-token")
-    workflow.forget_auth("https://example.com")
-    workflow.forget_all_auth(apply=True)
-    assert len(connections) == 3
-    assert all(db.execute("PRAGMA secure_delete").fetchone()[0] == 1 for db in connections)
+    assert workflow.auth("https://example.com", kind="token", value="synthetic-token")[
+        "wal_cleanup_complete"] is True
+    assert workflow.forget_auth("https://example.com")["wal_cleanup_complete"] is True
+    assert workflow.forget_all_auth(apply=True)["wal_cleanup_complete"] is True
+    assert len(connections) == 6
+    assert all(connections[index].secure_delete_enabled for index in (0, 2, 4))
+    assert not any(connection.secure_delete_enabled for connection in (connections[1], connections[3], connections[5]))
     for db in connections:
         db.close()
+
+
+def test_credential_retirement_truncates_wal_and_reports_busy_reader(tmp_path):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    stored = workflow.auth("https://example.com", kind="token", value="synthetic-wal-secret")
+    assert stored["wal_cleanup_complete"] is True
+    forgotten = workflow.forget_auth("https://example.com")
+    assert forgotten["wal_cleanup_complete"] is True
+    wal_path = workflow.database.with_name(workflow.database.name + "-wal")
+    assert not wal_path.exists() or wal_path.stat().st_size == 0
+    assert b"synthetic-wal-secret" not in workflow.database.read_bytes()
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (0,)
+
+    workflow.auth("https://example.com", kind="token", value="synthetic-wal-secret")
+    reader = sqlite3.connect(workflow.database)
+    reader.execute("BEGIN")
+    assert reader.execute("SELECT payload FROM web_credentials").fetchone() is not None
+    try:
+        blocked = workflow.forget_auth("https://example.com")
+        assert blocked["credential_removed"] is True
+        assert blocked["wal_cleanup_complete"] is False
+        assert "could not be confirmed" in blocked["limit"]
+        assert b"synthetic-wal-secret" in workflow.database.read_bytes()
+    finally:
+        reader.close()
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (0,)
+    assert workflow._truncate_credential_wal() is True
+    assert b"synthetic-wal-secret" not in workflow.database.read_bytes()
 
 
 def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):

@@ -28,6 +28,11 @@ from metis.core.native_work_receipt import (
 from metis.core.study_token_admission import TokenLaunchOutcome
 from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
 
+_PROCESS_TERMINATION_GRACE_SECONDS = 5.0
+_PROCESS_KILL_REAP_TIMEOUT_SECONDS = 5.0
+_PROCESS_GROUP_POLL_INTERVAL_SECONDS = 0.05
+_PROCESS_FINAL_REAP_PROBE_SECONDS = 0.05
+
 
 class LlamaBackendError(RuntimeError):
     """Sanitized backend failure; never includes prompts or model output."""
@@ -52,7 +57,11 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
-def _sha256(path: Path, *, abort_check: Callable[[], None] | None = None) -> str:
+def _sha256(path: Path, *, abort_check: Callable[[], None] | None = None,
+            check: Callable[[], None] | None = None) -> str:
+    if abort_check is not None and check is not None and abort_check is not check:
+        raise ValueError("provide one artifact hash callback")
+    abort_check = abort_check or check
     digest = hashlib.sha256()
     with path.open("rb") as source:
         while True:
@@ -62,8 +71,6 @@ def _sha256(path: Path, *, abort_check: Callable[[], None] | None = None) -> str
             if not chunk:
                 break
             digest.update(chunk)
-    if abort_check is not None:
-        abort_check()
     return digest.hexdigest()
 
 
@@ -86,7 +93,9 @@ class LlamaServerBackend:
                  token_limit: int, max_output_tokens: int, startup_seconds: float = 30,
                  context_reservation: bool = False, startup_deadline: float | None = None,
                  startup_should_stop: Callable[[], bool] | None = None,
-                 native_work_budget_cap: int | None = None):
+                 native_work_budget_cap: int | None = None,
+                 deadline_monotonic: float | None = None,
+                 should_stop: Callable[[], bool] | None = None):
         if not budget_key or len(budget_key) > 128 or not 1 <= token_limit <= 10**9:
             raise ValueError("invalid budget configuration")
         if not 1 <= max_output_tokens <= 4096 or not 0 < startup_seconds <= 120:
@@ -100,8 +109,10 @@ class LlamaServerBackend:
         self.budget_key, self.token_limit = budget_key, token_limit
         self.max_output_tokens, self.startup_seconds = max_output_tokens, startup_seconds
         self.context_reservation = context_reservation
-        self.startup_deadline = startup_deadline
-        self.startup_should_stop = startup_should_stop
+        deadlines = [value for value in (startup_deadline, deadline_monotonic) if value is not None]
+        self.startup_deadline = min(deadlines) if deadlines else None
+        stops = [value for value in (startup_should_stop, should_stop) if value is not None]
+        self.startup_should_stop = (lambda: any(stop() for stop in stops)) if stops else None
         self.native_work_budget_cap = native_work_budget_cap
         self._native_work_nonce = secrets.token_hex(16) if native_work_budget_cap is not None else None
         self._receipt_read_fd: int | None = None
@@ -237,13 +248,13 @@ class LlamaServerBackend:
         worker = threading.Thread(target=invoke, name="metis-llama-request", daemon=True)
         worker.start()
         while worker.is_alive():
-            if should_stop is not None and should_stop():
+            if should_stop is not None and should_stop() and not result:
                 self.close()
                 raise LlamaBackendStopped("model call cancelled")
             worker.join(timeout=min(.05, max(0, deadline - time.monotonic())))
             if time.monotonic() >= deadline:
                 break
-        if should_stop is not None and should_stop():
+        if should_stop is not None and should_stop() and not result:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         if worker.is_alive():
@@ -297,7 +308,8 @@ class LlamaServerBackend:
 
     def complete(self, prompt: str, *, n_predict: int, timeout_seconds: float,
                  should_stop: Callable[[], bool] | None = None,
-                 call_deadline: float | None = None) -> tuple[str, int, int]:
+                 call_deadline: float | None = None,
+                 deadline_monotonic: float | None = None) -> tuple[str, int, int]:
         if not isinstance(prompt, str) or len(prompt.encode()) > 65_536:
             raise ValueError("prompt exceeds input boundary")
         if not 1 <= n_predict <= self.max_output_tokens or not 0 < timeout_seconds <= 120:
@@ -306,8 +318,9 @@ class LlamaServerBackend:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         deadline = time.monotonic() + timeout_seconds
-        if call_deadline is not None:
-            deadline = min(deadline, call_deadline)
+        deadlines = [value for value in (call_deadline, deadline_monotonic) if value is not None]
+        if deadlines:
+            deadline = min(deadline, *deadlines)
         if deadline <= time.monotonic():
             raise LlamaBackendError("model call deadline exceeded")
         tokenized = self._request_before("/tokenize",
@@ -354,15 +367,13 @@ class LlamaServerBackend:
                 or not isinstance(result.get("content"), str)):
             self.close()
             raise LlamaBackendError("completion usage or settings mismatch")
-        if should_stop is not None and should_stop():
-            self.close()
-            raise LlamaBackendStopped("model call cancelled")
         return result["content"], evaluated, predicted
 
     def complete_admitted(self, prompt: str, *, n_predict: int, token_cap: int,
                           timeout_seconds: float,
                           should_stop: Callable[[], bool] | None = None,
-                          call_deadline: float | None = None) -> tuple[str, int, int]:
+                          call_deadline: float | None = None,
+                          deadline_monotonic: float | None = None) -> tuple[str, int, int]:
         """Run a claim-funded request without the standalone budget ledger.
 
         The caller has already consumed a durable study claim. The entire
@@ -381,8 +392,9 @@ class LlamaServerBackend:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         deadline = time.monotonic() + timeout_seconds
-        if call_deadline is not None:
-            deadline = min(deadline, call_deadline)
+        deadlines = [value for value in (call_deadline, deadline_monotonic) if value is not None]
+        if deadlines:
+            deadline = min(deadline, *deadlines)
         if deadline <= time.monotonic():
             raise LlamaBackendError("model call deadline exceeded")
         try:
@@ -467,48 +479,123 @@ class LlamaServerBackend:
 
     def close(self) -> None:
         process = self._process
-        self._process = None
+        interrupted = False
+        reaped = process is None
+        kill_sent = False
+        kill_wait_completed = False
+
+        def signal_group(value: signal.Signals) -> None:
+            nonlocal interrupted
+            assert process is not None
+            while True:
+                try:
+                    os.killpg(process.pid, value)
+                    return
+                except ProcessLookupError:
+                    return
+                except PermissionError:
+                    # The group may be in the short transition after its leader exits.
+                    return
+                except KeyboardInterrupt:
+                    interrupted = True
+
+        def wait_for(timeout: float, *, continue_after_interrupt: bool = False) -> bool:
+            nonlocal interrupted
+            assert process is not None
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    process_reaped = process.poll() is not None
+                    try:
+                        os.killpg(process.pid, 0)
+                        group_alive = True
+                    except ProcessLookupError:
+                        group_alive = False
+                    except PermissionError:
+                        # macOS can report EPERM briefly while a terminated
+                        # group is disappearing; keep waiting before escalation.
+                        group_alive = True
+                    if process_reaped and not group_alive:
+                        return True
+                except KeyboardInterrupt:
+                    interrupted = True
+                    if not continue_after_interrupt:
+                        return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                try:
+                    time.sleep(min(_PROCESS_GROUP_POLL_INTERVAL_SECONDS, remaining))
+                except KeyboardInterrupt:
+                    interrupted = True
+                    if not continue_after_interrupt:
+                        return False
+
+        def finish_cleanup(action: Callable[[], None]) -> None:
+            nonlocal interrupted
+            while True:
+                try:
+                    action()
+                    return
+                except KeyboardInterrupt:
+                    interrupted = True
+
         try:
             if process is not None:
                 # The group can outlive a wrapper parent; signal it regardless of poll().
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except PermissionError:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                # Waiting for the leader can succeed while a descendant still
-                # runs in the group and ignores SIGTERM.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except PermissionError:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    raise LlamaBackendError("server process could not be reaped") from None
-                self._process_status = process.poll()
+                signal_group(signal.SIGTERM)
+                reaped = wait_for(_PROCESS_TERMINATION_GRACE_SECONDS)
+                if not reaped:
+                    signal_group(signal.SIGKILL)
+                    kill_sent = True
+                    reaped = wait_for(
+                        _PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+                        continue_after_interrupt=True,
+                    )
+                    kill_wait_completed = True
         finally:
-            if self._log is not None:
-                self._log.close()
-                self._log = None
-            if self._private is not None:
-                self._private.cleanup()
-                self._private = None
-                self._socket = None
-            for name in ("_receipt_read_fd", "_receipt_write_fd"):
-                fd = getattr(self, name)
-                if fd is not None and (name == "_receipt_write_fd"
-                                       or self.native_work_budget_cap is None
-                                       or not self._native_launch_started):
-                    os.close(fd)
-                    setattr(self, name, None)
+            if process is not None and not reaped and not kill_sent:
+                signal_group(signal.SIGKILL)
+                kill_sent = True
+            if (process is not None and not reaped and kill_sent
+                    and not kill_wait_completed):
+                reaped = wait_for(
+                    _PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+                    continue_after_interrupt=True,
+                )
+                kill_wait_completed = True
+            elif process is not None and not reaped and kill_sent:
+                reaped = wait_for(
+                    _PROCESS_FINAL_REAP_PROBE_SECONDS,
+                    continue_after_interrupt=True,
+                )
+            if reaped:
+                if process is not None:
+                    self._process_status = process.poll()
+                self._process = None
+                if self._log is not None:
+                    finish_cleanup(self._log.close)
+                    self._log = None
+                if self._private is not None:
+                    finish_cleanup(self._private.cleanup)
+                    self._private = None
+                    self._socket = None
+                write_fd = self._receipt_write_fd
+                if write_fd is not None:
+                    finish_cleanup(lambda: os.close(write_fd))
+                    self._receipt_write_fd = None
+                read_fd = self._receipt_read_fd
+                if not self._native_launch_started and read_fd is not None:
+                    finish_cleanup(lambda: os.close(read_fd))
+                    self._receipt_read_fd = None
+        if not reaped:
+            if interrupted:
+                error = KeyboardInterrupt()
+                error.add_note("llama process group did not finish cleanup; resources remain retained")
+                raise error
+            raise LlamaBackendError("server process did not stop")
+        if interrupted:
+            raise KeyboardInterrupt
 
     def __exit__(self, *_: object) -> None:
         self.close()
