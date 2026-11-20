@@ -15,6 +15,7 @@ import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from metis.core.artifacts import artifact_stream
@@ -34,6 +35,10 @@ from metis.core.store import RunStore
 
 NATIVE_TOOLS = DATA_TOOLS
 MAX_DERIVED_ARTIFACTS_PER_RUN = 100
+MAX_ADDED_ARTIFACTS_PER_RUN = 100
+MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE = 4096
+MAX_ADDED_ARTIFACT_NAME = 60
+MAX_LEGACY_ADDED_ARTIFACT_NAME_BYTES = 255
 
 
 class DerivedArtifactLimitError(ValueError):
@@ -532,12 +537,23 @@ class CodexSession:
         return relative
 
     def purge_derived(self, run_id: str, *, apply: bool = False) -> dict[str, object]:
-        """Dry-run or remove only generated `.metis-derived` files for a terminal run.
+        """Dry-run or remove only generated `.metis-derived` files for a terminal run."""
+        return self._purge_registered_artifacts(
+            run_id, kind="derived", apply=apply,
+        )
 
-        Files are unlinked before their manifest entries are removed. If the process
-        stops between those steps, a retry treats already-missing registered files
-        as complete and finishes the manifest update.
-        """
+    def purge_added(self, run_id: str, *, apply: bool = False) -> dict[str, object]:
+        """Dry-run or remove only user-added `.metis-added` files for a terminal run."""
+        return self._purge_registered_artifacts(
+            run_id, kind="added", apply=apply,
+        )
+
+    def _purge_registered_artifacts(self, run_id: str, *, kind: Literal["derived", "added"],
+                                    apply: bool) -> dict[str, object]:
+        """Remove one bounded registered artifact class; retry tolerates missing files."""
+        directory = ".metis-derived" if kind == "derived" else ".metis-added"
+        limit = MAX_DERIVED_ARTIFACTS_PER_RUN if kind == "derived" else MAX_ADDED_ARTIFACTS_PER_RUN
+        prefix = directory + "/"
         with operation_lock(self.database, run_id), run_lock(self.database, run_id):
             events = self.store.read(run_id)
             if not events:
@@ -547,7 +563,7 @@ class CodexSession:
             # allowlist while holding both run locks, before any unlink.
             if events[-1].status not in {RunStatus.SOLVED, RunStatus.CANCELLED,
                                         RunStatus.ERROR, RunStatus.POLICY_DENIED}:
-                raise ValueError("run must be terminal before derived artifact purge")
+                raise ValueError(f"run must be terminal before {kind} artifact purge")
 
             with closing(sqlite3.connect(self.database)) as db:
                 tables = {row[0] for row in db.execute(
@@ -567,82 +583,97 @@ class CodexSession:
 
             manifest_text = self._session(run_id)[0]
             manifest = ChallengeManifest.model_validate_json(manifest_text)
-            derived_paths = sorted(path for path in manifest.artifacts
-                                   if path.startswith(".metis-derived/"))
-            if len(derived_paths) > MAX_DERIVED_ARTIFACTS_PER_RUN:
-                raise DerivedArtifactLimitError(len(derived_paths))
+            artifact_paths = sorted(path for path in manifest.artifacts if path.startswith(prefix))
+            if kind == "derived" and len(artifact_paths) > limit:
+                raise DerivedArtifactLimitError(len(artifact_paths))
+            if kind == "added" and len(artifact_paths) > MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE:
+                raise ValueError("added artifact manifest exceeds legacy purge safety limit")
+            selected_paths = artifact_paths[:limit]
             expected_names: set[str] = set()
-            for path in derived_paths:
-                name = path.removeprefix(".metis-derived/")
-                if ("/" in name or not re.fullmatch(r"[0-9a-f]{32}\.[a-z0-9]{1,8}", name)):
-                    raise ValueError("registered derived artifact path is unexpected")
+            for path in artifact_paths:
+                name = path.removeprefix(prefix)
+                if kind == "derived":
+                    valid_name = re.fullmatch(r"[0-9a-f]{32}\.[a-z0-9]{1,8}", name) is not None
+                else:
+                    # Prior add-file versions appended unbounded collision
+                    # counters after truncating to 60 characters. Preserve
+                    # purge access to any component the filesystem could store.
+                    valid_name = (len(os.fsencode(name)) <= MAX_LEGACY_ADDED_ARTIFACT_NAME_BYTES
+                                  and re.fullmatch(r"[\w.-]+", name) is not None
+                                  and not name.startswith("."))
+                if not valid_name:
+                    raise ValueError(f"registered {kind} artifact path is unexpected")
                 expected_names.add(name)
-            if len(expected_names) != len(derived_paths):
-                raise ValueError("registered derived artifact path is duplicated")
+            if len(expected_names) != len(artifact_paths):
+                raise ValueError(f"registered {kind} artifact path is duplicated")
 
             root = self.artifact_root(run_id)
             if root is None:
                 if expected_names:
                     raise ValueError("run has no registered artifact root")
-                return {"run_id": run_id, "applied": apply, "files": [], "bytes": 0}
+                return {"run_id": run_id, "applied": apply, "files": [], "bytes": 0,
+                        "remaining_registered": 0}
             root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            derived_fd: int | None = None
+            artifact_fd: int | None = None
             entries: list[dict[str, str | int]]
             try:
                 try:
-                    derived_fd = os.open(".metis-derived", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                         dir_fd=root_fd)
+                    artifact_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                          dir_fd=root_fd)
                 except FileNotFoundError:
                     entries = [
-                        {"path": path, "state": "missing", "size": 0} for path in derived_paths
+                        {"path": path, "state": "missing", "size": 0} for path in selected_paths
                     ]
-                    derived_exists = False
+                    directory_exists = False
                 else:
                     seen_entries = 0
-                    with os.scandir(derived_fd) as directory_entries:
+                    with os.scandir(artifact_fd) as directory_entries:
                         for directory_entry in directory_entries:
                             seen_entries += 1
-                            if seen_entries > MAX_DERIVED_ARTIFACTS_PER_RUN:
-                                raise ValueError("derived directory exceeds per-run artifact limit")
+                            scan_limit = (MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE
+                                          if kind == "added" else limit)
+                            if seen_entries > scan_limit:
+                                raise ValueError(f"{kind} directory exceeds per-run artifact limit")
                             if directory_entry.name not in expected_names:
-                                raise ValueError("derived directory contains unregistered entries")
+                                raise ValueError(f"{kind} directory contains unregistered entries")
                     entries = []
-                    for path in derived_paths:
-                        name = path.removeprefix(".metis-derived/")
+                    for path in selected_paths:
+                        name = path.removeprefix(prefix)
                         try:
-                            file_stat = os.stat(name, dir_fd=derived_fd, follow_symlinks=False)
+                            file_stat = os.stat(name, dir_fd=artifact_fd, follow_symlinks=False)
                         except FileNotFoundError:
                             entries.append({"path": path, "state": "missing", "size": 0})
                             continue
                         if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
-                            raise ValueError("derived artifact is not a private regular file")
+                            raise ValueError(f"{kind} artifact is not a private regular file")
                         entries.append({"path": path, "state": "present", "size": file_stat.st_size})
-                    derived_exists = True
+                    directory_exists = True
 
                 total_bytes = sum(int(item["size"]) for item in entries)
                 if not apply:
-                    return {"run_id": run_id, "applied": False, "files": entries, "bytes": total_bytes}
+                    return {"run_id": run_id, "applied": False, "files": entries, "bytes": total_bytes,
+                            "remaining_registered": len(artifact_paths) - len(selected_paths)}
 
-                if derived_exists and derived_fd is not None:
+                if directory_exists and artifact_fd is not None:
                     for item in entries:
                         if item["state"] == "present":
-                            os.unlink(str(item["path"]).removeprefix(".metis-derived/"),
-                                      dir_fd=derived_fd)
+                            os.unlink(str(item["path"]).removeprefix(prefix), dir_fd=artifact_fd)
                             item["state"] = "deleted"
-                    os.fsync(derived_fd)
+                    os.fsync(artifact_fd)
 
                 data = manifest.model_dump()
-                data["artifacts"] = [path for path in manifest.artifacts
-                                     if not path.startswith(".metis-derived/")]
+                selected_set = set(selected_paths)
+                data["artifacts"] = [path for path in manifest.artifacts if path not in selected_set]
                 updated = ChallengeManifest.model_validate(data)
                 with closing(sqlite3.connect(self.database)) as db, db:
                     db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
                                (updated.model_dump_json(), run_id))
                 return {"run_id": run_id, "applied": True, "files": entries, "bytes": total_bytes,
-                        "manifest_entries_removed": len(derived_paths)}
+                        "manifest_entries_removed": len(selected_paths),
+                        "remaining_registered": len(artifact_paths) - len(selected_paths)}
             finally:
-                if derived_fd is not None:
-                    os.close(derived_fd)
+                if artifact_fd is not None:
+                    os.close(artifact_fd)
                 os.close(root_fd)
 
     @locked
@@ -654,39 +685,78 @@ class CodexSession:
         root = self.artifact_root(run_id)
         if root is None:
             raise ValueError("no artifact root registered")
-        name = re.sub(r"[^\w.-]", "_", supplied.name)[:60].lstrip(".") or "added.bin"
-        directory = root / ".metis-added"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        if directory.is_symlink():
-            raise ValueError("invalid snapshot directory")
-        target = directory / name
-        stem, suffix, counter = target.stem, target.suffix, 1
-        while target.exists():
-            counter += 1
-            target = directory / f"{stem}-{counter}{suffix}"
+        name = _added_filename(supplied.name)
+        manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
+        added_count = sum(item.startswith(".metis-added/") for item in manifest.artifacts)
+        if added_count >= MAX_ADDED_ARTIFACTS_PER_RUN:
+            raise ValueError("added artifact count exceeds per-run limit")
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                os.mkdir(".metis-added", mode=0o700, dir_fd=root_fd)
+            except FileExistsError:
+                pass
+            try:
+                added_directory_fd = os.open(
+                    ".metis-added", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd,
+                )
+            except OSError as error:
+                raise ValueError("invalid snapshot directory") from error
+        finally:
+            os.close(root_fd)
         digest = hashlib.sha256()
         size = 0
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        descriptor: int | None = None
         try:
-            with (os.fdopen(descriptor, "wb") as stream,
-                  artifact_stream(path.parent, path.name, max_bytes=MAX_FILE) as source):
-                while chunk := source.read(1_048_576):
-                    size += len(chunk)
-                    if size > MAX_FILE:
-                        raise ValueError("file exceeds the artifact limit")
-                    digest.update(chunk)
-                    stream.write(chunk)
-        except (OSError, ValueError):
-            target.unlink(missing_ok=True)
-            raise
-        relative = ".metis-added/" + target.name
-        manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
-        data = manifest.model_dump()
-        data["artifacts"] = [*manifest.artifacts, relative]
-        updated = ChallengeManifest.model_validate(data)
-        with sqlite3.connect(self.database) as db:
-            db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
-                       (updated.model_dump_json(), run_id))
+            suffix = Path(name).suffix
+            if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", suffix):
+                suffix = ""
+            stem = name[:-len(suffix)] if suffix else name
+            candidate_name: str | None = None
+            for collision_index in range(MAX_ADDED_ARTIFACTS_PER_RUN + 1):
+                if collision_index == 0:
+                    candidate_name = name
+                else:
+                    counter_suffix = f"-{collision_index + 1}"
+                    suffix_budget = MAX_ADDED_ARTIFACT_NAME - len(counter_suffix) - 1
+                    kept_suffix = suffix[:suffix_budget]
+                    stem_budget = MAX_ADDED_ARTIFACT_NAME - len(counter_suffix) - len(kept_suffix)
+                    candidate_name = f"{stem[:stem_budget]}{counter_suffix}{kept_suffix}"
+                try:
+                    descriptor = os.open(
+                        candidate_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600, dir_fd=added_directory_fd,
+                    )
+                except FileExistsError:
+                    continue
+                break
+            else:
+                raise ValueError("could not allocate a unique added artifact name within the collision limit")
+            assert descriptor is not None and candidate_name is not None
+            try:
+                with (os.fdopen(descriptor, "wb") as stream,
+                      artifact_stream(path.parent, path.name, max_bytes=MAX_FILE) as source):
+                    while chunk := source.read(1_048_576):
+                        size += len(chunk)
+                        if size > MAX_FILE:
+                            raise ValueError("file exceeds the artifact limit")
+                        digest.update(chunk)
+                        stream.write(chunk)
+                relative = ".metis-added/" + candidate_name
+                data = manifest.model_dump()
+                data["artifacts"] = [*manifest.artifacts, relative]
+                updated = ChallengeManifest.model_validate(data)
+                with sqlite3.connect(self.database) as db:
+                    db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                               (updated.model_dump_json(), run_id))
+            except BaseException:
+                try:
+                    os.unlink(candidate_name, dir_fd=added_directory_fd)
+                except FileNotFoundError:
+                    pass
+                raise
+        finally:
+            os.close(added_directory_fd)
         return {"run_id": run_id, "ok": True, "artifact": relative, "size": size,
                 "sha256": digest.hexdigest()}
 
@@ -789,3 +859,13 @@ def _suffix(content: bytes) -> str:
         if content.startswith(magic):
             return suffix
     return ".bin"
+
+
+def _added_filename(name: str) -> str:
+    """Sanitize a basename and retain a short, ordinary file extension."""
+    sanitized = re.sub(r"[^\w.-]", "_", name).lstrip(".") or "added.bin"
+    suffix = Path(sanitized).suffix
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", suffix):
+        suffix = ""
+    stem = sanitized[:-len(suffix)] if suffix else sanitized
+    return stem[:MAX_ADDED_ARTIFACT_NAME - len(suffix)] + suffix

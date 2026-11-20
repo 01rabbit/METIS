@@ -120,7 +120,7 @@ def _interval(values: list[float], *, seed: int, samples: int) -> list[float]:
             for quantile in (0.025, 0.975)]
 
 
-def analyze(study: Study, *, samples: int = 10_000) -> dict:
+def _analyze(study: Study, *, samples: int, control_attestation_verified: bool) -> dict:
     # Revalidate constructed/mutated objects at the trust boundary.
     study = Study.model_validate(study.model_dump())
     if not 100 <= samples <= 20_000:
@@ -153,7 +153,7 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
                               and budget.cost_usd is not None)
         if not resources_complete:
             resource_ineligible[trial.arm] += 1
-        acceptance_scored[key] = scored[key] * int(resources_complete)
+        acceptance_scored[key] = scored[key] * int(resources_complete and control_attestation_verified)
     arms = {}
     task_means: dict[str, list[float]] = {}
     acceptance_task_means: dict[str, list[float]] = {}
@@ -169,11 +169,15 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
             "trials": len(trials), "scored_solves": sum(scored[(t.task_id, t.repetition, arm)]
                                                         for t in trials),
             "solve_rate": statistics.mean(means),
-            "acceptance_eligible_solves": sum(acceptance_scored[(t.task_id, t.repetition, arm)]
-                                              for t in trials),
-            "acceptance_eligible_solve_rate": statistics.mean(acceptance_means),
-            "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": _interval(
-                acceptance_means, seed=study.seed, samples=samples),
+            "acceptance_eligible_solves": (sum(acceptance_scored[(t.task_id, t.repetition, arm)]
+                                                for t in trials)
+                                           if control_attestation_verified else None),
+            "acceptance_eligible_solve_rate": (statistics.mean(acceptance_means)
+                                                if control_attestation_verified else None),
+            "acceptance_eligible_solve_rate_cluster_bootstrap_95_interval": (
+                _interval(acceptance_means, seed=study.seed, samples=samples)
+                if control_attestation_verified else None
+            ),
             "acceptance_ineligible_resource_trials": resource_ineligible[arm],
             "cost_cap_declared": study.budgets[arm].cost_usd is not None,
             "solve_rate_cluster_bootstrap_95_interval": _interval(
@@ -207,9 +211,13 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
         acceptance_deltas = [value - baseline for value, baseline in zip(
             acceptance_task_means[arm], acceptance_task_means[study.baseline], strict=True)]
         comparisons[f"{arm}_minus_{study.baseline}"].update({
-            "paired_acceptance_eligible_solve_rate_difference": statistics.mean(acceptance_deltas),
-            "paired_acceptance_eligible_cluster_bootstrap_95_interval": _interval(
-                acceptance_deltas, seed=study.seed, samples=samples),
+            "paired_acceptance_eligible_solve_rate_difference": (
+                statistics.mean(acceptance_deltas) if control_attestation_verified else None
+            ),
+            "paired_acceptance_eligible_cluster_bootstrap_95_interval": (
+                _interval(acceptance_deltas, seed=study.seed, samples=samples)
+                if control_attestation_verified else None
+            ),
         })
     return {
         "study_id": study.study_id, "measurement": study.measurement,
@@ -218,8 +226,12 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
         "matched_aggregate_budgets": {a: b.model_dump() for a, b in study.budgets.items()},
         "solve_metric_roles": {
             "scored_solves": "diagnostic; unknown tokens/cost or absent cost cap may remain",
-            "acceptance_eligible_solves": "requires actual tokens/cost and declared cost cap",
+            "acceptance_eligible_solves": (
+                "requires authenticated independent controls, actual tokens/cost and declared cost cap"
+            ),
         },
+        "acceptance_control_attestation_verified": control_attestation_verified,
+        "unauthenticated_control_excluded_trials": 0 if control_attestation_verified else len(study.trials),
         "arms": arms, "comparisons": comparisons,
         "contamination_excluded_trials": dict(exclusions),
         "unresolved_solvability_control_excluded_trials": sum(
@@ -237,6 +249,16 @@ def analyze(study: Study, *, samples: int = 10_000) -> dict:
             "Prior model-training exposure cannot be ruled out by a clean local exposure declaration.",
         ],
     }
+
+
+def analyze(study: Study, *, samples: int = 10_000) -> dict:
+    """Produce diagnostic metrics; unsigned controls never produce acceptance scores."""
+    return _analyze(study, samples=samples, control_attestation_verified=False)
+
+
+def _analyze_with_verified_controls(study: Study, *, samples: int = 10_000) -> dict:
+    """Internal path used only after heldout_protocol verifies a detached signature."""
+    return _analyze(study, samples=samples, control_attestation_verified=True)
 
 
 def reconcile_evidence(study: Study, database: Path) -> dict[str, int]:

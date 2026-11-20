@@ -144,6 +144,29 @@ def test_cli_purge_derived_defaults_to_preview_and_apply_is_explicit(tmp_path):
     assert not derived_file.exists()
 
 
+def test_cli_purge_added_defaults_to_preview_and_apply_is_explicit(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    source = tmp_path / "download.txt"
+    source.write_text("user added")
+    session = CodexSession(database)
+    run_id = session.intake(title="retention-added", description="fixture", paths=[source])["run_id"]
+    added = session.add_file(run_id, source)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    added_file = root / added
+
+    preview = cli("codex", "--database", database, "purge-added", run_id)
+    assert preview.returncode == 0, preview.stderr
+    assert json.loads(preview.stdout)["applied"] is False
+    assert added_file.exists()
+
+    applied = cli("codex", "--database", database, "purge-added", run_id, "--apply")
+    assert applied.returncode == 0, applied.stderr
+    assert json.loads(applied.stdout)["applied"] is True
+    assert not added_file.exists()
+
+
 def test_rejected_inputs_are_not_echoed_or_recorded(tmp_path):
     manifest = tmp_path / "invalid.json"
     database = tmp_path / "runs.sqlite"
