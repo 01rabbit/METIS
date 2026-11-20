@@ -25,6 +25,7 @@ from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
 _PROCESS_TERMINATION_GRACE_SECONDS = 5.0
 _PROCESS_KILL_REAP_TIMEOUT_SECONDS = 5.0
 _PROCESS_GROUP_POLL_INTERVAL_SECONDS = 0.05
+_PROCESS_FINAL_REAP_PROBE_SECONDS = 0.05
 
 
 class LlamaBackendError(RuntimeError):
@@ -358,6 +359,8 @@ class LlamaServerBackend:
         process = self._process
         interrupted = False
         reaped = process is None
+        kill_sent = False
+        kill_wait_completed = False
 
         def signal_group(value: signal.Signals) -> None:
             nonlocal interrupted
@@ -422,14 +425,26 @@ class LlamaServerBackend:
                 reaped = wait_for(_PROCESS_TERMINATION_GRACE_SECONDS)
                 if not reaped:
                     signal_group(signal.SIGKILL)
+                    kill_sent = True
                     reaped = wait_for(
                         _PROCESS_KILL_REAP_TIMEOUT_SECONDS,
                         continue_after_interrupt=True,
                     )
+                    kill_wait_completed = True
         finally:
-            if process is not None and not reaped:
-                reaped = wait_for(0, continue_after_interrupt=True) or wait_for(
+            if process is not None and not reaped and not kill_sent:
+                signal_group(signal.SIGKILL)
+                kill_sent = True
+            if (process is not None and not reaped and kill_sent
+                    and not kill_wait_completed):
+                reaped = wait_for(
                     _PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+                    continue_after_interrupt=True,
+                )
+                kill_wait_completed = True
+            elif process is not None and not reaped and kill_sent:
+                reaped = wait_for(
+                    _PROCESS_FINAL_REAP_PROBE_SECONDS,
                     continue_after_interrupt=True,
                 )
             if reaped:

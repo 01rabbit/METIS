@@ -400,6 +400,14 @@ def test_close_keeps_resources_if_descendant_survives_sigkill(backend_files, mon
         signals.append(value)
         if value == 0:
             return
+        if value == signal.SIGKILL:
+            raise PermissionError
+
+    class Log:
+        closed = False
+
+        def close(self):
+            self.closed = True
 
     monkeypatch.setattr(module.os, "killpg", killpg)
     monkeypatch.setattr(module, "_PROCESS_TERMINATION_GRACE_SECONDS", 0)
@@ -409,12 +417,15 @@ def test_close_keeps_resources_if_descendant_survives_sigkill(backend_files, mon
     private = module.tempfile.TemporaryDirectory(dir=tmp_path)
     private_path = Path(private.name)
     backend._private = private
+    log = Log()
+    backend._log = log
 
     with pytest.raises(LlamaBackendError, match="did not stop"):
         backend.close()
 
     assert signal.SIGKILL in signals
     assert backend._process is process and backend._private is private
+    assert backend._log is log and not log.closed
     assert private_path.exists()
 
 
