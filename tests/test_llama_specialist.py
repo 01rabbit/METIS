@@ -334,6 +334,43 @@ def test_run_admitted_validates_claim_and_uses_admitted_backend(tmp_path, monkey
     assert runner.hard_token_budget_enforced is False
 
 
+@pytest.mark.parametrize(("failure", "expected_status"), [
+    (KeyboardInterrupt, "cancelled"),
+    (OSError, "request_incomplete"),
+])
+def test_admitted_failure_preserves_valid_terminal_work_receipt(tmp_path, monkeypatch, failure,
+                                                               expected_status):
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    prompt = runner.build_native_request("authorized assignment")
+    outcomes = []
+
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+
+    class InterruptedBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, *_args, **_kwargs): raise failure("synthetic interruption")
+        def collect_native_work(self, *, generated, evaluated=None):
+            assert generated is None and evaluated is None
+            return TokenLaunchOutcome(status="request_incomplete", exit_status=0, observed_work=27)
+
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", InterruptedBackend)
+    turn = runner.run_admitted(prompt, model=runner.model_id, timeout=5,
+        token_claim=_claim(runner, prompt), admission=Admission())
+
+    assert turn.returncode == 1 and turn.message is None
+    assert [outcome.status for outcome in outcomes] == [expected_status]
+    assert outcomes[0].exit_status == 0 and outcomes[0].observed_work == 27
+
+
 @pytest.mark.parametrize("defect", ["prompt", "model", "runtime", "manifest", "images", "cap"])
 def test_run_admitted_preflight_rejects_without_consumption_or_backend(tmp_path, monkeypatch, defect):
     prompt = "authorized assignment"
