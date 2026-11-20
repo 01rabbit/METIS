@@ -6,13 +6,14 @@ import json
 import os
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from metis.core import workflow_model_trial
+from metis.core import ctf_workflow, workflow_model_trial
 from metis.core.codex_isolation import sandbox_command, seatbelt_profile
 from metis.core.codex_session import CodexSession
 from metis.core.ctf_sandbox import configure
@@ -312,6 +313,59 @@ def test_manifest_snapshots_all_cases_sorts_ids_and_projects_answer_free_results
     event_data = "".join(session.store.export_jsonl(run_id) for run_id in run_ids)
     assert trial_a.oracle_sha256 not in event_data and trial_b.oracle_sha256 not in event_data
     assert str(tmp_path) not in event_data and "decoded-private-answer" not in event_data
+
+
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
+                    reason="requires an immutable METIS_TEST_SANDBOX_IMAGE")
+def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
+    tmp_path, monkeypatch,
+):
+    tmp_path.chmod(0o700)
+    beta_case, beta = _manifest_case(tmp_path, "beta", 3)
+    alpha_case, alpha = _manifest_case(tmp_path, "alpha", 2)
+    manifest = _write_trial_manifest(tmp_path, [beta_case, alpha_case])
+    database = tmp_path / "run-workspace" / "state.sqlite"
+    trials = {alpha.challenge: alpha, beta.challenge: beta}
+    isolation: list[dict] = []
+    real_run = ctf_workflow.run_workflow_in_sandbox
+
+    def capture_isolation(*args, **kwargs):
+        result = real_run(*args, **kwargs)
+        value = result.get("sandbox") if isinstance(result, dict) else None
+        assert isinstance(value, dict)
+        isolation.append(value)
+        return result
+
+    monkeypatch.setattr(ctf_workflow, "run_workflow_in_sandbox", capture_isolation)
+    report = run_external_fixture_manifest_trial(
+        database, image=os.environ["METIS_TEST_SANDBOX_IMAGE"],
+        platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"), manifest=manifest,
+        proposer=lambda challenge: trials[challenge].workflow_json,
+    )
+
+    assert [row["case_id"] for row in report["cases"]] == ["alpha", "beta"]
+    assert report["summary"] == {"total": 2, "passed": 2, "failed": 0, "pass_rate": 1.0}
+    assert all(row["ok"] and row["reproducible"] and row["oracle_match"]
+               and row["failure"] is None for row in report["cases"])
+    assert len(isolation) == 4  # two independent replays for each case
+    assert all(item["network"] == "none" and item["host_mounts"] is False
+               and item["image"] == os.environ["METIS_TEST_SANDBOX_IMAGE"]
+               for item in isolation)
+    assert len({item["platform"] for item in isolation}) == 1
+
+    session = CodexSession(database)
+    with sqlite3.connect(database) as db:
+        run_ids = [row[0] for row in db.execute("SELECT run_id FROM codex_sessions ORDER BY started")]
+    assert len(run_ids) == 2
+    events = "".join(session.store.export_jsonl(run_id) for run_id in run_ids)
+    serialized = json.dumps(report, sort_keys=True)
+    for trial in (alpha, beta):
+        assert trial.oracle_sha256 not in serialized + events
+    assert str(tmp_path) not in serialized + events
+    for run_id in run_ids:
+        root = session.artifact_root(run_id)
+        assert root is not None
+        assert sorted(path.name for path in root.iterdir()) == ["00-challenge.txt", "01-workflow.json"]
 
 
 @pytest.mark.parametrize("invalid", [

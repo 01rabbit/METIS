@@ -522,6 +522,14 @@ acceptance remain unmet. See
 The review-gate behavior and evidence are in
 [`issue7-capability-review-2026-11-17.md`](reports/issue7-capability-review-2026-11-17.md)
 and [`WORKFLOW_CAPABILITIES.md`](WORKFLOW_CAPABILITIES.md).
+An optional real-container integration test now covers the multi-case manifest
+path with two deterministic synthetic fixtures. Both replayed twice in a
+fixed `linux/arm64` image with no network or host mounts; the answer-free
+summary was 2/2 with both private oracle matches. The targeted 77-test suite
+passed with this real-sandbox test enabled. This does not evaluate model
+proposals or held-out CTF performance; the P5 dependency and Issue #7 remain
+open. See
+[`issue7-multicase-real-sandbox-2026-11-20.md`](reports/issue7-multicase-real-sandbox-2026-11-20.md).
 
 Issue #5 synthesis now scores support/rejection reports per case-and-whitespace
 normalized hypothesis and marks a conflict only when that same hypothesis has
