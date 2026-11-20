@@ -61,18 +61,21 @@ def test_probe_executes_hashed_absolute_paths_with_closed_stdin(tmp_path, monkey
     alias = tmp_path / "cli-alias"
     alias.symlink_to(cli)
     monkeypatch.chdir(tmp_path)
+    for key in ("LLAMA_ARG_MODEL", "LLAMA_ARG_N_PREDICT", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "HOME", "PATH"):
+        monkeypatch.setenv(key, "/ambient/fixture")
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
         assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["env"] == {"LC_ALL": "C"}
         assert "input" not in kwargs
         assert command[1:5] == ["-m", str(model), "-p", "Hello"]
         if command[0] == str(tokenizer):
             return subprocess.CompletedProcess(command, 0, b"Total number of tokens: 3\n", b"")
         assert command[0] == str(cli)
         assert command[5:7] == ["-n", "1"]
-        return subprocess.CompletedProcess(command, 0, '{"prompt_tokens":3,"completion_tokens":1}', "")
+        return subprocess.CompletedProcess(command, 0, b'{"prompt_tokens":3,"completion_tokens":1}', b"")
 
     monkeypatch.setattr(subprocess, "run", run)
     result = probe(Path("model"), Path("cli-alias"), Path("tokenizer"))
@@ -81,6 +84,24 @@ def test_probe_executes_hashed_absolute_paths_with_closed_stdin(tmp_path, monkey
         assert result[f"{file.name}_sha256"] == hashlib.sha256(file.name.encode()).hexdigest()
     assert result["usage_protocol_compatible"] is True
     assert result["precount_tokens"] == 3
+    assert result["strict_cap_ready"] is False
+
+
+@pytest.mark.parametrize(("stdout", "stderr"), [
+    (b'{"prompt_tokens":3,"completion_tokens":1}\n\xff', b""),
+    (b'{"prompt_tokens":3,"completion_tokens":1}', b"\xff"),
+])
+def test_probe_rejects_usage_when_a_cli_stream_has_invalid_utf8(tmp_path, monkeypatch, stdout, stderr):
+    files = _files(tmp_path)
+    calls = iter((
+        subprocess.CompletedProcess([], 0, b"Total number of tokens: 3\n", b""),
+        subprocess.CompletedProcess([], 0, stdout, stderr),
+    ))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(calls))
+
+    result = probe(*files)
+    assert result["usage_protocol_compatible"] is False
+    assert result["usage_observed"] is False
     assert result["strict_cap_ready"] is False
 
 
@@ -103,7 +124,7 @@ def test_replacing_probe_input_rejects_even_identical_bytes(tmp_path, monkeypatc
             replacement.replace(path)
         if len(calls) == 1:
             return subprocess.CompletedProcess(command, 0, b"Total number of tokens: 3\n", b"")
-        return subprocess.CompletedProcess(command, 0, '{"prompt_tokens":3,"completion_tokens":1}', "")
+        return subprocess.CompletedProcess(command, 0, b'{"prompt_tokens":3,"completion_tokens":1}', b"")
 
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(ValueError, match="probe input changed during execution"):

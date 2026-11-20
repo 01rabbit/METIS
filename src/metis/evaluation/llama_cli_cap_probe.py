@@ -99,10 +99,13 @@ def probe(model: Path, cli: Path, tokenizer: Path, *, timeout: int = 30) -> dict
     snapshots = {path: _snapshot(path) for path in (model, cli, tokenizer)}
 
     prompt = "Hello"
+    # Use a fixed locale for the tokenizer count and no ambient runtime settings.
+    environment = {"LC_ALL": "C"}
     _require_file_identities(snapshots)
     try:
         counted = subprocess.run([str(tokenizer), "-m", str(model), "-p", prompt, "--show-count"],
-                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=True)
+                                 stdin=subprocess.DEVNULL, capture_output=True, env=environment,
+                                 timeout=timeout, check=True)
     finally:
         _require_file_identities(snapshots)
     match = re.search(rb"Total number of tokens: ([0-9]+)\s*$", counted.stdout)
@@ -115,10 +118,16 @@ def probe(model: Path, cli: Path, tokenizer: Path, *, timeout: int = 30) -> dict
     _require_file_identities(snapshots)
     try:
         generated = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                                   text=True, timeout=timeout, check=False)
+                                   env=environment, timeout=timeout, check=False)
     finally:
         _require_file_identities(snapshots)
-    observed = assess_cli_output(generated.stdout, generated.stderr, precount_tokens=precount_tokens,
+    try:
+        stdout = generated.stdout.decode("utf-8")
+        stderr = generated.stderr.decode("utf-8")
+    except UnicodeDecodeError:
+        # A malformed stream cannot support a compatible usage observation.
+        stdout = stderr = ""
+    observed = assess_cli_output(stdout, stderr, precount_tokens=precount_tokens,
                                  returncode=generated.returncode)
     return {"model_sha256": snapshots[model][1], "cli_sha256": snapshots[cli][1],
             "tokenizer_sha256": snapshots[tokenizer][1], "precount_tokens": precount_tokens,

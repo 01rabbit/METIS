@@ -3,9 +3,11 @@
 This branch adds an answer-free local probe. It does not enable real-model held-out
 execution or advertise `hard_token_budget_enforced`. No API key or Docker is needed.
 
-The installed Homebrew `llama-cli` 1.0.0 (build 12359, `b1b770d90`) accepts
-`--predict 1` and a local GGUF path. A direct invocation against the installed
-Shisa 3B GGUF succeeded, but showed an interactive chat wrapper (`available
+The original observations predate the probe's fixed environment and strict
+output checks. The tested Homebrew `llama-cli` 1.0.0 (build 12359,
+`b1b770d90`) accepted `--predict 1` and a local GGUF path. A direct invocation
+against the installed Shisa 3B GGUF succeeded, but showed an interactive chat
+wrapper (`available
 commands`, `/read`, `/glob`, and `> Hello`) and no machine-readable prompt or
 generation token counts, even with `--single-turn --log-jsonl --verbose-prompt`.
 The installed Qwen3.5 0.8B GGUF failed to load because this llama.cpp build
@@ -17,14 +19,18 @@ reconcile actual usage after the call. The probe's `strict_cap_ready` result is
 always false. `usage_protocol_compatible` requires a zero exit status and exactly
 one unambiguous usage record without a chat wrapper. Its nonnegative prompt
 count must match the tokenizer's count, and its completion count must be at
-most the requested one token. The two historical observations still fail
-these checks. Neither model was rerun after tightening the probe.
+most the requested one token. Invalid UTF-8 on the generator's stdout or
+stderr makes the output incompatible. The two historical observations supply
+no compatible evidence. The hardened probe was checked with simulated
+subprocesses only. Neither model was rerun.
 
 The probe resolves the model and both executables to absolute paths before
 hashing and uses those exact paths for both subprocesses. It checks file
 identity before and after each subprocess. Both subprocesses receive the
-fixed prompt as an argument and have stdin disconnected. The result contains
-hashes, usage counts, exit status and capability booleans, with no retained
+fixed prompt as an argument, have stdin disconnected, and run with only
+`LC_ALL=C` in their environment. The probe does not retry with ambient settings
+if either binary cannot run in that environment. The result contains hashes,
+usage counts, exit status and capability booleans, with no retained
 response or challenge data. These checks support local compatibility
 diagnostics; trustworthy accounting, immutable routing and token admission
 remain unverified.
