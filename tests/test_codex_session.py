@@ -363,6 +363,32 @@ def test_added_collision_preserves_short_extension(tmp_path):
     assert second == ".metis-added/challenge-2.zip"
 
 
+@pytest.mark.parametrize(
+    ("source_name", "expected_suffix"),
+    [
+        ("A" * 80 + ".pcap", ".pcap"),
+        ("あ" * 70 + ".txt", ".txt"),
+        ("x" * 55 + ".tar.gz", ".gz"),
+        ("ab.c" + "d" * 70, ""),
+    ],
+)
+def test_added_filename_bounds_and_preserves_valid_short_extension(
+    tmp_path, source_name, expected_suffix,
+):
+    source = tmp_path / source_name
+    source.write_bytes(b"fixture")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="bounded-name", description="fixture", paths=[source])["run_id"]
+
+    added = [session.add_file(run_id, source)["artifact"] for _ in range(2)]
+    names = [item.removeprefix(".metis-added/") for item in added]
+    assert all(len(name) <= MAX_ADDED_ARTIFACT_NAME for name in names)
+    assert all(len(os.fsencode(name)) <= 255 for name in names)
+    if expected_suffix:
+        assert all(name.endswith(expected_suffix) for name in names)
+    assert len(set(names)) == 2
+
+
 def test_store_artifact_caps_derived_entries_and_keeps_purge_recoverable(tmp_path):
     database = tmp_path / "sessions.sqlite"
     source = tmp_path / "source.txt"

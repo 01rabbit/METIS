@@ -677,8 +677,7 @@ class CodexSession:
         root = self.artifact_root(run_id)
         if root is None:
             raise ValueError("no artifact root registered")
-        name = (re.sub(r"[^\w.-]", "_", supplied.name)[:MAX_ADDED_ARTIFACT_NAME]
-                .lstrip(".") or "added.bin")
+        name = _added_filename(supplied.name)
         manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
         added_count = sum(item.startswith(".metis-added/") for item in manifest.artifacts)
         if added_count >= MAX_ADDED_ARTIFACTS_PER_RUN:
@@ -850,3 +849,13 @@ def _suffix(content: bytes) -> str:
         if content.startswith(magic):
             return suffix
     return ".bin"
+
+
+def _added_filename(name: str) -> str:
+    """Sanitize a basename and retain a short, ordinary file extension."""
+    sanitized = re.sub(r"[^\w.-]", "_", name).lstrip(".") or "added.bin"
+    suffix = Path(sanitized).suffix
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", suffix):
+        suffix = ""
+    stem = sanitized[:-len(suffix)] if suffix else sanitized
+    return stem[:MAX_ADDED_ARTIFACT_NAME - len(suffix)] + suffix
