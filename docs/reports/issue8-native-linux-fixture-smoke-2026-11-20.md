@@ -6,10 +6,20 @@ The native work-budget patch was built from METIS main snapshot
 `353aac716cfb16b0908524b8fa80491807e01644` using upstream llama.cpp commit
 `b1b770d90d94cad9e9ea5b993bdbc383a522fb28`. The build ran in an ephemeral
 Ubuntu 24.04 `linux/arm64` container under the existing Colima `rosetta`
-profile. The container image digest was
+profile. `docker info --format '{{.ServerVersion}} {{.OSType}} {{.Architecture}}'`
+reported Docker 29.5.2, OS `linux`, and architecture `aarch64`; `uname -a`
+identified `aarch64` in both the VM and container. The run did not exercise
+x86_64 translation. The container image digest was
 `sha256:ab18ecc70c55c703eae968948f9f1dbbe662aa8d9badac7c982e6a6237b9d74c`;
 the build used Python 3.12.3, CMake 3.28.3, and GCC 13.3.0, using the built-in
 CPU backend with dynamic backend loading disabled.
+
+The Docker and `uname` outputs, container image digest, tool versions,
+executable digest, and sidecar digest are transcribed from observations made
+during the run. Their raw command output and build artifacts were not retained
+as separate files after cleanup. The patch digest and fixture digest were
+checked against the tracked patch and registered fixture hash, respectively;
+these can still be verified from the repository.
 
 The resulting Linux/aarch64 executable SHA-256 was
 `fc5b9ca352feab434f046596d4a62209bf59cb109987abd970d840e1643bd3cb`. Its
@@ -37,7 +47,9 @@ three-token generation with two additional graph positions; an `XDG_CONFIG_HOME`
 configuration that requires an API key being ignored for the controlled launch;
 nonprivate-directory, stale-socket, symlink, and comma/quote socket-path
 handling; an abandoned receipt pipe; and a SIGSTOP-induced client timeout
-followed by SIGKILL with no receipt.
+followed by SIGKILL with no receipt. The comma/quote socket-path case also
+checks that the server logs exactly one listening address, equal to the literal
+`unix://` prefix followed by the requested socket path.
 
 ## Scope and limits
 

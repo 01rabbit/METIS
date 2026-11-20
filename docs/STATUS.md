@@ -957,10 +957,11 @@ acceptance. Capability flags remain false. See
 A native work-budget binary built from the pinned upstream commit and patch
 passed `smoke.py` in an Ubuntu 24.04 `linux/arm64` container under Colima's
 existing `rosetta` profile, using the registered public `stories260K.gguf`
-fixture. The smoke checked cap refusals, terminal receipts, and Unix socket
-path and failure cases. This does not run the METIS controller admission or
-ledger, validate an independently approved executable pin, or establish
-provider token limits.
+fixture. The Linux run targeted aarch64 and did not exercise x86_64 translation.
+The smoke checked cap refusals, terminal receipts, and Unix socket path and
+failure cases. This does not run the METIS controller admission or ledger,
+validate an independently approved executable pin, or establish provider token
+limits. Exact environment and test details are in the report.
 Hard-cap capability flags remain false; Issue #8 remains open. Evidence:
 [`issue8-native-linux-fixture-smoke-2026-11-20.md`](reports/issue8-native-linux-fixture-smoke-2026-11-20.md).
 
