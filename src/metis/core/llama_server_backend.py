@@ -218,6 +218,9 @@ class LlamaServerBackend:
                         *, deadline: float, should_stop: Callable[[], bool] | None = None,
                         deadline_error: str = "model call deadline exceeded") -> dict[str, Any]:
         """Enforce one monotonic deadline even if a peer trickles bytes forever."""
+        if should_stop is not None and should_stop():
+            self.close()
+            raise LlamaBackendStopped("model call cancelled")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             self.close()
@@ -240,6 +243,9 @@ class LlamaServerBackend:
             worker.join(timeout=min(.05, max(0, deadline - time.monotonic())))
             if time.monotonic() >= deadline:
                 break
+        if should_stop is not None and should_stop():
+            self.close()
+            raise LlamaBackendStopped("model call cancelled")
         if worker.is_alive():
             self.close()
             raise LlamaBackendError(deadline_error)
@@ -474,16 +480,19 @@ class LlamaServerBackend:
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except PermissionError:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
+                    pass
+                # Waiting for the leader can succeed while a descendant still
+                # runs in the group and ignores SIGTERM.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except PermissionError:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    raise LlamaBackendError("server process could not be reaped") from None
                 self._process_status = process.poll()
         finally:
             if self._log is not None:

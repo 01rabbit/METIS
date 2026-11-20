@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -89,6 +90,11 @@ class TokenLaunchOutcome(_Record):
                      and self.observed_work is not None)
         elif self.status == "request_incomplete":
             valid = self.exit_status == 0 and self.observed_work is not None
+        elif self.status == "cancelled":
+            # Cancellation can race with a clean native exit. Preserve measured
+            # graph work when that terminal receipt is available.
+            valid = ((self.exit_status is None and self.observed_work is None)
+                     or (self.exit_status == 0 and self.observed_work is not None))
         else:
             valid = self.observed_work is None and (
                 self.status not in ("launch_failed", "lost") or self.exit_status is None
@@ -194,6 +200,10 @@ if hasattr(os, "register_at_fork"):
 
 class FixtureClaimBusy(ValueError):
     """A fixture controller or reconciler still holds the claim lock."""
+
+
+class SchedulerLaunchDeadlineExpired(ValueError):
+    """The persisted scheduler or run deadline elapsed before claim consumption."""
 
 
 class StudyTokenAdmission:
@@ -480,8 +490,6 @@ class StudyTokenAdmission:
         receipt = TokenLaunchClaim.model_validate(claim)
         study, slot, attempt = receipt.receipt.study, receipt.receipt.slot, receipt.receipt.attempt
         with self._transaction() as db:
-            if scheduler_bound:
-                self._require_current_scheduler_turn(db, receipt.receipt)
             row = db.execute(
                 "SELECT p.study_id,p.protocol_sha256,p.runtime_sha256,p.model_sha256,p.token_limit,"
                 "p.native_manifest_sha256,s.task_id,s.repetition,s.arm,s.token_limit,"
@@ -503,6 +511,8 @@ class StudyTokenAdmission:
             )
             if row is None or row[:17] != expected or row[17] != 0:
                 raise ValueError("native launch claim is invalid or already consumed")
+            if scheduler_bound:
+                self._require_current_scheduler_turn(db, receipt.receipt)
             changed = db.execute(
                 "UPDATE study_token_launches SET consumed=1, launched=? WHERE run_id=? AND turn_reservation_id=? "
                 "AND nonce=? AND consumed=0",
@@ -515,10 +525,10 @@ class StudyTokenAdmission:
                                         receipt: TokenAdmissionReceipt) -> None:
         slot, attempt = receipt.slot, receipt.attempt
         job = db.execute(
-            "SELECT run_id,state,attempt_id FROM agent_jobs WHERE assignment_id=?",
+            "SELECT run_id,state,attempt_id,deadline FROM agent_jobs WHERE assignment_id=?",
             (attempt.assignment_id,),
         ).fetchone()
-        if job != (slot.run_id, "running", attempt.attempt_id):
+        if job is None or job[:3] != (slot.run_id, "running", attempt.attempt_id):
             raise ValueError("scheduler job is no longer the claimed running attempt")
         self._require_active_run_state(db, slot.run_id)
         reservation = db.execute(
@@ -527,6 +537,23 @@ class StudyTokenAdmission:
         ).fetchone()
         if reservation != (slot.run_id, attempt.assignment_id, attempt.attempt_id):
             raise ValueError("scheduler turn reservation no longer matches the claim")
+        session = db.execute(
+            "SELECT activated,wall_seconds FROM codex_sessions WHERE run_id=?", (slot.run_id,),
+        ).fetchone()
+        job_deadline = job[3]
+        if (session is None or not isinstance(job_deadline, (int, float))
+                or not math.isfinite(job_deadline) or job_deadline <= 0):
+            raise ValueError("scheduler launch deadline is unavailable")
+        activated, wall_seconds = session
+        deadline = job_deadline
+        if activated is not None:
+            if (not isinstance(activated, (int, float)) or not math.isfinite(activated)
+                    or not isinstance(wall_seconds, (int, float)) or not math.isfinite(wall_seconds)
+                    or wall_seconds <= 0 or not math.isfinite(activated + wall_seconds)):
+                raise ValueError("scheduler run deadline is unavailable")
+            deadline = min(deadline, activated + wall_seconds)
+        if time.time() >= deadline:
+            raise SchedulerLaunchDeadlineExpired("scheduler launch deadline expired before claim consumption")
 
     def _require_active_run_state(self, db: sqlite3.Connection, run_id: str) -> None:
         from metis.core.contracts import RunStatus

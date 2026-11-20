@@ -4,9 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,7 +21,16 @@ from metis.core.ctf_orchestration import AgentLedger
 from metis.core.llama_server_backend import LlamaBackendError, LlamaBackendRefused
 from metis.core.llama_specialist import LlamaSpecialist
 from metis.core.study_token_admission import StudyTokenAdmission, TokenLaunchOutcome
-from metis.evaluation.heldout_protocol import Protocol, bind_run, digest, schedule
+from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
+from metis.evaluation.heldout_protocol import (
+    Bindings,
+    Protocol,
+    RunAssignment,
+    bind_run,
+    digest,
+    reconcile_arm_dispatch,
+    schedule,
+)
 
 PROMPT_PREFIX = "Use bounded METIS tools and return evidence only."
 
@@ -71,7 +82,7 @@ def _protocol(database: Path, *, manifest: str | None = "d" * 64,
     })
 
 
-def _running_slot(tmp_path: Path, *, protocol: Protocol | None = None):
+def _running_slot(tmp_path: Path, *, protocol: Protocol | None = None, arm: str = "full"):
     database = tmp_path / "state.sqlite"
     selected_protocol = protocol or _protocol(database)
     artifacts = [tmp_path / "sample.txt", tmp_path / "notes.txt"]
@@ -82,11 +93,15 @@ def _running_slot(tmp_path: Path, *, protocol: Protocol | None = None):
         paths=artifacts, categories=["crypto", "forensics"], max_actions=20, wall_seconds=60,
         evaluation_split="heldout",
     )
-    slot = next(item for item in schedule(selected_protocol) if item["arm"] == "full")
+    slot = next(item for item in schedule(selected_protocol) if item["arm"] == arm)
     bind_run(selected_protocol, database, run["run_id"], **slot,
              expected_sha256=digest(selected_protocol), prompt_text=PROMPT_PREFIX)
     ledger = AgentLedger(database)
-    wave = ledger.create_wave(run["run_id"])
+    max_specialists = selected_protocol.arm_config[slot["arm"]].max_specialists
+    wave = ledger.create_wave(
+        run["run_id"],
+        plan_policy=lambda plan: {**plan, "assignments": plan["assignments"][:max_specialists]},
+    )
     scheduler = AgentScheduler(database, BridgeHost())
     scheduler.configure(current_model="test-model", catalog=[])
     scheduler.enqueue(run["run_id"], wave["wave_id"])
@@ -332,6 +347,42 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
     assert retry.returncode == 1 and len(native_calls) == 1
 
 
+def test_native_claim_delay_consumes_call_deadline_and_keeps_charge(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    now = 100.0
+    claim_launch = admission.claim_scheduler_native_launch
+
+    def delayed_claim(claim, *, owner_id):
+        nonlocal now
+        now += 6
+        return claim_launch(claim, owner_id=owner_id)
+
+    def unexpected_backend(**_kwargs):
+        pytest.fail("the native backend must not start after the launch claim used the deadline")
+
+    monkeypatch.setattr(admission, "claim_scheduler_native_launch", delayed_claim)
+    monkeypatch.setattr("metis.core.llama_specialist.time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", unexpected_backend)
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                   turn_timeout=5, study_token_admission=admission, final_handoff_call_limit=1)
+
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT status, observed_work FROM study_token_outcomes").fetchall() == [
+            ("timeout", None),
+        ]
+        assert db.execute("SELECT consumed, launched FROM study_token_launches").fetchall() == [(1, 1)]
+        assert db.execute("SELECT tokens FROM study_token_attempts").fetchall() == [
+            (FULL_CONTEXT_RESERVATION_TOKENS + pin.max_output_tokens,),
+        ]
+
+
 def test_concurrent_native_consumers_start_backend_once(tmp_path, monkeypatch):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
     admission = StudyTokenAdmission(database)
@@ -462,6 +513,55 @@ def test_same_launch_owner_rechecks_scheduler_after_cancellation(tmp_path):
     ))
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("cancelled",)
+@pytest.mark.parametrize("defect", [None, "consumed", "missing_claim", "wrong_prompt", "missing_prompt",
+                                    "wrong_attempt", "wrong_manifest", "contradictory_turn"])
+def test_reconcile_native_reservation_abandoned_before_launch(tmp_path, monkeypatch, defect):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    admission = StudyTokenAdmission(database)
+    runner = AdmittedFakeRunner(database)
+    reserve_model_turn = scheduler.reserve_model_turn
+
+    def cancel_after_reservation(*args, **kwargs):
+        reservation = reserve_model_turn(*args, **kwargs)
+        scheduler.cancel(assignment_id=job["assignment_id"])
+        return reservation
+
+    monkeypatch.setattr(scheduler, "reserve_model_turn", cancel_after_reservation)
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            study_token_admission=admission)
+
+    assert result["outcome"]["state"] == result["job_state"] == "cancelled"
+    assert not runner.calls
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+        if defect == "consumed":
+            db.execute("UPDATE study_token_launches SET consumed=1")
+        elif defect == "missing_claim":
+            db.execute("DELETE FROM study_token_launches")
+        elif defect == "wrong_prompt":
+            db.execute("UPDATE study_token_attempts SET prompt_sha256=?", ("a" * 64,))
+        elif defect == "missing_prompt":
+            db.execute("DELETE FROM agent_job_log WHERE event='heldout_prompt_applied'")
+        elif defect == "wrong_attempt":
+            db.execute("UPDATE study_token_attempts SET attempt_id=?", ("a" * 16,))
+        elif defect == "wrong_manifest":
+            db.execute("UPDATE study_token_pins SET native_manifest_sha256=?", ("a" * 64,))
+        elif defect == "contradictory_turn":
+            db.execute(
+                "INSERT INTO agent_job_log(assignment_id,attempt_id,event,detail,time) "
+                "SELECT assignment_id,attempt_id,'codex_turn',detail,time FROM agent_job_log "
+                "WHERE event='model_turn_abandoned'",
+            )
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    if defect is None:
+        reconcile_arm_dispatch(protocol, bindings, database)
+    else:
+        with pytest.raises(ValueError, match="held-out prompt dispatch mismatch"):
+            reconcile_arm_dispatch(protocol, bindings, database)
 
 
 def test_native_binding_cannot_fall_back_to_ordinary_runner(tmp_path):
@@ -482,6 +582,46 @@ def test_native_binding_cannot_fall_back_to_ordinary_runner(tmp_path):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner)
     assert runner.calls == 0
     assert scheduler.model_turn_budget(run_id)["reserved"] == 0
+
+
+@pytest.mark.parametrize("deadline, job_state", [("assignment", "timed_out"), ("run", "failed")])
+def test_native_reservation_refuses_expired_deadline_before_consumption(
+    tmp_path, monkeypatch, deadline, job_state,
+):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    admission = StudyTokenAdmission(database)
+    runner = AdmittedFakeRunner(database)
+    reserve_model_turn = scheduler.reserve_model_turn
+
+    def expire_after_reservation(*args, **kwargs):
+        reservation = reserve_model_turn(*args, **kwargs)
+        with sqlite3.connect(database) as db:
+            expired = time.time() - 1
+            if deadline == "assignment":
+                db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=?",
+                           (expired, job["assignment_id"]))
+            else:
+                db.execute("UPDATE codex_sessions SET activated=?-wall_seconds WHERE run_id=?",
+                           (expired, run_id))
+        return reservation
+
+    monkeypatch.setattr(scheduler, "reserve_model_turn", expire_after_reservation)
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                            study_token_admission=admission)
+
+    assert result["outcome"]["state"] == result["job_state"] == job_state
+    assert "deadline expired before claim consumption" in result["outcome"]["reason"]
+    assert not runner.calls
+    assert scheduler.model_turn_budget(run_id)["reserved"] == 1
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (4098,)
+        assert db.execute("SELECT COUNT(*) FROM study_token_outcomes").fetchone() == (0,)
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    reconcile_arm_dispatch(protocol, bindings, database)
 
 
 def test_native_admitted_runner_with_noop_validator_is_rejected_before_reservation(tmp_path):
