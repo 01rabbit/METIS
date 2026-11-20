@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import re
 import sqlite3
@@ -10,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import Field, model_validator
 
 from metis.core.ctf_knowledge import validate_heldout_snapshot_source
@@ -20,6 +23,7 @@ from metis.evaluation.heldout_analysis import (
     Identifier,
     Record,
     Task,
+    _analyze_with_verified_controls,
     analyze,
     reconcile_evidence,
 )
@@ -67,6 +71,7 @@ class Protocol(Record):
     measurement: Literal["synthetic_fixture", "real_model"]
     model_pin: Identifier
     runtime_pin: Identifier
+    control_reviewer_key_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     llama_backend: LlamaBackendPin | None = None
     seed: Annotated[int, Field(ge=0, le=2**32 - 1)]
     repetitions: Annotated[int, Field(ge=2, le=20)]
@@ -132,6 +137,10 @@ def digest(protocol: Protocol) -> str:
     # native manifest field. A present manifest is included in the commitment.
     if protocol.llama_backend is not None and protocol.llama_backend.native_manifest_sha256 is None:
         payload["llama_backend"].pop("native_manifest_sha256", None)
+    # Existing v1 protocols had no reviewer-key field; keep their commitments
+    # stable while pinning the key whenever acceptance review is preregistered.
+    if protocol.control_reviewer_key_sha256 is None:
+        payload.pop("control_reviewer_key_sha256", None)
     canonical = json.dumps(payload, sort_keys=True,
                            separators=(",", ":"), ensure_ascii=True).encode("ascii")
     return hashlib.sha256(canonical).hexdigest()
@@ -325,9 +334,11 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                         raise ValueError("held-out dispatch treatment mismatch")
 
 
-def finalize(protocol: Protocol, bindings: Bindings, database: Path,
-             *, expected_sha256: str) -> dict[str, Any]:
-    """Accept only the frozen protocol and exact run matrix, then analyze ledger evidence."""
+def _finalize(protocol: Protocol, bindings: Bindings, database: Path, *, expected_sha256: str,
+              verified_control_attestation: object | None = None,
+              control_manifest_sha256: str | None = None,
+              control_signature_sha256: str | None = None,
+              reviewer_key_sha256: str | None = None) -> dict[str, Any]:
     protocol = Protocol.model_validate(protocol.model_dump())
     bindings = Bindings.model_validate(bindings.model_dump())
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
@@ -346,6 +357,7 @@ def finalize(protocol: Protocol, bindings: Bindings, database: Path,
     data.pop("arm_config")
     data.pop("memory_card_digests")
     data.pop("llama_backend")
+    data.pop("control_reviewer_key_sha256")
     data["tasks"] = [task.model_dump(exclude={"source_id", "distribution_sha256"})
                      for task in protocol.tasks]
     data["runs"] = [run.model_dump() for run in bindings.runs]
@@ -356,9 +368,56 @@ def finalize(protocol: Protocol, bindings: Bindings, database: Path,
         or sum(trial.seconds for trial in study.trials) > 7_200
     ):
         raise ValueError("observed real-model study exceeds the authorized cap")
-    return {"protocol_sha256": actual, "study": study.model_dump(mode="json"),
-            "analysis": analyze(study),
+    authenticated_controls = verified_control_attestation is not None
+    analysis = (_analyze_with_verified_controls(study) if authenticated_controls else analyze(study))
+    return {"protocol_sha256": actual,
+            "control_attestation_status": "verified" if authenticated_controls else "absent",
+            "control_attestation_sha256": control_manifest_sha256,
+            "control_signature_sha256": control_signature_sha256,
+            "trusted_reviewer_key_sha256": reviewer_key_sha256,
+            "study": study.model_dump(mode="json"),
+            "analysis": analysis,
             "ledger_reconciliation": reconcile_evidence(study, database)}
+
+
+def finalize(protocol: Protocol, bindings: Bindings, database: Path,
+             *, expected_sha256: str) -> dict[str, Any]:
+    """Export exploratory results; task-control claims remain acceptance-ineligible."""
+    return _finalize(protocol, bindings, database, expected_sha256=expected_sha256,
+                     verified_control_attestation=None)
+
+
+def finalize_acceptance(
+    protocol: Protocol,
+    bindings: Bindings,
+    database: Path,
+    *,
+    expected_sha256: str,
+    control_manifest: bytes,
+    control_signature: bytes,
+    trusted_reviewer_key: Ed25519PublicKey,
+) -> dict[str, Any]:
+    """Finalize acceptance analysis only with the reviewer key pinned in the protocol."""
+    if protocol.control_reviewer_key_sha256 is None:
+        raise ValueError("protocol does not pin an independent control reviewer key")
+    raw_key = trusted_reviewer_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    key_digest = hashlib.sha256(raw_key).hexdigest()
+    if not hmac.compare_digest(key_digest, protocol.control_reviewer_key_sha256):
+        raise ValueError("trusted reviewer key does not match preregistered protocol pin")
+    from metis.evaluation.heldout_control_attestation import verify
+
+    attestation = verify(protocol, control_manifest, control_signature,
+                         trusted_reviewer_key=trusted_reviewer_key)
+    return _finalize(
+        protocol, bindings, database, expected_sha256=expected_sha256,
+        verified_control_attestation=attestation,
+        control_manifest_sha256=hashlib.sha256(control_manifest).hexdigest(),
+        control_signature_sha256=hashlib.sha256(control_signature).hexdigest(),
+        reviewer_key_sha256=key_digest,
+    )
 
 
 def _read(path: Path, limit: int) -> bytes:
@@ -390,6 +449,14 @@ def main() -> int:
     finish.add_argument("bindings", type=Path)
     finish.add_argument("--database", type=Path, required=True)
     finish.add_argument("--expected-sha256", required=True)
+    accept = commands.add_parser("finalize-acceptance")
+    accept.add_argument("protocol", type=Path)
+    accept.add_argument("bindings", type=Path)
+    accept.add_argument("--database", type=Path, required=True)
+    accept.add_argument("--expected-sha256", required=True)
+    accept.add_argument("--control-manifest", type=Path, required=True)
+    accept.add_argument("--control-signature", type=Path, required=True)
+    accept.add_argument("--trusted-reviewer-key", type=Path, required=True)
     args = parser.parse_args()
     try:
         protocol = Protocol.model_validate_json(_read(args.protocol, MAX_PROTOCOL_BYTES))
@@ -403,10 +470,24 @@ def main() -> int:
                      repetition=args.repetition, arm=args.arm,
                      expected_sha256=args.expected_sha256, prompt_text=prompt_text)
             output = {"run_id": args.run_id, "bound": True}
-        else:
+        elif args.command == "finalize":
             bindings = Bindings.model_validate_json(_read(args.bindings, MAX_BINDINGS_BYTES))
             output = finalize(protocol, bindings, args.database,
                               expected_sha256=args.expected_sha256)
+        else:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+            from metis.evaluation.heldout_control_attestation import MAX_ATTESTATION_BYTES
+
+            bindings = Bindings.model_validate_json(_read(args.bindings, MAX_BINDINGS_BYTES))
+            output = finalize_acceptance(
+                protocol, bindings, args.database, expected_sha256=args.expected_sha256,
+                control_manifest=_read(args.control_manifest, MAX_ATTESTATION_BYTES),
+                control_signature=_read(args.control_signature, 64),
+                trusted_reviewer_key=Ed25519PublicKey.from_public_bytes(
+                    _read(args.trusted_reviewer_key, 32),
+                ),
+            )
     except (OSError, ValueError, TypeError, sqlite3.Error):
         print("held-out protocol rejected", file=sys.stderr)
         return 2

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from metis.core.agent_host import FakeHost
 from metis.core.agent_scheduler import AgentScheduler
@@ -17,13 +19,19 @@ from metis.core.contracts import ChallengeManifest
 from metis.core.ctf_knowledge import KnowledgeBase, TechniqueCard
 from metis.core.ctf_orchestration import AgentLedger
 from metis.core.store import RunStore
-from metis.evaluation.heldout_analysis import reconcile_evidence
+from metis.evaluation import heldout_control_attestation as control_review
+from metis.evaluation.heldout_analysis import (
+    Study,
+    _analyze_with_verified_controls,
+    reconcile_evidence,
+)
 from metis.evaluation.heldout_protocol import (
     Bindings,
     Protocol,
     bind_run,
     digest,
     finalize,
+    finalize_acceptance,
     main,
     schedule,
 )
@@ -226,14 +234,170 @@ def _protocol_fixture(tmp_path: Path) -> tuple[Path, Protocol, Bindings]:
     return database, protocol, bindings
 
 
+_TEST_CONTROL_REVIEWER = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+
+
+def _pin_control_reviewer(protocol: Protocol, bindings: Bindings):
+    public_key = _TEST_CONTROL_REVIEWER.public_key()
+    raw = public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    data = protocol.model_dump()
+    data["control_reviewer_key_sha256"] = fingerprint
+    pinned_protocol = Protocol.model_validate(data)
+    pinned_bindings = Bindings.model_validate({
+        "protocol_sha256": digest(pinned_protocol),
+        "runs": [run.model_dump() for run in bindings.runs],
+    })
+    return pinned_protocol, pinned_bindings, public_key, fingerprint
+
+
+def _control_review_artifacts(protocol: Protocol, *, mutation: dict | None = None):
+    document = {
+        "schema_version": 1,
+        "role": "independent_control_reviewer",
+        "protocol_sha256": digest(protocol),
+        "tasks": [
+            {
+                "task_id_sha256": hashlib.sha256(task.task_id.encode("ascii")).hexdigest(),
+                "source_id_sha256": hashlib.sha256(task.source_id.encode("ascii")).hexdigest(),
+                "distribution_sha256": task.distribution_sha256,
+                "evidence_sha256": "e" * 64,
+                "control": "verified" if task.solvability_control_verified else "unverified",
+                "exposure": task.exposure,
+            }
+            for task in protocol.tasks
+        ],
+    }
+    if mutation:
+        document["tasks"][0].update(mutation)
+    attestation = control_review.ControlAttestation.model_validate(document)
+    manifest = json.dumps(attestation.model_dump(mode="json")).encode("ascii")
+    signature = _TEST_CONTROL_REVIEWER.sign(control_review.signing_bytes(attestation))
+    public_key = _TEST_CONTROL_REVIEWER.public_key()
+    public_bytes = public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return manifest, signature, public_key, hashlib.sha256(public_bytes).hexdigest()
+
+
+def test_unpinned_v1_protocol_digest_remains_stable(tmp_path: Path) -> None:
+    _database, protocol, _bindings = _protocol_fixture(tmp_path)
+    payload = protocol.model_dump(mode="json")
+    assert payload["control_reviewer_key_sha256"] is None
+    payload.pop("control_reviewer_key_sha256")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    assert digest(protocol) == hashlib.sha256(canonical).hexdigest()
+
+
 def test_protocol_finalizes_frozen_matrix_with_controller_evidence(tmp_path: Path) -> None:
     database, protocol, bindings = _protocol_fixture(tmp_path)
     result = finalize(protocol, bindings, database, expected_sha256=digest(protocol))
     assert result["protocol_sha256"] == digest(protocol)
     assert result["ledger_reconciliation"]["trials_reconciled"] == 8
     assert result["analysis"]["arms"]["full"]["scored_solves"] == 4
-    assert result["analysis"]["arms"]["full"]["acceptance_eligible_solves"] == 0
+    assert result["analysis"]["arms"]["full"]["acceptance_eligible_solves"] is None
     assert "private result" not in json.dumps(result)
+
+
+def test_exploratory_finalization_never_trusts_unsigned_control_claims(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    result = finalize(protocol, bindings, database, expected_sha256=digest(protocol))
+    assert result["control_attestation_status"] == "absent"
+    assert result["control_attestation_sha256"] is None
+    assert result["control_signature_sha256"] is None
+    assert result["analysis"]["unauthenticated_control_excluded_trials"] == 8
+    assert result["analysis"]["acceptance_control_attestation_verified"] is False
+    assert result["analysis"]["arms"]["full"]["acceptance_eligible_solves"] is None
+    assert all(task["exposure"] == "unseen" and task["solvability_control_verified"]
+               for task in result["study"]["tasks"])
+
+
+def test_acceptance_finalization_requires_pinned_signed_control_attestation(tmp_path: Path) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    protocol, bindings, public_key, key_digest = _pin_control_reviewer(protocol, bindings)
+    manifest, signature, _public_key, _key_digest = _control_review_artifacts(protocol)
+    result = finalize_acceptance(
+        protocol, bindings, database, expected_sha256=digest(protocol),
+        control_manifest=manifest, control_signature=signature,
+        trusted_reviewer_key=public_key,
+    )
+    assert result["control_attestation_status"] == "verified"
+    assert result["analysis"]["solvability_controls_missing"] == 0
+    assert result["trusted_reviewer_key_sha256"] == key_digest
+    assert result["control_attestation_sha256"] == hashlib.sha256(manifest).hexdigest()
+    assert result["control_signature_sha256"] == hashlib.sha256(signature).hexdigest()
+    assert all(task["exposure"] == "unseen" and task["solvability_control_verified"]
+               for task in result["study"]["tasks"])
+
+
+@pytest.mark.parametrize(
+    ("task_change", "expected_exclusion", "expected_unresolved"),
+    [
+        ({"exposure": "prior_solved"}, {"held_out:prior_solved": 4}, 0),
+        ({"solvability_control_verified": False}, {}, 4),
+    ],
+)
+def test_signed_unverified_or_prior_exposed_tasks_stay_out_of_acceptance(
+    tmp_path: Path, task_change: dict, expected_exclusion: dict, expected_unresolved: int,
+) -> None:
+    database, original, bindings = _protocol_fixture(tmp_path)
+    data = original.model_dump()
+    data["tasks"][0].update(task_change)
+    protocol = Protocol.model_validate(data)
+    bindings = Bindings.model_validate({
+        "protocol_sha256": digest(protocol), "runs": [run.model_dump() for run in bindings.runs],
+    })
+    protocol, bindings, public_key, _key_digest = _pin_control_reviewer(protocol, bindings)
+    manifest, signature, _key, _fingerprint = _control_review_artifacts(protocol)
+    result = finalize_acceptance(
+        protocol, bindings, database, expected_sha256=digest(protocol),
+        control_manifest=manifest, control_signature=signature,
+        trusted_reviewer_key=public_key,
+    )
+    analysis = result["analysis"]
+    assert analysis["acceptance_control_attestation_verified"] is True
+    assert analysis["contamination_excluded_trials"] == expected_exclusion
+    assert analysis["unresolved_solvability_control_excluded_trials"] == expected_unresolved
+    resource_complete = result["study"]
+    for budget in resource_complete["budgets"].values():
+        budget["cost_usd"] = 1.0
+    for trial in resource_complete["trials"]:
+        trial["cost_usd"] = 0.1
+    accepted = _analyze_with_verified_controls(Study.model_validate(resource_complete))
+    assert accepted["arms"]["full"]["acceptance_eligible_solves"] == 2
+    assert accepted["arms"]["full"]["acceptance_eligible_solve_rate"] == 0.5
+
+
+def test_acceptance_finalization_rejects_unpinned_or_mismatched_attestation(tmp_path: Path) -> None:
+    database, unpinned_protocol, unpinned_bindings = _protocol_fixture(tmp_path)
+    protocol, bindings, public_key, _key_digest = _pin_control_reviewer(
+        unpinned_protocol, unpinned_bindings,
+    )
+    manifest, signature, _public_key, _manifest_key_digest = _control_review_artifacts(protocol)
+    other_key = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33))).public_key()
+    cases = [
+        (unpinned_protocol, unpinned_bindings, manifest, signature, public_key,
+         "protocol does not pin an independent control reviewer key"),
+        (protocol, bindings, manifest, b"", public_key, "control attestation input outside bounds"),
+        (protocol, bindings, manifest, signature, other_key,
+         "trusted reviewer key does not match preregistered protocol pin"),
+        (protocol, bindings, manifest, signature[:-1] + bytes([signature[-1] ^ 1]), public_key,
+         "invalid control attestation signature"),
+        (protocol, bindings, _control_review_artifacts(protocol, mutation={"exposure": "prior_answer"})[0],
+         signature, public_key, "task assertions mismatch"),
+    ]
+    changed_protocol = protocol.model_copy(update={"seed": protocol.seed + 1})
+    changed_bindings = Bindings.model_validate({
+        "protocol_sha256": digest(changed_protocol), "runs": [run.model_dump() for run in bindings.runs],
+    })
+    cases.append((changed_protocol, changed_bindings, manifest, signature, public_key,
+                  "control attestation protocol mismatch"))
+    for selected_protocol, selected_bindings, altered_manifest, altered_signature, key, message in cases:
+        with pytest.raises(ValueError, match=message):
+            finalize_acceptance(
+                selected_protocol, selected_bindings, database,
+                expected_sha256=digest(selected_protocol),
+                control_manifest=altered_manifest, control_signature=altered_signature,
+                trusted_reviewer_key=key,
+            )
 
 
 def test_protocol_rejects_mutation_order_and_missing_binding(tmp_path: Path) -> None:
@@ -671,6 +835,47 @@ def test_protocol_cli_prepare_and_finalize_fail_closed(tmp_path: Path, monkeypat
     assert main() == 0
     assert json.loads(capsys.readouterr().out)["ledger_reconciliation"]["trials_reconciled"] == 8
     monkeypatch.setattr(sys, "argv", args[:-1] + ["0" * 64])
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "held-out protocol rejected\n"
+
+
+def test_protocol_cli_acceptance_finalize_requires_detached_review(tmp_path: Path, monkeypatch, capsys) -> None:
+    database, protocol, bindings = _protocol_fixture(tmp_path)
+    protocol, bindings, _public_key, _key_digest = _pin_control_reviewer(protocol, bindings)
+    protocol_path = tmp_path / "protocol.json"
+    bindings_path = tmp_path / "bindings.json"
+    protocol_path.write_text(protocol.model_dump_json())
+    bindings_path.write_text(bindings.model_dump_json())
+    artifacts = _control_review_artifacts(protocol)
+    design, run_map, manifest, signature, public_key_path = (
+        protocol_path, bindings_path, tmp_path / "control.json",
+        tmp_path / "control.sig", tmp_path / "reviewer.pub",
+    )
+    design.write_text(protocol.model_dump_json())
+    run_map.write_text(bindings.model_dump_json())
+    manifest.write_bytes(artifacts[0])
+    signature.write_bytes(artifacts[1])
+    public_key_path.write_bytes(artifacts[2].public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw,
+    ))
+    args = [
+        "heldout-protocol", "finalize-acceptance", str(design), str(run_map),
+        "--database", str(database), "--expected-sha256", digest(protocol),
+        "--control-manifest", str(manifest), "--control-signature", str(signature),
+        "--trusted-reviewer-key", str(public_key_path),
+    ]
+    monkeypatch.setattr(sys, "argv", args)
+    assert main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["control_attestation_status"] == "verified"
+    assert output["analysis"]["acceptance_control_attestation_verified"] is True
+
+    public_key_path.write_bytes(Ed25519PrivateKey.from_private_bytes(
+        bytes(range(1, 33)),
+    ).public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
+    monkeypatch.setattr(sys, "argv", args)
     assert main() == 2
     captured = capsys.readouterr()
     assert captured.out == ""

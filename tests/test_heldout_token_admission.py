@@ -38,6 +38,7 @@ PROMPT_PREFIX = "Use bounded METIS tools and return evidence only."
 def test_optional_native_manifest_preserves_v1_digest_when_absent(tmp_path):
     protocol = _protocol(tmp_path / "state.sqlite", manifest=None)
     legacy_payload = protocol.model_dump(mode="json")
+    legacy_payload.pop("control_reviewer_key_sha256")
     legacy_payload["llama_backend"].pop("native_manifest_sha256")
     legacy_digest = hashlib.sha256(json.dumps(
         legacy_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
