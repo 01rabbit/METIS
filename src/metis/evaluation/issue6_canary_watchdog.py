@@ -17,6 +17,7 @@ from typing import Literal, Self
 
 from metis.core.codex_isolation import native_codex
 
+from ._issue6_transcript_canary import STUB_MODES, StubMode
 from .issue6_pilot_admission import DryRunAdmission, DryRunPhase
 
 _HELPER = Path(__file__).with_name("_issue6_canary_process.py")
@@ -89,8 +90,18 @@ def start_offline_runtime_canary(admission: DryRunAdmission, workspace: Path, ru
                            "runtime_guardian", source, seconds)
 
 
+def start_transcript_canary(admission: DryRunAdmission, workspace: Path, run_id: str, assignment_id: str,
+                            attempt_id: str, receipt: DryRunPhase, *, mode: StubMode = "complete",
+                            seconds: float = _MAX_SECONDS) -> Canary:
+    """Reserve and supervise one fixed public JSONL stub, with no real CLI execution."""
+    if mode not in STUB_MODES:
+        raise ValueError("unsupported fixed transcript behavior")
+    return _start_guardian(admission, workspace, run_id, assignment_id, attempt_id, receipt,
+                           "transcript_guardian", mode, seconds)
+
+
 def _start_guardian(admission: DryRunAdmission, workspace: Path, run_id: str, assignment_id: str,
-                    attempt_id: str, receipt: DryRunPhase, role: Literal["guardian", "runtime_guardian"],
+                    attempt_id: str, receipt: DryRunPhase, role: Literal["guardian", "runtime_guardian", "transcript_guardian"],
                     argument: str, seconds: float) -> Canary:
     if not math.isfinite(seconds) or not 0 < seconds <= _MAX_SECONDS:
         raise ValueError("unsupported canary deadline")

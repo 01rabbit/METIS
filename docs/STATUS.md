@@ -11,6 +11,19 @@ This improves visibility but does not establish secure erasure, provider-side
 revocation, or full retention-policy compliance. Issue #9 remains open. See
 [`issue9-operator-credential-retention-preview-2026-11-20.md`](reports/issue9-operator-credential-retention-preview-2026-11-20.md).
 
+## Issue #6 fixed-transcript guardian canary (2026-11-20)
+
+An offline fixed JSONL stub now exercises the guardian's sanitized evidence
+path, output limits, cancellation/deadline, and terminal-record rollback. A
+macOS `killpg`/zombie `EPERM` race now falls through to bounded direct-child
+wait; deterministic regression coverage and ten repeated deadline/overflow
+checks passed. HMAC fields use a discarded per-run key and are therefore
+privacy redactions, not later-verifiable commitments. Reap evidence covers the
+direct child; child processes are prohibited in these canaries. No model is
+launched, and the result does not satisfy Issue #6's measured-gain gate or its
+Issue #7 dependency. See
+[`issue6-transcript-canary-2026-11-20.md`](reports/issue6-transcript-canary-2026-11-20.md).
+
 ## Issue #9 artifact registration audit (2026-11-20)
 
 `metis audit` now reports bounded, count-only artifact registrations from the
@@ -871,6 +884,14 @@ paired difference −8.33 points (descriptive cluster interval [−25.00, 0.00])
 The nonpositive stop applies; no larger or held-out trial followed. P5's
 measured-gain gate and dependent P6 remain open. See
 `docs/reports/issue6-conditional-reserve-pilot-results-2026-11-18.md`.
+`run_assignment` and the direct specialist CLI now expose a fixed, answer-free
+`failure_category` for completion, deadlines, cancellation, policy/provider
+failures, budget exhaustion, invalid output, abstention,
+infrastructure/configuration failures, unconfirmed termination, and other
+failures. The autopilot currently discards per-assignment return values, so this
+change does not persist categories for autopilot runs or reconstruct them for
+historical sanitized runs. Prior scores are unchanged; Issue #6's measured-gain
+gate remains unmet.
 
 The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
 across compatible Stage 1 intervals and checks the deadline inside one guess.
