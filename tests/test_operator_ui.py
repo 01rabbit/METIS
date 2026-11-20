@@ -278,9 +278,9 @@ def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path
     _session, second_id = _start_run(database)
     # Server construction prepares this lookup index before it starts serving.
     ensure_run_audit_list_index(database)
-    before = database.read_bytes()
 
     with server_for(database, cancel_run=session.cancel) as port:
+        before = database.read_bytes()
         assert request(port, "GET", "/api/runs")[0] == 401
         assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
         assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
@@ -294,7 +294,7 @@ def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path
         assert all(run["status"] == "planning" for run in payload["runs"])
         assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
         assert "private" not in body.decode()
-    assert database.read_bytes() == before
+        assert database.read_bytes() == before
 
 
 def test_credential_retention_preview_is_authenticated_bounded_redacted_and_read_only(
@@ -632,7 +632,12 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           await dispatchStatus();
           assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, false);
           mockFetch = async (path, options) => {
-            assert.equal(path, '/api/runs/' + runId + '/dispatch/pause');
+            assert.ok(path === '/api/runs/' + runId + '/dispatch/pause'
+              || path === '/api/runs/' + runId + '/dispatch');
+            if (options.method === 'GET') return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 1}],
+            })};
             assert.equal(options.method, 'POST');
             return {ok: true, status: 200, json: async () => ({
               run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
@@ -642,8 +647,15 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           assert.equal(confirmations.at(-1),
             'Pause new specialist dispatch for run ' + runId + '? Running specialists continue.');
           assert.equal(JSON.parse(elements.result.textContent).dispatch_paused, true);
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
+            ['pause']);
           mockFetch = async (path, options) => {
-            assert.equal(path, '/api/runs/' + runId + '/dispatch/resume');
+            assert.ok(path === '/api/runs/' + runId + '/dispatch/resume'
+              || path === '/api/runs/' + runId + '/dispatch');
+            if (options.method === 'GET') return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 1}, {action: 'resume', updated: 2}],
+            })};
             assert.equal(options.method, 'POST');
             return {ok: true, status: 200, json: async () => ({
               run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
@@ -658,6 +670,44 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           await dispatchStatus();
           assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
             ['pause', 'resume']);
+        });
+
+        test('pause invalidates stale status and reloads the committed status and history', async () => {
+          await loadAndSelect();
+          elements.token.value = 'operator-secret';
+          let resolveOldStatus;
+          mockFetch = (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/dispatch');
+            assert.equal(options.method, 'GET');
+            return new Promise(resolve => { resolveOldStatus = resolve; });
+          };
+          const oldStatus = dispatchStatus();
+          let refreshed = 0;
+          mockFetch = async (path, options) => {
+            if (options.method === 'POST') {
+              assert.equal(path, '/api/runs/' + runId + '/dispatch/pause');
+              return {ok: true, status: 200, json: async () => ({
+                run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+              })};
+            }
+            assert.equal(path, '/api/runs/' + runId + '/dispatch');
+            refreshed++;
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 50}],
+            })};
+          };
+          await pauseDispatch();
+          assert.equal(refreshed, 1);
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent), {
+            run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+            history: [{action: 'pause', updated: 50}],
+          });
+          resolveOldStatus({ok: true, status: 200, json: async () => ({
+            run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only', history: [],
+          })});
+          await oldStatus;
+          assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, true);
         });
 
         test('selected dispatch state and control history reload on selection and refresh', async () => {

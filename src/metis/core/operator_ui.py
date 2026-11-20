@@ -516,10 +516,15 @@ function setDispatchPaused(paused) {
     ? 'Pause new specialist dispatch for run ' + run + '? Running specialists continue.'
     : 'Resume queued specialist dispatch for run ' + run + '?';
   if (!window.confirm(message)) return;
+  latestDispatchRequest++;
+  dispatchOutput.textContent = '';
   const request = ++latestRunRequest;
   const outputRequest = claimOutput();
   const path = '/api/runs/' + run + '/dispatch/' + (paused ? 'pause' : 'resume');
-  return operatorRequest(path, 'POST', action + ' dispatch', showResult,
+  return operatorRequest(path, 'POST', action + ' dispatch', payload => {
+    showResult(payload);
+    return loadDispatchStatus(run);
+  },
     () => request === latestRunRequest && run === runInput.value
       && outputRequest === latestOutputRequest);
 }

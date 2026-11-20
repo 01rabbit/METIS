@@ -1292,7 +1292,7 @@ def main() -> int:
                                    WebWorkflow.preview_credential_retention(
                                        args.database, older_than_days=older_than_days,
                                    ))
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.Error):
             parser.exit(2, "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n")
         print(f"METIS operator view: http://127.0.0.1:{server.server_port}/", flush=True)
         try:

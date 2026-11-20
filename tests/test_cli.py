@@ -1,8 +1,11 @@
 import io
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from metis.core import ctf_workflow
 from metis.core.codex_session import CodexSession
@@ -88,6 +91,30 @@ def test_operator_wires_preview_only_credential_retention_callback(tmp_path, mon
     assert state["dispatch_paused"] is True
     assert [event["action"] for event in state["history"]] == ["pause"]
     assert "METIS operator view: http://127.0.0.1:45678/" in capsys.readouterr().out
+
+
+def test_operator_reports_scheduler_sqlite_initialization_failure_cleanly(
+    tmp_path, monkeypatch, capsys,
+):
+    from metis.cli import main
+    from metis.core.agent_scheduler import AgentScheduler
+
+    database = tmp_path / "state.sqlite"
+    WebWorkflow(database)
+
+    def fail_init(self, *_args, **_kwargs):
+        raise sqlite3.OperationalError("private sqlite startup detail")
+
+    monkeypatch.setattr(AgentScheduler, "__init__", fail_init)
+    monkeypatch.setenv("METIS_OPERATOR_TOKEN", "operator-secret-token-with-32-characters")
+    monkeypatch.setattr(sys, "argv", ["metis", "operator", "--database", str(database)])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n"
+    assert "private sqlite startup detail" not in captured.err
 
 
 def test_audit_is_read_only_and_omits_free_form_event_details(tmp_path):
