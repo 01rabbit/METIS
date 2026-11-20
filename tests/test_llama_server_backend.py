@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import signal
+import socket
 import sqlite3
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -166,7 +169,7 @@ def test_startup_obeys_absolute_assignment_deadline(backend_files, monkeypatch):
     monkeypatch.setattr(module.subprocess, "Popen", track_popen)
     monkeypatch.setattr(module.tempfile, "TemporaryDirectory", track_tempdir)
     deadline = time.monotonic() + .5
-    with pytest.raises(LlamaBackendError, match="startup deadline"), LlamaServerBackend(
+    with pytest.raises(LlamaBackendError, match="deadline exceeded"), LlamaServerBackend(
         **backend_files, startup_seconds=10, deadline_monotonic=deadline,
     ):
         pytest.fail("server must not finish startup after the assignment deadline")
@@ -219,7 +222,7 @@ def test_startup_hashing_honors_cancel_before_creating_process_or_tempdir(backen
         checks += 1
         return checks >= 7
 
-    backend = LlamaServerBackend(**backend_files, should_stop=stop_after_two_model_chunks)
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=stop_after_two_model_chunks)
     with pytest.raises(LlamaBackendStopped, match="cancelled"):
         backend.__enter__()
     assert checks == 7
@@ -269,7 +272,7 @@ UnixStreamServer(path, Handler).serve_forever()
         return request_started
 
     backend = LlamaServerBackend(**backend_files, startup_seconds=10,
-                                 should_stop=should_stop)
+                                 startup_should_stop=should_stop)
     request_before = backend._request_before
 
     def cancel_during_health_check(*args, **kwargs):
@@ -736,3 +739,368 @@ def test_live_cancellation_stops_process_and_retains_reservation(backend_files):
         assert backend._process is None
     with sqlite3.connect(backend_files["database"]) as db:
         assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4,)
+
+
+def _make_health_trickle(backend_files) -> Path:
+    binary = backend_files["binary"]
+    source = binary.read_text()
+    ordinary = '''self.send_response(200); self.end_headers(); self.wfile.write(b'{"status":"ok"}')'''
+    marker = binary.parent / "health-started"
+    trickle = (f"self.send_response(200); self.send_header('Content-Length','15'); self.end_headers(); "
+               f"open({str(marker)!r}, 'w').write('started'); "
+               "[ (self.wfile.write(bytes([byte])), self.wfile.flush(), __import__('time').sleep(.25)) "
+               "for byte in b'{\"status\":\"ok\"}' ]")
+    assert ordinary in source
+    binary.write_text(source.replace(ordinary, trickle))
+    binary.chmod(0o700)
+    backend_files["binary_sha256"] = _hash(binary)
+    return marker
+
+
+
+
+def test_startup_cancellation_stops_server_before_health(backend_files):
+    source = backend_files["binary"].read_text()
+    backend_files["binary"].write_text(
+        source.replace("UnixStreamServer(sock,Handler).serve_forever()",
+                       "__import__('time').sleep(5)\nUnixStreamServer(sock,Handler).serve_forever()")
+    )
+    backend_files["binary"].chmod(0o700)
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    cancel_at = time.monotonic() + .2
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=lambda: time.monotonic() >= cancel_at)
+    with pytest.raises(LlamaBackendStopped, match="startup"):
+        backend.__enter__()
+    assert backend._process is None and backend._private is None
+    assert not backend_files["database"].exists()
+
+
+def test_startup_cancellation_terminates_sigterm_ignoring_group_member(backend_files):
+    import ctypes
+    import sys
+
+    binary = backend_files["binary"]
+    observer = None
+    reaper = None
+    reaped = threading.Event()
+    with tempfile.TemporaryDirectory(prefix="metis-llama-test-") as directory, socket.socket(
+            socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        address = str(Path(directory) / "child.sock")
+        child_pid_file = Path(directory) / "child.pid"
+        listener.bind(address)
+        listener.listen()
+        listener.setblocking(False)
+        binary.write_text(f"""#!/usr/bin/env python3
+import os, signal, socket, time
+if os.fork() == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open({str(child_pid_file)!r}, 'w') as pid_file:
+        pid_file.write(str(os.getpid()))
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as witness:
+        witness.settimeout(5)
+        witness.connect({address!r})
+        witness.recv(1)
+else:
+    time.sleep(5)
+""")
+        backend_files["binary_sha256"] = _hash(binary)
+
+        # Linux containers may not have an init process that reaps orphans.
+        # Become a temporary subreaper and reap only this fixture's child so
+        # close() can observe the entire process group disappearing.
+        libc = ctypes.CDLL(None, use_errno=True)
+        previous_subreaper = ctypes.c_int()
+        subreaper_enabled = sys.platform.startswith("linux")
+        if subreaper_enabled:
+            assert libc.prctl(37, ctypes.byref(previous_subreaper), 0, 0, 0) == 0
+            assert libc.prctl(36, 1, 0, 0, 0) == 0
+
+        def reap_fixture_child(child_pid: int) -> None:
+            while True:
+                try:
+                    waited_pid, _status = os.waitpid(child_pid, os.WNOHANG)
+                except ChildProcessError:
+                    time.sleep(.01)
+                    continue
+                if waited_pid == child_pid:
+                    reaped.set()
+                    return
+                time.sleep(.01)
+
+        def connected() -> bool:
+            nonlocal observer, reaper
+            if observer is None:
+                try:
+                    observer, _address = listener.accept()
+                except BlockingIOError:
+                    return False
+                if subreaper_enabled:
+                    child_pid = int(child_pid_file.read_text())
+                    reaper = threading.Thread(target=reap_fixture_child, args=(child_pid,), daemon=True)
+                    reaper.start()
+            return True
+
+        backend = LlamaServerBackend(**backend_files, startup_seconds=4,
+                                     startup_should_stop=connected)
+        try:
+            with pytest.raises(LlamaBackendStopped), backend:
+                pytest.fail("the fixture has no health server")
+            assert observer is not None
+            observer.settimeout(1)
+            assert observer.recv(1) == b""
+            if subreaper_enabled:
+                assert reaper is not None
+                reaper.join(timeout=2)
+                assert reaped.is_set()
+        finally:
+            if observer is not None:
+                observer.close()
+            if subreaper_enabled:
+                assert libc.prctl(36, previous_subreaper.value, 0, 0, 0) == 0
+
+
+def test_startup_deadline_after_artifact_hash_prevents_process_launch(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    real_hash = module._sha256
+    deadline = time.monotonic() + .05
+
+    def slow_hash(path, *, abort_check=None):
+        time.sleep(.1)
+        return real_hash(path)
+
+    monkeypatch.setattr(module, "_sha256", slow_hash)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("expired call must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_deadline=deadline)
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+
+
+def test_startup_cancellation_before_artifact_hash_prevents_process_launch(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    monkeypatch.setattr(module, "_sha256",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled call must not hash artifacts"))
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled call must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=lambda: True)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+
+
+def test_startup_hash_observes_run_cancellation(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    checks = 0
+    def stop_on_hash_check():
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+    def interrupt_hash(path, *, abort_check=None):
+        assert abort_check is not None
+        abort_check()
+        return _hash(path)
+    monkeypatch.setattr(module, "_sha256", interrupt_hash)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled hash must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_should_stop=stop_on_hash_check)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert checks == 2
+
+
+def test_startup_hash_checks_cancellation_between_real_file_chunks(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    model = backend_files["model"]
+    model.write_bytes(b"m" * (2 * 1024 * 1024 + 1))
+    backend_files["model_sha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
+    real_open = Path.open
+    read_sizes: list[int] = []
+    read_lengths: list[int] = []
+
+    class CountingReader:
+        def __init__(self, source):
+            self.source = source
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            self.source.close()
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            chunk = self.source.read(size)
+            read_lengths.append(len(chunk))
+            return chunk
+
+    def track_model_open(path, *args, **kwargs):
+        source = real_open(path, *args, **kwargs)
+        return CountingReader(source) if path == model else source
+
+    monkeypatch.setattr(Path, "open", track_model_open)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("cancelled hash must not launch server"))
+    backend = LlamaServerBackend(**backend_files,
+                                 startup_should_stop=lambda: bool(read_lengths))
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert read_sizes == [1024 * 1024]
+    assert read_lengths == [1024 * 1024]
+
+
+def test_startup_hash_observes_call_deadline(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    def expire_hash(path, *, abort_check=None):
+        assert abort_check is not None
+        time.sleep(.1)
+        abort_check()
+        return _hash(path)
+    monkeypatch.setattr(module, "_sha256", expire_hash)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("expired hash must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_deadline=time.monotonic() + .05)
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+
+
+def test_startup_deadline_before_process_launch_is_rechecked(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    real_tempdir = module.tempfile.TemporaryDirectory
+
+    def slow_tempdir(*args, **kwargs):
+        time.sleep(.1)
+        return real_tempdir(*args, **kwargs)
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", slow_tempdir)
+    monkeypatch.setattr(module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: pytest.fail("expired call must not launch server"))
+    backend = LlamaServerBackend(**backend_files, startup_deadline=time.monotonic() + .05)
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+
+
+def test_startup_is_bounded_by_call_deadline(backend_files):
+    source = backend_files["binary"].read_text()
+    backend_files["binary"].write_text(
+        source.replace("UnixStreamServer(sock,Handler).serve_forever()",
+                       "__import__('time').sleep(5)\nUnixStreamServer(sock,Handler).serve_forever()")
+    )
+    backend_files["binary"].chmod(0o700)
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    backend = LlamaServerBackend(**backend_files, startup_deadline=time.monotonic() + .2)
+    started = time.monotonic()
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+    assert time.monotonic() - started < 1
+    assert backend._process is None and backend._private is None
+    assert not backend_files["database"].exists()
+
+
+def test_startup_health_trickle_obeys_call_deadline(backend_files):
+    marker = _make_health_trickle(backend_files)
+    backend = LlamaServerBackend(**backend_files, startup_seconds=5,
+                                 startup_deadline=time.monotonic() + 2)
+    started = time.monotonic()
+    with pytest.raises(LlamaBackendError, match="deadline"):
+        backend.__enter__()
+    assert marker.is_file()
+    assert time.monotonic() - started < 3
+    assert backend._process is None and backend._private is None
+
+
+def test_startup_health_trickle_obeys_cancellation(backend_files):
+    marker = _make_health_trickle(backend_files)
+    cancel_at = time.monotonic() + 2
+    backend = LlamaServerBackend(**backend_files, startup_seconds=5,
+                                 startup_should_stop=lambda: time.monotonic() >= cancel_at)
+    started = time.monotonic()
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert marker.is_file()
+    assert time.monotonic() - started < 3
+    assert backend._process is None and backend._private is None
+
+
+def test_sha256_checks_abort_between_bounded_reads(tmp_path, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    artifact = tmp_path / "large-model.gguf"
+    artifact.write_bytes(b"x" * (5 * 1024 * 1024))
+    class CountingReader(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.read_calls = 0
+            self.bytes_read = 0
+        def read(self, size=-1):
+            self.read_calls += 1
+            chunk = super().read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+    reader = CountingReader(b"x" * (5 * 1024 * 1024))
+    monkeypatch.setattr(Path, "open", lambda _path, _mode="r", **_kwargs: reader)
+    checks = 0
+    def abort_on_fourth_check():
+        nonlocal checks
+        checks += 1
+        if checks == 4:
+            raise RuntimeError("cancelled during hash")
+    with pytest.raises(RuntimeError, match="cancelled during hash"):
+        module._sha256(artifact, abort_check=abort_on_fourth_check)
+    assert checks == 4 and reader.read_calls == 3
+    assert reader.bytes_read == 3 * 1024 * 1024
+
+
+@pytest.mark.parametrize("stop_mode", ["deadline", "cancel"])
+def test_budget_reservation_lock_obeys_deadline_and_cancellation(backend_files, stop_mode):
+    with LlamaServerBackend(**backend_files) as backend:
+        blocker = sqlite3.connect(backend_files["database"], isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        if stop_mode == "deadline":
+            expected = pytest.raises(LlamaBackendError, match="deadline")
+            kwargs = {"timeout_seconds": .2}
+        else:
+            expected = pytest.raises(LlamaBackendStopped, match="cancelled")
+            cancel_at = time.monotonic() + .2
+            kwargs = {"timeout_seconds": 5, "should_stop": lambda: time.monotonic() >= cancel_at}
+        with expected:
+            backend.complete("one", n_predict=2, **kwargs)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1
+        assert backend._process is None
+        blocker.rollback()
+        blocker.close()
+    with sqlite3.connect(backend_files["database"]) as db:
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?",
+                          ("llama_token_budgets",)).fetchone() is None
+
+def test_non_admitted_cancellation_after_completion_response_preserves_usage(backend_files, monkeypatch):
+    completion_returned = threading.Event()
+    cancelled = threading.Event()
+    with LlamaServerBackend(**backend_files) as backend:
+        original_request = backend._request
+
+        def request(route, payload, *, timeout):
+            response = original_request(route, payload, timeout=timeout)
+            if route == "/completion":
+                completion_returned.set()
+            return response
+
+        def stop() -> bool:
+            if completion_returned.is_set() and not cancelled.is_set():
+                while any(thread.name == "metis-llama-request"
+                          for thread in threading.enumerate()):
+                    time.sleep(.001)
+                cancelled.set()
+            return cancelled.is_set()
+
+        monkeypatch.setattr(backend, "_request", request)
+        result = backend.complete("one two", n_predict=2, timeout_seconds=5, should_stop=stop)
+
+    assert cancelled.is_set()
+    assert result == ("xx", 2, 2)

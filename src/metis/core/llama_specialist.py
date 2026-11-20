@@ -37,6 +37,11 @@ class _BackendConfig(TypedDict):
     context_reservation: bool
 
 
+def _timed_out(error: LlamaBackendError) -> bool:
+    reason = str(error).lower()
+    return "deadline" in reason
+
+
 class LlamaSpecialist:
     model_turn_budget_enforced = True
     hard_token_budget_enforced = False
@@ -110,16 +115,20 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         if timeout <= 0:
             return CodexTurn(returncode=1, message=None, timed_out=True, isolation=isolation)
+        call_deadline = time.monotonic() + min(timeout, 120)
         # The schema is an instruction to the model; the parsed decision is checked
         # independently below. No tool affordance is passed to the native server.
         request = self.build_native_request(prompt, output_schema)
         try:
-            with LlamaServerBackend(**self.backend_config) as backend:
+            with LlamaServerBackend(**self.backend_config, deadline_monotonic=call_deadline,
+                                    should_stop=should_stop) as backend:
+                remaining = call_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LlamaBackendError("model call deadline exceeded during server startup")
                 content, input_tokens, output_tokens = backend.complete(
                     request, n_predict=self.max_output_tokens,
-                    timeout_seconds=min(timeout, 120), should_stop=should_stop)
-            if should_stop is not None and should_stop():
-                return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
+                    timeout_seconds=remaining, should_stop=should_stop,
+                    call_deadline=call_deadline)
             usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
             try:
                 decision = _decision(content)
@@ -132,8 +141,7 @@ class LlamaSpecialist:
         except LlamaBackendStopped:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         except LlamaBackendError as exc:
-            return CodexTurn(returncode=1, message=None,
-                             timed_out="deadline" in str(exc),
+            return CodexTurn(returncode=1, message=None, timed_out=_timed_out(exc),
                              stderr_tail="local model call failed", isolation=isolation)
         except (ValueError, TypeError, OSError, sqlite3.Error):
             return CodexTurn(returncode=1, message=None,
@@ -145,6 +153,7 @@ class LlamaSpecialist:
                      images: list[tuple[str, bytes]] | None = None,
                      output_schema: dict[str, Any] | None = None) -> CodexTurn:
         """Consume a scheduler-approved prompt claim through the native backend."""
+        started = time.monotonic()
         isolation = {"mode": "local_unix_socket", "tools": "none", "auth": "none",
                      "model_sha256": self.backend_config["model_sha256"],
                      "binary_sha256": self.backend_config["binary_sha256"],
@@ -159,8 +168,6 @@ class LlamaSpecialist:
         launch_start_attempted = False
         backend_entered = False
         launch_owner = secrets.token_hex(16)
-        started_at = time.monotonic()
-        deadline = started_at
 
         try:
             # Assume consumed while checking so an interruption during this
@@ -175,7 +182,7 @@ class LlamaSpecialist:
                     or not isinstance(timeout, (int, float)) or not math.isfinite(timeout)
                     or timeout <= 0):
                 raise ValueError("admitted input refused")
-            deadline = started_at + min(timeout, 120)
+            call_deadline = started + min(timeout, 120)
             digest = hashlib.sha256(prompt.encode()).hexdigest()
             if digest != receipt.attempt.prompt_sha256:
                 raise ValueError("admitted prompt digest mismatch")
@@ -203,24 +210,20 @@ class LlamaSpecialist:
                 consumed = False
                 raise ValueError("native launch claim was already started")
             launch_owned = True
-            startup_remaining = deadline - time.monotonic()
-            if startup_remaining <= 0:
-                raise LlamaBackendError("model call deadline exceeded")
-            with LlamaServerBackend(
-                **self.backend_config,
-                startup_seconds=min(30, startup_remaining),
-                deadline_monotonic=deadline,
-                should_stop=should_stop,
-            ) as backend:
+            if should_stop is not None and should_stop():
+                raise LlamaBackendStopped("model call cancelled before server startup")
+            if time.monotonic() >= call_deadline:
+                raise LlamaBackendError("model call deadline exceeded before server startup")
+            with LlamaServerBackend(**self.backend_config, deadline_monotonic=call_deadline,
+                                    should_stop=should_stop) as backend:
                 backend_entered = True
-                remaining = deadline - time.monotonic()
+                remaining = call_deadline - time.monotonic()
                 if remaining <= 0:
-                    raise LlamaBackendError("model call deadline exceeded")
+                    raise LlamaBackendError("model call deadline exceeded during server startup")
                 content, input_tokens, output_tokens = backend.complete_admitted(
                     prompt, n_predict=self.max_output_tokens,
                     token_cap=receipt.attempt.tokens, timeout_seconds=remaining,
-                    deadline_monotonic=deadline,
-                    should_stop=should_stop)
+                    should_stop=should_stop, deadline_monotonic=call_deadline)
             outcome = TokenLaunchOutcome(status="completed", exit_status=0,
                                         observed_work=input_tokens + output_tokens,
                                         native_manifest_sha256=outcome_manifest)
@@ -243,7 +246,7 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         except LlamaBackendError as exc:
             detail = str(exc).lower()
-            status = ("timeout" if "deadline" in detail else
+            status = ("timeout" if _timed_out(exc) else
                       "launch_failed" if "pinned artifact" in detail or "startup" in detail else
                       "server_error")
             if status == "timeout":

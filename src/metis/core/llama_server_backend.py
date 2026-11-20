@@ -51,14 +51,19 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
-def _sha256(path: Path, *, check: Callable[[], None] | None = None) -> str:
+def _sha256(path: Path, *, abort_check: Callable[[], None] | None = None,
+            check: Callable[[], None] | None = None) -> str:
+    if abort_check is not None and check is not None and abort_check is not check:
+        raise ValueError("provide one artifact hash callback")
+    abort_check = abort_check or check
     digest = hashlib.sha256()
-    if check is not None:
-        check()
     with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            if check is not None:
-                check()
+        while True:
+            if abort_check is not None:
+                abort_check()
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -80,7 +85,8 @@ class LlamaServerBackend:
     def __init__(self, *, binary: Path, binary_sha256: str, model: Path,
                  model_sha256: str, database: Path, budget_key: str,
                  token_limit: int, max_output_tokens: int, startup_seconds: float = 30,
-                 context_reservation: bool = False,
+                 context_reservation: bool = False, startup_deadline: float | None = None,
+                 startup_should_stop: Callable[[], bool] | None = None,
                  deadline_monotonic: float | None = None,
                  should_stop: Callable[[], bool] | None = None):
         if not budget_key or len(budget_key) > 128 or not 1 <= token_limit <= 10**9:
@@ -92,7 +98,10 @@ class LlamaServerBackend:
         self.budget_key, self.token_limit = budget_key, token_limit
         self.max_output_tokens, self.startup_seconds = max_output_tokens, startup_seconds
         self.context_reservation = context_reservation
-        self.deadline_monotonic, self.should_stop = deadline_monotonic, should_stop
+        deadlines = [value for value in (startup_deadline, deadline_monotonic) if value is not None]
+        self.startup_deadline = min(deadlines) if deadlines else None
+        stops = [value for value in (startup_should_stop, should_stop) if value is not None]
+        self.startup_should_stop = (lambda: any(stop() for stop in stops)) if stops else None
         self._process: subprocess.Popen[bytes] | None = None
         self._private: tempfile.TemporaryDirectory[str] | None = None
         self._log: Any = None
@@ -101,27 +110,20 @@ class LlamaServerBackend:
     def __enter__(self) -> Self:
         if self._process is not None or self._private is not None:
             raise LlamaBackendError("server already started")
-        startup_deadline = time.monotonic() + self.startup_seconds
-        if self.deadline_monotonic is not None:
-            startup_deadline = min(startup_deadline, self.deadline_monotonic)
-
-        def check_startup() -> None:
-            if self.should_stop is not None and self.should_stop():
-                raise LlamaBackendStopped("server startup cancelled")
-            now = time.monotonic()
-            if now >= startup_deadline:
-                if (self.deadline_monotonic is not None
-                        and now >= self.deadline_monotonic):
-                    raise LlamaBackendError("server startup deadline exceeded")
-                raise LlamaBackendError("server startup timed out")
-
-        check_startup()
+        deadline = time.monotonic() + self.startup_seconds
+        deadline_error = "server startup timed out"
+        if self.startup_deadline is not None and self.startup_deadline <= deadline:
+            deadline = self.startup_deadline
+            deadline_error = "model call deadline exceeded during server startup"
         for path, expected in ((self.binary, self.binary_sha256), (self.model, self.model_sha256)):
+            self._check_startup_abort(deadline, deadline_error)
             if not path.is_file() or not stat.S_ISREG(path.stat().st_mode):
                 raise LlamaBackendError("pinned artifact unavailable")
-            if len(expected) != 64 or _sha256(path, check=check_startup) != expected.lower():
+            if len(expected) != 64 or _sha256(
+                    path, abort_check=lambda: self._check_startup_abort(deadline, deadline_error)
+            ) != expected.lower():
                 raise LlamaBackendError("pinned artifact changed")
-            check_startup()
+        self._check_startup_abort(deadline, deadline_error)
         try:
             self._private = tempfile.TemporaryDirectory(prefix="metis-llama-", dir=None)
             os.chmod(self._private.name, 0o700)
@@ -132,7 +134,7 @@ class LlamaServerBackend:
             # The child receives no prompt before complete() reserves tokens.
             child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
                          "TMPDIR": self._private.name, "LANG": "C"}
-            check_startup()
+            self._check_startup_abort(deadline, deadline_error)
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
                  "--parallel", "1", "--no-webui", "--ctx-size",
@@ -141,30 +143,33 @@ class LlamaServerBackend:
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT,
                 start_new_session=True, close_fds=True, env=child_env,
             )
-            while time.monotonic() < startup_deadline:
-                check_startup()
+            while time.monotonic() < deadline:
+                self._check_startup_abort(deadline, deadline_error)
                 if self._process.poll() is not None:
                     raise LlamaBackendError("server exited during startup")
                 try:
-                    response = self._request_before(
-                        "/health", None, deadline=startup_deadline,
-                        should_stop=self.should_stop,
-                    )
+                    response = self._request_before("/health", None, deadline=deadline,
+                                                    should_stop=self.startup_should_stop,
+                                                    deadline_error=deadline_error)
                     if response.get("status") == "ok":
+                        self._check_startup_abort(deadline, deadline_error)
                         return self
                 except LlamaBackendStopped:
                     raise
-                except (LlamaBackendError, OSError, TimeoutError):
-                    pass
-                remaining = startup_deadline - time.monotonic()
-                if remaining > 0:
-                    time.sleep(min(.1, remaining))
-            if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
-                raise LlamaBackendError("server startup deadline exceeded")
-            raise LlamaBackendError("server startup timed out")
+                except (LlamaBackendError, OSError, TimeoutError) as exc:
+                    if isinstance(exc, LlamaBackendError) and str(exc) == deadline_error:
+                        raise
+                time.sleep(min(.1, max(0, deadline - time.monotonic())))
+            raise LlamaBackendError(deadline_error)
         except BaseException:
             self.close()
             raise
+
+    def _check_startup_abort(self, deadline: float, deadline_error: str) -> None:
+        if self.startup_should_stop is not None and self.startup_should_stop():
+            raise LlamaBackendStopped("model call cancelled during server startup")
+        if time.monotonic() >= deadline:
+            raise LlamaBackendError(deadline_error)
 
     def _request(self, route: str, payload: dict[str, Any] | None, *, timeout: float) -> dict[str, Any]:
         if self._socket is None or self._process is None or self._process.poll() is not None:
@@ -188,12 +193,16 @@ class LlamaServerBackend:
             connection.close()
 
     def _request_before(self, route: str, payload: dict[str, Any] | None,
-                        *, deadline: float, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
+                        *, deadline: float, should_stop: Callable[[], bool] | None = None,
+                        deadline_error: str = "model call deadline exceeded") -> dict[str, Any]:
         """Enforce one monotonic deadline even if a peer trickles bytes forever."""
+        if should_stop is not None and should_stop():
+            self.close()
+            raise LlamaBackendStopped("model call cancelled")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             self.close()
-            raise LlamaBackendError("model call deadline exceeded")
+            raise LlamaBackendError(deadline_error)
         result: list[tuple[dict[str, Any], float]] = []
         errors: list[tuple[BaseException, float]] = []
 
@@ -206,46 +215,67 @@ class LlamaServerBackend:
         worker = threading.Thread(target=invoke, name="metis-llama-request", daemon=True)
         worker.start()
         while worker.is_alive():
-            if should_stop is not None and should_stop():
+            if should_stop is not None and should_stop() and not result:
                 self.close()
                 raise LlamaBackendStopped("model call cancelled")
             worker.join(timeout=min(.05, max(0, deadline - time.monotonic())))
             if time.monotonic() >= deadline:
                 break
+        if should_stop is not None and should_stop() and not result:
+            self.close()
+            raise LlamaBackendStopped("model call cancelled")
         if worker.is_alive():
             self.close()
-            raise LlamaBackendError("model call deadline exceeded")
+            raise LlamaBackendError(deadline_error)
         if ((errors and errors[0][1] >= deadline)
                 or (result and result[0][1] >= deadline)):
             self.close()
-            raise LlamaBackendError("model call deadline exceeded")
+            raise LlamaBackendError(deadline_error)
         if errors:
             raise errors[0][0]
         if not result:
             raise LlamaBackendError("server request produced no result")
         return result[0][0]
 
-    def _reserve(self, amount: int) -> None:
-        with sqlite3.connect(self.database, timeout=10, isolation_level=None) as db:
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("CREATE TABLE IF NOT EXISTS llama_token_budgets ("
-                       "budget_key TEXT PRIMARY KEY, token_limit INTEGER NOT NULL, reserved INTEGER NOT NULL)")
-            row = db.execute("SELECT token_limit, reserved FROM llama_token_budgets WHERE budget_key=?",
-                             (self.budget_key,)).fetchone()
-            if row is None:
-                db.execute("INSERT INTO llama_token_budgets VALUES (?, ?, ?)",
-                           (self.budget_key, self.token_limit, amount))
-            else:
-                if row[0] != self.token_limit or row[1] + amount > self.token_limit:
-                    raise LlamaBackendError("shared token budget exhausted or changed")
-                db.execute("UPDATE llama_token_budgets SET reserved=reserved+? WHERE budget_key=?",
-                           (amount, self.budget_key))
-            if amount > self.token_limit:
-                raise LlamaBackendError("shared token budget exhausted")
-            db.commit()
+    def _reserve(self, amount: int, *, deadline: float,
+                 should_stop: Callable[[], bool] | None = None) -> None:
+        while True:
+            if should_stop is not None and should_stop():
+                raise LlamaBackendStopped("model call cancelled while reserving token budget")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LlamaBackendError("model call deadline exceeded while reserving token budget")
+            try:
+                with sqlite3.connect(self.database, timeout=min(.05, remaining),
+                                     isolation_level=None) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("CREATE TABLE IF NOT EXISTS llama_token_budgets ("
+                               "budget_key TEXT PRIMARY KEY, token_limit INTEGER NOT NULL, reserved INTEGER NOT NULL)")
+                    row = db.execute("SELECT token_limit, reserved FROM llama_token_budgets WHERE budget_key=?",
+                                     (self.budget_key,)).fetchone()
+                    if row is None:
+                        db.execute("INSERT INTO llama_token_budgets VALUES (?, ?, ?)",
+                                   (self.budget_key, self.token_limit, amount))
+                    else:
+                        if row[0] != self.token_limit or row[1] + amount > self.token_limit:
+                            raise LlamaBackendError("shared token budget exhausted or changed")
+                        db.execute("UPDATE llama_token_budgets SET reserved=reserved+? WHERE budget_key=?",
+                                   (amount, self.budget_key))
+                    if amount > self.token_limit:
+                        raise LlamaBackendError("shared token budget exhausted")
+                    if should_stop is not None and should_stop():
+                        raise LlamaBackendStopped("model call cancelled while reserving token budget")
+                    if time.monotonic() >= deadline:
+                        raise LlamaBackendError("model call deadline exceeded while reserving token budget")
+                    db.commit()
+                    return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
 
     def complete(self, prompt: str, *, n_predict: int, timeout_seconds: float,
-                 should_stop: Callable[[], bool] | None = None) -> tuple[str, int, int]:
+                 should_stop: Callable[[], bool] | None = None,
+                 call_deadline: float | None = None) -> tuple[str, int, int]:
         if not isinstance(prompt, str) or len(prompt.encode()) > 65_536:
             raise ValueError("prompt exceeds input boundary")
         if not 1 <= n_predict <= self.max_output_tokens or not 0 < timeout_seconds <= 120:
@@ -254,6 +284,10 @@ class LlamaServerBackend:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         deadline = time.monotonic() + timeout_seconds
+        if call_deadline is not None:
+            deadline = min(deadline, call_deadline)
+        if deadline <= time.monotonic():
+            raise LlamaBackendError("model call deadline exceeded")
         tokenized = self._request_before("/tokenize",
                                          {"content": prompt, "add_special": True}, deadline=deadline,
                                          should_stop=should_stop)
@@ -267,7 +301,15 @@ class LlamaServerBackend:
         # inference. This is independent of /tokenize parity. The extra output
         # allowance covers a server that evaluates generated tokens separately.
         reserved_input = FULL_CONTEXT_RESERVATION_TOKENS if self.context_reservation else prompt_count
-        self._reserve(reserved_input + n_predict)
+        try:
+            self._reserve(reserved_input + n_predict, deadline=deadline, should_stop=should_stop)
+        except LlamaBackendStopped:
+            self.close()
+            raise
+        except LlamaBackendError as exc:
+            if "deadline" in str(exc):
+                self.close()
+            raise
         if should_stop is not None and should_stop():
             self.close()
             raise LlamaBackendStopped("model call cancelled")
@@ -290,15 +332,13 @@ class LlamaServerBackend:
                 or not isinstance(result.get("content"), str)):
             self.close()
             raise LlamaBackendError("completion usage or settings mismatch")
-        if should_stop is not None and should_stop():
-            self.close()
-            raise LlamaBackendStopped("model call cancelled")
         return result["content"], evaluated, predicted
 
     def complete_admitted(self, prompt: str, *, n_predict: int, token_cap: int,
                           timeout_seconds: float,
-                          deadline_monotonic: float | None = None,
-                          should_stop: Callable[[], bool] | None = None) -> tuple[str, int, int]:
+                          should_stop: Callable[[], bool] | None = None,
+                          call_deadline: float | None = None,
+                          deadline_monotonic: float | None = None) -> tuple[str, int, int]:
         """Run a claim-funded request without the standalone budget ledger.
 
         The caller has already consumed a durable study claim. The entire
@@ -317,10 +357,10 @@ class LlamaServerBackend:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         deadline = time.monotonic() + timeout_seconds
-        if deadline_monotonic is not None:
-            deadline = min(deadline, deadline_monotonic)
-        if time.monotonic() >= deadline:
-            self.close()
+        deadlines = [value for value in (call_deadline, deadline_monotonic) if value is not None]
+        if deadlines:
+            deadline = min(deadline, *deadlines)
+        if deadline <= time.monotonic():
             raise LlamaBackendError("model call deadline exceeded")
         try:
             tokenized = self._request_before("/tokenize", {"content": prompt, "add_special": True},

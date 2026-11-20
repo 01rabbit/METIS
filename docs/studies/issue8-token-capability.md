@@ -61,6 +61,14 @@ no model was launched. Real-model held-out execution remains refused until a
 reviewed runner accepts only a controller-consumed claim and establishes its
 own pre-dispatch token bound.
 
+The admitted runner's server startup now shares the call's monotonic deadline
+and scheduler stop callback. Cancellation during health polling terminates the
+server process group and records a cancelled outcome; the call deadline bounds
+startup plus tokenization and completion together. Startup cancellation and
+deadline expiry are covered with a delayed local fake server. This closes the
+local wait-boundary gap but does not change the runner's `hard_token_budget_enforced`
+declaration or authorize a real-model held-out trial.
+
 ## Native fixture build identity v2
 
 The pinned native fixture manifest now records a bounded, canonical hash list

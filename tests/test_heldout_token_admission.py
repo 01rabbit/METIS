@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from metis.core.ctf_orchestration import AgentLedger
 from metis.core.llama_server_backend import LlamaBackendError, LlamaBackendRefused
 from metis.core.llama_specialist import LlamaSpecialist
 from metis.core.study_token_admission import StudyTokenAdmission, TokenLaunchOutcome
+from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
 from metis.evaluation.heldout_protocol import (
     Bindings,
     Protocol,
@@ -323,6 +325,42 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
     retry = runner.run_admitted(request, model=protocol.model_pin, timeout=5,
         token_claim=claim, admission=admission, output_schema=final_handoff_schema())
     assert retry.returncode == 1 and len(native_calls) == 1
+
+
+def test_native_claim_delay_consumes_call_deadline_and_keeps_charge(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
+        binary_sha256=pin.binary_sha256, model_path=tmp_path / "model.gguf",
+        model_sha256=pin.model_sha256, database=database, budget_key=pin.budget_key,
+        token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256)
+    now = 100.0
+    claim_launch = admission.claim_scheduler_native_launch
+
+    def delayed_claim(claim, *, owner_id):
+        nonlocal now
+        now += 6
+        return claim_launch(claim, owner_id=owner_id)
+
+    def unexpected_backend(**_kwargs):
+        pytest.fail("the native backend must not start after the launch claim used the deadline")
+
+    monkeypatch.setattr(admission, "claim_scheduler_native_launch", delayed_claim)
+    monkeypatch.setattr("metis.core.llama_specialist.time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", unexpected_backend)
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                   turn_timeout=5, study_token_admission=admission, final_handoff_call_limit=1)
+
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT status, observed_work FROM study_token_outcomes").fetchall() == [
+            ("timeout", None),
+        ]
+        assert db.execute("SELECT consumed, launched FROM study_token_launches").fetchall() == [(1, 1)]
+        assert db.execute("SELECT tokens FROM study_token_attempts").fetchall() == [
+            (FULL_CONTEXT_RESERVATION_TOKENS + pin.max_output_tokens,),
+        ]
 
 
 def test_concurrent_native_consumers_start_backend_once(tmp_path, monkeypatch):

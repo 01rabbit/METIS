@@ -995,3 +995,16 @@ The expanded web credential/request suite covers these behaviors. This is local
 retention control only: provider revocation, secure physical deletion, encrypted
 credential storage and Issue #9 acceptance remain open. See
 `docs/reports/issue9-credential-age-retention-2026-11-20.md`.
+
+## Issue #8 admitted llama startup cancellation (2026-11-20)
+
+Both llama runner paths now apply one monotonic call deadline across artifact
+hashing, server startup, SQLite budget reservation, tokenization, and completion,
+and watch cancellation during health polling and budget reservation. Startup
+cancellation stops the process group and records a cancelled outcome; timeout
+before completion records a timeout and retains the consumed admitted
+reservation. The affected test suites pass, with Ruff, mypy, repository
+validation, and `git diff --check` also passing. This closes the startup
+wait-boundary gap only; `hard_token_budget_enforced` remains false and Issue #8
+remains open. Evidence:
+[`issue8-llama-admitted-startup-deadline-2026-11-20.md`](reports/issue8-llama-admitted-startup-deadline-2026-11-20.md).
