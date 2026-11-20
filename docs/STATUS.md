@@ -1104,6 +1104,18 @@ held-out trial was used.
 Issue #8 remains open. Evidence:
 [`issue8-signed-control-acceptance-gate-2026-11-20.md`](reports/issue8-signed-control-acceptance-gate-2026-11-20.md).
 
+## Issue #8 native outcome reconciliation (2026-11-20)
+
+Held-out finalization now requires one matching terminal ledger outcome for
+each dispatched, admitted native turn. It checks the committed study, slot,
+runtime, model, manifest, reservation, attempt, and prompt digest, as well as
+the single consumed and launched claim. A turn abandoned before launch must
+retain an unconsumed claim with no outcome or fixture claim. Timeout,
+cancellation, and invalid-receipt records preserve unknown work when the
+controller could not validate a receipt. This is a check on controller ledger
+consistency. Both hard-cap capability flags remain false, native graph work is
+distinct from token usage and billing, and Issue #8 remains open.
+
 ## Issue #9 current-main release attestation drill (2026-11-20)
 
 The separate non-release `release attestation drill` workflow succeeded on
