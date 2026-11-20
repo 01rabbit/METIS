@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 import sqlite3
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -157,6 +159,8 @@ class LlamaSpecialist:
         launch_start_attempted = False
         backend_entered = False
         launch_owner = secrets.token_hex(16)
+        started_at = time.monotonic()
+        deadline = started_at
 
         try:
             # Assume consumed while checking so an interruption during this
@@ -167,8 +171,11 @@ class LlamaSpecialist:
                 consumed = False
                 raise ValueError("admitted claim is not persisted as consumed")
             if (model != self.model_id or images or not isinstance(prompt, str)
-                    or len(prompt.encode()) > 65_536 or timeout <= 0):
+                    or len(prompt.encode()) > 65_536 or isinstance(timeout, bool)
+                    or not isinstance(timeout, (int, float)) or not math.isfinite(timeout)
+                    or timeout <= 0):
                 raise ValueError("admitted input refused")
+            deadline = started_at + min(timeout, 120)
             digest = hashlib.sha256(prompt.encode()).hexdigest()
             if digest != receipt.attempt.prompt_sha256:
                 raise ValueError("admitted prompt digest mismatch")
@@ -196,11 +203,23 @@ class LlamaSpecialist:
                 consumed = False
                 raise ValueError("native launch claim was already started")
             launch_owned = True
-            with LlamaServerBackend(**self.backend_config) as backend:
+            startup_remaining = deadline - time.monotonic()
+            if startup_remaining <= 0:
+                raise LlamaBackendError("model call deadline exceeded")
+            with LlamaServerBackend(
+                **self.backend_config,
+                startup_seconds=min(30, startup_remaining),
+                deadline_monotonic=deadline,
+                should_stop=should_stop,
+            ) as backend:
                 backend_entered = True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LlamaBackendError("model call deadline exceeded")
                 content, input_tokens, output_tokens = backend.complete_admitted(
                     prompt, n_predict=self.max_output_tokens,
-                    token_cap=receipt.attempt.tokens, timeout_seconds=min(timeout, 120),
+                    token_cap=receipt.attempt.tokens, timeout_seconds=remaining,
+                    deadline_monotonic=deadline,
                     should_stop=should_stop)
             outcome = TokenLaunchOutcome(status="completed", exit_status=0,
                                         observed_work=input_tokens + output_tokens,
@@ -224,7 +243,7 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         except LlamaBackendError as exc:
             detail = str(exc).lower()
-            status = ("timeout" if "deadline" in detail else
+            status = ("timeout" if "deadline" in detail or time.monotonic() >= deadline else
                       "launch_failed" if "pinned artifact" in detail or "startup" in detail else
                       "server_error")
             if status == "timeout":

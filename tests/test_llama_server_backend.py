@@ -140,6 +140,18 @@ def test_startup_failure_before_any_prompt_has_no_reservation(backend_files):
     assert not backend_files["database"].exists()
 
 
+def test_startup_obeys_absolute_assignment_deadline(backend_files):
+    backend_files["binary"].write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(1)\n")
+    backend_files["binary"].chmod(0o700)
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    deadline = time.monotonic() + .05
+    with pytest.raises(LlamaBackendError, match="startup deadline"), LlamaServerBackend(
+        **backend_files, startup_seconds=10, deadline_monotonic=deadline,
+    ):
+        pytest.fail("server must not finish startup after the assignment deadline")
+    assert time.monotonic() >= deadline
+
+
 def test_shared_concurrent_reservation(backend_files):
     backend_files["token_limit"] = 6
     results = []

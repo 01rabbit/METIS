@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -368,3 +369,59 @@ def test_server_startup_timeout_is_launch_failure_not_model_timeout(tmp_path, mo
     assert turn.returncode == 1 and not turn.timed_out
     assert outcomes[0].status == "launch_failed"
     assert outcomes[0].exit_status is None and outcomes[0].observed_work is None
+
+
+def test_admitted_startup_and_completion_share_assignment_deadline(tmp_path, monkeypatch):
+    prompt = LlamaSpecialist.build_native_request("assignment")
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    outcomes = []
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+    class SlowStartup:
+        def __init__(self, **config): self.config = config
+        def __enter__(self):
+            time.sleep(.02)
+            return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, _prompt, **kwargs):
+            assert kwargs["timeout_seconds"] < 1
+            assert kwargs["deadline_monotonic"] == self.config["deadline_monotonic"]
+            return '{"action":"fail","intent":null,"report":null,"reason":"none","candidate":null}', 12, 3
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", SlowStartup)
+    turn = runner.run_admitted(prompt, model=runner.model_id, timeout=1,
+        token_claim=_claim(runner, prompt), admission=Admission())
+    assert turn.returncode == 0 and turn.usage == {"input_tokens": 12, "output_tokens": 3}
+    assert outcomes[0].status == "completed"
+
+
+def test_admitted_startup_past_assignment_deadline_skips_completion(tmp_path, monkeypatch):
+    prompt = LlamaSpecialist.build_native_request("assignment")
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    outcomes = []
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+    class SlowStartup:
+        def __init__(self, **_config): pass
+        def __enter__(self):
+            time.sleep(.02)
+            return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, *_args, **_kwargs):
+            pytest.fail("completion must not begin after the assignment deadline")
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", SlowStartup)
+    turn = runner.run_admitted(prompt, model=runner.model_id, timeout=.01,
+        token_claim=_claim(runner, prompt), admission=Admission())
+    assert turn.returncode == 1 and turn.timed_out
+    assert outcomes[0].status == "timeout"
