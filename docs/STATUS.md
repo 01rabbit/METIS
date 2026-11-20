@@ -957,8 +957,10 @@ untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
 auth generations, and removes only the corresponding auth-origin cookies from
 linked runs. The command refuses more than 100 credential origins or 1,000
 linked runs, and reports counts without origin names or secret values. Preview
-leaves credential rows untouched; in WAL mode SQLite may create `-wal`/`-shm`
-sidecars, so the database directory must be writable. Credential writes and
+leaves credential rows untouched. Checkpointed WAL state uses immutable
+read-only mode and creates no sidecars; an uncheckpointed WAL may create/update
+`-wal`/`-shm` coordination files and requires a writable DB directory. A pending
+rollback journal is refused. Credential writes and
 retirement close their write transaction and attempt a bounded WAL truncate. A
 busy reader leaves deletion committed and reports incomplete cleanup; repeating
 `--apply` retries cleanup after the reader exits. Triggers that suppress a

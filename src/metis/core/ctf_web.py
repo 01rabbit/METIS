@@ -62,6 +62,57 @@ def _closed_transaction(connection: sqlite3.Connection, *, readonly_wal_preview:
         connection.close()
 
 
+def _sqlite_file_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("credential preview database sidecars must be regular files")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _credential_preview_source(database: Path) -> tuple[str, tuple[object, ...] | None, bool]:
+    """Choose immutable mode for stable files, otherwise read a live WAL snapshot."""
+    absolute = database.absolute()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(absolute, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("credential preview database must be a regular file")
+        header = os.read(fd, 20)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+
+    def signature_from_stat(info: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    main_signature = signature_from_stat(before)
+    if signature_from_stat(after) != main_signature or _sqlite_file_signature(absolute) != main_signature:
+        raise ValueError("SQLite database changed while preparing the read-only credential preview; retry it")
+
+    uri = absolute.as_uri()
+    wal_path = absolute.with_name(absolute.name + "-wal")
+    shm_path = absolute.with_name(absolute.name + "-shm")
+    journal_path = absolute.with_name(absolute.name + "-journal")
+    wal_signature = _sqlite_file_signature(wal_path)
+    shm_signature = _sqlite_file_signature(shm_path)
+    journal_signature = _sqlite_file_signature(journal_path)
+    signature = (main_signature, wal_signature, shm_signature, journal_signature)
+    if header[18:20] == b"\x02\x02" and wal_signature is not None and wal_signature[2] > 0:
+        # A read-only WAL connection must coordinate through SQLite's
+        # shared-memory index. SQLite may create/recreate sidecars here.
+        return uri + "?mode=ro", None, True
+
+    if journal_signature is not None and journal_signature[2] > 0:
+        raise ValueError("credential preview will not recover a pending SQLite journal; close the writer cleanly")
+    # Immutable mode avoids SQLite creating lock sidecars just to read a stable
+    # snapshot. A file-signature check after the transaction detects concurrent changes.
+    return uri + "?mode=ro&immutable=1", signature, False
+
+
 class WebRequest(BaseModel):
     """One scoped HTTP request against a granted challenge origin."""
 
@@ -382,10 +433,17 @@ class WebWorkflow:
         rows: list[tuple[str, float | None]] = []
         old_origins: list[str] = []
         newer = unknown = selected_runs = removed_cookie_jars = 0
+        wal_sidecars_may_be_created = False
         if apply or self.database.exists():
+            preview_signature: tuple[object, ...] | None = None
             try:
-                connection = (sqlite3.connect(self.database) if apply else
-                              sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True))
+                if apply:
+                    connection = sqlite3.connect(self.database)
+                else:
+                    preview_uri, preview_signature, wal_sidecars_may_be_created = _credential_preview_source(
+                        self.database,
+                    )
+                    connection = sqlite3.connect(preview_uri, uri=True)
             except sqlite3.OperationalError:
                 if not apply:
                     raise ValueError(
@@ -474,10 +532,22 @@ class WebWorkflow:
                             if deleted.rowcount != 1:
                                 raise sqlite3.IntegrityError("credential retirement did not delete every selected origin")
 
+            if preview_signature is not None:
+                absolute = self.database.absolute()
+                after = (
+                    _sqlite_file_signature(absolute),
+                    _sqlite_file_signature(absolute.with_name(absolute.name + "-wal")),
+                    _sqlite_file_signature(absolute.with_name(absolute.name + "-shm")),
+                    _sqlite_file_signature(absolute.with_name(absolute.name + "-journal")),
+                )
+                if after != preview_signature:
+                    raise ValueError("SQLite database changed during read-only credential preview; retry it")
+
         # Re-applying the same age policy also retries a previously busy WAL cleanup.
         wal_clean = self._truncate_credential_wal() if apply else None
-        sidecar_note = ("Read-only preview may create SQLite -wal/-shm sidecars and needs a writable "
-                        "database directory; " if not apply else "")
+        sidecar_note = ("Read-only WAL preview may create/update -wal/-shm sidecars and needs a writable "
+                        "database directory; " if wal_sidecars_may_be_created else
+                        "This preview creates no SQLite sidecars; ")
         return {
             "applied": apply,
             "older_than_days": older_than_days,
@@ -490,7 +560,7 @@ class WebWorkflow:
             "cookie_jars_selected": removed_cookie_jars,
             "provider_revocation_required": bool(apply and old_origins),
             "wal_cleanup_complete": wal_clean,
-            "sqlite_wal_sidecars_may_be_created": not apply,
+            "sqlite_wal_sidecars_may_be_created": wal_sidecars_may_be_created,
             "limit": ("Only locally stored credentials with a known timestamp are eligible. "
                       "Environment variables, provider state, in-flight requests, snapshots and backups "
                       f"may retain prior values; {sidecar_note}"

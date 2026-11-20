@@ -9,10 +9,13 @@ metis web credential-retention --older-than-days 90 --apply
 ```
 
 The default preview opens a read-only SQLite transaction and reports counts
-without origins or credential values. It does not write credential rows, but
-SQLite WAL mode may create `-wal`/`-shm` sidecars and requires write access to
-the database directory; a directory permission failure is reported explicitly.
-Apply uses `BEGIN IMMEDIATE` and
+without origins or credential values. When a WAL database has no uncheckpointed
+frames, it uses immutable read-only mode and creates no sidecars. With
+uncheckpointed WAL frames, it uses SQLite's read-only WAL path; SQLite may
+create or update `-wal`/`-shm` coordination sidecars, so the database directory
+must be writable. A directory permission failure is reported explicitly. A
+pending rollback journal is refused. Checkpointed immutable snapshots are
+rejected if their database files change during the read. Apply uses `BEGIN IMMEDIATE` and
 `secure_delete=ON`, retires only records with a known timestamp at or before
 the cutoff, advances each affected auth generation, and removes only the
 matching authentication-origin cookie jar from linked runs. The operation is

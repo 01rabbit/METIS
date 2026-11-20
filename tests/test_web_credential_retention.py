@@ -10,7 +10,7 @@ from threading import Barrier
 import pytest
 
 from metis.cli import main
-from metis.core.ctf_web import WebWorkflow
+from metis.core.ctf_web import WebWorkflow, _credential_preview_source
 
 
 def _insert_credential(db: sqlite3.Connection, key: str, updated_at: float | None) -> None:
@@ -50,7 +50,7 @@ def test_retention_preview_is_read_only_redacted_and_classifies_cutoff(tmp_path)
     assert result["age_unknown_retained"] == 1
     assert result["selected_runs"] == 1 and result["cookie_jars_selected"] == 1
     assert result["sqlite_wal_sidecars_may_be_created"] is True
-    assert "may create SQLite -wal/-shm sidecars" in result["limit"]
+    assert "may create/update -wal/-shm sidecars" in result["limit"]
     assert "private-" not in json.dumps(result)
     assert "old.example" not in json.dumps(result)
     with sqlite3.connect(workflow.database) as db:
@@ -145,7 +145,7 @@ def test_cli_preview_accepts_relative_database_path(tmp_path, monkeypatch, capsy
     assert workflow.database == database
 
 
-def test_readonly_wal_preview_reports_directory_permission_requirement(tmp_path):
+def test_readonly_wal_preview_creates_no_sidecars_or_needs_no_directory_write(tmp_path):
     database = tmp_path / "state" / "metis.sqlite"
     workflow = WebWorkflow(database)
     assert workflow._truncate_credential_wal() is True
@@ -162,10 +162,29 @@ def test_readonly_wal_preview_reports_directory_permission_requirement(tmp_path)
         database.parent.chmod(0o700)
         pytest.skip("test process can write through the read-only directory mode")
     try:
-        with pytest.raises(ValueError, match="could not open SQLite.*WAL mode.*write access.*sidecars"):
-            workflow.credential_retention(older_than_days=30)
+        result = workflow.credential_retention(older_than_days=30)
+        assert result["sqlite_wal_sidecars_may_be_created"] is False
+        assert not database.with_name(database.name + "-wal").exists()
+        assert not database.with_name(database.name + "-shm").exists()
     finally:
         database.parent.chmod(0o700)
+
+
+@pytest.mark.parametrize("has_shm", [False, True])
+def test_preview_reports_sidecar_requirement_for_uncheckpointed_wal(tmp_path, has_shm):
+    database = tmp_path / "synthetic.sqlite"
+    database.write_bytes(b"0" * 18 + b"\x02\x02")
+    database.with_name(database.name + "-wal").write_bytes(b"nonempty")
+    shm = database.with_name(database.name + "-shm")
+    if has_shm:
+        shm.write_bytes(b"existing synthetic shm")
+
+    uri, signature, may_create_sidecars = _credential_preview_source(database)
+
+    assert uri.endswith("?mode=ro")
+    assert signature is None
+    assert may_create_sidecars is True
+    assert shm.exists() is has_shm
 
 
 def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_path):
