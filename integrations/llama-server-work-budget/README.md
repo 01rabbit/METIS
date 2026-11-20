@@ -105,14 +105,21 @@ python3 integrations/llama-server-work-budget/smoke.py \
     /tmp/metis-llama-guard-build/build/bin/llama-server /absolute/path/to/stories260K.gguf
 ```
 
-The smoke test on macOS arm64 checks startup refusal at cap 1, prompt refusal
-at cap 21, one completion at cap 22, and the next decode graph after 23 charged
-positions. Cap 24 allows generation of three tokens, which submits two decode
-graphs after the startup and prompt positions. Each terminal record is checked
-against the exact cap, nonce, submitted work, and reason. Additional cases
-cover a literal path containing commas and quotes, stale sockets and
-symlinks, a nonprivate directory, a broken receipt pipe, a timed-out client
-whose server is killed, and ambient config that tries to require an API key.
+The smoke test has passed on macOS arm64 and in an Ubuntu 24.04 `linux/arm64`
+container under Colima's `rosetta` profile (full run details are in
+[`issue8-native-linux-fixture-smoke-2026-11-20.md`](../../docs/reports/issue8-native-linux-fixture-smoke-2026-11-20.md)).
+The Linux run targeted aarch64 and did not exercise x86_64 translation. The
+smoke checks startup refusal at cap 1, prompt refusal at cap 21, one completion
+at cap 22, and the next decode graph after 23
+charged positions. Cap 24 allows generation of three tokens, which submits two
+decode graphs after the startup and prompt positions. Each terminal record is
+checked against the exact cap, nonce, submitted work, and reason. Additional
+cases cover a literal path containing commas and quotes whose log contains
+exactly one listening address, which is `unix://<requested-path>`; stale
+sockets and symlinks; a nonprivate directory; a broken receipt pipe; an
+API-key requirement in XDG user config that must not
+change the controlled launch, and a SIGSTOP-induced client timeout followed by
+server SIGKILL with no receipt.
 
 This builds on the native gate in METIS PR #87. The admitted
 `LlamaSpecialist` path now binds the scheduler-consumed claim to the cap,
