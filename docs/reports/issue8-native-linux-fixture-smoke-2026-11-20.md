@@ -41,7 +41,8 @@ Verified literal comma path, single Unix listener, and stale/symlink/public path
 Verified broken receipt pipe refusal and missing receipt after a deadline and SIGKILL.
 ```
 
-The cases include startup denial before model load at cap 1; exact nonce/cap/
+The cases include denial at the startup probe before the server reports
+`model loaded` at cap 1; exact nonce/cap/
 charge/reason receipt checks; prompt and next-decode budget denial; deterministic
 three-token generation with two additional graph positions; an `XDG_CONFIG_HOME`
 configuration that requires an API key being ignored for the controlled launch;
