@@ -14,11 +14,43 @@ from metis.core.codex_specialist import (
     REQUIRED_DISABLES,
     CodexCLI,
     CodexTurn,
+    _failure_category,
     _normalize_report_intent,
     render_prompt,
     run_assignment,
 )
 from metis.core.ctf_orchestration import AgentLedger
+
+
+@pytest.mark.parametrize(("state", "failure", "category"), [
+    ("completed", None, "none"),
+    ("cancelled", "run cancelled", "cancelled"),
+    ("timed_out", "deadline exceeded", "deadline"),
+    ("timed_out", "max turns reached", "budget_exhausted"),
+    ("failed", "codex exited 1: max turns reached", "provider_failure"),
+    ("unknown", "deadline exceeded", "termination_unconfirmed"),
+    ("unknown", "run cancelled (stop not confirmed)", "termination_unconfirmed"),
+    ("failed", "policy_violation: Codex used tools command_execution", "policy_violation"),
+    ("failed", "codex exited 1: provider returned private marker", "provider_failure"),
+    ("failed", "per-specialist call cap exhausted without completion", "budget_exhausted"),
+    ("failed", "shared model-turn reserve held for unstarted peers", "budget_exhausted"),
+    ("failed", "run specialist model-turn budget exhausted", "budget_exhausted"),
+    ("failed", "no valid report within the turn limit", "invalid_or_incomplete_output"),
+    ("failed", "specialist gave up", "specialist_abstained"),
+    ("failed", "spawn_error: RuntimeError", "infrastructure_or_configuration_failure"),
+    ("failed", "native token admission does not cover image inputs",
+     "infrastructure_or_configuration_failure"),
+    ("failed", "unrecognized private detail", "other_failure"),
+])
+def test_failure_category_is_bounded_and_answer_free(state, failure, category):
+    observed = _failure_category(state, failure)
+    assert observed == category
+    assert observed in {
+        "none", "cancelled", "deadline", "policy_violation", "provider_failure",
+        "budget_exhausted", "invalid_or_incomplete_output", "specialist_abstained",
+        "infrastructure_or_configuration_failure", "termination_unconfirmed", "other_failure",
+    }
+    assert failure is None or failure not in observed
 
 
 class ScriptedRunner:
@@ -313,6 +345,7 @@ def test_tool_use_inside_codex_is_a_policy_violation(setup, turn, reason):
     job = started[0]
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], ScriptedRunner([turn]))
     assert result["job_state"] == "failed" and "policy_violation" in result["failure"] and reason in result["failure"]
+    assert result["failure_category"] == "policy_violation"
 
 
 def test_flag_in_report_is_rejected_then_corrected(setup):
@@ -463,6 +496,7 @@ def test_cli_codex_command_is_wired(setup, monkeypatch, capsys):
     assert cli.main() == 0
     output = json.loads(capsys.readouterr().out)
     assert output["job_state"] == "failed" and output["failure"] == "not my category"
+    assert output["failure_category"] == "specialist_abstained"
     assert Path(database).exists()
 
 
@@ -797,6 +831,81 @@ def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
     second = started[1]
     result = run_assignment(scheduler, run_id, second["assignment_id"], second["attempt_id"], hard)
     assert "codex exited 1" in result["failure"] and len(hard.prompts) == 1
+
+
+@pytest.mark.parametrize(("deadline_offset", "turn_timeout", "category"), [
+    (60.0, 300.0, "deadline"),
+    (600.0, 1.0, "provider_failure"),
+])
+def test_timed_out_turn_category_uses_effective_deadline(
+    setup, deadline_offset, turn_timeout, category,
+):
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=?",
+                   (time.time() + deadline_offset, job["assignment_id"]))
+
+    class TimedOutRunner:
+        timeout = None
+
+        def run(self, _prompt, *, model, timeout, should_stop, images):
+            self.timeout = timeout
+            return CodexTurn(returncode=1, message=None, timed_out=True,
+                             stderr_tail="controlled timeout")
+
+    runner = TimedOutRunner()
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
+                            runner, turn_timeout=turn_timeout)
+    assert result["job_state"] == "failed"
+    assert result["failure_category"] == category
+    assert runner.timeout is not None
+    if category == "deadline":
+        assert runner.timeout <= turn_timeout
+    else:
+        assert runner.timeout == turn_timeout
+
+
+@pytest.mark.parametrize(("deadline_offset", "turn_timeout", "category"), [
+    (60.0, 300.0, "deadline"),
+    (600.0, 1.0, "provider_failure"),
+])
+def test_retry_timed_out_turn_category_uses_effective_deadline(
+    setup, monkeypatch, deadline_offset, turn_timeout, category,
+):
+    import metis.core.codex_specialist as driver
+
+    monkeypatch.setattr(driver, "TRANSIENT_BACKOFF", 0.0)
+    database, scheduler, run_id, _wave, started, _artifact = setup
+    job = started[0]
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=?",
+                   (time.time() + deadline_offset, job["assignment_id"]))
+
+    class RetryRunner:
+        def __init__(self):
+            self.calls = 0
+            self.timeouts = []
+
+        def run(self, _prompt, *, model, timeout, should_stop, images):
+            self.calls += 1
+            self.timeouts.append(timeout)
+            if self.calls == 1:
+                return CodexTurn(returncode=1, message=None, stderr_tail="503 transient")
+            return CodexTurn(returncode=1, message=None, timed_out=True,
+                             stderr_tail="controlled timeout")
+
+    runner = RetryRunner()
+    result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
+                            runner, turn_timeout=turn_timeout)
+    assert result["job_state"] == "failed"
+    assert result["failure_category"] == category
+    assert runner.calls == 2
+    assert len(runner.timeouts) == 2
+    if category == "deadline":
+        assert runner.timeouts[1] <= turn_timeout
+    else:
+        assert runner.timeouts[1] == turn_timeout
 
 
 def test_transient_retry_does_not_start_after_deadline(setup, monkeypatch):

@@ -846,6 +846,14 @@ paired difference −8.33 points (descriptive cluster interval [−25.00, 0.00])
 The nonpositive stop applies; no larger or held-out trial followed. P5's
 measured-gain gate and dependent P6 remain open. See
 `docs/reports/issue6-conditional-reserve-pilot-results-2026-11-18.md`.
+`run_assignment` and the direct specialist CLI now expose a fixed, answer-free
+`failure_category` for completion, deadlines, cancellation, policy/provider
+failures, budget exhaustion, invalid output, abstention,
+infrastructure/configuration failures, unconfirmed termination, and other
+failures. The autopilot currently discards per-assignment return values, so this
+change does not persist categories for autopilot runs or reconstruct them for
+historical sanitized runs. Prior scores are unchanged; Issue #6's measured-gain
+gate remains unmet.
 
 The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
 across compatible Stage 1 intervals and checks the deadline inside one guess.
