@@ -18,7 +18,11 @@ from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexTurn, _decision, final_handoff_schema, run_assignment
 from metis.core.contracts import RunStatus
 from metis.core.ctf_orchestration import AgentLedger
-from metis.core.llama_server_backend import LlamaBackendError, LlamaBackendRefused
+from metis.core.llama_server_backend import (
+    LlamaBackendError,
+    LlamaBackendRefused,
+    LlamaBackendStopped,
+)
 from metis.core.llama_specialist import LlamaSpecialist
 from metis.core.study_token_admission import StudyTokenAdmission, TokenLaunchOutcome
 from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
@@ -214,8 +218,15 @@ def test_run_assignment_reconciles_cancel_racing_claim_consumption(tmp_path, mon
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (4098,)
 
 
-def test_run_assignment_native_consumer_hashes_exact_bytes_sent_to_backend(tmp_path, monkeypatch):
-    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+@pytest.mark.parametrize("defect", [
+    None, "missing_outcome", "duplicate_outcome", "other_nonce", "other_slot", "other_run",
+    "unconsumed", "unlaunched", "fixture_claim", "foreign_manifest", "malformed_outcome",
+    "overcharged", "at_graph_cap", "wrong_prompt", "wrong_attempt",
+    "extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation",
+    "extra_launch_without_admission", "unrelated_admission",
+])
+def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, monkeypatch, defect):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
     admission = StudyTokenAdmission(database)
     pin = protocol.llama_backend
     runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
@@ -248,6 +259,166 @@ def test_run_assignment_native_consumer_hashes_exact_bytes_sent_to_backend(tmp_p
         assert db.execute("SELECT status,observed_work FROM study_token_outcomes").fetchone() == (
             "completed", 117,
         )
+
+        mutations = {
+            "missing_outcome": "DELETE FROM study_token_outcomes",
+            "other_nonce": "UPDATE study_token_outcomes SET nonce='00000000000000000000000000000000'",
+            "other_slot": "UPDATE study_token_slots SET repetition=1",
+            "other_run": "UPDATE agent_turn_reservations SET run_id='00000000000000000000000000000000'",
+            "unconsumed": "UPDATE study_token_launches SET consumed=0",
+            "unlaunched": "UPDATE study_token_launches SET launched=0",
+            "fixture_claim": "INSERT INTO study_token_fixture_claims SELECT nonce FROM study_token_launches",
+            "foreign_manifest": "UPDATE study_token_outcomes SET native_manifest_sha256=lower(hex(zeroblob(32)))",
+            "malformed_outcome": "UPDATE study_token_outcomes SET observed_work=NULL",
+            "overcharged": "UPDATE study_token_outcomes SET observed_work=(SELECT tokens FROM study_token_attempts)",
+            "at_graph_cap": "UPDATE study_token_outcomes SET observed_work=(SELECT tokens-1 FROM study_token_attempts)",
+            "wrong_prompt": "UPDATE study_token_attempts SET prompt_sha256=lower(hex(zeroblob(32)))",
+            "wrong_attempt": "UPDATE study_token_attempts SET attempt_id='unrelated-attempt'",
+        }
+        if defect == "duplicate_outcome":
+            db.execute("ALTER TABLE study_token_outcomes RENAME TO original_outcomes")
+            db.execute("CREATE TABLE study_token_outcomes AS SELECT * FROM original_outcomes")
+            db.execute("INSERT INTO study_token_outcomes SELECT * FROM original_outcomes")
+        elif defect in ("extra_admission", "extra_admission_with_outcome", "unrelated_admission"):
+            extra_run = "0" * 32 if defect == "unrelated_admission" else run_id
+            db.execute(
+                "INSERT INTO study_token_attempts "
+                "SELECT study_id,?,turn_reservation_id+1,assignment_id,attempt_id,prompt_sha256,tokens "
+                "FROM study_token_attempts WHERE run_id=?",
+                (extra_run, run_id),
+            )
+            if defect == "extra_admission_with_outcome":
+                other_nonce = "0" * 32
+                db.execute(
+                    "INSERT INTO study_token_launches(run_id,turn_reservation_id,nonce,consumed,launched) "
+                    "SELECT run_id,turn_reservation_id+1,?,1,1 FROM study_token_launches WHERE run_id=?",
+                    (other_nonce, run_id),
+                )
+                db.execute(
+                    "INSERT INTO study_token_outcomes "
+                    "SELECT ?,status,exit_status,observed_work,native_manifest_sha256 FROM study_token_outcomes",
+                    (other_nonce,),
+                )
+        elif defect == "extra_scheduler_reservation":
+            db.execute(
+                "INSERT INTO agent_turn_reservations(run_id,assignment_id,attempt_id,reserved) "
+                "SELECT run_id,'orphaned-job',attempt_id,reserved FROM agent_turn_reservations WHERE run_id=?",
+                (run_id,),
+            )
+        elif defect == "extra_launch_without_admission":
+            db.execute(
+                "INSERT INTO study_token_launches(run_id,turn_reservation_id,nonce) "
+                "SELECT run_id,MAX(turn_reservation_id)+1,? FROM study_token_launches WHERE run_id=? "
+                "GROUP BY run_id",
+                ("1" * 32, run_id),
+            )
+        elif defect is not None:
+            db.execute(mutations[defect])
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    if defect in (None, "at_graph_cap", "unrelated_admission"):
+        reconcile_arm_dispatch(protocol, bindings, database)
+    elif defect in (
+        "extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation",
+        "extra_launch_without_admission",
+    ):
+        with pytest.raises(ValueError, match="held-out native reservation coverage mismatch"):
+            reconcile_arm_dispatch(protocol, bindings, database)
+    else:
+        with pytest.raises(ValueError, match="held-out prompt dispatch mismatch"):
+            reconcile_arm_dispatch(protocol, bindings, database)
+
+
+def test_reconcile_native_dispatch_covers_multiple_reservations_for_one_run(tmp_path, monkeypatch):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    _, other_scheduler, _, other_run_id, other_job = _running_slot(tmp_path, protocol=protocol)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(
+        model_id=protocol.model_pin, binary=tmp_path / "server", binary_sha256=pin.binary_sha256,
+        model_path=tmp_path / "model.gguf", model_sha256=pin.model_sha256, database=database,
+        budget_key=pin.budget_key, token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256,
+    )
+    give_up = json.dumps({
+        "action": "fail", "intent": None, "report": None, "reason": "synthetic", "candidate": None,
+    })
+    # An invalid first decision triggers a second turn through the real assignment driver.
+    responses = iter(("{}", give_up, give_up))
+
+    class FakeBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, _prompt, **_kwargs):
+            return next(responses), 100, 1
+        def collect_native_work(self, *, generated, evaluated=None):
+            assert (generated, evaluated) == (1, 100)
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=117)
+
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                   study_token_admission=admission)
+    run_assignment(other_scheduler, other_run_id, other_job["assignment_id"], other_job["attempt_id"], runner,
+                   study_token_admission=admission)
+
+    with sqlite3.connect(database) as db:
+        counts = dict(db.execute("SELECT run_id, COUNT(*) FROM study_token_attempts GROUP BY run_id"))
+        assert counts == {run_id: 2, other_run_id: 1}
+        assert db.execute("SELECT COUNT(*) FROM study_token_outcomes").fetchone() == (3,)
+
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    reconcile_arm_dispatch(protocol, bindings, database)
+
+
+@pytest.mark.parametrize("bad_native_schema", [False, True])
+def test_reconcile_native_dispatch_without_any_reservation(tmp_path, bad_native_schema):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    scheduler.cancel(assignment_id=job["assignment_id"])
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
+        assert db.execute("SELECT 1 FROM sqlite_schema WHERE name='study_token_attempts'").fetchone() is None
+        if bad_native_schema:
+            db.execute("CREATE TABLE study_token_attempts (run_id TEXT)")
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    if bad_native_schema:
+        with pytest.raises(ValueError, match="^held-out native reservation coverage mismatch$"):
+            reconcile_arm_dispatch(protocol, bindings, database)
+    else:
+        reconcile_arm_dispatch(protocol, bindings, database)
+
+
+@pytest.mark.parametrize("with_attempt_table", [False, True])
+def test_reconcile_native_dispatch_rejects_orphan_launch_without_reservation(tmp_path, with_attempt_table):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    scheduler.cancel(assignment_id=job["assignment_id"])
+    with sqlite3.connect(database) as db:
+        if with_attempt_table:
+            db.execute(
+                "CREATE TABLE study_token_attempts (run_id TEXT, turn_reservation_id INTEGER, "
+                "assignment_id TEXT, attempt_id TEXT)"
+            )
+        db.execute(
+            "CREATE TABLE study_token_launches (run_id TEXT, turn_reservation_id INTEGER, nonce TEXT)"
+        )
+        db.execute(
+            "INSERT INTO study_token_launches VALUES (?, 1, ?)",
+            (run_id, "1" * 32),
+        )
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    with pytest.raises(ValueError, match="^held-out native reservation coverage mismatch$"):
+        reconcile_arm_dispatch(protocol, bindings, database)
 
 
 def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path, monkeypatch):
@@ -285,10 +456,10 @@ def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path,
 
 @pytest.mark.parametrize(("failure", "expected"), [
     ("deadline", "timeout"), ("usage", "server_error"), ("refused", "receipt_invalid"),
-    ("cap_denied", "cap_denied"),
+    ("cap_denied", "cap_denied"), ("cancelled", "cancelled"),
 ])
 def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, monkeypatch, failure, expected):
-    database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
     admission = StudyTokenAdmission(database)
     pin = protocol.llama_backend
     runner = LlamaSpecialist(model_id=protocol.model_pin, binary=tmp_path / "server",
@@ -311,6 +482,8 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
         def complete_admitted(self, prompt, **kwargs):
             native_calls.append(1)
             native_requests.append(prompt)
+            if failure == "cancelled":
+                raise LlamaBackendStopped("synthetic cancellation")
             if failure == "refused":
                 raise LlamaBackendRefused("prompt exceeds reserved context")
             if failure == "cap_denied":
@@ -319,6 +492,8 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
             raise LlamaBackendError(reason)
         def collect_native_work(self, *, generated, evaluated=None):
             assert generated is None
+            if failure == "cancelled":
+                return TokenLaunchOutcome(status="cancelled")
             if failure == "deadline":
                 return TokenLaunchOutcome(status="timeout")
             if failure == "usage":
@@ -346,6 +521,11 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
             expected_exit = 1 if expected == "server_error" else 75
             assert db.execute("SELECT exit_status FROM study_token_outcomes").fetchone() == (expected_exit,)
     assert hashlib.sha256(request.encode()).hexdigest() == stored_hash
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    reconcile_arm_dispatch(protocol, bindings, database)
     # The exact committed bytes are rejected after a terminal outcome, before
     # any second backend launch.
     retry = runner.run_admitted(request, model=protocol.model_pin, timeout=5,
@@ -519,8 +699,9 @@ def test_same_launch_owner_rechecks_scheduler_after_cancellation(tmp_path):
     ))
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("cancelled",)
-@pytest.mark.parametrize("defect", [None, "consumed", "missing_claim", "wrong_prompt", "missing_prompt",
-                                    "wrong_attempt", "wrong_manifest", "contradictory_turn"])
+@pytest.mark.parametrize("defect", [None, "consumed", "launched", "outcome", "fixture_claim", "missing_claim",
+                                    "wrong_prompt", "missing_prompt", "wrong_attempt", "wrong_manifest",
+                                    "contradictory_turn"])
 def test_reconcile_native_reservation_abandoned_before_launch(tmp_path, monkeypatch, defect):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
     admission = StudyTokenAdmission(database)
@@ -543,6 +724,12 @@ def test_reconcile_native_reservation_abandoned_before_launch(tmp_path, monkeypa
         assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (0,)
         if defect == "consumed":
             db.execute("UPDATE study_token_launches SET consumed=1")
+        elif defect == "launched":
+            db.execute("UPDATE study_token_launches SET launched=1")
+        elif defect == "outcome":
+            db.execute("INSERT INTO study_token_outcomes(nonce,status) SELECT nonce,'lost' FROM study_token_launches")
+        elif defect == "fixture_claim":
+            db.execute("INSERT INTO study_token_fixture_claims SELECT nonce FROM study_token_launches")
         elif defect == "missing_claim":
             db.execute("DELETE FROM study_token_launches")
         elif defect == "wrong_prompt":

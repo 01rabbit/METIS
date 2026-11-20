@@ -1,12 +1,16 @@
 import io
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from metis.core import ctf_workflow
 from metis.core.codex_session import CodexSession
-from metis.core.contracts import RunStatus
+from metis.core.contracts import ChallengeManifest, RunStatus
+from metis.core.ctf_web import WebWorkflow
 from metis.core.ctf_workflow import WorkflowCapabilityApprovals
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +43,78 @@ def test_inspect_does_not_create_missing_database(tmp_path):
     result = cli("inspect", "absent", "--database", database)
     assert result.returncode == 2
     assert not database.exists()
+
+
+def test_operator_wires_preview_only_credential_retention_callback(tmp_path, monkeypatch, capsys):
+    from metis.cli import main
+    from metis.core.agent_host import BridgeHost
+    from metis.core.agent_scheduler import AgentScheduler
+
+    database = tmp_path / "state.sqlite"
+    WebWorkflow(database)
+    manifest = ChallengeManifest.model_validate({
+        "challenge_id": "operator-control-test", "title": "operator control",
+        "description": "synthetic", "scope": {"authorized": True, "granted_by": "test",
+                                                  "challenge_id": "operator-control-test"},
+    })
+    run_id = CodexSession(database).start(manifest)["run_id"]
+    captured = {}
+
+    class Server:
+        server_port = 45678
+
+        def serve_forever(self, *, poll_interval):
+            assert poll_interval == 0.2
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    def fake_create_server(path, **kwargs):
+        captured["database"] = path
+        captured.update(kwargs)
+        return Server()
+
+    monkeypatch.setattr("metis.cli.create_server", fake_create_server)
+    monkeypatch.setenv("METIS_OPERATOR_TOKEN", "operator-secret-token-with-32-characters")
+    monkeypatch.setattr(sys, "argv", ["metis", "operator", "--database", str(database)])
+    assert main() == 0
+    assert captured["database"] == database
+    assert callable(captured["credential_retention_preview"])
+    assert callable(captured["dispatch_control"])
+    assert callable(captured["dispatch_status"])
+    result = captured["credential_retention_preview"](30)
+    assert result["applied"] is False and result["older_than_days"] == 30
+    control = captured["dispatch_control"](run_id, True)
+    assert control["dispatch_paused"] is True
+    state = AgentScheduler(database, BridgeHost()).dispatch_control(run_id)
+    assert state["dispatch_paused"] is True
+    assert [event["action"] for event in state["history"]] == ["pause"]
+    assert "METIS operator view: http://127.0.0.1:45678/" in capsys.readouterr().out
+
+
+def test_operator_reports_scheduler_sqlite_initialization_failure_cleanly(
+    tmp_path, monkeypatch, capsys,
+):
+    from metis.cli import main
+    from metis.core.agent_scheduler import AgentScheduler
+
+    database = tmp_path / "state.sqlite"
+    WebWorkflow(database)
+
+    def fail_init(self, *_args, **_kwargs):
+        raise sqlite3.OperationalError("private sqlite startup detail")
+
+    monkeypatch.setattr(AgentScheduler, "__init__", fail_init)
+    monkeypatch.setenv("METIS_OPERATOR_TOKEN", "operator-secret-token-with-32-characters")
+    monkeypatch.setattr(sys, "argv", ["metis", "operator", "--database", str(database)])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n"
+    assert "private sqlite startup detail" not in captured.err
 
 
 def test_audit_is_read_only_and_omits_free_form_event_details(tmp_path):

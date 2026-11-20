@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 import sqlite3
@@ -14,11 +15,66 @@ from metis.core.store import RunStore, ensure_run_audit_list_index
 
 RUN_AUDIT = re.compile(r"/api/runs/([0-9a-f]{32})/audit")
 RUN_CANCEL = re.compile(r"/api/runs/([0-9a-f]{32})/cancel")
+RUN_DISPATCH_CONTROL = re.compile(r"/api/runs/([0-9a-f]{32})/dispatch/(pause|resume)")
+RUN_DISPATCH_STATUS = re.compile(r"/api/runs/([0-9a-f]{32})/dispatch")
 RUN_LIST = re.compile(r"/api/runs(?:\?limit=(\d{1,3}))?")
+CREDENTIAL_RETENTION = re.compile(r"/api/credentials/retention\?older_than_days=([1-9][0-9]{0,4})")
+RETENTION_COUNTS = (
+    "credentials_considered", "eligible_credentials", "newer_credentials_retained",
+    "age_unknown_retained", "selected_runs", "cookie_jars_selected",
+)
+
+
+def _dispatch_control_projection(result: Any, *, run_id: str,
+                                 expected_paused: bool | None = None) -> dict[str, Any]:
+    if (not isinstance(result, dict) or result.get("run_id") != run_id
+            or type(result.get("dispatch_paused")) is not bool
+            or result.get("scope") != "queued_specialist_dispatch_only"
+            or (expected_paused is not None and result["dispatch_paused"] is not expected_paused)):
+        raise ValueError("dispatch control returned an invalid state")
+    history = result.get("history")
+    if not isinstance(history, list) or len(history) > 20:
+        raise ValueError("dispatch control returned invalid history")
+    projected_history = []
+    for event in history:
+        if (not isinstance(event, dict) or event.get("action") not in {"pause", "resume"}
+                or type(event.get("updated")) not in (int, float)
+                or not math.isfinite(event["updated"])):
+            raise ValueError("dispatch control returned invalid history")
+        projected_history.append({"action": event["action"], "updated": event["updated"]})
+    return {"run_id": run_id, "dispatch_paused": result["dispatch_paused"],
+            "scope": "queued_specialist_dispatch_only", "history": projected_history}
+
+
+def _credential_retention_projection(result: dict[str, Any], *, older_than_days: int) -> dict[str, Any]:
+    """Expose only bounded count fields from a local, preview-only retention result."""
+    if (result.get("applied") is not False or type(result.get("older_than_days")) is not int
+            or result["older_than_days"] != older_than_days
+            or result.get("wal_cleanup_complete") is not None):
+        raise ValueError("credential retention preview returned an invalid result")
+    payload: dict[str, Any] = {"applied": False, "older_than_days": older_than_days}
+    for field in RETENTION_COUNTS:
+        value = result.get(field)
+        if type(value) is not int or value < 0:
+            raise ValueError("credential retention preview returned invalid counts")
+        payload[field] = value
+    sidecars = result.get("sqlite_wal_sidecars_may_be_created")
+    if type(sidecars) is not bool:
+        raise ValueError("credential retention preview omitted WAL status")
+    payload["sqlite_wal_sidecars_may_be_created"] = sidecars
+    payload["note"] = (
+        "Preview only; credentials remain unchanged. "
+        + ("WAL-mode read may create or update SQLite -wal/-shm coordination sidecars."
+           if sidecars else "This read-only preview did not require WAL sidecars.")
+    )
+    return payload
 
 
 def create_server(database: Path, *, port: int, token: str,
-                  cancel_run: Callable[[str], dict[str, Any]] | None = None
+                  cancel_run: Callable[[str], dict[str, Any]] | None = None,
+                  dispatch_control: Callable[[str, bool], dict[str, Any]] | None = None,
+                  dispatch_status: Callable[[str], dict[str, Any]] | None = None,
+                  credential_retention_preview: Callable[[int], dict[str, Any]] | None = None,
                   ) -> ThreadingHTTPServer:
     """Bind only 127.0.0.1; the caller owns the server lifetime."""
     if database.is_symlink() or not database.is_file():
@@ -73,6 +129,62 @@ def create_server(database: Path, *, port: int, token: str,
             if self.path == "/operator.js":
                 self._send(200, _SCRIPT, "text/javascript; charset=utf-8")
                 return
+            if self.path == "/api/credentials/retention" or self.path.startswith(
+                "/api/credentials/retention?",
+            ):
+                if not self._authenticated():
+                    self._send(401, b"unauthorized", "text/plain; charset=utf-8")
+                    return
+                match = CREDENTIAL_RETENTION.fullmatch(self.path)
+                if match is None or int(match.group(1)) > 36_500:
+                    self._send(400, b"invalid credential retention query", "text/plain; charset=utf-8")
+                    return
+                if credential_retention_preview is None:
+                    self._send(503, b"credential retention preview unavailable", "text/plain; charset=utf-8")
+                    return
+                older_than_days = int(match.group(1))
+                try:
+                    retention_result = credential_retention_preview(older_than_days)
+                    if not isinstance(retention_result, dict):
+                        raise TypeError("invalid preview")
+                    retention_payload = _credential_retention_projection(
+                        retention_result, older_than_days=older_than_days,
+                    )
+                except (OSError, TypeError, ValueError, sqlite3.Error):
+                    self._send(503, b"credential retention preview unavailable", "text/plain; charset=utf-8")
+                    return
+                self._send(200, json.dumps(retention_payload, sort_keys=True).encode(),
+                           "application/json; charset=utf-8")
+                return
+            dispatch_match = RUN_DISPATCH_STATUS.fullmatch(self.path)
+            if dispatch_match is not None:
+                if not self._authenticated():
+                    self._send(401, b"unauthorized", "text/plain; charset=utf-8")
+                    return
+                if dispatch_status is None:
+                    self._send(503, b"dispatch status unavailable", "text/plain; charset=utf-8")
+                    return
+                run_id = dispatch_match.group(1)
+                try:
+                    if RunStore(database, read_only=True).audit_summary(run_id) is None:
+                        self._send(404, b"run unavailable", "text/plain; charset=utf-8")
+                        return
+                except (OSError, ValueError, sqlite3.Error):
+                    self._send(503, b"dispatch status unavailable", "text/plain; charset=utf-8")
+                    return
+                try:
+                    dispatch_result = dispatch_status(run_id)
+                except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                    self._send(503, b"dispatch status unavailable", "text/plain; charset=utf-8")
+                    return
+                try:
+                    projection = _dispatch_control_projection(dispatch_result, run_id=run_id)
+                except (TypeError, ValueError):
+                    self._send(503, b"dispatch status unavailable", "text/plain; charset=utf-8")
+                    return
+                self._send(200, json.dumps(projection, sort_keys=True).encode(),
+                           "application/json; charset=utf-8")
+                return
             if self.path == "/api/runs" or self.path.startswith("/api/runs?"):
                 if not self._authenticated():
                     self._send(401, b"unauthorized", "text/plain; charset=utf-8")
@@ -125,8 +237,9 @@ def create_server(database: Path, *, port: int, token: str,
             if not self._host_ok() or not self._origin_ok():
                 self._send(403, b"forbidden", "text/plain; charset=utf-8")
                 return
-            match = RUN_CANCEL.fullmatch(self.path)
-            if match is None:
+            cancel_match = RUN_CANCEL.fullmatch(self.path)
+            control_match = RUN_DISPATCH_CONTROL.fullmatch(self.path)
+            if cancel_match is None and control_match is None:
                 if RUN_AUDIT.fullmatch(self.path) is not None:
                     self._send(405, b"read-only", "text/plain; charset=utf-8")
                     return
@@ -140,10 +253,39 @@ def create_server(database: Path, *, port: int, token: str,
                 self.close_connection = True
                 self._send(400, b"empty request required", "text/plain; charset=utf-8")
                 return
+            if control_match is not None:
+                if dispatch_control is None:
+                    self._send(503, b"dispatch control unavailable", "text/plain; charset=utf-8")
+                    return
+                run_id = control_match.group(1)
+                paused = control_match.group(2) == "pause"
+                try:
+                    if RunStore(database, read_only=True).audit_summary(run_id) is None:
+                        self._send(404, b"run unavailable", "text/plain; charset=utf-8")
+                        return
+                except (OSError, ValueError, sqlite3.Error):
+                    self._send(503, b"dispatch control unavailable", "text/plain; charset=utf-8")
+                    return
+                try:
+                    result = dispatch_control(run_id, paused)
+                except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                    self._send(503, b"dispatch control unavailable", "text/plain; charset=utf-8")
+                    return
+                try:
+                    projection = _dispatch_control_projection(
+                        result, run_id=run_id, expected_paused=paused,
+                    )
+                except (TypeError, ValueError):
+                    self._send(503, b"dispatch control status unavailable", "text/plain; charset=utf-8")
+                    return
+                body = json.dumps(projection, sort_keys=True).encode()
+                self._send(200, body, "application/json; charset=utf-8")
+                return
             if cancel_run is None:
                 self._send(503, b"cancellation unavailable", "text/plain; charset=utf-8")
                 return
-            run_id = match.group(1)
+            assert cancel_match is not None
+            run_id = cancel_match.group(1)
             try:
                 result = cancel_run(run_id)
             except ValueError:
@@ -174,34 +316,56 @@ def create_server(database: Path, *, port: int, token: str,
 
 
 _PAGE = """<!doctype html><html lang="ja"><meta charset="utf-8"><title>METIS operator</title>
-<h1>METIS operator</h1><p>認証済みローカル操作: 監査表示とrunのキャンセル。</p>
+<h1>METIS operator</h1><p>認証済みローカル操作: 資格情報整理のプレビュー、監査表示、専門家dispatchのpause/resume、runのキャンセル。</p>
 <label>Operator token <input id="token" type="password" autocomplete="off"></label>
+<label>Credential age (days) <input id="retention-age" type="number" min="1" max="36500" value="90"></label>
+<button id="retention-preview">Preview credential retention</button>
 <button id="refresh">List recent runs</button>
 <label>Recent runs <select id="run-list"><option value="">Select a run</option></select></label>
 <label>Run ID <input id="run" maxlength="32" spellcheck="false"></label>
-<button id="inspect">Inspect</button><button id="cancel">Cancel run</button><pre id="result"></pre>
+<button id="inspect">Inspect</button><button id="dispatch-status">Check dispatch</button>
+<button id="pause-dispatch">Pause queued specialists</button>
+<button id="resume-dispatch">Resume queued specialists</button><button id="cancel">Cancel run</button>
+<pre id="dispatch-result"></pre><pre id="result"></pre>
 <script src="/operator.js"></script></html>""".encode()
 
 _SCRIPT = b"""const tokenInput = document.getElementById('token');
 const runInput = document.getElementById('run');
 const output = document.getElementById('result');
+const dispatchOutput = document.getElementById('dispatch-result');
 const select = document.getElementById('run-list');
+const retentionAge = document.getElementById('retention-age');
 let authorizationGeneration = 0;
 let latestListRequest = 0;
 let latestRunRequest = 0;
+let latestDispatchRequest = 0;
+let latestRetentionRequest = 0;
+let latestOutputRequest = 0;
 let selectedRunId = '';
+
+function claimOutput() {
+  return ++latestOutputRequest;
+}
 
 function clearProtectedView() {
   authorizationGeneration++;
+  claimOutput();
+  latestDispatchRequest++;
   select.replaceChildren(new Option('Select a run', ''));
   runInput.value = '';
   selectedRunId = '';
   output.textContent = '';
+  dispatchOutput.textContent = '';
 }
 
 tokenInput.addEventListener('input', clearProtectedView);
+retentionAge.addEventListener('input', () => {
+  latestRetentionRequest++;
+  claimOutput();
+  output.textContent = '';
+});
 
-async function operatorRequest(path, method, label, render, isLatest = () => true) {
+async function operatorRequest(path, method, label, render, isLatest = () => true, target = output) {
   const generation = authorizationGeneration;
   const token = tokenInput.value;
   const sameAuthorization = () => generation === authorizationGeneration && token === tokenInput.value;
@@ -211,29 +375,49 @@ async function operatorRequest(path, method, label, render, isLatest = () => tru
     if (!sameAuthorization()) return;
     if (response.status === 401 || response.status === 403) {
       clearProtectedView();
-      output.textContent = label + ' unavailable (' + response.status + ')';
+      target.textContent = label + ' unavailable (' + response.status + ')';
       return;
     }
     if (!isLatest()) return;
     if (!response.ok) {
-      output.textContent = label + ' unavailable (' + response.status + ')';
+      target.textContent = label + ' unavailable (' + response.status + ')';
       return;
     }
     const payload = await response.json();
-    if (sameAuthorization() && isLatest()) render(payload);
+    if (sameAuthorization() && isLatest()) await render(payload);
   } catch (_) {
-    if (sameAuthorization() && isLatest()) output.textContent = label + ' unavailable';
+    if (sameAuthorization() && isLatest()) target.textContent = label + ' unavailable';
   }
 }
 
 function invalidateRunView() {
   latestRunRequest++;
+  latestDispatchRequest++;
+  claimOutput();
   output.textContent = '';
+  dispatchOutput.textContent = '';
+}
+
+function loadDispatchStatus(run) {
+  const request = ++latestDispatchRequest;
+  if (!/^[0-9a-f]{32}$/.test(run)) {
+    dispatchOutput.textContent = '';
+    return;
+  }
+  return operatorRequest('/api/runs/' + run + '/dispatch', 'GET', 'Dispatch status', payload => {
+    if (payload.run_id !== run || typeof payload.dispatch_paused !== 'boolean'
+        || payload.scope !== 'queued_specialist_dispatch_only' || !Array.isArray(payload.history)) {
+      dispatchOutput.textContent = 'Dispatch status unavailable';
+      return;
+    }
+    dispatchOutput.textContent = JSON.stringify(payload, null, 2);
+  }, () => request === latestDispatchRequest && run === runInput.value, dispatchOutput);
 }
 
 document.getElementById('refresh').addEventListener('click', () => {
   const request = ++latestListRequest;
-  return operatorRequest('/api/runs?limit=20', 'GET', 'Run list', payload => {
+  const outputRequest = claimOutput();
+  return operatorRequest('/api/runs?limit=20', 'GET', 'Run list', async payload => {
     if (!Array.isArray(payload.runs)) { output.textContent = 'Run list unavailable'; return; }
     select.replaceChildren(new Option('Select a run', ''));
     for (const run of payload.runs) {
@@ -257,7 +441,8 @@ document.getElementById('refresh').addEventListener('click', () => {
     output.textContent = payload.truncated
       ? 'Loaded ' + count + ' recent runs; list is partial at the safety limit'
       : 'Loaded ' + count + ' runs';
-  }, () => request === latestListRequest);
+    if (selectedRunId) return loadDispatchStatus(selectedRunId);
+  }, () => request === latestListRequest && outputRequest === latestOutputRequest);
 });
 select.addEventListener('change', () => {
   selectedRunId = select.value;
@@ -276,18 +461,73 @@ function showResult(payload) {
   output.textContent = JSON.stringify(payload, null, 2);
 }
 
+document.getElementById('retention-preview').addEventListener('click', () => {
+  const request = ++latestRetentionRequest;
+  const outputRequest = claimOutput();
+  const age = retentionAge.value;
+  if (!/^[1-9][0-9]{0,4}$/.test(age) || Number(age) > 36500) {
+    output.textContent = 'Invalid credential retention age';
+    return;
+  }
+  return operatorRequest('/api/credentials/retention?older_than_days=' + age,
+    'GET', 'Credential retention preview', showResult,
+    () => request === latestRetentionRequest && age === retentionAge.value
+      && outputRequest === latestOutputRequest);
+});
+
 document.getElementById('inspect').addEventListener('click', () => {
   const request = ++latestRunRequest;
+  const outputRequest = claimOutput();
   const run = runInput.value;
   if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
   return operatorRequest('/api/runs/' + run + '/audit', 'GET', 'Audit', showResult,
-    () => request === latestRunRequest && run === runInput.value);
+    () => request === latestRunRequest && run === runInput.value
+      && outputRequest === latestOutputRequest);
+});
+document.getElementById('dispatch-status').addEventListener('click', () => {
+  const run = runInput.value;
+  if (!/^[0-9a-f]{32}$/.test(run)) { dispatchOutput.textContent = 'Invalid run ID'; return; }
+  return loadDispatchStatus(run);
 });
 document.getElementById('cancel').addEventListener('click', () => {
   const run = runInput.value;
-  if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
+  if (!/^[0-9a-f]{32}$/.test(run)) {
+    claimOutput();
+    output.textContent = 'Invalid run ID';
+    return;
+  }
   if (!window.confirm('Cancel run ' + run + '?')) return;
   const request = ++latestRunRequest;
+  const outputRequest = claimOutput();
   return operatorRequest('/api/runs/' + run + '/cancel', 'POST', 'Cancellation', showResult,
-    () => request === latestRunRequest && run === runInput.value);
-});"""
+    () => request === latestRunRequest && run === runInput.value
+      && outputRequest === latestOutputRequest);
+});
+
+function setDispatchPaused(paused) {
+  const run = runInput.value;
+  if (!/^[0-9a-f]{32}$/.test(run)) {
+    claimOutput();
+    output.textContent = 'Invalid run ID';
+    return;
+  }
+  const action = paused ? 'Pause' : 'Resume';
+  const message = paused
+    ? 'Pause new specialist dispatch for run ' + run + '? Running specialists continue.'
+    : 'Resume queued specialist dispatch for run ' + run + '?';
+  if (!window.confirm(message)) return;
+  latestDispatchRequest++;
+  dispatchOutput.textContent = '';
+  const request = ++latestRunRequest;
+  const outputRequest = claimOutput();
+  const path = '/api/runs/' + run + '/dispatch/' + (paused ? 'pause' : 'resume');
+  return operatorRequest(path, 'POST', action + ' dispatch', payload => {
+    showResult(payload);
+    return loadDispatchStatus(run);
+  },
+    () => request === latestRunRequest && run === runInput.value
+      && outputRequest === latestOutputRequest);
+}
+document.getElementById('pause-dispatch').addEventListener('click', () => setDispatchPaused(true));
+document.getElementById('resume-dispatch').addEventListener('click', () => setDispatchPaused(false));
+"""
