@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -162,6 +163,33 @@ def test_attestation_verification_fails_closed_for_every_release_artifact(
         assert verify < workflow.index(publish_command)
     else:
         assert "gh release create " not in step
+
+
+def test_release_workflow_contract_covers_attestation_permissions_and_action_pins():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text()
+
+    attest_start = workflow.index("      - name: Attest package archives and checksums")
+    verify_start = workflow.index("      - name: Verify package attestations before publishing")
+    attest_step = workflow[attest_start:verify_start]
+    assert "uses: actions/attest@" in attest_step
+    assert "subject-path: 'dist/*'" in attest_step
+
+    publish = workflow.index("gh release create ", verify_start)
+    verify_step = workflow[verify_start:publish]
+    assert "for artifact in dist/*.whl dist/*.tar.gz dist/SHA256SUMS; do" in verify_step
+    assert 'gh attestation verify "$artifact" \\\n' in verify_step
+    assert '--repo "$GITHUB_REPOSITORY"' in verify_step
+    assert verify_start < publish
+
+    top_level_permissions = workflow.split("permissions:\n", 1)[1].split("concurrency:\n", 1)[0]
+    assert top_level_permissions == "  contents: read\n"
+    release_job = workflow.split("  release:\n", 1)[1]
+    job_permissions = release_job.split("    permissions:\n", 1)[1].split("    steps:\n", 1)[0]
+    assert job_permissions == "      contents: write\n      attestations: write\n      id-token: write\n"
+
+    action_uses = re.findall(r"(?m)^\s+uses:\s*([^\s#]+)", workflow)
+    assert action_uses
+    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in action_uses)
 
 
 def test_release_and_drill_share_checksum_generation_path():
