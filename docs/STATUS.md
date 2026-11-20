@@ -1,5 +1,16 @@
 # METIS implementation status
 
+## Issue #9 operator credential retention preview (2026-11-20)
+
+The authenticated loopback operator view now exposes a bounded preview of the
+existing credential-age retention policy. It accepts only a canonical age in
+1..36500 days and returns aggregate counts, with no origin or credential values;
+the route cannot apply deletion. The UI invalidates stale responses after age
+or token edits. A WAL-mode SQLite read can create/update coordination sidecars.
+This improves visibility but does not establish secure erasure, provider-side
+revocation, or full retention-policy compliance. Issue #9 remains open. See
+[`issue9-operator-credential-retention-preview-2026-11-20.md`](reports/issue9-operator-credential-retention-preview-2026-11-20.md).
+
 ## Issue #9 artifact registration audit (2026-11-20)
 
 `metis audit` now reports bounded, count-only artifact registrations from the

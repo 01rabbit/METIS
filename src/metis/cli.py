@@ -1276,7 +1276,11 @@ def main() -> int:
             if args.database.is_symlink() or not args.database.is_file():
                 raise ValueError("operator database unavailable")
             server = create_server(args.database, port=args.port, token=token,
-                                   cancel_run=lambda run_id: CodexSession(args.database).cancel(run_id))
+                                   cancel_run=lambda run_id: CodexSession(args.database).cancel(run_id),
+                                   credential_retention_preview=lambda older_than_days:
+                                   WebWorkflow.preview_credential_retention(
+                                       args.database, older_than_days=older_than_days,
+                                   ))
         except (OSError, ValueError):
             parser.exit(2, "operator view unavailable; check database and METIS_OPERATOR_TOKEN\n")
         print(f"METIS operator view: http://127.0.0.1:{server.server_port}/", flush=True)

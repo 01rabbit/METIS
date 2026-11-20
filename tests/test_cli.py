@@ -7,6 +7,7 @@ from pathlib import Path
 from metis.core import ctf_workflow
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
+from metis.core.ctf_web import WebWorkflow
 from metis.core.ctf_workflow import WorkflowCapabilityApprovals
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,39 @@ def test_inspect_does_not_create_missing_database(tmp_path):
     result = cli("inspect", "absent", "--database", database)
     assert result.returncode == 2
     assert not database.exists()
+
+
+def test_operator_wires_preview_only_credential_retention_callback(tmp_path, monkeypatch, capsys):
+    from metis.cli import main
+
+    database = tmp_path / "state.sqlite"
+    WebWorkflow(database)
+    captured = {}
+
+    class Server:
+        server_port = 45678
+
+        def serve_forever(self, *, poll_interval):
+            assert poll_interval == 0.2
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    def fake_create_server(path, **kwargs):
+        captured["database"] = path
+        captured.update(kwargs)
+        return Server()
+
+    monkeypatch.setattr("metis.cli.create_server", fake_create_server)
+    monkeypatch.setenv("METIS_OPERATOR_TOKEN", "operator-secret-token-with-32-characters")
+    monkeypatch.setattr(sys, "argv", ["metis", "operator", "--database", str(database)])
+    assert main() == 0
+    assert captured["database"] == database
+    assert callable(captured["credential_retention_preview"])
+    result = captured["credential_retention_preview"](30)
+    assert result["applied"] is False and result["older_than_days"] == 30
+    assert "METIS operator view: http://127.0.0.1:45678/" in capsys.readouterr().out
 
 
 def test_audit_is_read_only_and_omits_free_form_event_details(tmp_path):

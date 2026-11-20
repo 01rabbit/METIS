@@ -16,6 +16,7 @@ import pytest
 
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
+from metis.core.ctf_web import WebWorkflow
 from metis.core.operator_ui import create_server
 from metis.core.store import RunStore
 
@@ -24,8 +25,9 @@ TOKEN = "secret-operator-token-with-32-chars-minimum"
 
 
 @contextmanager
-def server_for(database: Path, *, cancel_run=None):
-    server = create_server(database, port=0, token=TOKEN, cancel_run=cancel_run)
+def server_for(database: Path, *, cancel_run=None, credential_retention_preview=None):
+    server = create_server(database, port=0, token=TOKEN, cancel_run=cancel_run,
+                           credential_retention_preview=credential_retention_preview)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -203,6 +205,130 @@ def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path
     assert database.read_bytes() == before
 
 
+def test_credential_retention_preview_is_authenticated_bounded_redacted_and_read_only(
+    tmp_path: Path,
+) -> None:
+    database = fixture_database(tmp_path)
+    WebWorkflow(database)
+    now = 10_000_000.0
+    old_origin = "https://private-origin.example"
+    newer_origin = "https://newer-origin.example"
+    unknown_origin = "https://unknown-origin.example"
+    old_token = "private-retention-token-sentinel"
+    cookie_secret = "private-retention-cookie-sentinel"
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,?)",
+                   (old_origin, json.dumps({"token": old_token}), now - 31 * 86_400))
+        db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,?)",
+                   (newer_origin, json.dumps({"token": "newer-private-token"}), now))
+        db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,NULL)",
+                   (unknown_origin, json.dumps({"token": "unknown-private-token"})))
+        db.execute(
+            "INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
+            ("retention-preview-run", json.dumps({"auth_origin": old_origin}),
+             json.dumps({"cookies": {old_origin: [{"value": cookie_secret}]}}),
+             "[]", "[]", "fixture-salt"),
+        )
+        credentials_before = db.execute(
+            "SELECT origin,payload,updated_at FROM web_credentials ORDER BY origin",
+        ).fetchall()
+        state_before = db.execute(
+            "SELECT state FROM web_runs WHERE run_id='retention-preview-run'",
+        ).fetchone()
+        generations_before = db.execute(
+            "SELECT * FROM web_auth_generations ORDER BY origin",
+        ).fetchall()
+
+    preview_calls: list[int] = []
+
+    def preview(days: int) -> dict[str, Any]:
+        preview_calls.append(days)
+        return WebWorkflow.preview_credential_retention(database, older_than_days=days, now=now)
+
+    with server_for(database, credential_retention_preview=preview) as port:
+        path = "/api/credentials/retention?older_than_days=30"
+        assert request(port, "GET", path)[0] == 401
+        assert request(port, "GET", path, token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "GET", path, token=TOKEN,
+                       origin="https://evil.example")[0] == 403
+        assert request(port, "GET", "/api/credentials/retention", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/credentials/retention?older_than_days=0", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/credentials/retention?older_than_days=36501",
+                       token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/credentials/retention?older_than_days=030",
+                       token=TOKEN)[0] == 400
+        assert request(port, "GET", path + "&extra=1", token=TOKEN)[0] == 400
+        assert preview_calls == []
+
+        status, headers, body = request(port, "GET", path, token=TOKEN)
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        payload = json.loads(body)
+        assert payload["applied"] is False
+        assert payload["older_than_days"] == 30
+        assert payload["credentials_considered"] == 3
+        assert payload["eligible_credentials"] == 1
+        assert payload["newer_credentials_retained"] == 1
+        assert payload["age_unknown_retained"] == 1
+        assert payload["selected_runs"] == 1 and payload["cookie_jars_selected"] == 1
+        assert "private-origin.example" not in body.decode()
+        assert "private-retention-token-sentinel" not in body.decode()
+        assert "private-retention-cookie-sentinel" not in body.decode()
+        assert TOKEN.encode() not in body
+        assert set(payload) == {
+            "applied", "older_than_days", "credentials_considered", "eligible_credentials",
+            "newer_credentials_retained", "age_unknown_retained", "selected_runs",
+            "cookie_jars_selected", "sqlite_wal_sidecars_may_be_created", "note",
+        }
+
+    assert preview_calls == [30]
+    with sqlite3.connect(database) as db:
+        assert db.execute(
+            "SELECT origin,payload,updated_at FROM web_credentials ORDER BY origin",
+        ).fetchall() == credentials_before
+        assert db.execute(
+            "SELECT state FROM web_runs WHERE run_id='retention-preview-run'",
+        ).fetchone() == state_before
+        assert db.execute("SELECT * FROM web_auth_generations ORDER BY origin").fetchall() == generations_before
+
+
+def test_credential_retention_preview_rejects_malformed_callback_results(tmp_path: Path) -> None:
+    database = fixture_database(tmp_path)
+    valid = {
+        "applied": False, "older_than_days": 1,
+        "credentials_considered": 0, "eligible_credentials": 0,
+        "newer_credentials_retained": 0, "age_unknown_retained": 0,
+        "selected_runs": 0, "cookie_jars_selected": 0,
+        "sqlite_wal_sidecars_may_be_created": False, "wal_cleanup_complete": None,
+    }
+    malformed = [
+        lambda days: {**valid, "older_than_days": days, "applied": True},
+        lambda days: {**valid, "older_than_days": days + 1},
+        lambda days: {**valid, "older_than_days": days, "eligible_credentials": -1},
+        lambda days: {key: value for key, value in {**valid, "older_than_days": days}.items()
+                      if key != "sqlite_wal_sidecars_may_be_created"},
+        None,
+        sqlite3.Error("private callback failure"),
+    ]
+    calls = 0
+
+    def callback(_days: int):
+        nonlocal calls
+        item = malformed[calls]
+        calls += 1
+        if isinstance(item, sqlite3.Error):
+            raise item
+        return item(_days) if callable(item) else item
+
+    with server_for(database, credential_retention_preview=callback) as port:
+        for age in range(1, len(malformed) + 1):
+            status, _headers, body = request(
+                port, "GET", f"/api/credentials/retention?older_than_days={age}", token=TOKEN,
+            )
+            assert status == 503
+            assert body == b"credential retention preview unavailable"
+    assert calls == len(malformed)
+
+
 def test_run_list_fails_closed_on_corrupt_selected_chain(tmp_path: Path) -> None:
     database = tmp_path / "state.sqlite"
     _session, run_id = _start_run(database)
@@ -262,7 +388,8 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
         }
 
         const elements = Object.fromEntries(
-          ['token', 'run', 'result', 'run-list', 'refresh', 'inspect', 'cancel']
+          ['token', 'run', 'result', 'run-list', 'refresh', 'inspect', 'cancel',
+           'retention-age', 'retention-preview']
             .map(id => [id, new Element()])
         );
         const document = {
@@ -291,6 +418,7 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
         const success = () => ({ok: true, status: 200, json: async () => payload});
         const refresh = () => elements.refresh.fire('click');
         const inspect = () => elements.inspect.fire('click');
+        const retentionPreview = () => elements['retention-preview'].fire('click');
         const deny = status => { mockFetch = async () => ({ok: false, status}); };
 
         async function loadAndSelect() {
@@ -413,6 +541,83 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           })});
           await pendingCancel;
           assert.deepEqual(JSON.parse(elements.result.textContent), audit);
+        });
+
+        test('credential retention preview ignores stale age and authorization responses', async () => {
+          elements.token.value = 'operator-secret';
+          elements['retention-age'].value = '30';
+          let resolveOlder;
+          mockFetch = (path, options) => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=30');
+            assert.equal(options.method, 'GET');
+            return new Promise(resolve => { resolveOlder = resolve; });
+          };
+          const older = retentionPreview();
+          elements['retention-age'].value = '31';
+          elements['retention-age'].fire('input');
+          assert.equal(elements.result.textContent, '');
+
+          const current = {applied: false, older_than_days: 31, eligible_credentials: 2};
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=31');
+            assert.equal(options.method, 'GET');
+            return {ok: true, status: 200, json: async () => current};
+          };
+          await retentionPreview();
+          resolveOlder({ok: true, status: 200, json: async () => ({
+            applied: false, older_than_days: 30, eligible_credentials: 1,
+          })});
+          await older;
+          assert.deepEqual(JSON.parse(elements.result.textContent), current);
+
+          let resolveProtected;
+          mockFetch = () => new Promise(resolve => { resolveProtected = resolve; });
+          const pending = retentionPreview();
+          elements.token.value = '';
+          elements.token.fire('input');
+          assert.equal(elements.result.textContent, '');
+          resolveProtected({ok: true, status: 200, json: async () => ({
+            applied: false, older_than_days: 31, eligible_credentials: 99,
+          })});
+          await pending;
+          assert.equal(elements.result.textContent, '');
+        });
+
+        test('retention and run views share one output freshness generation', async () => {
+          await loadAndSelect();
+          elements.token.value = 'operator-secret';
+          elements['retention-age'].value = '30';
+          let resolveRetention;
+          mockFetch = path => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=30');
+            return new Promise(resolve => { resolveRetention = resolve; });
+          };
+          const pendingRetention = retentionPreview();
+
+          const audit = {run_id: runId, status: 'planning'};
+          mockFetch = async path => {
+            assert.equal(path, '/api/runs/' + runId + '/audit');
+            return {ok: true, status: 200, json: async () => audit};
+          };
+          await inspect();
+          resolveRetention({ok: true, status: 200, json: async () => ({
+            applied: false, older_than_days: 30, eligible_credentials: 1,
+          })});
+          await pendingRetention;
+          assert.deepEqual(JSON.parse(elements.result.textContent), audit);
+
+          let resolveAudit;
+          mockFetch = () => new Promise(resolve => { resolveAudit = resolve; });
+          const pendingAudit = inspect();
+          const retention = {applied: false, older_than_days: 30, eligible_credentials: 2};
+          mockFetch = async path => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=30');
+            return {ok: true, status: 200, json: async () => retention};
+          };
+          await retentionPreview();
+          resolveAudit({ok: true, status: 200, json: async () => audit});
+          await pendingAudit;
+          assert.deepEqual(JSON.parse(elements.result.textContent), retention);
         });
         """],
         input=script,
