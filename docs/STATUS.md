@@ -665,6 +665,17 @@ checksum manifest as an exact bundle using `--verify-checksums`. This confirms
 local bundle consistency; signed installer and recipient provenance evidence
 remain open. See the [release bundle checks](reports/issue9-release-checksum-portability-2026-11-19.md#offline-bundle-verification).
 
+PR #111, now merged, provides the offline verifier. Main-based integration
+PR #125 applies it to the tag-triggered release and the nonpublishing
+attestation drill after checksum generation and before attestation or
+publication. Synthetic CLI coverage rejects a changed archive, and
+workflow-order tests keep verification ahead of those release steps. The
+integration commit `b71e79f` passed 46 focused tests, Ruff, repository
+validation (0 findings), and `git diff --check`; exact-head CI and review are
+pending. No tag or release was run. Bundle consistency does not authenticate
+source provenance or prove OIDC/attestation publication. See
+[`issue9-release-bundle-workflow-gate-2026-11-20.md`](reports/issue9-release-bundle-workflow-gate-2026-11-20.md).
+
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
 before registering a worker or accepting results, and cannot replace another
@@ -925,3 +936,14 @@ The local regression checks recreate the workflow object over the same
 database after forgetting; they do not exercise a fresh process or reboot.
 This remains best-effort local retirement, not physical erasure, automatic
 provider revocation, a retention policy, or completion of Issue #9.
+
+## Issue #9 release attestation identity pins (2026-11-20)
+
+The tag release workflow and nonpublishing main-branch attestation drill now
+require GitHub CLI verification to match the expected repository, exact signer
+certificate identity and OIDC issuer, source ref and source commit; both also
+reject self-hosted runners. This replaces the previous repository-only
+identity check with an exact SAN match. The change is code and workflow
+validation only; it does not produce a release or independently validate a
+newly generated GitHub attestation. Issue #9 remains open for release execution,
+host recovery, retention/secret controls, and the Issue #8 dependency.
