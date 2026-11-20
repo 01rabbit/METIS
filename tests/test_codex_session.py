@@ -237,6 +237,31 @@ def test_purge_added_rejects_symlinks_and_unregistered_entries(tmp_path):
     assert unregistered.read_text() == "leave untouched"
 
 
+def test_purge_added_rejects_hardlinks_without_changing_manifest(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "download.txt"
+    external = tmp_path / "outside.txt"
+    source.write_text("download")
+    external.write_text("must remain")
+    session = CodexSession(database)
+    run_id = session.intake(title="added-hardlink", description="fixture", paths=[source])["run_id"]
+    added = session.add_file(run_id, source)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    target = root / added
+    manifest_before = session.context(run_id)["challenge"]["artifacts"]
+    target.unlink()
+    os.link(external, target)
+
+    with pytest.raises(ValueError, match="added artifact is not a private regular file"):
+        session.purge_added(run_id, apply=True)
+
+    assert external.read_text() == "must remain"
+    assert target.samefile(external)
+    assert session.context(run_id)["challenge"]["artifacts"] == manifest_before
+
+
 def test_add_file_and_added_purge_enforce_bounded_entries(tmp_path, monkeypatch):
     database = tmp_path / "sessions.sqlite"
     source = tmp_path / "download.bin"
