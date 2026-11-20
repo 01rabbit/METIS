@@ -55,8 +55,6 @@ def _sha256(path: Path, *, check: Callable[[], None] | None = None) -> str:
             if check is not None:
                 check()
             digest.update(chunk)
-        if check is not None:
-            check()
     return digest.hexdigest()
 
 
@@ -354,33 +352,59 @@ class LlamaServerBackend:
 
     def close(self) -> None:
         process = self._process
-        self._process = None
+        interrupted = False
+        reaped = process is None
+
+        def signal_group(value: signal.Signals) -> None:
+            nonlocal interrupted
+            assert process is not None
+            while True:
+                try:
+                    os.killpg(process.pid, value)
+                    return
+                except ProcessLookupError:
+                    return
+                except KeyboardInterrupt:
+                    interrupted = True
+
+        def wait_for(timeout: float) -> bool:
+            nonlocal interrupted
+            assert process is not None
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    process.wait(timeout=max(0, deadline - time.monotonic()))
+                    return True
+                except KeyboardInterrupt:
+                    interrupted = True
+                    return False
+                except subprocess.TimeoutExpired:
+                    return False
+
         try:
             if process is not None:
                 # The group can outlive a wrapper parent; signal it regardless of poll().
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
+                signal_group(signal.SIGTERM)
+                reaped = wait_for(5)
+                if not reaped:
+                    signal_group(signal.SIGKILL)
+                    reaped = wait_for(5)
         finally:
-            if self._log is not None:
-                self._log.close()
-                self._log = None
-            if self._private is not None:
-                self._private.cleanup()
-                self._private = None
-                self._socket = None
+            if process is not None and process.poll() is not None:
+                reaped = True
+            if reaped:
+                self._process = None
+                if self._log is not None:
+                    self._log.close()
+                    self._log = None
+                if self._private is not None:
+                    self._private.cleanup()
+                    self._private = None
+                    self._socket = None
+        if not reaped:
+            raise LlamaBackendError("server process did not stop")
+        if interrupted:
+            raise KeyboardInterrupt
 
     def __exit__(self, *_: object) -> None:
         self.close()

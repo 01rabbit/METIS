@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import sqlite3
 import threading
 import time
@@ -171,6 +172,7 @@ def test_startup_obeys_absolute_assignment_deadline(backend_files, monkeypatch):
         pytest.fail("server must not finish startup after the assignment deadline")
     assert time.monotonic() >= deadline
     assert processes and processes[0].poll() is not None
+    assert processes[0].returncode == -signal.SIGTERM
     assert tempdirs and not Path(tempdirs[0].name).exists()
 
 
@@ -188,6 +190,41 @@ def test_pinned_artifact_hash_checks_cancellation_between_chunks(tmp_path):
     with pytest.raises(LlamaBackendStopped, match="cancelled"):
         _sha256(artifact, check=cancel_during_hash)
     assert checks == 4
+
+
+def test_startup_hashing_honors_cancel_before_creating_process_or_tempdir(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    backend_files["model"].write_bytes(b"x" * (4 * 1024 * 1024))
+    backend_files["model_sha256"] = _hash(backend_files["model"])
+    real_popen = module.subprocess.Popen
+    real_tempdir = module.tempfile.TemporaryDirectory
+    popen_calls = []
+    tempdir_calls = []
+
+    def track_popen(*args, **kwargs):
+        popen_calls.append(args)
+        return real_popen(*args, **kwargs)
+
+    def track_tempdir(*args, **kwargs):
+        tempdir_calls.append(args)
+        return real_tempdir(*args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "Popen", track_popen)
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", track_tempdir)
+    checks = 0
+
+    def stop_after_two_model_chunks():
+        nonlocal checks
+        checks += 1
+        return checks >= 7
+
+    backend = LlamaServerBackend(**backend_files, should_stop=stop_after_two_model_chunks)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        backend.__enter__()
+    assert checks == 7
+    assert popen_calls == []
+    assert tempdir_calls == []
 
 
 def test_cancelled_startup_kills_server_and_cleans_private_directory(backend_files, monkeypatch):
@@ -255,6 +292,43 @@ UnixStreamServer(path, Handler).serve_forever()
     assert close_calls == 2
     assert processes and processes[0].poll() is not None
     assert tempdirs and not Path(tempdirs[0].name).exists()
+
+
+def test_close_kills_and_reaps_after_wait_is_interrupted(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    class InterruptedProcess:
+        pid = 123
+        returncode = None
+        wait_calls = 0
+
+        def wait(self, *, timeout):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise KeyboardInterrupt
+            if self.returncode is None:
+                raise module.subprocess.TimeoutExpired("fake-server", timeout)
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    process = InterruptedProcess()
+    signals = []
+
+    def killpg(_pid, value):
+        signals.append(value)
+        if value == signal.SIGKILL:
+            process.returncode = -signal.SIGKILL
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    backend = LlamaServerBackend(**backend_files)
+    backend._process = process
+    with pytest.raises(KeyboardInterrupt):
+        backend.close()
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert process.wait_calls == 2 and backend._process is None
+    backend.close()
 
 
 def test_shared_concurrent_reservation(backend_files):
