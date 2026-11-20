@@ -1003,7 +1003,8 @@ hashing, server startup, SQLite budget reservation, tokenization, and completion
 and watch cancellation during health polling and budget reservation. Startup
 cancellation stops the process group and records a cancelled outcome; timeout
 before completion records a timeout and retains the consumed admitted
-reservation. The two affected test files pass 63 cases,
-with Ruff, mypy, repository validation, and `git diff --check` also
-passing on Python 3.12.13. This closes the startup wait-boundary gap only;
-`hard_token_budget_enforced` remains false and Issue #8 remains open. Evidence:
+reservation. The affected test suites pass, with Ruff, mypy, repository
+validation, and `git diff --check` also passing. This closes the startup
+wait-boundary gap only; `hard_token_budget_enforced` remains false and Issue #8
+remains open. Evidence:
+[`issue8-llama-admitted-startup-deadline-2026-11-20.md`](reports/issue8-llama-admitted-startup-deadline-2026-11-20.md).

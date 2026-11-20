@@ -10,8 +10,10 @@ bounded operations, and expiry is checked immediately before the child process
 is launched. Cleanup escalates to SIGKILL for any surviving members of the
 process group after SIGTERM and waits for the server child. Cancellation
 observed before a response is accepted records a cancelled outcome. Expiry of
-the call deadline or the backend startup limit records a timeout. The scheduler
-retains committed token reservations.
+the absolute call deadline records a timeout; reaching the separate backend
+startup limit records `launch_failed`. Once a valid completion response has
+been received, its measured usage is preserved even if cancellation arrives
+afterward. The scheduler retains committed token reservations.
 
 Validation on the PR branch:
 

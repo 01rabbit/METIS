@@ -221,7 +221,7 @@ class LlamaServerBackend:
             worker.join(timeout=min(.05, max(0, deadline - time.monotonic())))
             if time.monotonic() >= deadline:
                 break
-        if should_stop is not None and should_stop():
+        if should_stop is not None and should_stop() and not result:
             self.close()
             raise LlamaBackendStopped("model call cancelled")
         if worker.is_alive():

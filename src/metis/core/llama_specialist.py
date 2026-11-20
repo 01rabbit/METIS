@@ -129,8 +129,6 @@ class LlamaSpecialist:
                     request, n_predict=self.max_output_tokens,
                     timeout_seconds=remaining, should_stop=should_stop,
                     call_deadline=call_deadline)
-            if should_stop is not None and should_stop():
-                return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
             usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
             try:
                 decision = _decision(content)
@@ -226,8 +224,6 @@ class LlamaSpecialist:
                     prompt, n_predict=self.max_output_tokens,
                     token_cap=receipt.attempt.tokens, timeout_seconds=remaining,
                     should_stop=should_stop, deadline_monotonic=call_deadline)
-            if should_stop is not None and should_stop():
-                raise LlamaBackendStopped("model call cancelled")
             outcome = TokenLaunchOutcome(status="completed", exit_status=0,
                                         observed_work=input_tokens + output_tokens,
                                         native_manifest_sha256=outcome_manifest)

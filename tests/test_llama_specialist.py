@@ -593,7 +593,7 @@ def test_admitted_startup_time_counts_against_total_call_deadline(tmp_path, monk
     assert outcomes[0].status == "timeout"
 
 
-def test_admitted_cancellation_before_completion_response_records_cancelled(tmp_path, monkeypatch):
+def test_admitted_cancellation_after_completion_response_preserves_usage(tmp_path, monkeypatch):
     prompt = LlamaSpecialist.build_native_request("assignment")
     runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
         binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
@@ -634,6 +634,7 @@ def test_admitted_cancellation_before_completion_response_records_cancelled(tmp_
         token_claim=_claim(runner, prompt), admission=Admission(), should_stop=stop)
 
     assert cancelled.is_set()
-    assert turn.returncode == 1 and turn.stopped and turn.message is None
-    assert [outcome.status for outcome in outcomes] == ["cancelled"]
-    assert outcomes[0].observed_work is None
+    assert turn.returncode == 0 and not turn.stopped
+    assert turn.usage == {"input_tokens": 1, "output_tokens": 1}
+    assert [outcome.status for outcome in outcomes] == ["completed"]
+    assert outcomes[0].observed_work == 2
