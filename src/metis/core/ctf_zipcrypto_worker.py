@@ -74,7 +74,9 @@ if __name__ == "__main__":
         raise SystemExit(0)
     result = known_plaintext_attack(
         member_bytes(archive, entry), plaintext, 12 + offset,
-        extra={11: check_bytes(entry)[11]}, seconds=request["seconds"], workers=8,
+        # The zipcrypto sandbox enforces a four-CPU quota; do not oversubscribe
+        # it with eight multiprocessing workers on variable CI hosts.
+        extra={11: check_bytes(entry)[11]}, seconds=request["seconds"], workers=4,
         phase_callback=mark_phase)
     print(json.dumps({"result": result}, separators=(",", ":")))
 '''

@@ -749,7 +749,12 @@ def _specialist_intent_zipcrypto_chain(tmp_path, monkeypatch=None, *, seconds=12
 
     attack = intent("artifact", "zipcrypto_attack", artifact=name,
                     options={"member": "known.txt", "plaintext_hex": known[:60].hex(), "seconds": seconds})
-    assert attack["ok"] and attack["result"]["found"]
+    assert attack["ok"] and attack["result"]["found"], {
+        "ok": attack.get("ok"),
+        "reason": attack.get("result", {}).get("reason"),
+        "stage": attack.get("result", {}).get("stage"),
+        "seconds": attack.get("result", {}).get("seconds"),
+    }
     recovered = attack["result"]["keys"]
     assert recovered == keys.hex()
     recovered_keys = zc.parse_keys(",".join(recovered[k] for k in ("x", "y", "z")))
