@@ -1031,10 +1031,12 @@ release metadata, generated and then verified the checksum manifest, and
 installed the wheel in a fresh Python 3.12 environment. `metis doctor` exited
 0 with `ready: true` and `mode: codex-native`; the sandbox was not configured, so
 this smoke test did not exercise sandbox execution. One Build Provenance
-attestation contains all three subjects. Verification checked the repository,
-workflow identity, OIDC issuer, main ref, source commit, and rejection of
-self-hosted runners in the same workflow job. The attestation is publicly
-recorded in the repository and Rekor (log index `4019447095`). This separate
+attestation contains all three subjects. In the same workflow job,
+`gh attestation verify` checked the repository, workflow identity, OIDC
+issuer, main ref, and source commit, and used `--deny-self-hosted-runners`.
+The loop's success is evidenced by the step's zero exit status. The attestation
+is publicly recorded in the repository and [Rekor (log index
+`4019447095`)](https://search.sigstore.dev/?logIndex=4019447095). This separate
 drill did not exercise production `release.yml`; no tag, GitHub Release or
 release assets were created. It is one non-release provenance drill, not
 release publication or P8 acceptance.

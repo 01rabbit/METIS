@@ -31,7 +31,9 @@ All workflow steps succeeded:
    repository, drill-workflow certificate identity, GitHub Actions OIDC
    issuer, `refs/heads/main`, and source commit above, while rejecting
    self-hosted runners. This is an in-job verification, not an independent
-   post-run verification by a third party.
+   post-run verification by a third party. The command prints no per-subject
+   success lines; successful verification is evidenced by the step's zero exit
+   status under `bash -e`.
 
 ## Scope and limits
 
