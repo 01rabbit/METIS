@@ -585,6 +585,7 @@ def test_credential_retirement_truncates_wal_and_reports_busy_reader(tmp_path):
     assert forgotten["wal_cleanup_complete"] is True
     wal_path = workflow.database.with_name(workflow.database.name + "-wal")
     assert not wal_path.exists() or wal_path.stat().st_size == 0
+    assert b"synthetic-wal-secret" not in workflow.database.read_bytes()
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (0,)
 
@@ -597,11 +598,13 @@ def test_credential_retirement_truncates_wal_and_reports_busy_reader(tmp_path):
         assert blocked["credential_removed"] is True
         assert blocked["wal_cleanup_complete"] is False
         assert "could not be confirmed" in blocked["limit"]
+        assert b"synthetic-wal-secret" in workflow.database.read_bytes()
     finally:
         reader.close()
     with sqlite3.connect(workflow.database) as db:
         assert db.execute("SELECT COUNT(*) FROM web_credentials").fetchone() == (0,)
     assert workflow._truncate_credential_wal() is True
+    assert b"synthetic-wal-secret" not in workflow.database.read_bytes()
 
 
 def test_forget_auth_removes_cookie_and_fences_stale_client(tmp_path, sites):
