@@ -46,11 +46,17 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, *, check: Callable[[], None] | None = None) -> str:
     digest = hashlib.sha256()
+    if check is not None:
+        check()
     with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        while chunk := source.read(1024 * 1024):
+            if check is not None:
+                check()
             digest.update(chunk)
+        if check is not None:
+            check()
     return digest.hexdigest()
 
 
@@ -95,17 +101,24 @@ class LlamaServerBackend:
         startup_deadline = time.monotonic() + self.startup_seconds
         if self.deadline_monotonic is not None:
             startup_deadline = min(startup_deadline, self.deadline_monotonic)
-        if self.should_stop is not None and self.should_stop():
-            raise LlamaBackendStopped("server startup cancelled")
-        if time.monotonic() >= startup_deadline:
-            raise LlamaBackendError("server startup deadline exceeded")
+
+        def check_startup() -> None:
+            if self.should_stop is not None and self.should_stop():
+                raise LlamaBackendStopped("server startup cancelled")
+            now = time.monotonic()
+            if now >= startup_deadline:
+                if (self.deadline_monotonic is not None
+                        and now >= self.deadline_monotonic):
+                    raise LlamaBackendError("server startup deadline exceeded")
+                raise LlamaBackendError("server startup timed out")
+
+        check_startup()
         for path, expected in ((self.binary, self.binary_sha256), (self.model, self.model_sha256)):
             if not path.is_file() or not stat.S_ISREG(path.stat().st_mode):
                 raise LlamaBackendError("pinned artifact unavailable")
-            if len(expected) != 64 or _sha256(path) != expected.lower():
+            if len(expected) != 64 or _sha256(path, check=check_startup) != expected.lower():
                 raise LlamaBackendError("pinned artifact changed")
-            if time.monotonic() >= startup_deadline:
-                raise LlamaBackendError("server startup deadline exceeded")
+            check_startup()
         try:
             self._private = tempfile.TemporaryDirectory(prefix="metis-llama-", dir=None)
             os.chmod(self._private.name, 0o700)
@@ -116,6 +129,7 @@ class LlamaServerBackend:
             # The child receives no prompt before complete() reserves tokens.
             child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
                          "TMPDIR": self._private.name, "LANG": "C"}
+            check_startup()
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
                  "--parallel", "1", "--no-webui", "--ctx-size",
@@ -125,8 +139,7 @@ class LlamaServerBackend:
                 start_new_session=True, close_fds=True, env=child_env,
             )
             while time.monotonic() < startup_deadline:
-                if self.should_stop is not None and self.should_stop():
-                    raise LlamaBackendStopped("server startup cancelled")
+                check_startup()
                 if self._process.poll() is not None:
                     raise LlamaBackendError("server exited during startup")
                 try:

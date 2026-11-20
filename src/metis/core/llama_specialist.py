@@ -243,7 +243,7 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         except LlamaBackendError as exc:
             detail = str(exc).lower()
-            status = ("timeout" if "deadline" in detail or time.monotonic() >= deadline else
+            status = ("timeout" if "deadline" in detail else
                       "launch_failed" if "pinned artifact" in detail or "startup" in detail else
                       "server_error")
             if status == "timeout":

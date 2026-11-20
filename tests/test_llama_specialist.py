@@ -425,3 +425,53 @@ def test_admitted_startup_past_assignment_deadline_skips_completion(tmp_path, mo
         token_claim=_claim(runner, prompt), admission=Admission())
     assert turn.returncode == 1 and turn.timed_out
     assert outcomes[0].status == "timeout"
+
+
+def test_admitted_startup_cancellation_records_cancelled_outcome(tmp_path, monkeypatch):
+    prompt = LlamaSpecialist.build_native_request("assignment")
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    outcomes = []
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+    class CancelledStartup:
+        def __init__(self, **_config): pass
+        def __enter__(self): raise LlamaBackendStopped("server startup cancelled")
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, *_args, **_kwargs):
+            pytest.fail("completion must not run after startup cancellation")
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", CancelledStartup)
+    turn = runner.run_admitted(prompt, model=runner.model_id, timeout=1,
+        token_claim=_claim(runner, prompt), admission=Admission(), should_stop=lambda: True)
+    assert turn.returncode == 1 and turn.stopped and not turn.timed_out
+    assert [outcome.status for outcome in outcomes] == ["cancelled"]
+
+
+def test_integrity_failure_after_deadline_is_not_relabelled_as_timeout(tmp_path, monkeypatch):
+    prompt = LlamaSpecialist.build_native_request("assignment")
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    outcomes = []
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+    class ChangedArtifact:
+        def __init__(self, **_config): pass
+        def __enter__(self):
+            time.sleep(.02)
+            raise LlamaBackendError("pinned artifact changed")
+        def __exit__(self, *_args): pass
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", ChangedArtifact)
+    turn = runner.run_admitted(prompt, model=runner.model_id, timeout=.01,
+        token_claim=_claim(runner, prompt), admission=Admission())
+    assert turn.returncode == 1 and not turn.timed_out
+    assert [outcome.status for outcome in outcomes] == ["launch_failed"]

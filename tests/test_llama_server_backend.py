@@ -14,6 +14,7 @@ from metis.core.llama_server_backend import (
     LlamaBackendRefused,
     LlamaBackendStopped,
     LlamaServerBackend,
+    _sha256,
 )
 
 
@@ -140,16 +141,120 @@ def test_startup_failure_before_any_prompt_has_no_reservation(backend_files):
     assert not backend_files["database"].exists()
 
 
-def test_startup_obeys_absolute_assignment_deadline(backend_files):
+def test_startup_obeys_absolute_assignment_deadline(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
     backend_files["binary"].write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(1)\n")
     backend_files["binary"].chmod(0o700)
     backend_files["binary_sha256"] = _hash(backend_files["binary"])
-    deadline = time.monotonic() + .05
+    real_popen = module.subprocess.Popen
+    real_tempdir = module.tempfile.TemporaryDirectory
+    processes = []
+    tempdirs = []
+
+    def track_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def track_tempdir(*args, **kwargs):
+        tempdir = real_tempdir(*args, **kwargs)
+        tempdirs.append(tempdir)
+        return tempdir
+
+    monkeypatch.setattr(module.subprocess, "Popen", track_popen)
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", track_tempdir)
+    deadline = time.monotonic() + .5
     with pytest.raises(LlamaBackendError, match="startup deadline"), LlamaServerBackend(
         **backend_files, startup_seconds=10, deadline_monotonic=deadline,
     ):
         pytest.fail("server must not finish startup after the assignment deadline")
     assert time.monotonic() >= deadline
+    assert processes and processes[0].poll() is not None
+    assert tempdirs and not Path(tempdirs[0].name).exists()
+
+
+def test_pinned_artifact_hash_checks_cancellation_between_chunks(tmp_path):
+    artifact = tmp_path / "large-model.gguf"
+    artifact.write_bytes(b"x" * (4 * 1024 * 1024))
+    checks = 0
+
+    def cancel_during_hash():
+        nonlocal checks
+        checks += 1
+        if checks == 4:
+            raise LlamaBackendStopped("server startup cancelled")
+
+    with pytest.raises(LlamaBackendStopped, match="cancelled"):
+        _sha256(artifact, check=cancel_during_hash)
+    assert checks == 4
+
+
+def test_cancelled_startup_kills_server_and_cleans_private_directory(backend_files, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    backend_files["binary"].write_text('''#!/usr/bin/env python3
+import socket, sys, time
+from http.server import BaseHTTPRequestHandler
+from socketserver import UnixStreamServer
+path = sys.argv[sys.argv.index('--host') + 1]
+class Handler(BaseHTTPRequestHandler):
+ def log_message(self, *args): pass
+ def do_GET(self): time.sleep(3)
+UnixStreamServer(path, Handler).serve_forever()
+''')
+    backend_files["binary"].chmod(0o700)
+    backend_files["binary_sha256"] = _hash(backend_files["binary"])
+    real_popen = module.subprocess.Popen
+    real_tempdir = module.tempfile.TemporaryDirectory
+    processes = []
+    tempdirs = []
+    request_started = False
+
+    def track_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        socket_path = args[0][args[0].index("--host") + 1]
+        ready_by = time.monotonic() + 3
+        while not Path(socket_path).exists() and time.monotonic() < ready_by:
+            time.sleep(.005)
+        assert Path(socket_path).exists()
+        return process
+
+    def track_tempdir(*args, **kwargs):
+        tempdir = real_tempdir(*args, **kwargs)
+        tempdirs.append(tempdir)
+        return tempdir
+
+    monkeypatch.setattr(module.subprocess, "Popen", track_popen)
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", track_tempdir)
+    def should_stop():
+        return request_started
+
+    backend = LlamaServerBackend(**backend_files, startup_seconds=10,
+                                 should_stop=should_stop)
+    request_before = backend._request_before
+
+    def cancel_during_health_check(*args, **kwargs):
+        nonlocal request_started
+        request_started = True
+        return request_before(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_request_before", cancel_during_health_check)
+    close_calls = 0
+    close = backend.close
+
+    def count_close():
+        nonlocal close_calls
+        close_calls += 1
+        close()
+
+    monkeypatch.setattr(backend, "close", count_close)
+    with pytest.raises(LlamaBackendStopped, match="cancelled"), backend:
+        pytest.fail("cancelled startup must not enter the backend")
+    assert close_calls == 2
+    assert processes and processes[0].poll() is not None
+    assert tempdirs and not Path(tempdirs[0].name).exists()
 
 
 def test_shared_concurrent_reservation(backend_files):
