@@ -131,12 +131,16 @@ class AdmittedFakeRunner(LlamaSpecialist):
                          native_manifest_sha256="d" * 64)
         self.hard_token_budget_enforced = True
         self.calls: list[tuple[str, object]] = []
+        self.admissions: list[StudyTokenAdmission] = []
         self.fail = fail
 
     def run(self, _prompt, *, model=None, timeout=1, should_stop=None, images=None, output_schema=None):
         raise AssertionError("native admitted fixture must use run_admitted")
 
-    def run_admitted(self, prompt, *, token_claim, **_kwargs):
+    def run_admitted(self, prompt, *, token_claim, admission, **_kwargs):
+        if not isinstance(admission, StudyTokenAdmission):
+            raise TypeError("the persisted admission controller must reach the native consumer")
+        self.admissions.append(admission)
         self.calls.append((prompt, token_claim))
         if self.fail:
             raise TimeoutError("synthetic runner interruption")
@@ -156,6 +160,7 @@ def test_run_assignment_claims_actual_reservation_and_hashes_exact_prompt(tmp_pa
                    study_token_admission=admission, final_handoff_call_limit=1)
 
     assert len(runner.calls) == 1
+    assert runner.admissions == [admission]
     prompt, claim = runner.calls[0]
     assert prompt.startswith(PROMPT_PREFIX + "\n\n")
     assert "FINAL SPECIALIST CALL:" in prompt[len(PROMPT_PREFIX) + 2:]

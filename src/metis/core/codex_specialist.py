@@ -702,7 +702,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 return stop_outcome(str(exc))
             turn = runner.run_admitted(  # type: ignore[attr-defined]
                 prompt, model=selected, timeout=timeout, should_stop=stopped,
-                images=list(attached.values()) or None, token_claim=token_claim, **kwargs,
+                images=list(attached.values()) or None, token_claim=token_claim,
+                admission=study_token_admission, **kwargs,
             )
         else:
             turn = runner.run(prompt, model=selected, timeout=timeout,
