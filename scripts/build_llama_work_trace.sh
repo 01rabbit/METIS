@@ -30,7 +30,7 @@ esac
 
 metis_repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 metis_source_pin=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
-metis_trace_patch_sha256=7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d
+metis_trace_patch_sha256=c97500f6a98a2c34554953f82eb46ce6b39d1b82581fa1aef65b197090dd1c4c
 metis_source_remote=${METIS_LLAMA_SOURCE_REMOTE:-https://github.com/ggml-org/llama.cpp.git}
 metis_build_jobs=${METIS_LLAMA_BUILD_JOBS:-4}
 case "$metis_build_jobs" in
