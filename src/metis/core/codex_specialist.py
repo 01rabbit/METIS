@@ -42,7 +42,7 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_isolation import (
@@ -88,6 +88,52 @@ MAX_IMAGES = 4
 # Failures of the model service, not of the specialist: the same turn is retried once.
 TRANSIENT_MARKERS = ("hardware key", "rate limit", "connection failed", "temporarily unavailable", "503", "502")
 TRANSIENT_BACKOFF = 5.0
+FailureCategory = Literal[
+    "none", "cancelled", "deadline", "policy_violation", "provider_failure", "budget_exhausted",
+    "invalid_or_incomplete_output", "specialist_abstained", "infrastructure_or_configuration_failure",
+    "termination_unconfirmed", "other_failure",
+]
+
+
+def _effective_runner_timeout(runner: object, requested: float) -> float:
+    """Account for an optional runner-enforced per-call timeout ceiling."""
+    cap = getattr(runner, "max_call_timeout", None)
+    if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0:
+        return min(requested, float(cap))
+    return requested
+
+
+def _failure_category(state: str, failure: str | None) -> FailureCategory:
+    """Return a fixed answer-free failure class without copying private failure text."""
+    reason = (failure or "").casefold()
+    if state == "completed":
+        return "none"
+    if state == "unknown":
+        return "termination_unconfirmed"
+    if state == "cancelled":
+        return "cancelled"
+    if state == "timed_out" and reason == "max turns reached":
+        return "budget_exhausted"
+    if state == "timed_out":
+        return "deadline"
+    if reason.startswith("policy_violation:"):
+        return "policy_violation"
+    if reason.startswith(("codex turn timed out", "codex exited ")):
+        return "provider_failure"
+    if "deadline" in reason:
+        return "deadline"
+    if any(marker in reason for marker in (
+        "budget exhausted", "shared model-turn reserve held", "call cap exhausted",
+    )):
+        return "budget_exhausted"
+    if reason.startswith(("no valid report", "final handoff call returned a prohibited action")):
+        return "invalid_or_incomplete_output"
+    if reason.startswith("specialist gave up"):
+        return "specialist_abstained"
+    if reason.startswith(("spawn_error:", "native token admission does not cover image inputs")):
+        return "infrastructure_or_configuration_failure"
+    return "other_failure"
+
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 STOP_POLL = 2.0
 TRANSCRIPT_CHARS = 40_000
@@ -647,6 +693,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     attached: dict[str, tuple[str, bytes]] = {}
     private_candidates: set[str] = set()
     decision_counts: dict[str, int] = {}
+    failure_category_hint: FailureCategory | None = None
 
     def record_turn(turn: CodexTurn, reservation_id: int) -> None:
         record = {"thread_id": turn.thread_id, "returncode": turn.returncode, "usage": turn.usage,
@@ -803,7 +850,18 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                  json.dumps({"reservation_id": reservation["reservation_id"]}))
             outcome = stop_outcome("run or attempt stopped before provider call")
             break
-        turn = invoke(reservation, min(turn_timeout, remaining), prompt, token_claim)
+        latest = _job(scheduler, assignment_id)
+        call_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
+        # Native admission rechecks the assignment deadline while consuming its claim and
+        # persists the unconsumed refusal; keep that authoritative path intact.
+        if call_remaining <= 0 and token_claim is None:
+            scheduler.tick()
+            outcome = stop_outcome("deadline exceeded before the provider call")
+            break
+        requested_timeout = min(turn_timeout, call_remaining if call_remaining > 0 else remaining)
+        deadline_limited_turn = (call_remaining > 0
+                                 and call_remaining <= _effective_runner_timeout(runner, requested_timeout))
+        turn = invoke(reservation, requested_timeout, prompt, token_claim)
         if isinstance(turn, dict):
             outcome = turn
             break
@@ -841,7 +899,16 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                      json.dumps({"reservation_id": retry_reservation["reservation_id"]}))
                 outcome = stop_outcome("run or attempt stopped before transient retry")
                 break
-            turn = invoke(retry_reservation, min(turn_timeout, retry_remaining), retry_prompt, retry_claim)
+            latest = _job(scheduler, assignment_id)
+            call_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
+            if call_remaining <= 0 and retry_claim is None:
+                scheduler.tick()
+                outcome = stop_outcome("deadline exceeded before the retry provider call")
+                break
+            requested_timeout = min(turn_timeout, call_remaining if call_remaining > 0 else retry_remaining)
+            deadline_limited_turn = (call_remaining > 0
+                                     and call_remaining <= _effective_runner_timeout(runner, requested_timeout))
+            turn = invoke(retry_reservation, requested_timeout, retry_prompt, retry_claim)
             if isinstance(turn, dict):
                 outcome = turn
                 break
@@ -859,6 +926,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             break
         if turn.timed_out or turn.returncode != 0:
             reason = "codex turn timed out" if turn.timed_out else f"codex exited {turn.returncode}"
+            if turn.timed_out:
+                failure_category_hint = "deadline" if deadline_limited_turn else "provider_failure"
             outcome = scheduler.fail(assignment_id, attempt_id, reason + ": " + turn.stderr_tail[-160:])
             break
         try:
@@ -880,6 +949,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                                "how_to_fix": "Send the candidate with action candidate, then submit the report in a later turn."})
             continue
         if decision["action"] == "fail":
+            failure_category_hint = "specialist_abstained"
             outcome = scheduler.fail(assignment_id, attempt_id, str(decision.get("reason") or "specialist gave up"))
             break
         if decision["action"] in {"candidate", "candidate_report"}:
@@ -961,7 +1031,8 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
     return {"run_id": run_id, "assignment_id": assignment_id, "attempt_id": attempt_id, "model": selected,
             "codex_turns": turns, "intents": [_public_step(step) for step in transcript],
             "decision_counts": decision_counts,
-            "outcome": outcome, "job_state": final["state"], "failure": final["failure"]}
+            "outcome": outcome, "job_state": final["state"], "failure": final["failure"],
+            "failure_category": failure_category_hint or _failure_category(final["state"], final["failure"])}
 
 
 REPORT_HINTS = (
