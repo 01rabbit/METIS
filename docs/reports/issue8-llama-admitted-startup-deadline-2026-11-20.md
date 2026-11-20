@@ -11,15 +11,14 @@ is launched. Cleanup escalates to SIGKILL for any surviving members of the
 process group after SIGTERM and waits for the server child. Cancellation
 observed before a response is accepted records a cancelled outcome. Expiry of
 the absolute call deadline records a timeout; reaching the separate backend
-startup limit records `launch_failed`. Once a valid completion response has
-been received, its measured usage is preserved even if cancellation arrives
-afterward. The scheduler retains committed token reservations.
+startup limit records `launch_failed`. Once the backend accepts a completion response, its measured usage is
+preserved even if cancellation arrives afterward. The scheduler retains committed token reservations.
 
 Validation on the PR branch:
 
 ```text
 PYTHONPATH=src:. /Users/mao/Developer/GitHub/METIS/.venv/bin/pytest -q tests/test_llama_server_backend.py tests/test_llama_specialist.py
-63 passed
+82 passed
 ruff check src tests scripts
 All checks passed
 mypy src

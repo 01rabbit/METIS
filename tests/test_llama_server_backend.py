@@ -776,11 +776,17 @@ def test_startup_cancellation_stops_server_before_health(backend_files):
 
 
 def test_startup_cancellation_terminates_sigterm_ignoring_group_member(backend_files):
+    import ctypes
+    import sys
+
     binary = backend_files["binary"]
     observer = None
+    reaper = None
+    reaped = threading.Event()
     with tempfile.TemporaryDirectory(prefix="metis-llama-test-") as directory, socket.socket(
             socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         address = str(Path(directory) / "child.sock")
+        child_pid_file = Path(directory) / "child.pid"
         listener.bind(address)
         listener.listen()
         listener.setblocking(False)
@@ -788,6 +794,8 @@ def test_startup_cancellation_terminates_sigterm_ignoring_group_member(backend_f
 import os, signal, socket, time
 if os.fork() == 0:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open({str(child_pid_file)!r}, 'w') as pid_file:
+        pid_file.write(str(os.getpid()))
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as witness:
         witness.settimeout(5)
         witness.connect({address!r})
@@ -797,13 +805,39 @@ else:
 """)
         backend_files["binary_sha256"] = _hash(binary)
 
+        # Linux containers may not have an init process that reaps orphans.
+        # Become a temporary subreaper and reap only this fixture's child so
+        # close() can observe the entire process group disappearing.
+        libc = ctypes.CDLL(None, use_errno=True)
+        previous_subreaper = ctypes.c_int()
+        subreaper_enabled = sys.platform.startswith("linux")
+        if subreaper_enabled:
+            assert libc.prctl(37, ctypes.byref(previous_subreaper), 0, 0, 0) == 0
+            assert libc.prctl(36, 1, 0, 0, 0) == 0
+
+        def reap_fixture_child(child_pid: int) -> None:
+            while True:
+                try:
+                    waited_pid, _status = os.waitpid(child_pid, os.WNOHANG)
+                except ChildProcessError:
+                    time.sleep(.01)
+                    continue
+                if waited_pid == child_pid:
+                    reaped.set()
+                    return
+                time.sleep(.01)
+
         def connected() -> bool:
-            nonlocal observer
+            nonlocal observer, reaper
             if observer is None:
                 try:
                     observer, _address = listener.accept()
                 except BlockingIOError:
                     return False
+                if subreaper_enabled:
+                    child_pid = int(child_pid_file.read_text())
+                    reaper = threading.Thread(target=reap_fixture_child, args=(child_pid,), daemon=True)
+                    reaper.start()
             return True
 
         backend = LlamaServerBackend(**backend_files, startup_seconds=4,
@@ -814,9 +848,15 @@ else:
             assert observer is not None
             observer.settimeout(1)
             assert observer.recv(1) == b""
+            if subreaper_enabled:
+                assert reaper is not None
+                reaper.join(timeout=2)
+                assert reaped.is_set()
         finally:
             if observer is not None:
                 observer.close()
+            if subreaper_enabled:
+                assert libc.prctl(36, previous_subreaper.value, 0, 0, 0) == 0
 
 
 def test_startup_deadline_after_artifact_hash_prevents_process_launch(backend_files, monkeypatch):
@@ -1038,3 +1078,29 @@ def test_budget_reservation_lock_obeys_deadline_and_cancellation(backend_files, 
     with sqlite3.connect(backend_files["database"]) as db:
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?",
                           ("llama_token_budgets",)).fetchone() is None
+
+def test_non_admitted_cancellation_after_completion_response_preserves_usage(backend_files, monkeypatch):
+    completion_returned = threading.Event()
+    cancelled = threading.Event()
+    with LlamaServerBackend(**backend_files) as backend:
+        original_request = backend._request
+
+        def request(route, payload, *, timeout):
+            response = original_request(route, payload, timeout=timeout)
+            if route == "/completion":
+                completion_returned.set()
+            return response
+
+        def stop() -> bool:
+            if completion_returned.is_set() and not cancelled.is_set():
+                while any(thread.name == "metis-llama-request"
+                          for thread in threading.enumerate()):
+                    time.sleep(.001)
+                cancelled.set()
+            return cancelled.is_set()
+
+        monkeypatch.setattr(backend, "_request", request)
+        result = backend.complete("one two", n_predict=2, timeout_seconds=5, should_stop=stop)
+
+    assert cancelled.is_set()
+    assert result == ("xx", 2, 2)

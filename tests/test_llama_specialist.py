@@ -601,7 +601,7 @@ def test_admitted_cancellation_after_completion_response_preserves_usage(tmp_pat
         max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
     outcomes = []
     completion_started = threading.Event()
-    waiting_for_response = threading.Event()
+    completion_returned = threading.Event()
     cancelled = threading.Event()
 
     class Admission:
@@ -611,19 +611,18 @@ def test_admitted_cancellation_after_completion_response_preserves_usage(tmp_pat
         def record_outcome(self, _claim, outcome): outcomes.append(outcome)
 
     def stop() -> bool:
-        already_cancelled = cancelled.is_set()
-        if completion_started.is_set():
-            waiting_for_response.set()
-        return already_cancelled
+        if completion_returned.is_set() and not cancelled.is_set():
+            while any(thread.name == "metis-llama-request" for thread in threading.enumerate()):
+                time.sleep(.001)
+            cancelled.set()
+        return cancelled.is_set()
 
     def request(backend, route, payload, *, timeout):
         if route == "/tokenize":
             return {"tokens": [1]}
         assert route == "/completion"
         completion_started.set()
-        if not waiting_for_response.wait(2):
-            raise LlamaBackendError("completion fixture did not reach the cancellation check")
-        cancelled.set()
+        completion_returned.set()
         return {"content": "late response", "tokens_evaluated": 1, "tokens_predicted": 1,
                 "generation_settings": {"n_predict": payload["n_predict"]},
                 "model": str(backend.model)}
@@ -638,3 +637,47 @@ def test_admitted_cancellation_after_completion_response_preserves_usage(tmp_pat
     assert turn.usage == {"input_tokens": 1, "output_tokens": 1}
     assert [outcome.status for outcome in outcomes] == ["completed"]
     assert outcomes[0].observed_work == 2
+
+def test_admitted_cancellation_before_completion_response_records_cancelled(tmp_path, monkeypatch):
+    prompt = LlamaSpecialist.build_native_request("assignment")
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    outcomes = []
+    completion_started = threading.Event()
+    release_response = threading.Event()
+    request_finished = threading.Event()
+
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+
+    def stop() -> bool:
+        return completion_started.is_set()
+
+    def request(backend, route, payload, *, timeout):
+        if route == "/tokenize":
+            return {"tokens": [1]}
+        assert route == "/completion"
+        completion_started.set()
+        if not release_response.wait(2):
+            raise LlamaBackendError("test did not release completion fixture")
+        request_finished.set()
+        return {"content": "late response", "tokens_evaluated": 1, "tokens_predicted": 1,
+                "generation_settings": {"n_predict": payload["n_predict"]},
+                "model": str(backend.model)}
+
+    monkeypatch.setattr(LlamaServerBackend, "__enter__", lambda backend: backend)
+    monkeypatch.setattr(LlamaServerBackend, "_request", request)
+    try:
+        turn = runner.run_admitted(prompt, model=runner.model_id, timeout=5,
+            token_claim=_claim(runner, prompt), admission=Admission(), should_stop=stop)
+    finally:
+        release_response.set()
+    assert request_finished.wait(1)
+    assert turn.returncode == 1 and turn.stopped and turn.message is None
+    assert [outcome.status for outcome in outcomes] == ["cancelled"]
+    assert outcomes[0].observed_work is None

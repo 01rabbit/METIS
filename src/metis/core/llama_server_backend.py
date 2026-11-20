@@ -215,7 +215,7 @@ class LlamaServerBackend:
         worker = threading.Thread(target=invoke, name="metis-llama-request", daemon=True)
         worker.start()
         while worker.is_alive():
-            if should_stop is not None and should_stop():
+            if should_stop is not None and should_stop() and not result:
                 self.close()
                 raise LlamaBackendStopped("model call cancelled")
             worker.join(timeout=min(.05, max(0, deadline - time.monotonic())))
@@ -332,9 +332,6 @@ class LlamaServerBackend:
                 or not isinstance(result.get("content"), str)):
             self.close()
             raise LlamaBackendError("completion usage or settings mismatch")
-        if should_stop is not None and should_stop():
-            self.close()
-            raise LlamaBackendStopped("model call cancelled")
         return result["content"], evaluated, predicted
 
     def complete_admitted(self, prompt: str, *, n_predict: int, token_cap: int,
