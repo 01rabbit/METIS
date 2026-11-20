@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,74 @@ from metis.core.llama_server_backend import (
 
 def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _native_work_server(backend_files, *, receipt_mode="valid"):
+    binary = backend_files["binary"]
+    source = binary.read_text()
+    source = source.replace(
+        "args=sys.argv\nsock=args[args.index('--host')+1]\nmodel=args[args.index('--model')+1]",
+        """args=sys.argv
+native='--metis-work-budget' in args
+sock=args[args.index('--socket')+1] if native else args[args.index('--host')+1]
+model=args[args.index('--model')+1]
+receipt_fd=int(args[args.index('--metis-receipt-fd')+1]) if native else -1
+nonce=args[args.index('--metis-launch-nonce')+1] if native else ''
+cap=int(args[args.index('--metis-work-budget')+1]) if native else 0
+receipt_mode=__RECEIPT_MODE__
+def write_receipt(reason='shutdown', status=0):
+ if receipt_mode=='missing': return
+ value={'version':1,'nonce':nonce,'cap':cap,'charged':3,'reason':reason}
+ if receipt_mode in ('under_report','zero_predicted_under_report'): value['charged']=0
+ if receipt_mode=='wrong_nonce': value['nonce']='0'*32
+ if receipt_mode=='wrong_cap': value['cap']=cap+1
+ if receipt_mode=='bool_version': value['version']=True
+ if receipt_mode=='float_version': value['version']=1.0
+ raw=json.dumps(value,separators=(',',':')).encode()+b'\\n'
+ if receipt_mode=='duplicate': raw=raw+raw
+ if receipt_mode=='oversize': raw=b'x'*257
+ if receipt_mode=='duplicate_key': raw=b'{"version":1,"version":1,"nonce":"'+nonce.encode()+b'","cap":'+str(cap).encode()+b',"charged":3,"reason":"shutdown"}\\n'
+ try: os.write(receipt_fd,raw)
+ except OSError: pass
+ if status: os._exit(status)
+def stop(signum, frame):
+ write_receipt()
+ raise SystemExit(0)
+if native: __import__('signal').signal(__import__('signal').SIGTERM,stop)""")
+    source = source.replace("else:\n   n=data['n_predict']; out=", """else:
+   if native and receipt_mode=='cap_denied':
+    write_receipt('cap_denied',75)
+   n=data['n_predict']; out=""")
+    source = source.replace("  raw=json.dumps(out).encode()", """  if native and self.path=='/completion':
+   if receipt_mode in ('zero_predicted','zero_predicted_under_report'):
+    out['tokens_predicted']=0
+    out['content']=''
+   if receipt_mode=='zero_evaluated':
+    out['tokens_evaluated']=0
+  raw=json.dumps(out).encode()""")
+    assert "__RECEIPT_MODE__" in source
+    source = source.replace("__RECEIPT_MODE__", repr(receipt_mode))
+    binary.write_text(source)
+    binary.chmod(0o700)
+    backend_files["binary_sha256"] = _hash(binary)
+    return binary
+
+
+def _make_health_trickle(backend_files) -> Path:
+    binary = backend_files["binary"]
+    source = binary.read_text()
+    ordinary = '''self.send_response(200); self.end_headers(); self.wfile.write(b'{"status":"ok"}')'''
+    marker = binary.parent / "health-started"
+    trickle = (f"self.send_response(200); self.send_header('Content-Length','15'); self.end_headers(); "
+               f"open({str(marker)!r}, 'w').write('started'); "
+               "[ (self.wfile.write(bytes([byte])), self.wfile.flush(), __import__('time').sleep(.25)) "
+               "for byte in b'{\"status\":\"ok\"}' ]")
+    assert ordinary in source
+    binary.write_text(source.replace(ordinary, trickle))
+    binary.chmod(0o700)
+    backend_files["binary_sha256"] = _hash(binary)
+    return marker
+
 
 
 @pytest.fixture
@@ -1104,3 +1173,146 @@ def test_non_admitted_cancellation_after_completion_response_preserves_usage(bac
 
     assert cancelled.is_set()
     assert result == ("xx", 2, 2)
+
+
+def test_native_work_receipt_binds_one_process_cap_and_reports_charged_work(backend_files,
+                                                                            monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    binary = _native_work_server(backend_files)
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    real_popen = module.subprocess.Popen
+    launched = []
+
+    def capture(*args, **kwargs):
+        if kwargs.get("pass_fds"):
+            assert os.get_inheritable(kwargs["pass_fds"][0]) is False
+        launched.append((args[0], kwargs.get("pass_fds")))
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "Popen", capture)
+    with backend:
+        content, evaluated, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=generated, evaluated=evaluated)
+
+    assert content == "xx" and evaluated == 1 and generated == 2
+    assert terminal.status == "completed" and terminal.exit_status == 0
+    assert terminal.observed_work == 3
+    assert backend.hard_cap_capable is False
+    argv, pass_fds = launched[0]
+    assert argv[0] == str(binary)
+    assert argv[1:6:2] == ["--metis-work-budget", "--model", "--socket"]
+    assert argv[2] == "4094" and argv[4] == str(backend_files["model"])
+    assert argv[6].endswith("server.sock")
+    assert argv[7] == "--metis-receipt-fd" and argv[8].isdigit()
+    assert argv[9] == "--metis-launch-nonce" and len(argv[10]) == 32
+    assert len(pass_fds) == 1
+
+
+def test_native_work_receipt_rejects_underreported_prompt_and_decode_work(backend_files):
+    _native_work_server(backend_files, receipt_mode="under_report")
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files, native_work_budget_cap=4094) as backend:
+        _, evaluated, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=generated, evaluated=evaluated)
+    assert terminal.status == "receipt_invalid"
+    assert terminal.observed_work is None
+
+
+@pytest.mark.parametrize(("receipt_mode", "status", "work"), [
+    ("zero_predicted", "completed", 3),
+    ("zero_predicted_under_report", "receipt_invalid", None),
+])
+def test_native_work_receipt_requires_prompt_work_even_when_no_tokens_are_generated(
+    backend_files, receipt_mode, status, work,
+):
+    _native_work_server(backend_files, receipt_mode=receipt_mode)
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files, native_work_budget_cap=4094) as backend:
+        _, evaluated, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    assert (evaluated, generated) == (1, 0)
+    terminal = backend.collect_native_work(generated=generated, evaluated=evaluated)
+    assert (terminal.status, terminal.observed_work) == (status, work)
+
+
+def test_native_admitted_completion_rejects_zero_evaluated_prompt_tokens(backend_files):
+    _native_work_server(backend_files, receipt_mode="zero_evaluated")
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    with backend, pytest.raises(LlamaBackendError, match="usage or settings mismatch"):
+        backend.complete_admitted("one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    assert backend.collect_native_work(generated=None).status == "request_incomplete"
+
+
+def test_native_clean_shutdown_without_completion_is_accounted_as_incomplete(backend_files):
+    _native_work_server(backend_files)
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    backend.__enter__()
+    backend.close()
+    terminal = backend.collect_native_work(generated=None)
+    assert terminal.status == "request_incomplete"
+    assert terminal.exit_status == 0 and terminal.observed_work == 3
+
+
+def test_private_server_socket_uses_resolved_temporary_directory(backend_files, tmp_path, monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    real_tempdir = module.tempfile.TemporaryDirectory
+
+    class TempDirAlias:
+        def __init__(self):
+            short_physical = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tmp")
+            self._real = real_tempdir(dir=short_physical)
+            self.alias = Path("/tmp") / f"metis-alias-{uuid.uuid4().hex}"
+            self.alias.symlink_to(self._real.name, target_is_directory=True)
+            self.name = str(self.alias)
+
+        def cleanup(self):
+            self.alias.unlink()
+            self._real.cleanup()
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", lambda **_kwargs: TempDirAlias())
+    launches = []
+    real_popen = module.subprocess.Popen
+
+    def capture(args, **kwargs):
+        launches.append((args, kwargs.get("env")))
+        return real_popen(args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "Popen", capture)
+    with LlamaServerBackend(**backend_files):
+        pass
+    args, child_env = launches[0]
+    socket_path = Path(args[args.index("--host") + 1])
+    assert socket_path.parent == socket_path.parent.resolve()
+    assert child_env["TMPDIR"] == str(socket_path.parent)
+
+
+@pytest.mark.parametrize("receipt_mode", ["wrong_nonce", "wrong_cap", "bool_version",
+                                           "float_version", "duplicate",
+                                           "duplicate_key", "oversize", "missing"])
+def test_native_work_receipt_rejects_invalid_terminal_record(backend_files, receipt_mode):
+    _native_work_server(backend_files, receipt_mode=receipt_mode)
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files, native_work_budget_cap=4094) as backend:
+        _, _, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=generated, evaluated=1)
+    assert terminal.status == "receipt_invalid"
+    assert terminal.observed_work is None
+
+
+def test_native_work_cap_denial_is_not_reported_as_success(backend_files):
+    _native_work_server(backend_files, receipt_mode="cap_denied")
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    with backend, pytest.raises(LlamaBackendError):
+        backend.complete_admitted("one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=None)
+    assert terminal.status == "cap_denied" and terminal.exit_status == 75
+    assert terminal.observed_work == 3

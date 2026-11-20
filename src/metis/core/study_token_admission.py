@@ -72,7 +72,7 @@ class TokenLaunchClaim(_Record):
 class TokenLaunchOutcome(_Record):
     status: Literal[
         "completed", "cap_denied", "unsupported_graph", "server_error",
-        "launch_failed", "receipt_invalid", "timeout", "cancelled", "lost",
+        "launch_failed", "receipt_invalid", "request_incomplete", "timeout", "cancelled", "lost",
     ]
     exit_status: Annotated[int, Field(ge=-127, le=255)] | None = None
     observed_work: Annotated[int, Field(ge=0, le=10_000_000)] | None = None
@@ -88,6 +88,14 @@ class TokenLaunchOutcome(_Record):
             valid = (self.observed_work is None if self.exit_status is None else
                      1 <= self.exit_status <= 255 and self.exit_status not in (74, 75)
                      and self.observed_work is not None)
+        elif self.status == "request_incomplete":
+            valid = self.exit_status == 0 and self.observed_work is not None
+        elif self.status == "cancelled":
+            # Cancellation can leave a known process status without a terminal
+            # receipt (for example, SIGKILL returns -9). Preserve measured graph
+            # work when a clean native receipt is available.
+            valid = (self.observed_work is None
+                     or (self.exit_status == 0 and self.observed_work is not None))
         else:
             valid = self.observed_work is None and (
                 self.status not in ("launch_failed", "lost") or self.exit_status is None

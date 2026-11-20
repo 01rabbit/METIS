@@ -1008,3 +1008,16 @@ validation, and `git diff --check` also passing. This closes the startup
 wait-boundary gap only; `hard_token_budget_enforced` remains false and Issue #8
 remains open. Evidence:
 [`issue8-llama-admitted-startup-deadline-2026-11-20.md`](reports/issue8-llama-admitted-startup-deadline-2026-11-20.md).
+
+## Issue #8 admitted native work receipt (2026-11-20)
+
+The admitted llama path now passes a per-launch graph-work cap, fresh nonce,
+and pipe descriptor to the patched native binary, then requires a bounded
+matching terminal receipt before it records native `observed_work`. Missing,
+malformed, duplicate, oversized, or mismatched receipts fail closed and retain
+the full admission. Local fake-binary tests cover success, denial, and invalid
+receipts; they do not run the patched binary or a model. The meter covers only
+submitted graph positions for the pinned patch, not provider billing tokens or
+other models. Both hard-cap capability flags remain false; no held-out study is
+enabled and Issue #8 remains open. Evidence:
+[`issue8-admitted-native-work-receipts-2026-11-20.md`](reports/issue8-admitted-native-work-receipts-2026-11-20.md).
