@@ -37,6 +37,7 @@ NATIVE_TOOLS = DATA_TOOLS
 MAX_DERIVED_ARTIFACTS_PER_RUN = 100
 MAX_ADDED_ARTIFACTS_PER_RUN = 100
 MAX_ADDED_ARTIFACT_NAME = 60
+MAX_LEGACY_ADDED_ARTIFACT_NAME = MAX_ADDED_ARTIFACT_NAME + 4
 
 
 class DerivedArtifactLimitError(ValueError):
@@ -592,7 +593,10 @@ class CodexSession:
                 if kind == "derived":
                     valid_name = re.fullmatch(r"[0-9a-f]{32}\.[a-z0-9]{1,8}", name) is not None
                 else:
-                    valid_name = (len(name) <= MAX_ADDED_ARTIFACT_NAME
+                    # Prior add-file versions appended a collision counter after
+                    # truncating to 60 characters, so preserve purge access to
+                    # their longest possible names (100 entries => four chars).
+                    valid_name = (len(name) <= MAX_LEGACY_ADDED_ARTIFACT_NAME
                                   and re.fullmatch(r"[\w.-]+", name) is not None
                                   and not name.startswith("."))
                 if not valid_name:
@@ -679,53 +683,66 @@ class CodexSession:
         added_count = sum(item.startswith(".metis-added/") for item in manifest.artifacts)
         if added_count >= MAX_ADDED_ARTIFACTS_PER_RUN:
             raise ValueError("added artifact count exceeds per-run limit")
-        directory = root / ".metis-added"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        if directory.is_symlink():
-            raise ValueError("invalid snapshot directory")
-        requested = directory / name
-        stem, suffix = requested.stem, requested.suffix
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                os.mkdir(".metis-added", mode=0o700, dir_fd=root_fd)
+            except FileExistsError:
+                pass
+            try:
+                added_directory_fd = os.open(
+                    ".metis-added", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd,
+                )
+            except OSError as error:
+                raise ValueError("invalid snapshot directory") from error
+        finally:
+            os.close(root_fd)
         digest = hashlib.sha256()
         size = 0
         descriptor: int | None = None
-        target: Path | None = None
-        for collision_index in range(MAX_ADDED_ARTIFACTS_PER_RUN + 1):
-            if collision_index == 0:
-                candidate_name = name
-            else:
-                counter_suffix = f"-{collision_index + 1}"
-                available_stem = MAX_ADDED_ARTIFACT_NAME - len(counter_suffix) - len(suffix)
-                candidate_name = f"{stem[:max(1, available_stem)]}{counter_suffix}{suffix}"
-            candidate = directory / candidate_name
-            try:
-                descriptor = os.open(
-                    candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
-                )
-            except FileExistsError:
-                continue
-            target = candidate
-            break
-        if descriptor is None or target is None:
-            raise ValueError("could not allocate a unique added artifact name within the collision limit")
         try:
-            with (os.fdopen(descriptor, "wb") as stream,
-                  artifact_stream(path.parent, path.name, max_bytes=MAX_FILE) as source):
-                while chunk := source.read(1_048_576):
-                    size += len(chunk)
-                    if size > MAX_FILE:
-                        raise ValueError("file exceeds the artifact limit")
-                    digest.update(chunk)
-                    stream.write(chunk)
-        except (OSError, ValueError):
-            target.unlink(missing_ok=True)
-            raise
-        relative = ".metis-added/" + target.name
-        data = manifest.model_dump()
-        data["artifacts"] = [*manifest.artifacts, relative]
-        updated = ChallengeManifest.model_validate(data)
-        with sqlite3.connect(self.database) as db:
-            db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
-                       (updated.model_dump_json(), run_id))
+            candidate_name: str | None = None
+            for collision_index in range(MAX_ADDED_ARTIFACTS_PER_RUN + 1):
+                if collision_index == 0:
+                    candidate_name = name
+                else:
+                    counter_suffix = f"-{collision_index + 1}"
+                    candidate_name = f"{name[:MAX_ADDED_ARTIFACT_NAME - len(counter_suffix)]}{counter_suffix}"
+                try:
+                    descriptor = os.open(
+                        candidate_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600, dir_fd=added_directory_fd,
+                    )
+                except FileExistsError:
+                    continue
+                break
+            else:
+                raise ValueError("could not allocate a unique added artifact name within the collision limit")
+            assert descriptor is not None and candidate_name is not None
+            try:
+                with (os.fdopen(descriptor, "wb") as stream,
+                      artifact_stream(path.parent, path.name, max_bytes=MAX_FILE) as source):
+                    while chunk := source.read(1_048_576):
+                        size += len(chunk)
+                        if size > MAX_FILE:
+                            raise ValueError("file exceeds the artifact limit")
+                        digest.update(chunk)
+                        stream.write(chunk)
+                relative = ".metis-added/" + candidate_name
+                data = manifest.model_dump()
+                data["artifacts"] = [*manifest.artifacts, relative]
+                updated = ChallengeManifest.model_validate(data)
+                with sqlite3.connect(self.database) as db:
+                    db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                               (updated.model_dump_json(), run_id))
+            except BaseException:
+                try:
+                    os.unlink(candidate_name, dir_fd=added_directory_fd)
+                except FileNotFoundError:
+                    pass
+                raise
+        finally:
+            os.close(added_directory_fd)
         return {"run_id": run_id, "ok": True, "artifact": relative, "size": size,
                 "sha256": digest.hexdigest()}
 

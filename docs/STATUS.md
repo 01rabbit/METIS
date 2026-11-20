@@ -8,8 +8,9 @@ purge path, rejects active runs/workers, symlinks and unregistered entries, and
 bounds the operation to 100 files. Original inputs and `.metis-derived` outputs
 are preserved; missing files are safe to retry. `add-file` uses the same per-run
 cap, bounds collision-name allocation to 101 exclusive attempts, and keeps
-generated names within the purge validator's 60-character limit. This is manual
-per-run cleanup, not age-based retention or physical
+new names within 60 characters while accepting prior names up to 64 characters.
+Add-file opens the destination directory without following symlinks. This is
+manual per-run cleanup, not age-based retention or physical
 erasure from backups. An unregistered file left by a crash during `add-file` is
 refused for manual review rather than automatically deleted. Issue #9 remains
 open for its P7 dependency, host reboot, signed public release and full
