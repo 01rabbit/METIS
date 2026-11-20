@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import json
 import os
+import secrets
 import signal
 import socket
 import sqlite3
@@ -18,9 +19,33 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Self, TypeGuard
+from typing import Any, Literal, Self, TypeGuard
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from metis.core.study_token_admission import TokenLaunchOutcome
 from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
+
+_MAX_WORK_RECEIPT_BYTES = 256
+
+
+class _NativeWorkReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal[1]
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+    cap: int = Field(ge=1, le=10_000_000)
+    charged: int = Field(ge=0, le=10_000_000)
+    reason: Literal["shutdown", "cap_denied", "unsupported_graph", "server_error"]
+
+
+def _unique_receipt_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate receipt field")
+        value[key] = item
+    return value
 
 
 class LlamaBackendError(RuntimeError):
@@ -79,11 +104,16 @@ class LlamaServerBackend:
                  model_sha256: str, database: Path, budget_key: str,
                  token_limit: int, max_output_tokens: int, startup_seconds: float = 30,
                  context_reservation: bool = False, startup_deadline: float | None = None,
-                 startup_should_stop: Callable[[], bool] | None = None):
+                 startup_should_stop: Callable[[], bool] | None = None,
+                 native_work_budget_cap: int | None = None):
         if not budget_key or len(budget_key) > 128 or not 1 <= token_limit <= 10**9:
             raise ValueError("invalid budget configuration")
         if not 1 <= max_output_tokens <= 4096 or not 0 < startup_seconds <= 120:
             raise ValueError("invalid process configuration")
+        if (native_work_budget_cap is not None
+                and (type(native_work_budget_cap) is not int
+                     or not 1 <= native_work_budget_cap <= 10_000_000)):
+            raise ValueError("invalid native work budget")
         self.binary, self.model, self.database = binary.resolve(), model.resolve(), database
         self.binary_sha256, self.model_sha256 = binary_sha256, model_sha256
         self.budget_key, self.token_limit = budget_key, token_limit
@@ -91,6 +121,13 @@ class LlamaServerBackend:
         self.context_reservation = context_reservation
         self.startup_deadline = startup_deadline
         self.startup_should_stop = startup_should_stop
+        self.native_work_budget_cap = native_work_budget_cap
+        self._native_work_nonce = secrets.token_hex(16) if native_work_budget_cap is not None else None
+        self._receipt_read_fd: int | None = None
+        self._receipt_write_fd: int | None = None
+        self._native_launch_started = False
+        self._process_status: int | None = None
+        self._native_outcome: TokenLaunchOutcome | None = None
         self._process: subprocess.Popen[bytes] | None = None
         self._private: tempfile.TemporaryDirectory[str] | None = None
         self._log: Any = None
@@ -124,14 +161,29 @@ class LlamaServerBackend:
             child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
                          "TMPDIR": self._private.name, "LANG": "C"}
             self._check_startup_abort(deadline, deadline_error)
+            pass_fds: tuple[int, ...] = ()
+            if self.native_work_budget_cap is None:
+                args = [str(self.binary), "--model", str(self.model),
+                        "--host", self._socket, "--parallel", "1", "--no-webui",
+                        "--ctx-size", str(FULL_CONTEXT_RESERVATION_TOKENS),
+                        "--no-context-shift", "--no-warmup"]
+            else:
+                self._receipt_read_fd, self._receipt_write_fd = os.pipe()
+                os.set_inheritable(self._receipt_write_fd, True)
+                args = [str(self.binary), "--metis-work-budget", str(self.native_work_budget_cap),
+                        "--model", str(self.model), "--socket", self._socket,
+                        "--metis-receipt-fd", str(self._receipt_write_fd),
+                        "--metis-launch-nonce", str(self._native_work_nonce)]
+                pass_fds = (self._receipt_write_fd,)
             self._process = subprocess.Popen(
-                [str(self.binary), "--model", str(self.model), "--host", self._socket,
-                 "--parallel", "1", "--no-webui", "--ctx-size",
-                 str(FULL_CONTEXT_RESERVATION_TOKENS),
-                 "--no-context-shift", "--no-warmup"],
+                args,
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT,
-                start_new_session=True, close_fds=True, env=child_env,
+                start_new_session=True, close_fds=True, pass_fds=pass_fds, env=child_env,
             )
+            self._native_launch_started = self.native_work_budget_cap is not None
+            if self._receipt_write_fd is not None:
+                os.close(self._receipt_write_fd)
+                self._receipt_write_fd = None
             while time.monotonic() < deadline:
                 self._check_startup_abort(deadline, deadline_error)
                 if self._process.poll() is not None:
@@ -152,6 +204,9 @@ class LlamaServerBackend:
             raise LlamaBackendError(deadline_error)
         except BaseException:
             self.close()
+            if self._receipt_read_fd is not None:
+                os.close(self._receipt_read_fd)
+                self._receipt_read_fd = None
             raise
 
     def _check_startup_abort(self, deadline: float, deadline_error: str) -> None:
@@ -379,6 +434,61 @@ class LlamaServerBackend:
             raise LlamaBackendError("completion usage or settings mismatch")
         return result["content"], evaluated, predicted
 
+    def collect_native_work(self, *, generated: int | None) -> TokenLaunchOutcome:
+        """Validate the one-shot native receipt after the server process exits."""
+        if self.native_work_budget_cap is None:
+            raise LlamaBackendError("native work receipt was not requested")
+        if self._native_outcome is not None:
+            return self._native_outcome
+        invalid = TokenLaunchOutcome(status="receipt_invalid")
+        fd = self._receipt_read_fd
+        self._receipt_read_fd = None
+        if not self._native_launch_started or self._process_status is None or fd is None:
+            if fd is not None:
+                os.close(fd)
+            self._native_outcome = invalid
+            return invalid
+        try:
+            os.set_blocking(fd, False)
+            raw = os.read(fd, _MAX_WORK_RECEIPT_BYTES + 1)
+            extra = os.read(fd, 1)
+            if (len(raw) > _MAX_WORK_RECEIPT_BYTES or extra or raw.count(b"\n") != 1
+                    or not raw.endswith(b"\n")):
+                self._native_outcome = invalid
+                return invalid
+            record = json.loads(raw.decode("ascii"), object_pairs_hook=_unique_receipt_fields)
+            receipt = _NativeWorkReceipt.model_validate(record)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, ValidationError):
+            self._native_outcome = invalid
+            return invalid
+        finally:
+            os.close(fd)
+        if (receipt.nonce != self._native_work_nonce
+                or receipt.cap != self.native_work_budget_cap
+                or receipt.charged > receipt.cap):
+            self._native_outcome = invalid
+        elif (receipt.reason == "shutdown" and self._process_status == 0
+              and type(generated) is int and 0 <= generated <= self.max_output_tokens
+              and receipt.charged + generated <= receipt.cap + self.max_output_tokens):
+            self._native_outcome = TokenLaunchOutcome(
+                status="completed", exit_status=0, observed_work=receipt.charged)
+        elif (receipt.reason == "cap_denied" and self._process_status == 75 and generated is None):
+            self._native_outcome = TokenLaunchOutcome(
+                status="cap_denied", exit_status=75, observed_work=receipt.charged)
+        elif (receipt.reason == "unsupported_graph" and self._process_status == 75
+              and generated is None):
+            self._native_outcome = TokenLaunchOutcome(
+                status="unsupported_graph", exit_status=75, observed_work=receipt.charged)
+        elif (receipt.reason == "server_error" and type(self._process_status) is int
+              and 1 <= self._process_status <= 255 and self._process_status not in (74, 75)
+              and generated is None):
+            self._native_outcome = TokenLaunchOutcome(
+                status="server_error", exit_status=self._process_status,
+                observed_work=receipt.charged)
+        else:
+            self._native_outcome = invalid
+        return self._native_outcome
+
     def close(self) -> None:
         process = self._process
         self._process = None
@@ -387,6 +497,8 @@ class LlamaServerBackend:
                 # The group can outlive a wrapper parent; signal it regardless of poll().
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
+                except PermissionError:
+                    process.terminate()
                 except ProcessLookupError:
                     pass
                 try:
@@ -394,12 +506,15 @@ class LlamaServerBackend:
                 except subprocess.TimeoutExpired:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
+                    except PermissionError:
+                        process.kill()
                     except ProcessLookupError:
                         pass
                     try:
                         process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
+                self._process_status = process.poll()
         finally:
             if self._log is not None:
                 self._log.close()
@@ -408,6 +523,13 @@ class LlamaServerBackend:
                 self._private.cleanup()
                 self._private = None
                 self._socket = None
+            for name in ("_receipt_read_fd", "_receipt_write_fd"):
+                fd = getattr(self, name)
+                if fd is not None and (name == "_receipt_write_fd"
+                                       or self.native_work_budget_cap is None
+                                       or not self._native_launch_started):
+                    os.close(fd)
+                    setattr(self, name, None)
 
     def __exit__(self, *_: object) -> None:
         self.close()

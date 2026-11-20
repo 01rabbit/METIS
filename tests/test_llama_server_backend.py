@@ -22,6 +22,47 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _native_work_server(backend_files, *, receipt_mode="valid"):
+    binary = backend_files["binary"]
+    source = binary.read_text()
+    source = source.replace(
+        "args=sys.argv\nsock=args[args.index('--host')+1]\nmodel=args[args.index('--model')+1]",
+        """args=sys.argv
+native='--metis-work-budget' in args
+sock=args[args.index('--socket')+1] if native else args[args.index('--host')+1]
+model=args[args.index('--model')+1]
+receipt_fd=int(args[args.index('--metis-receipt-fd')+1]) if native else -1
+nonce=args[args.index('--metis-launch-nonce')+1] if native else ''
+cap=int(args[args.index('--metis-work-budget')+1]) if native else 0
+receipt_mode=__RECEIPT_MODE__
+def write_receipt(reason='shutdown', status=0):
+ if receipt_mode=='missing': return
+ value={'version':1,'nonce':nonce,'cap':cap,'charged':3,'reason':reason}
+ if receipt_mode=='wrong_nonce': value['nonce']='0'*32
+ if receipt_mode=='wrong_cap': value['cap']=cap+1
+ raw=json.dumps(value,separators=(',',':')).encode()+b'\\n'
+ if receipt_mode=='duplicate': raw=raw+raw
+ if receipt_mode=='oversize': raw=b'x'*257
+ if receipt_mode=='duplicate_key': raw=b'{"version":1,"version":1,"nonce":"'+nonce.encode()+b'","cap":'+str(cap).encode()+b',"charged":3,"reason":"shutdown"}\\n'
+ try: os.write(receipt_fd,raw)
+ except OSError: pass
+ if status: os._exit(status)
+def stop(signum, frame):
+ write_receipt()
+ raise SystemExit(0)
+if native: __import__('signal').signal(__import__('signal').SIGTERM,stop)""")
+    source = source.replace("else:\n   n=data['n_predict']; out=", """else:
+   if native and receipt_mode=='cap_denied':
+    write_receipt('cap_denied',75)
+   n=data['n_predict']; out=""")
+    assert "__RECEIPT_MODE__" in source
+    source = source.replace("__RECEIPT_MODE__", repr(receipt_mode))
+    binary.write_text(source)
+    binary.chmod(0o700)
+    backend_files["binary_sha256"] = _hash(binary)
+    return binary
+
+
 def _make_health_trickle(backend_files) -> Path:
     binary = backend_files["binary"]
     source = binary.read_text()
@@ -94,6 +135,64 @@ def test_admitted_completion_uses_claim_allowance_without_standalone_ledger(back
                                          timeout_seconds=5) == ("xx", 1, 2)
     with sqlite3.connect(backend_files["database"]) as db:
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='llama_token_budgets'").fetchone() is None
+
+
+def test_native_work_receipt_binds_one_process_cap_and_reports_charged_work(backend_files,
+                                                                            monkeypatch):
+    from metis.core import llama_server_backend as module
+
+    binary = _native_work_server(backend_files)
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    real_popen = module.subprocess.Popen
+    launched = []
+
+    def capture(*args, **kwargs):
+        launched.append((args[0], kwargs.get("pass_fds")))
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "Popen", capture)
+    with backend:
+        content, evaluated, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=generated)
+
+    assert content == "xx" and evaluated == 1 and generated == 2
+    assert terminal.status == "completed" and terminal.exit_status == 0
+    assert terminal.observed_work == 3
+    assert backend.hard_cap_capable is False
+    argv, pass_fds = launched[0]
+    assert argv[0] == str(binary)
+    assert argv[1:6:2] == ["--metis-work-budget", "--model", "--socket"]
+    assert argv[2] == "4094" and argv[4] == str(backend_files["model"])
+    assert argv[6].endswith("server.sock")
+    assert argv[7] == "--metis-receipt-fd" and argv[8].isdigit()
+    assert argv[9] == "--metis-launch-nonce" and len(argv[10]) == 32
+    assert len(pass_fds) == 1
+
+
+@pytest.mark.parametrize("receipt_mode", ["wrong_nonce", "wrong_cap", "duplicate",
+                                           "duplicate_key", "oversize", "missing"])
+def test_native_work_receipt_rejects_invalid_terminal_record(backend_files, receipt_mode):
+    _native_work_server(backend_files, receipt_mode=receipt_mode)
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files, native_work_budget_cap=4094) as backend:
+        _, _, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=generated)
+    assert terminal.status == "receipt_invalid"
+    assert terminal.observed_work is None
+
+
+def test_native_work_cap_denial_is_not_reported_as_success(backend_files):
+    _native_work_server(backend_files, receipt_mode="cap_denied")
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    with backend, pytest.raises(LlamaBackendError):
+        backend.complete_admitted("one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    terminal = backend.collect_native_work(generated=None)
+    assert terminal.status == "cap_denied" and terminal.exit_status == 75
+    assert terminal.observed_work == 3
 
 
 def test_admitted_tokenization_deadline_remains_timeout(backend_files, monkeypatch):

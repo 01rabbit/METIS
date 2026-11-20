@@ -114,11 +114,13 @@ cover a literal path containing commas and quotes, stale sockets and
 symlinks, a nonprivate directory, a broken receipt pipe, a timed-out client
 whose server is killed, and ambient config that tries to require an API key.
 
-This builds on the native gate in METIS PR #87. Production qualification still
-requires a trusted scheduler-to-admission binding, model and executable
-registration for supported runtimes, immutable split-file identity, and tests
-for alternate models, platforms, concurrent callers, and injected backend
-failures. Completion usage remains distinct from submitted work.
+This builds on the native gate in METIS PR #87. The admitted
+`LlamaSpecialist` path now binds the scheduler-consumed claim to the cap,
+nonce, receipt pipe, process exit, and observed native work. Production
+qualification still requires trusted model and executable registration for
+supported runtimes, immutable split-file identity, and tests for alternate
+models, platforms, concurrent callers, and injected backend failures.
+Completion usage remains distinct from submitted work.
 
 ## Controller qualification with the public fixture
 
@@ -199,8 +201,9 @@ A missing or invalid receipt yields a failed observation and zero refund.
 The first two cases fail to complete when the admission is one token smaller.
 The stop and EOS profiles also deny work at admission 24. This qualification
 depends on the fixed fixture and does not establish a general-provider token
-ceiling. Trusted build and model registration and scheduler/protocol binding
-are still required before enabling the METIS capability.
+ceiling. Trusted build and model registration, plus qualification across the
+supported model, platform, concurrency, and failure profiles, remain necessary
+before enabling the METIS capability.
 
 ## Offline build identity
 

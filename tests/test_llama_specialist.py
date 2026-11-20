@@ -16,6 +16,7 @@ from metis.core.study_token_admission import (
     TokenAdmissionReceipt,
     TokenAttempt,
     TokenLaunchClaim,
+    TokenLaunchOutcome,
 )
 from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
 
@@ -311,6 +312,9 @@ def test_run_admitted_validates_claim_and_uses_admitted_backend(tmp_path, monkey
         def complete_admitted(self, request, **kwargs):
             calls.append(("complete", kwargs["token_cap"], kwargs["n_predict"], request))
             return ('{"action":"fail","intent":null,"report":null,"reason":"none","candidate":null}', 20, 4)
+        def collect_native_work(self, *, generated):
+            assert generated == 4
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=24)
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
     claim = _claim(runner, native_request)
     turn = runner.run_admitted(native_request, model=runner.model_id, timeout=5,
@@ -369,6 +373,9 @@ def test_untrusted_deep_json_does_not_overwrite_completed_outcome(tmp_path, monk
         def __enter__(self): return self
         def __exit__(self, *_args): pass
         def complete_admitted(self, _prompt, **_kwargs): return content, 12, 3
+        def collect_native_work(self, *, generated):
+            assert generated == 3
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=15)
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
     turn = runner.run_admitted(prompt, model=runner.model_id, timeout=5,
         token_claim=_claim(runner, prompt), admission=Admission())

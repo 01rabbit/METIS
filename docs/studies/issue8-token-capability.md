@@ -23,9 +23,7 @@ No separate model API credential is requested by this change.
 
 For a protocol that includes a pinned `llama_backend`, `run_assignment` accepts
 only the pinned `LlamaSpecialist` type and requires its admitted-run hook plus
-an injected `study_token_admission`. The current `LlamaSpecialist` does not
-implement `run_admitted`, so native execution remains unavailable. The path
-renders one prompt string and passes
+an injected `study_token_admission`. The path renders one prompt string and passes
 that same value to the scheduler's `persist_receipt` callback and, after a
 successful commit, to the runner's `run_admitted` method with its one-time
 claim. Inside the scheduler's `BEGIN IMMEDIATE` transaction, the admission
@@ -47,20 +45,36 @@ charge uses `FULL_CONTEXT_RESERVATION_TOKENS + max_output_tokens`; the shared
 context constant also configures the server's context size. The native backend
 rejects a tokenized prompt above that value before requesting completion. This
 is a conservative reservation used for shared study/run accounting, not
-measured token usage and not proof of a provider hard cap. The successful fake-runner tests exercise
-only controller plumbing. No production runner currently implements
-`run_admitted`, `LlamaSpecialist.hard_token_budget_enforced` remains false, and
-no model was launched. Real-model held-out execution remains refused until a
-reviewed runner accepts only a controller-consumed claim and establishes its
-own pre-dispatch token bound.
+measured token usage and not proof of a provider hard cap.
 
-The admitted runner's server startup now shares the call's monotonic deadline
-and scheduler stop callback. Cancellation during health polling terminates the
+The native consumer starts only a custom `llama-server` build that accepts the
+work-budget arguments. For one consumed claim it subtracts the maximum output
+allowance from the committed admission, passes a fresh nonce and receipt pipe,
+then requires one bounded terminal receipt after the server exits. The receipt
+must match the nonce and cap, contain no duplicate or extra fields, and agree
+with the process exit and returned output count. Only a validated receipt
+supplies `observed_work`; missing, malformed, repeated, or mismatched receipts
+fail the turn and leave the whole admission charged. Cap denial, unsupported
+work, and runtime failure remain distinct outcomes.
+
+Tests use a local fake server and exercise the argument contract, valid receipt,
+cap denial, and malformed, duplicated, oversized, missing, wrong-nonce, and
+wrong-cap receipts. They do not execute the patched native binary or a model.
+`LlamaSpecialist.hard_token_budget_enforced` and
+`LlamaServerBackend.hard_cap_capable` remain false. The counter measures graph
+token positions submitted by this particular llama.cpp patch, not provider
+billing tokens, model-load allocation, arbitrary graphs, or other runtimes.
+Qualification remains limited to the public stories fixture; this integration
+does not qualify another model or general held-out execution. No real model,
+provider, CTF action, or comparison study was run.
+
+The admitted runner's server startup shares the call's monotonic deadline and
+scheduler stop callback. Cancellation during health polling terminates the
 server process group and records a cancelled outcome; the call deadline bounds
 startup plus tokenization and completion together. Startup cancellation and
 deadline expiry are covered with a delayed local fake server. This closes the
-local wait-boundary gap but does not change the runner's `hard_token_budget_enforced`
-declaration or authorize a real-model held-out trial.
+local wait-boundary gap but does not change the runner's
+`hard_token_budget_enforced` declaration or authorize a real-model held-out trial.
 
 ## Native fixture build identity v2
 
