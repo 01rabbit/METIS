@@ -701,6 +701,8 @@ class CodexSession:
         descriptor: int | None = None
         try:
             suffix = Path(name).suffix
+            if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", suffix):
+                suffix = ""
             stem = name[:-len(suffix)] if suffix else name
             candidate_name: str | None = None
             for collision_index in range(MAX_ADDED_ARTIFACTS_PER_RUN + 1):

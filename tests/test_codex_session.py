@@ -386,6 +386,8 @@ def test_added_filename_bounds_and_preserves_valid_short_extension(
     assert all(len(os.fsencode(name)) <= 255 for name in names)
     if expected_suffix:
         assert all(name.endswith(expected_suffix) for name in names)
+    else:
+        assert names[1].endswith("-2")
     assert len(set(names)) == 2
 
 
