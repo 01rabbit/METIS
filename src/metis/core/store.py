@@ -438,6 +438,47 @@ class RunStore:
             "operational_state": operational,
         }
 
+    def _read_bounded_audit_chain(self, db: sqlite3.Connection, run_id: str, *,
+                                  max_events: int, max_bytes: int
+                                  ) -> tuple[RunEvent, int, int, dict[str, int]]:
+        """Validate one chain incrementally without materializing an unbounded run."""
+        cursor = db.execute(
+            "SELECT sequence,payload,timestamp,previous_hash,digest FROM events "
+            "WHERE run_id=? ORDER BY sequence LIMIT ?", (run_id, max_events + 1),
+        )
+        parent = ""
+        event_count = 0
+        byte_count = 0
+        counts = {status.value: 0 for status in RunStatus}
+        last_event: RunEvent | None = None
+        try:
+            for sequence, payload, timestamp, previous, digest in cursor:
+                event_count += 1
+                if event_count > max_events:
+                    raise ValueError("run audit list exceeds its event bounds")
+                if (type(sequence) is not int or not all(
+                        isinstance(value, str) for value in (payload, timestamp, previous, digest))):
+                    raise ValueError("run audit event contains invalid storage fields")
+                byte_count += sum(len(value.encode("utf-8"))
+                                  for value in (run_id, payload, timestamp, previous, digest))
+                if byte_count > max_bytes:
+                    raise ValueError("run audit list exceeds its event bounds")
+                if sequence != event_count - 1:
+                    raise ValueError("event chain sequence is corrupt")
+                if (previous != parent or digest != self._digest(payload, timestamp, parent)):
+                    raise ValueError("event chain is corrupt")
+                event = RunEvent.model_validate_json(payload)
+                if event.run_id != run_id or event.sequence != sequence:
+                    raise ValueError("event identity is corrupt")
+                counts[event.status.value] += 1
+                last_event = event
+                parent = digest
+        finally:
+            cursor.close()
+        if last_event is None:
+            raise ValueError("run audit disappeared from snapshot")
+        return last_event, event_count, byte_count, counts
+
     def list_audit_summaries(self, *, limit: int = 20
                              ) -> tuple[list[dict[str, object]], bool]:
         """List newest runs in one read-only snapshot, validating every chain."""
@@ -497,37 +538,11 @@ class RunStore:
             for run_id, latest_timestamp in run_ids:
                 event_limit = _MAX_RUN_AUDIT_LIST_EVENTS - total_events
                 byte_limit = _MAX_RUN_AUDIT_LIST_BYTES - total_bytes
-                payloads = db.execute(
-                    "SELECT typeof(sequence), "
-                    "CASE WHEN typeof(sequence)='integer' THEN sequence ELSE NULL END, "
-                    "CASE WHEN typeof(run_id)='text' THEN "
-                    "COALESCE(substr(CAST(run_id AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN typeof(payload)='text' THEN "
-                    "COALESCE(substr(CAST(payload AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN typeof(timestamp)='text' THEN "
-                    "COALESCE(substr(CAST(timestamp AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN typeof(previous_hash)='text' THEN "
-                    "COALESCE(substr(CAST(previous_hash AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN typeof(digest)='text' THEN "
-                    "COALESCE(substr(CAST(digest AS BLOB), 1, ?), X'') END "
-                    "FROM events WHERE run_id=? ORDER BY sequence LIMIT ?",
-                    ((byte_limit + 1,) * 5 + (run_id, event_limit + 1)),
+                last_event, run_events, run_bytes, counts = self._read_bounded_audit_chain(
+                    db, run_id, max_events=event_limit, max_bytes=byte_limit,
                 )
-                run_events = 0
-                for sequence_type, sequence, *field_prefixes in payloads:
-                    run_events += 1
-                    if sequence_type != "integer" or type(sequence) is not int:
-                        raise ValueError("run audit sequence contains an invalid storage type")
-                    if any(not isinstance(field, bytes) for field in field_prefixes):
-                        raise ValueError("run audit event contains invalid storage fields")
-                    row_bytes = sum(len(field) for field in field_prefixes)
-                    total_bytes += row_bytes
-                    if run_events > event_limit or total_bytes > _MAX_RUN_AUDIT_LIST_BYTES:
-                        raise ValueError("run audit list exceeds its event bounds")
                 total_events += run_events
-                events = self._read(db, run_id)
-                if not events:
-                    raise ValueError("run audit disappeared from snapshot")
+                total_bytes += run_bytes
                 budget = None
                 tables = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -538,10 +553,10 @@ class RunStore:
                     ).fetchone()
                     if row is not None:
                         validated = _AuditBudget(max_actions=row[0], wall_seconds=row[1])
-                        charged = sum(event.status == RunStatus.EXECUTING for event in events)
+                        charged = counts[RunStatus.EXECUTING.value]
                         budget = {**validated.model_dump(), "actions_charged": charged,
                                   "actions_remaining": max(0, validated.max_actions - charged)}
-                summaries.append({"run_id": run_id, "status": events[-1].status.value,
+                summaries.append({"run_id": run_id, "status": last_event.status.value,
                                   "last_timestamp": latest_timestamp,
                                   "chain_valid": True,
                                   "codex_budget": budget})

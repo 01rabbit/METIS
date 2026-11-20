@@ -303,6 +303,21 @@ def test_list_audit_summaries_is_bounded_newest_first_redacted_and_read_only(tmp
     assert database.read_bytes() == before
 
 
+def test_list_audit_summaries_validates_chains_without_unbounded_read(tmp_path, monkeypatch):
+    database = tmp_path / "runs.sqlite"
+    start(CodexSession(database))
+
+    def refuse_unbounded_read(*_args, **_kwargs):
+        raise AssertionError("list summary must not materialize a full event chain")
+
+    monkeypatch.setattr(RunStore, "_read", refuse_unbounded_read)
+    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(limit=1)
+
+    assert len(summaries) == 1
+    assert summaries[0]["chain_valid"] is True
+    assert truncated is False
+
+
 def test_list_audit_summary_timestamp_matches_index_after_clock_regression(
         tmp_path, monkeypatch):
     database = tmp_path / "runs.sqlite"
