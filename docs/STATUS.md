@@ -1,5 +1,24 @@
 # METIS implementation status
 
+## Issue #9 user-added artifact purge (2026-11-20)
+
+`metis codex purge-added RUN_ID` now previews removal of registered `.metis-added`
+files; `--apply` is required to delete them. It shares the locked terminal-run
+purge path, rejects active runs/workers, symlinks and unregistered entries, and
+limits each deletion batch to 100 files. Original inputs and `.metis-derived`
+outputs are preserved; missing files are safe to retry. Legacy directories
+with 101..4096 registered entries can be purged in multiple batches; larger or
+unregistered directories fail closed. `add-file` limits new registrations to
+100 per run, bounds collision-name allocation to 101 exclusive attempts, and keeps
+new names within 60 characters while accepting safe legacy names up to 255 bytes.
+Add-file opens the destination directory without following symlinks. This is
+manual per-run cleanup, not age-based retention or physical
+erasure from backups. An unregistered file left by a crash during `add-file` is
+refused for manual review rather than automatically deleted. Issue #9 remains
+open for its P7 dependency, host reboot, signed public release and full
+lifecycle controls. See
+[`issue9-user-added-artifact-purge-2026-11-20.md`](reports/issue9-user-added-artifact-purge-2026-11-20.md).
+
 ## Issue #6 fixed-transcript guardian canary (2026-11-20)
 
 An offline fixed JSONL stub now exercises the guardian's sanitized evidence
@@ -877,10 +896,10 @@ measured-gain gate and dependent P6 remain open. See
 `failure_category` for completion, deadlines, cancellation, policy/provider
 failures, budget exhaustion, invalid output, abstention,
 infrastructure/configuration failures, unconfirmed termination, and other
-failures. The autopilot currently discards per-assignment return values, so this
-change does not persist categories for autopilot runs or reconstruct them for
-historical sanitized runs. Prior scores are unchanged; Issue #6's measured-gain
-gate remains unmet.
+failures. Autopilot records counts of those categories per invocation and
+counts driver exceptions and missing or invalid categories separately.
+Historical invocations lack these counts. Issue #6's measured-gain gate remains
+unmet. See [autopilot outcome metrics](reports/issue6-autopilot-outcomes-2026-11-20.md).
 
 The Issue #28 Stage 2 follow-up reuses all members' third-byte predictions
 across compatible Stage 1 intervals and checks the deadline inside one guess.
@@ -1069,6 +1088,21 @@ submitted graph positions for the pinned patch, not provider billing tokens or
 other models. Both hard-cap capability flags remain false; no held-out study is
 enabled and Issue #8 remains open. Evidence:
 [`issue8-admitted-native-work-receipts-2026-11-20.md`](reports/issue8-admitted-native-work-receipts-2026-11-20.md).
+
+## Issue #8 signed control acceptance gate (2026-11-20)
+
+Generic analysis and exploratory finalization now keep unsigned solvability/exposure
+declarations out of acceptance scores while preserving diagnostic outcomes; the
+acceptance fields are null until the controls are authenticated. A separate
+`finalize-acceptance` command requires a detached signature and reviewer key whose
+SHA-256 fingerprint is part of the committed protocol digest and run bindings.
+It records only manifest/signature digests and the key fingerprint. This
+authenticates the declaration's signer and protocol binding; it does not validate
+source evidence, official verdicts, task exposure, execution-time registration,
+or external pre-dispatch timestamping of the protocol. No real reviewer key or
+held-out trial was used.
+Issue #8 remains open. Evidence:
+[`issue8-signed-control-acceptance-gate-2026-11-20.md`](reports/issue8-signed-control-acceptance-gate-2026-11-20.md).
 
 ## Issue #9 current-main release attestation drill (2026-11-20)
 

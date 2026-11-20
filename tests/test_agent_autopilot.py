@@ -69,6 +69,7 @@ def test_driver_exception_persists_handoff_and_preserves_attempts_for_reconcilia
     assert result["stop"] == "specialist_driver_exception"
     assert result["metrics"]["daybreak_handoffs"] == 1
     assert result["metrics"]["specialist_turns"] == 0
+    assert result["metrics"]["specialist_outcomes"] == {"driver_exception": 2}
     assert "private worker output" not in str(result)
     jobs = scheduler.jobs(run)
     assert jobs and any(job["state"] in {"running", "unknown"} for job in jobs)
@@ -80,6 +81,7 @@ def test_driver_exception_persists_handoff_and_preserves_attempts_for_reconcilia
 
     resumed = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=crash)
     assert resumed["stop"] == "existing_attempt_needs_reconciliation"
+    assert resumed["metrics"]["specialist_outcomes"] == {}
     assert [job["assignment_id"] for job in scheduler.jobs(run) if job["state"] in {"running", "unknown"}] \
         == [job["assignment_id"] for job in jobs if job["state"] in {"running", "unknown"}]
     assert all(job["attempt_no"] <= 1 for job in scheduler.jobs(run))
@@ -90,7 +92,8 @@ def test_mixed_completed_and_crashed_batch_keeps_spent_turn_and_reconciliation_s
 
     def mixed_drive(scheduler, run_id, assignment, attempt, runner):
         if assignment.endswith(":1"):
-            return _complete_synthetic_report(scheduler, run_id, assignment, attempt)
+            _complete_synthetic_report(scheduler, run_id, assignment, attempt)
+            return {"failure_category": "none", "failure": "private completed specialist output"}
         if assignment.endswith(":2"):
             reservation = scheduler.reserve_model_turn(run_id, assignment, attempt)
             assert reservation == {"turn": 1, "limit": 24, "remaining": 23}
@@ -101,7 +104,9 @@ def test_mixed_completed_and_crashed_batch_keeps_spent_turn_and_reconciliation_s
     assert result["stop"] == "specialist_driver_exception"
     assert result["metrics"]["daybreak_handoffs"] == 1
     assert result["metrics"]["specialist_turns"] == 1
+    assert result["metrics"]["specialist_outcomes"] == {"none": 1, "driver_exception": 1}
     assert "private interrupted specialist output" not in str(result)
+    assert "private completed specialist output" not in str(result)
     jobs = scheduler.jobs(run)
     assert sum(job["state"] == "completed" for job in jobs) == 1
     assert sum(job["state"] == "running" for job in jobs) == 1
@@ -109,11 +114,12 @@ def test_mixed_completed_and_crashed_batch_keeps_spent_turn_and_reconciliation_s
     assert scheduler.model_turn_budget(run) == {"limit": 24, "reserved": 1, "remaining": 23}
     with sqlite3.connect(scheduler.database) as db:
         reservations = db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?", (run,)).fetchone()[0]
-        persisted = db.execute("SELECT stop_reason,daybreak_handoffs,specialist_turns FROM agent_autopilot_runs "
-                               "WHERE invocation_id=?",
+        persisted = db.execute("SELECT stop_reason,daybreak_handoffs,specialist_turns,specialist_outcomes "
+                               "FROM agent_autopilot_runs WHERE invocation_id=?",
                                (result["metrics"]["invocation_id"],)).fetchone()
     assert reservations == 1
-    assert persisted == ("specialist_driver_exception", 1, 1)
+    assert persisted[:3] == ("specialist_driver_exception", 1, 1)
+    assert json.loads(persisted[3]) == {"none": 1, "driver_exception": 1}
 
     resumed = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=mixed_drive)
     assert resumed["stop"] == "existing_attempt_needs_reconciliation"
@@ -132,6 +138,52 @@ def test_bounds_and_failed_attempt_stops_without_retry(tmp_path):
     result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=fail)
     assert result["stop"] == "failed_attempt_for_daybreak"
     assert all(j["attempt_no"] == 1 for j in scheduler.jobs(run))
+
+
+def test_specialist_outcomes_use_only_fixed_categories_across_batches(tmp_path):
+    scheduler, run = setup_run(tmp_path)
+    categories = {
+        "1": {"failure_category": "provider_failure"},
+        "2": {},
+        "3": {"failure_category": "private unrecognized category"},
+        "4": {"failure_category": ["private malformed category"]},
+    }
+
+    def drive(scheduler, run_id, assignment, attempt, runner):
+        scheduler.fail(assignment, attempt, "synthetic failure")
+        return categories[assignment.rsplit(":", 1)[-1]]
+
+    result = autopilot(scheduler, run, BudgetedTestRunner(), max_waves=1, drive=drive)
+    assert result["stop"] == "failed_attempt_for_daybreak"
+    assert result["operations"]["dispatch"] == 2
+    assert result["metrics"]["specialist_outcomes"] == {
+        "provider_failure": 1, "missing_or_invalid_category": 3,
+    }
+    assert "private " not in str(result["metrics"])
+    with sqlite3.connect(scheduler.database) as db:
+        stored = db.execute("SELECT specialist_outcomes FROM agent_autopilot_runs").fetchone()[0]
+    assert json.loads(stored) == result["metrics"]["specialist_outcomes"]
+
+
+def test_specialist_outcome_schema_preserves_legacy_invocation_rows(tmp_path):
+    scheduler, run = setup_run(tmp_path)
+    with sqlite3.connect(scheduler.database) as db:
+        db.execute("""CREATE TABLE agent_autopilot_runs (
+            invocation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, started REAL NOT NULL, finished REAL NOT NULL,
+            elapsed_seconds REAL NOT NULL, max_waves INTEGER NOT NULL, waves_inspected INTEGER NOT NULL,
+            stop_reason TEXT NOT NULL, daybreak_handoffs INTEGER NOT NULL, operations TEXT NOT NULL,
+            specialist_turns INTEGER NOT NULL, tokens TEXT NOT NULL, cost TEXT NOT NULL)""")
+        db.execute("INSERT INTO agent_autopilot_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   ("legacy", run, 1, 2, 1, 1, 0, "legacy stop", 0, "{}", 0, "{}", "unknown"))
+
+    result = autopilot(scheduler, run, object(), max_waves=1)
+    assert result["metrics"]["specialist_outcomes"] == {}
+    with sqlite3.connect(scheduler.database) as db:
+        rows = db.execute("SELECT invocation_id,stop_reason,specialist_outcomes FROM agent_autopilot_runs")
+        assert {invocation: (stop, stored) for invocation, stop, stored in rows} == {
+            "legacy": ("legacy stop", None),
+            result["metrics"]["invocation_id"]: ("host_model_turn_budget_unenforced", "{}"),
+        }
 
 
 def test_daybreak_continuation_requires_matching_inconclusive_report(tmp_path):
