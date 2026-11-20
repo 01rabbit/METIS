@@ -567,9 +567,10 @@ def test_auth_retirement_enables_secure_delete_on_write_connection(tmp_path, mon
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", track_connect)
-    workflow.auth("https://example.com", kind="token", value="synthetic-token")
-    workflow.forget_auth("https://example.com")
-    workflow.forget_all_auth(apply=True)
+    assert workflow.auth("https://example.com", kind="token", value="synthetic-token")[
+        "wal_cleanup_complete"] is True
+    assert workflow.forget_auth("https://example.com")["wal_cleanup_complete"] is True
+    assert workflow.forget_all_auth(apply=True)["wal_cleanup_complete"] is True
     assert len(connections) == 6
     assert all(connections[index].secure_delete_enabled for index in (0, 2, 4))
     assert not any(connection.secure_delete_enabled for connection in (connections[1], connections[3], connections[5]))
