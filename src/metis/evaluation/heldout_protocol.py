@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, model_validator
 
 from metis.core.ctf_knowledge import validate_heldout_snapshot_source
 from metis.core.study_token_admission import TokenLaunchOutcome
@@ -254,12 +254,33 @@ def _native_dispatch_matches(
             "observed_work": observed_work,
             "native_manifest_sha256": manifest,
         })
-    except ValidationError:
+        outcome.validate_admitted_work(reserved_tokens)
+    except ValueError:
         return False
-    # The admitted runner leaves one reserved position for the last sampled token.
-    return outcome.native_manifest_sha256 == backend.native_manifest_sha256 and (
-        outcome.observed_work is None or outcome.observed_work < reserved_tokens
-    )
+    return outcome.native_manifest_sha256 == backend.native_manifest_sha256
+
+
+def _reconcile_native_reservation_coverage(
+    db: sqlite3.Connection, run_id: str, reconciled: set[tuple[int, str, str]],
+) -> None:
+    """Check for ledger rows outside the scheduler jobs examined for this run."""
+    limit = len(reconciled) + 1
+    reservations = db.execute(
+        "SELECT id,assignment_id,attempt_id FROM agent_turn_reservations WHERE run_id=? LIMIT ?",
+        (run_id, limit),
+    ).fetchall()
+    # A run that stopped before reserving its first turn may have no native tables.
+    admissions = []
+    if db.execute(
+        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='study_token_attempts'"
+    ).fetchone():
+        admissions = db.execute(
+            "SELECT turn_reservation_id,assignment_id,attempt_id FROM study_token_attempts "
+            "WHERE run_id=? LIMIT ?",
+            (run_id, limit),
+        ).fetchall()
+    if any(len(rows) != len(reconciled) or set(rows) != reconciled for rows in (reservations, admissions)):
+        raise ValueError("held-out native reservation coverage mismatch")
 
 
 def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Path) -> None:
@@ -301,6 +322,7 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                               (assignment.run_id,)).fetchall()
             if not jobs:
                 raise ValueError("held-out dispatch evidence missing")
+            native_reservations: set[tuple[int, str, str]] = set()
             for assignment_id, state in jobs:
                 rows = db.execute("SELECT attempt_id,detail FROM agent_job_log WHERE assignment_id=? "
                                   "AND event='heldout_arm_applied'", (assignment_id,)).fetchall()
@@ -347,14 +369,14 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                             or prompt.get("model") != protocol.model_pin
                             or prompt.get("runtime") != protocol.runtime_pin):
                         raise ValueError("held-out prompt dispatch mismatch")
-                    if native_admission and (
-                        reservation_run_id != assignment.run_id or not _native_dispatch_matches(
+                    if native_admission:
+                        if reservation_run_id != assignment.run_id or not _native_dispatch_matches(
                             db, protocol, assignment, protocol_sha256=expected_digest, assignment_id=assignment_id,
                             attempt_id=attempt, reservation_id=identity, prompt_sha256=prompt_sha256,
                             abandoned=abandoned_native,
-                        )
-                    ):
-                        raise ValueError("held-out prompt dispatch mismatch")
+                        ):
+                            raise ValueError("held-out prompt dispatch mismatch")
+                        native_reservations.add((identity, assignment_id, attempt))
                 expected_cards = len(protocol.memory_card_digests) if protocol.arm_config[assignment.arm].memory_enabled else 0
                 for _, detail in rows:
                     applied = json.loads(detail)
@@ -362,6 +384,8 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                                    "memory_cards": expected_cards, "model": protocol.model_pin,
                                    "runtime": protocol.runtime_pin}:
                         raise ValueError("held-out dispatch treatment mismatch")
+            if native_admission:
+                _reconcile_native_reservation_coverage(db, assignment.run_id, native_reservations)
 
 
 def _finalize(protocol: Protocol, bindings: Bindings, database: Path, *, expected_sha256: str,

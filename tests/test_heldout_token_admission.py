@@ -221,7 +221,8 @@ def test_run_assignment_reconciles_cancel_racing_claim_consumption(tmp_path, mon
 @pytest.mark.parametrize("defect", [
     None, "missing_outcome", "duplicate_outcome", "other_nonce", "other_slot", "other_run",
     "unconsumed", "unlaunched", "fixture_claim", "foreign_manifest", "malformed_outcome",
-    "overcharged", "wrong_prompt", "wrong_attempt",
+    "overcharged", "at_graph_cap", "wrong_prompt", "wrong_attempt",
+    "extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation", "unrelated_admission",
 ])
 def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, monkeypatch, defect):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
@@ -269,6 +270,7 @@ def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, mon
             "foreign_manifest": "UPDATE study_token_outcomes SET native_manifest_sha256=lower(hex(zeroblob(32)))",
             "malformed_outcome": "UPDATE study_token_outcomes SET observed_work=NULL",
             "overcharged": "UPDATE study_token_outcomes SET observed_work=(SELECT tokens FROM study_token_attempts)",
+            "at_graph_cap": "UPDATE study_token_outcomes SET observed_work=(SELECT tokens-1 FROM study_token_attempts)",
             "wrong_prompt": "UPDATE study_token_attempts SET prompt_sha256=lower(hex(zeroblob(32)))",
             "wrong_attempt": "UPDATE study_token_attempts SET attempt_id='unrelated-attempt'",
         }
@@ -276,17 +278,60 @@ def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, mon
             db.execute("ALTER TABLE study_token_outcomes RENAME TO original_outcomes")
             db.execute("CREATE TABLE study_token_outcomes AS SELECT * FROM original_outcomes")
             db.execute("INSERT INTO study_token_outcomes SELECT * FROM original_outcomes")
+        elif defect in ("extra_admission", "extra_admission_with_outcome", "unrelated_admission"):
+            extra_run = "0" * 32 if defect == "unrelated_admission" else run_id
+            db.execute(
+                "INSERT INTO study_token_attempts "
+                "SELECT study_id,?,turn_reservation_id+1,assignment_id,attempt_id,prompt_sha256,tokens "
+                "FROM study_token_attempts WHERE run_id=?",
+                (extra_run, run_id),
+            )
+            if defect == "extra_admission_with_outcome":
+                other_nonce = "0" * 32
+                db.execute(
+                    "INSERT INTO study_token_launches(run_id,turn_reservation_id,nonce,consumed,launched) "
+                    "SELECT run_id,turn_reservation_id+1,?,1,1 FROM study_token_launches WHERE run_id=?",
+                    (other_nonce, run_id),
+                )
+                db.execute(
+                    "INSERT INTO study_token_outcomes "
+                    "SELECT ?,status,exit_status,observed_work,native_manifest_sha256 FROM study_token_outcomes",
+                    (other_nonce,),
+                )
+        elif defect == "extra_scheduler_reservation":
+            db.execute(
+                "INSERT INTO agent_turn_reservations(run_id,assignment_id,attempt_id,reserved) "
+                "SELECT run_id,'orphaned-job',attempt_id,reserved FROM agent_turn_reservations WHERE run_id=?",
+                (run_id,),
+            )
         elif defect is not None:
             db.execute(mutations[defect])
     slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
     bindings = Bindings.model_construct(
         protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
     )
-    if defect is None:
+    if defect in (None, "at_graph_cap", "unrelated_admission"):
         reconcile_arm_dispatch(protocol, bindings, database)
+    elif defect in ("extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation"):
+        with pytest.raises(ValueError, match="held-out native reservation coverage mismatch"):
+            reconcile_arm_dispatch(protocol, bindings, database)
     else:
         with pytest.raises(ValueError, match="held-out prompt dispatch mismatch"):
             reconcile_arm_dispatch(protocol, bindings, database)
+
+
+def test_reconcile_native_dispatch_without_any_reservation_or_admission_schema(tmp_path):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    scheduler.cancel(assignment_id=job["assignment_id"])
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
+        assert db.execute("SELECT 1 FROM sqlite_schema WHERE name='study_token_attempts'").fetchone() is None
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    reconcile_arm_dispatch(protocol, bindings, database)
+
 
 def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path, monkeypatch):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path)

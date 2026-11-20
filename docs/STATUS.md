@@ -1109,11 +1109,14 @@ Issue #8 remains open. Evidence:
 Held-out finalization now requires one matching terminal ledger outcome for
 each dispatched, admitted native turn. It checks the committed study, slot,
 runtime, model, manifest, reservation, attempt, and prompt digest, as well as
-the single consumed and launched claim. A turn abandoned before launch must
-retain an unconsumed claim with no outcome or fixture claim. Timeout,
-cancellation, and invalid-receipt records preserve unknown work when the
-controller could not validate a receipt. This is a check on controller ledger
-consistency. Both hard-cap capability flags remain false, native graph work is
+the single consumed and launched claim. Every native admission and scheduler
+reservation for the run must appear in the reconciliation. Native graph work
+must fit within the allowance after reserving one token for the final sampled
+output, both when recording the outcome and when finalizing. A turn abandoned
+before launch must retain an unconsumed claim with no outcome or fixture
+claim. Timeout, cancellation, and invalid-receipt records preserve unknown
+work when the controller could not validate a receipt. This is a check on
+controller ledger consistency. Both hard-cap capability flags remain false, native graph work is
 distinct from token usage and billing, and Issue #8 remains open.
 
 ## Issue #9 current-main release attestation drill (2026-11-20)
