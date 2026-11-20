@@ -69,6 +69,10 @@ def finish(*_):
             value["nonce"] = "0" * 32 if nonce != "0" * 32 else "1" * 32
         if mode == "wrong_cap":
             value["cap"] = cap + 1
+        if mode == "bool_version":
+            value["version"] = True
+        if mode == "float_version":
+            value["version"] = 1.0
         if mode == "over_cap":
             value["charged"] = cap + 1
         if mode == "under_work":
@@ -133,7 +137,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
             time.sleep(20)
         self.send_json({
-            "tokens_evaluated": 21 if mode == "bad_evaluated" else 20,
+            "tokens_evaluated": {"bad_evaluated": 21, "zero_evaluated": 0}.get(mode, 20),
             "tokens_predicted": limit + 1 if mode == "bad_generated" else (limit if end == "limit" else 1),
             "content": " text" if end == "limit" else "",
             "stop_type": end, "stopping_word": stop[0] if stop else "", "truncated": False,
@@ -209,11 +213,14 @@ def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     ("ignore_shutdown", "receipt_invalid", -9, None),
     ("wrong_nonce", "receipt_invalid", 0, None),
     ("wrong_cap", "receipt_invalid", 0, None),
+    ("bool_version", "receipt_invalid", 0, None),
+    ("float_version", "receipt_invalid", 0, None),
     ("over_cap", "receipt_invalid", 0, None),
     ("under_work", "receipt_invalid", 0, None),
     ("bad_prompt_count", "receipt_invalid", -9, None),
     ("bad_prompt_id", "receipt_invalid", -9, None),
     ("bad_evaluated", "receipt_invalid", -9, None),
+    ("zero_evaluated", "receipt_invalid", -9, None),
     ("bad_generated", "receipt_invalid", -9, None),
     ("duplicate_http_counter", "receipt_invalid", -9, None),
     ("bad_settings", "receipt_invalid", -9, None),
@@ -371,12 +378,12 @@ def test_public_native_fixture_cap_matrix(tmp_path):
         (1, "limit", 2, "cap_denied", 0),
         (1, "limit", 22, "cap_denied", 2),
         (1, "limit", 23, "completed", 22),
-        (3, "limit", 26, "cap_denied", 23),
-        (3, "limit", 27, "completed", 24),
-        (3, "word", 24, "cap_denied", 2),
-        (3, "word", 25, "completed", 22),
-        (3, "eos", 24, "cap_denied", 2),
-        (3, "eos", 25, "completed", 22),
+        (3, "limit", 24, "cap_denied", 23),
+        (3, "limit", 25, "completed", 24),
+        (3, "word", 22, "cap_denied", 2),
+        (3, "word", 23, "completed", 22),
+        (3, "eos", 22, "cap_denied", 2),
+        (3, "eos", 23, "completed", 22),
     ], 1):
         # Each profile is independently committed. Use a separate ledger for
         # each cap boundary to keep the test cases independent.
@@ -398,7 +405,7 @@ def test_public_native_fixture_cap_matrix(tmp_path):
             assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (cap,)
 
 @pytest.mark.parametrize(("end", "work"), [("limit", 24), ("word", 22), ("eos", 22)])
-def test_three_token_profile_reserves_full_output_headroom(tmp_path, monkeypatch, end, work):
+def test_three_token_profile_reserves_final_output_headroom(tmp_path, monkeypatch, end, work):
     admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid", n_predict=3, end=end)
     outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                            n_predict=3, end=end)

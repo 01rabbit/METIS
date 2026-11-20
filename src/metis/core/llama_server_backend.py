@@ -404,7 +404,7 @@ class LlamaServerBackend:
             raise
         evaluated, predicted = result.get("tokens_evaluated"), result.get("tokens_predicted")
         settings = result.get("generation_settings")
-        if (not _integer(evaluated) or evaluated > FULL_CONTEXT_RESERVATION_TOKENS
+        if (not _integer(evaluated) or not 1 <= evaluated <= FULL_CONTEXT_RESERVATION_TOKENS
                 or not _integer(predicted) or predicted > n_predict or not isinstance(settings, dict)
                 or settings.get("n_predict") != n_predict or result.get("model") != str(self.model)
                 or not isinstance(result.get("content"), str)):
@@ -449,8 +449,8 @@ class LlamaServerBackend:
             )
             return self._native_outcome
         minimum = None
-        if type(evaluated) is int and type(generated) is int and generated > 0:
-            minimum = evaluated + generated - 1
+        if type(evaluated) is int and evaluated > 0 and type(generated) is int and generated >= 0:
+            minimum = evaluated + max(generated - 1, 0)
         budget = self.native_work_budget_cap
         self._native_outcome = parse_native_work_receipt(
             raw, nonce=self._native_work_nonce or "", cap=budget,

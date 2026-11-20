@@ -39,9 +39,11 @@ receipt_mode=__RECEIPT_MODE__
 def write_receipt(reason='shutdown', status=0):
  if receipt_mode=='missing': return
  value={'version':1,'nonce':nonce,'cap':cap,'charged':3,'reason':reason}
- if receipt_mode=='under_report': value['charged']=0
+ if receipt_mode in ('under_report','zero_predicted_under_report'): value['charged']=0
  if receipt_mode=='wrong_nonce': value['nonce']='0'*32
  if receipt_mode=='wrong_cap': value['cap']=cap+1
+ if receipt_mode=='bool_version': value['version']=True
+ if receipt_mode=='float_version': value['version']=1.0
  raw=json.dumps(value,separators=(',',':')).encode()+b'\\n'
  if receipt_mode=='duplicate': raw=raw+raw
  if receipt_mode=='oversize': raw=b'x'*257
@@ -57,6 +59,13 @@ if native: __import__('signal').signal(__import__('signal').SIGTERM,stop)""")
    if native and receipt_mode=='cap_denied':
     write_receipt('cap_denied',75)
    n=data['n_predict']; out=""")
+    source = source.replace("  raw=json.dumps(out).encode()", """  if native and self.path=='/completion':
+   if receipt_mode in ('zero_predicted','zero_predicted_under_report'):
+    out['tokens_predicted']=0
+    out['content']=''
+   if receipt_mode=='zero_evaluated':
+    out['tokens_evaluated']=0
+  raw=json.dumps(out).encode()""")
     assert "__RECEIPT_MODE__" in source
     source = source.replace("__RECEIPT_MODE__", repr(receipt_mode))
     binary.write_text(source)
@@ -186,6 +195,32 @@ def test_native_work_receipt_rejects_underreported_prompt_and_decode_work(backen
     assert terminal.observed_work is None
 
 
+@pytest.mark.parametrize(("receipt_mode", "status", "work"), [
+    ("zero_predicted", "completed", 3),
+    ("zero_predicted_under_report", "receipt_invalid", None),
+])
+def test_native_work_receipt_requires_prompt_work_even_when_no_tokens_are_generated(
+    backend_files, receipt_mode, status, work,
+):
+    _native_work_server(backend_files, receipt_mode=receipt_mode)
+    backend_files["context_reservation"] = True
+    with LlamaServerBackend(**backend_files, native_work_budget_cap=4094) as backend:
+        _, evaluated, generated = backend.complete_admitted(
+            "one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    assert (evaluated, generated) == (1, 0)
+    terminal = backend.collect_native_work(generated=generated, evaluated=evaluated)
+    assert (terminal.status, terminal.observed_work) == (status, work)
+
+
+def test_native_admitted_completion_rejects_zero_evaluated_prompt_tokens(backend_files):
+    _native_work_server(backend_files, receipt_mode="zero_evaluated")
+    backend_files["context_reservation"] = True
+    backend = LlamaServerBackend(**backend_files, native_work_budget_cap=4094)
+    with backend, pytest.raises(LlamaBackendError, match="usage or settings mismatch"):
+        backend.complete_admitted("one", n_predict=2, token_cap=4098, timeout_seconds=5)
+    assert backend.collect_native_work(generated=None).status == "request_incomplete"
+
+
 def test_native_clean_shutdown_without_completion_is_accounted_as_incomplete(backend_files):
     _native_work_server(backend_files)
     backend_files["context_reservation"] = True
@@ -231,7 +266,8 @@ def test_private_server_socket_uses_resolved_temporary_directory(backend_files, 
     assert child_env["TMPDIR"] == str(socket_path.parent)
 
 
-@pytest.mark.parametrize("receipt_mode", ["wrong_nonce", "wrong_cap", "duplicate",
+@pytest.mark.parametrize("receipt_mode", ["wrong_nonce", "wrong_cap", "bool_version",
+                                           "float_version", "duplicate",
                                            "duplicate_key", "oversize", "missing"])
 def test_native_work_receipt_rejects_invalid_terminal_record(backend_files, receipt_mode):
     _native_work_server(backend_files, receipt_mode=receipt_mode)

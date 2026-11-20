@@ -48,8 +48,9 @@ is a conservative reservation used for shared study/run accounting, not
 measured token usage and not proof of a provider hard cap.
 
 The native consumer starts only a custom `llama-server` build that accepts the
-work-budget arguments. For one consumed claim it subtracts the maximum output
-allowance from the committed admission, passes a fresh nonce and receipt pipe,
+work-budget arguments. For one consumed claim it subtracts one token from
+the committed admission for the final sampled output that can leave without
+another graph evaluation, passes a fresh nonce and receipt pipe,
 then requires one bounded terminal receipt after the server exits. The receipt
 must match the nonce and cap, contain no duplicate or extra fields, and agree
 with the process exit and returned output count. Only a validated receipt
@@ -70,8 +71,9 @@ provider, CTF action, or comparison study was run.
 
 The admitted runner's server startup shares the call's monotonic deadline and
 scheduler stop callback. Cancellation during health polling terminates the
-server process group and records a cancelled outcome; the call deadline bounds
-startup plus tokenization and completion together. Startup cancellation and
+server process group. A valid clean shutdown without completion preserves
+observed work as `request_incomplete`; the call deadline bounds startup plus
+tokenization and completion together. Startup cancellation and
 deadline expiry are covered with a delayed local fake server. This closes the
 local wait-boundary gap but does not change the runner's
 `hard_token_budget_enforced` declaration or authorize a real-model held-out trial.

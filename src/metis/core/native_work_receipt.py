@@ -14,7 +14,7 @@ MAX_NATIVE_WORK_RECEIPT_BYTES = 256
 class NativeWorkReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    version: Literal[1]
+    version: int = Field(ge=1, le=1)
     nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
     cap: int = Field(ge=1, le=10_000_000)
     charged: int = Field(ge=0, le=10_000_000)
@@ -61,8 +61,9 @@ def parse_native_work_receipt(
                 status="request_incomplete", exit_status=exit_status,
                 observed_work=receipt.charged,
             )
-        if (minimum_completed_work is not None
-                and receipt.charged < minimum_completed_work):
+        if (type(generated) is not int or generated < 0
+                or minimum_completed_work is None
+                or not 0 < minimum_completed_work <= receipt.charged):
             return invalid
         if (maximum_completed_work is not None
                 and receipt.charged > maximum_completed_work):

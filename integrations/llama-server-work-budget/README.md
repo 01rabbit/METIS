@@ -127,9 +127,9 @@ Completion usage remains distinct from submitted work.
 The fixture-only Python boundary binds the admission to one staged binary,
 the registered single-file stories260K GGUF, and the digest of the exact
 request profile. It supports output allowances of one or three tokens. Before
-launch it subtracts the entire allowance from the committed token amount and
-requires the resulting native graph cap to be positive. This leaves room for
-the last sampled token, which can be returned without entering another graph.
+launch it subtracts one from the committed token amount and requires the
+resulting native graph cap to be positive. This reserves one token for the last
+sampled token, which can be returned without entering another graph.
 
 Before staging, the controller checks the manifest against an independently
 supplied expected digest committed with the study admission. It checks the
@@ -153,9 +153,10 @@ requires the known 20 input token IDs, matching completion counters, and
 the frozen limits, stop settings, and non-speculative generation settings.
 The terminal record must match the launch nonce, the reduced graph cap, and
 the observed process exit. Observed work in the ledger counts submitted
-graph positions. The controller also checks that graph work plus sampled
-outputs fit the original admission. An EOS or stop match can reduce the
-observed output while the full requested headroom stays reserved.
+graph positions, including positions used to evaluate earlier sampled tokens.
+The controller verifies that the receipt covers the known fixture prompt,
+startup work and all sampled tokens that entered another graph. The graph cap
+leaves one token inside the original admission for the final sampled token.
 All outcomes retain the entire admission charge. The controller holds a
 claim lock through the terminal write. The lock closes on exec and in a raw
 Python fork child. The controller compares the supplied receipt to the ledger
@@ -192,16 +193,15 @@ readiness and the sole request, followed by bounded process shutdown and reap.
 A missing or invalid receipt yields a failed observation and zero refund.
 
 
-| Output allowance | Admission | Graph cap | Observed qualification with the public fixture |
+| Output allowance | Admission | Graph cap | Expected result for the public fixture |
 | --- | --- | --- | --- |
 | 1 | 23 | 22 | 22 graph positions and 1 sampled output |
-| 3 | 27 | 24 | 24 graph positions and 3 sampled outputs |
-| 3, fixed EOS or stop | 25 | 22 | 22 graph positions and 1 sampled output |
+| 3 | 25 | 24 | 24 graph positions and 3 sampled outputs |
+| 3, fixed EOS or stop | 23 | 22 | 22 graph positions and 1 sampled output |
 
-The first two cases fail to complete when the admission is one token smaller.
-The stop and EOS profiles also deny work at admission 24. This qualification
-depends on the fixed fixture and does not establish a general-provider token
-ceiling. Trusted build and model registration, plus qualification across the
+The real-binary fixture test expects cap denial one token below each listed
+admission. These fixture-specific graph counts do not establish a provider
+token ceiling. Trusted build and model registration, plus qualification across the
 supported model, platform, concurrency, and failure profiles, remain necessary
 before enabling the METIS capability.
 
