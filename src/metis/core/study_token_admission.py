@@ -392,7 +392,8 @@ class StudyTokenAdmission:
                 "SELECT p.study_id,p.protocol_sha256,p.runtime_sha256,p.model_sha256,p.token_limit,"
                 "p.native_manifest_sha256,s.task_id,s.repetition,s.arm,s.token_limit,"
                 "a.assignment_id,a.attempt_id,a.prompt_sha256,a.tokens,"
-                "l.run_id,l.turn_reservation_id,l.nonce,l.consumed "
+                "l.run_id,l.turn_reservation_id,l.nonce,l.consumed,"
+                "EXISTS(SELECT 1 FROM study_token_outcomes o WHERE o.nonce=l.nonce) "
                 "FROM study_token_launches l "
                 "JOIN study_token_attempts a ON a.run_id=l.run_id "
                 "AND a.turn_reservation_id=l.turn_reservation_id "
@@ -407,7 +408,7 @@ class StudyTokenAdmission:
                 attempt.assignment_id, attempt.attempt_id, attempt.prompt_sha256, attempt.tokens,
                 slot.run_id, attempt.turn_reservation_id, receipt.nonce,
             )
-            if row is None or row[:17] != expected or row[17] != 0:
+            if row is None or row[:17] != expected or row[17] != 0 or row[18] != 0:
                 raise ValueError("native launch claim is invalid or already consumed")
             if scheduler_bound:
                 self._require_current_scheduler_turn(db, receipt.receipt)
@@ -652,11 +653,15 @@ class StudyTokenAdmission:
             outcome = TokenLaunchOutcome(
                 status="lost", native_manifest_sha256=receipt.study.native_manifest_sha256,
             )
-            self.record_outcome(claim, outcome)
+            self._record_outcome(claim, outcome, allow_unconsumed_fixture_claim=True)
             return outcome
 
     def record_outcome(self, claim: TokenLaunchClaim, outcome: TokenLaunchOutcome) -> None:
         """Record one terminal observation without changing the admission charge."""
+        self._record_outcome(claim, outcome, allow_unconsumed_fixture_claim=False)
+
+    def _record_outcome(self, claim: TokenLaunchClaim, outcome: TokenLaunchOutcome, *,
+                        allow_unconsumed_fixture_claim: bool) -> None:
         claim = TokenLaunchClaim.model_validate(claim)
         outcome = TokenLaunchOutcome.model_validate(outcome)
         receipt = claim.receipt
@@ -673,7 +678,13 @@ class StudyTokenAdmission:
             if stored is None or stored[0] != claim.nonce:
                 raise ValueError("token launch claim does not match committed nonce")
             if stored[1] != 1:
-                raise ValueError("token launch claim has not been consumed")
+                fixture_claim = db.execute(
+                    "SELECT 1 FROM study_token_fixture_claims WHERE nonce=?", (claim.nonce,),
+                ).fetchone() is not None
+                if (allow_unconsumed_fixture_claim and stored[1] == 0 and fixture_claim):
+                    pass
+                else:
+                    raise ValueError("token launch claim has not been consumed")
 
             inserted = db.execute(
                 """INSERT INTO study_token_outcomes (nonce, status, exit_status, observed_work, native_manifest_sha256)
