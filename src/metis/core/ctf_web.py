@@ -51,12 +51,11 @@ def _closed_transaction(connection: sqlite3.Connection, *, readonly_wal_preview:
     try:
         with connection:
             yield connection
-    except sqlite3.OperationalError as exc:
-        message = str(exc).lower()
-        if readonly_wal_preview and ("readonly" in message or "read-only" in message):
+    except sqlite3.OperationalError:
+        if readonly_wal_preview:
             raise ValueError(
-                "read-only credential preview does not change database rows, but SQLite WAL mode "
-                "may need write access to the database directory for -wal/-shm sidecars"
+                "read-only credential preview could not open SQLite; check database readability and, "
+                "in WAL mode, write access to the database directory for -wal/-shm sidecars"
             ) from None
         raise
     finally:
@@ -387,12 +386,11 @@ class WebWorkflow:
             try:
                 connection = (sqlite3.connect(self.database) if apply else
                               sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True))
-            except sqlite3.OperationalError as exc:
-                message = str(exc).lower()
-                if not apply and ("readonly" in message or "read-only" in message):
+            except sqlite3.OperationalError:
+                if not apply:
                     raise ValueError(
-                        "read-only credential preview does not change database rows, but SQLite WAL mode "
-                        "may need write access to the database directory for -wal/-shm sidecars"
+                        "read-only credential preview could not open SQLite; check database readability and, "
+                        "in WAL mode, write access to the database directory for -wal/-shm sidecars"
                     ) from None
                 raise
             with _closed_transaction(connection, readonly_wal_preview=not apply) as db:

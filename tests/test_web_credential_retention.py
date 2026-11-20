@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -144,18 +145,27 @@ def test_cli_preview_accepts_relative_database_path(tmp_path, monkeypatch, capsy
     assert workflow.database == database
 
 
-def test_readonly_wal_preview_reports_directory_permission_requirement(tmp_path, monkeypatch):
-    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
-    original_connect = sqlite3.connect
+def test_readonly_wal_preview_reports_directory_permission_requirement(tmp_path):
+    database = tmp_path / "state" / "metis.sqlite"
+    workflow = WebWorkflow(database)
+    assert workflow._truncate_credential_wal() is True
+    for suffix in ("-wal", "-shm"):
+        sidecar = database.with_name(database.name + suffix)
+        if not sidecar.exists():
+            continue
+        if suffix == "-wal" and sidecar.stat().st_size != 0:
+            pytest.skip("test database WAL is not empty")
+        sidecar.unlink()
 
-    def readonly_directory_failure(*args, **kwargs):
-        if kwargs.get("uri") and "mode=ro" in args[0]:
-            raise sqlite3.OperationalError("attempt to write a readonly database")
-        return original_connect(*args, **kwargs)
-
-    monkeypatch.setattr("metis.core.ctf_web.sqlite3.connect", readonly_directory_failure)
-    with pytest.raises(ValueError, match="WAL mode.*write access.*sidecars"):
-        workflow.credential_retention(older_than_days=30)
+    database.parent.chmod(0o500)
+    if os.access(database.parent, os.W_OK):
+        database.parent.chmod(0o700)
+        pytest.skip("test process can write through the read-only directory mode")
+    try:
+        with pytest.raises(ValueError, match="could not open SQLite.*WAL mode.*write access.*sidecars"):
+            workflow.credential_retention(older_than_days=30)
+    finally:
+        database.parent.chmod(0o700)
 
 
 def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_path):
