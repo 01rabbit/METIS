@@ -37,7 +37,7 @@ NATIVE_TOOLS = DATA_TOOLS
 MAX_DERIVED_ARTIFACTS_PER_RUN = 100
 MAX_ADDED_ARTIFACTS_PER_RUN = 100
 MAX_ADDED_ARTIFACT_NAME = 60
-MAX_LEGACY_ADDED_ARTIFACT_NAME = MAX_ADDED_ARTIFACT_NAME + 4
+MAX_LEGACY_ADDED_ARTIFACT_NAME_BYTES = 255
 
 
 class DerivedArtifactLimitError(ValueError):
@@ -593,10 +593,10 @@ class CodexSession:
                 if kind == "derived":
                     valid_name = re.fullmatch(r"[0-9a-f]{32}\.[a-z0-9]{1,8}", name) is not None
                 else:
-                    # Prior add-file versions appended a collision counter after
-                    # truncating to 60 characters, so preserve purge access to
-                    # their longest possible names (100 entries => four chars).
-                    valid_name = (len(name) <= MAX_LEGACY_ADDED_ARTIFACT_NAME
+                    # Prior add-file versions appended unbounded collision
+                    # counters after truncating to 60 characters. Preserve
+                    # purge access to any component the filesystem could store.
+                    valid_name = (len(os.fsencode(name)) <= MAX_LEGACY_ADDED_ARTIFACT_NAME_BYTES
                                   and re.fullmatch(r"[\w.-]+", name) is not None
                                   and not name.startswith("."))
                 if not valid_name:
@@ -701,13 +701,18 @@ class CodexSession:
         size = 0
         descriptor: int | None = None
         try:
+            suffix = Path(name).suffix
+            stem = name[:-len(suffix)] if suffix else name
             candidate_name: str | None = None
             for collision_index in range(MAX_ADDED_ARTIFACTS_PER_RUN + 1):
                 if collision_index == 0:
                     candidate_name = name
                 else:
                     counter_suffix = f"-{collision_index + 1}"
-                    candidate_name = f"{name[:MAX_ADDED_ARTIFACT_NAME - len(counter_suffix)]}{counter_suffix}"
+                    suffix_budget = MAX_ADDED_ARTIFACT_NAME - len(counter_suffix) - 1
+                    kept_suffix = suffix[:suffix_budget]
+                    stem_budget = MAX_ADDED_ARTIFACT_NAME - len(counter_suffix) - len(kept_suffix)
+                    candidate_name = f"{stem[:stem_budget]}{counter_suffix}{kept_suffix}"
                 try:
                     descriptor = os.open(
                         candidate_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,

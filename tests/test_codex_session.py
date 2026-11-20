@@ -282,7 +282,7 @@ def test_add_file_stops_after_bounded_name_collisions(tmp_path):
     folder = root / ".metis-added"
     folder.mkdir(mode=0o700)
     for index in range(1, MAX_ADDED_ARTIFACTS_PER_RUN + 2):
-        name = "same.txt" if index == 1 else f"same.txt-{index}"
+        name = "same.txt" if index == 1 else f"same-{index}.txt"
         (folder / name).write_text("collision")
 
     with pytest.raises(ValueError, match="collision limit"):
@@ -334,7 +334,7 @@ def test_added_purge_accepts_legacy_overlong_collision_name(tmp_path):
     added = session.add_file(run_id, source)["artifact"]
     root = session.artifact_root(run_id)
     assert root is not None
-    old_name = "a" * 56 + "-2.bin"
+    old_name = "a" * 56 + "-12345678901234567890.bin"
     (root / added).rename(root / ".metis-added" / old_name)
     manifest = ChallengeManifest.model_validate_json(session._session(run_id)[0])
     old_data = manifest.model_dump()
@@ -348,6 +348,19 @@ def test_added_purge_accepts_legacy_overlong_collision_name(tmp_path):
     result = session.purge_added(run_id, apply=True)
     assert result["files"] == [{"path": ".metis-added/" + old_name,
                                 "state": "deleted", "size": len("download")}]
+
+
+def test_added_collision_preserves_short_extension(tmp_path):
+    source = tmp_path / "challenge.zip"
+    source.write_bytes(b"archive")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="extension-collision", description="fixture", paths=[source])["run_id"]
+
+    first = session.add_file(run_id, source)["artifact"]
+    second = session.add_file(run_id, source)["artifact"]
+
+    assert first == ".metis-added/challenge.zip"
+    assert second == ".metis-added/challenge-2.zip"
 
 
 def test_store_artifact_caps_derived_entries_and_keeps_purge_recoverable(tmp_path):

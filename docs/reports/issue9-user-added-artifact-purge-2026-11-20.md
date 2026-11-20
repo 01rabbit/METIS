@@ -11,8 +11,8 @@ challenge inputs and `.metis-derived` files remain intact. `add-file` now also
 refuses to register more than 100 user-added files in one run. Collision
 resolution uses exclusive file creation with at most 101 name attempts, and
 new generated names remain within the 60-character limit. The purge validator
-also accepts up to 64 characters to clean files created by the prior naming
-scheme (60 base characters plus a four-character counter). Add-file opens the
+also accepts safe single-component names up to the filesystem's 255-byte limit
+to clean files created by the prior unbounded naming scheme. Add-file opens the
 snapshot and destination directories with no-follow directory descriptors, so
 a symlink replacement cannot redirect the write outside the run snapshot.
 
@@ -21,7 +21,7 @@ classes, active-run/worker refusal, symlink and unregistered-entry rejection,
 interrupted-unlink retry, the per-run bound, and CLI behavior.
 It also covers a fully colliding bounded name range, 100 repeated additions of
 a maximum-length name followed by preview and applied purge, and cleanup of a
-representative legacy overlong collision name. A symlinked destination
+legacy collision name with a 20-digit counter. A symlinked destination
 directory is refused without writing into its target.
 
 Observed checks on the implementation head:
