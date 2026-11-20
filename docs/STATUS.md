@@ -926,6 +926,18 @@ monitoring, not an enforced token or cost budget. See
 `docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
 remain open pending their separate evidence gates.
 
+## Pinned llama.cpp work trace probe (2026-11-20)
+
+A test-only instrumented CPU build now records aggregate `llama_process`, graph,
+and server-retry work for one fixed public model fixture. A local Darwin arm64
+probe observed 22 request graph positions; a synthetic precompute refusal
+recorded one failed process call and one retry while graph positions remained
+22. The synthetic branch is not a real KV/allocator failure, and the manifest
+does not independently prove binary provenance. This trace establishes no
+hard token budget, held-out eligibility, MUNIN gain, CTF solve, or Issue #8
+acceptance. Capability flags remain false. See
+`docs/reports/issue8-native-work-trace-2026-11-20.md`.
+
 ## Issue #9 local web credential retirement (2026-11-19)
 
 Credential replacement and `web forget`/`forget-all --apply` enable SQLite
