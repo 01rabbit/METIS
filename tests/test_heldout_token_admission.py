@@ -222,7 +222,8 @@ def test_run_assignment_reconciles_cancel_racing_claim_consumption(tmp_path, mon
     None, "missing_outcome", "duplicate_outcome", "other_nonce", "other_slot", "other_run",
     "unconsumed", "unlaunched", "fixture_claim", "foreign_manifest", "malformed_outcome",
     "overcharged", "at_graph_cap", "wrong_prompt", "wrong_attempt",
-    "extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation", "unrelated_admission",
+    "extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation",
+    "extra_launch_without_admission", "unrelated_admission",
 ])
 def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, monkeypatch, defect):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
@@ -304,6 +305,13 @@ def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, mon
                 "SELECT run_id,'orphaned-job',attempt_id,reserved FROM agent_turn_reservations WHERE run_id=?",
                 (run_id,),
             )
+        elif defect == "extra_launch_without_admission":
+            db.execute(
+                "INSERT INTO study_token_launches(run_id,turn_reservation_id,nonce) "
+                "SELECT run_id,MAX(turn_reservation_id)+1,? FROM study_token_launches WHERE run_id=? "
+                "GROUP BY run_id",
+                ("1" * 32, run_id),
+            )
         elif defect is not None:
             db.execute(mutations[defect])
     slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
@@ -312,7 +320,10 @@ def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, mon
     )
     if defect in (None, "at_graph_cap", "unrelated_admission"):
         reconcile_arm_dispatch(protocol, bindings, database)
-    elif defect in ("extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation"):
+    elif defect in (
+        "extra_admission", "extra_admission_with_outcome", "extra_scheduler_reservation",
+        "extra_launch_without_admission",
+    ):
         with pytest.raises(ValueError, match="held-out native reservation coverage mismatch"):
             reconcile_arm_dispatch(protocol, bindings, database)
     else:
@@ -383,6 +394,32 @@ def test_reconcile_native_dispatch_without_any_reservation(tmp_path, bad_native_
             reconcile_arm_dispatch(protocol, bindings, database)
     else:
         reconcile_arm_dispatch(protocol, bindings, database)
+
+
+@pytest.mark.parametrize("with_attempt_table", [False, True])
+def test_reconcile_native_dispatch_rejects_orphan_launch_without_reservation(tmp_path, with_attempt_table):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    scheduler.cancel(assignment_id=job["assignment_id"])
+    with sqlite3.connect(database) as db:
+        if with_attempt_table:
+            db.execute(
+                "CREATE TABLE study_token_attempts (run_id TEXT, turn_reservation_id INTEGER, "
+                "assignment_id TEXT, attempt_id TEXT)"
+            )
+        db.execute(
+            "CREATE TABLE study_token_launches (run_id TEXT, turn_reservation_id INTEGER, nonce TEXT)"
+        )
+        db.execute(
+            "INSERT INTO study_token_launches VALUES (?, 1, ?)",
+            (run_id, "1" * 32),
+        )
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    with pytest.raises(ValueError, match="^held-out native reservation coverage mismatch$"):
+        reconcile_arm_dispatch(protocol, bindings, database)
+
 
 def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path, monkeypatch):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path)

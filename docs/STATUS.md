@@ -1133,8 +1133,9 @@ Issue #8 remains open. Evidence:
 Held-out finalization now requires one matching terminal ledger outcome for
 each dispatched, admitted native turn. It checks the committed study, slot,
 runtime, model, manifest, reservation, attempt, and prompt digest, as well as
-the single consumed and launched claim. Every native admission and scheduler
-reservation for the run must appear in the reconciliation. Native graph work
+the single consumed and launched claim. Every native admission, launch row, and
+scheduler reservation for the run must appear in the reconciliation, so orphan
+launches also fail closed. Native graph work
 must fit within the allowance after reserving one token for the final sampled
 output, both when recording the outcome and when finalizing. A turn abandoned
 before launch must retain an unconsumed claim with no outcome or fixture

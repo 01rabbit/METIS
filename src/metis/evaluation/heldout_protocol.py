@@ -271,18 +271,36 @@ def _reconcile_native_reservation_coverage(
             (run_id, limit),
         ).fetchall()
         # A run that stopped before reserving its first turn may have no native tables.
-        admissions = []
-        if db.execute(
+        has_attempts = db.execute(
             "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='study_token_attempts'"
-        ).fetchone():
+        ).fetchone() is not None
+        has_launches = db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='study_token_launches'"
+        ).fetchone() is not None
+        admissions = []
+        if has_attempts:
             admissions = db.execute(
                 "SELECT turn_reservation_id,assignment_id,attempt_id FROM study_token_attempts "
                 "WHERE run_id=? LIMIT ?",
                 (run_id, limit),
             ).fetchall()
+            if not has_launches:
+                raise ValueError("held-out native reservation coverage mismatch")
+            launches = db.execute(
+                "SELECT turn_reservation_id FROM study_token_launches WHERE run_id=? LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+        elif has_launches:
+            raise ValueError("held-out native reservation coverage mismatch")
+        else:
+            launches = []
     except sqlite3.OperationalError:
         raise ValueError("held-out native reservation coverage mismatch") from None
     if any(len(rows) != len(reconciled) or set(rows) != reconciled for rows in (reservations, admissions)):
+        raise ValueError("held-out native reservation coverage mismatch")
+    expected_launches = {reservation_id for reservation_id, _, _ in reconciled}
+    actual_launches = {row[0] for row in launches}
+    if len(launches) != len(reconciled) or actual_launches != expected_launches:
         raise ValueError("held-out native reservation coverage mismatch")
 
 
