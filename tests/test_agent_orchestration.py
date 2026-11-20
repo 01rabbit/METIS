@@ -214,6 +214,122 @@ def test_concurrent_dispatch_does_not_double_reserve(state, tmp_path):
     assert len(host.spawned) == len(set(host.spawned)) == 3
 
 
+def test_dispatch_pause_persists_blocks_queued_work_and_resume_dispatches(state, tmp_path):
+    run_id = _run(state, tmp_path, categories=("crypto", "web"), files=2)
+    wave = AgentLedger(state).create_wave(run_id)
+    first_host = FakeHost()
+    scheduler = AgentScheduler(state, first_host)
+    queued = scheduler.enqueue(run_id, wave["wave_id"])
+    assert queued
+    assert scheduler.dispatch_control(run_id)["dispatch_paused"] is False
+    with pytest.raises(ValueError, match="boolean"):
+        scheduler.set_dispatch_paused(run_id, 1)
+    first_pause = scheduler.set_dispatch_paused(run_id, True)
+    repeated_pause = scheduler.set_dispatch_paused(run_id, True)
+    assert first_pause["dispatch_paused"] is True
+    assert repeated_pause["history"] == first_pause["history"]
+
+    restarted_host = FakeHost()
+    restarted = AgentScheduler(state, restarted_host)
+    control = restarted.dispatch_control(run_id)
+    assert control["dispatch_paused"] is True
+    assert [event["action"] for event in control["history"]] == ["pause"]
+    result = restarted.dispatch(run_id)
+    assert result["started"] == []
+    assert result["queued"] == len(queued)
+    assert restarted_host.spawned == []
+    assert all(job["state"] == "queued" for job in restarted.jobs(run_id))
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?",
+                          (run_id,)).fetchone() == (0,)
+
+    resumed_control = restarted.set_dispatch_paused(run_id, False)
+    assert resumed_control["dispatch_paused"] is False
+    assert [event["action"] for event in resumed_control["history"]] == ["pause", "resume"]
+    idempotent_resume = restarted.set_dispatch_paused(run_id, False)
+    assert [event["action"] for event in idempotent_resume["history"]] == ["pause", "resume"]
+    resumed = restarted.dispatch(run_id)
+    assert resumed["started"] and restarted_host.spawned
+    assert restarted.dispatch_control(run_id)["scope"] == "queued_specialist_dispatch_only"
+
+
+def test_dispatch_pause_does_not_stop_running_job_and_cancel_still_works(state, tmp_path):
+    run_id = _run(state, tmp_path, categories=("crypto", "web"), files=2)
+    wave = AgentLedger(state).create_wave(run_id)
+    host = FakeHost(script={role: (lambda _assignment, _brief: {"state": "hang"})
+                            for role in PROFILES}, max_parallel=1)
+    scheduler = AgentScheduler(state, host)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    started = scheduler.dispatch(run_id)["started"]
+    assert len(started) == 1
+    assert scheduler.set_dispatch_paused(run_id, True)["dispatch_paused"] is True
+    states = {job["state"] for job in scheduler.jobs(run_id)}
+    assert states == {"running", "queued"}
+    job = started[0]
+    reservation = scheduler.reserve_model_turn(run_id, job["assignment_id"], job["attempt_id"])
+    assert reservation is not None
+    assert scheduler.session.cancel(run_id)["status"] == "cancelled"
+    scheduler.cancel_run(run_id)
+    assert {job["state"] for job in scheduler.jobs(run_id)} == {"cancelled"}
+
+
+def test_pause_winning_between_reservation_and_spawn_requeues_without_host_call(
+    state, tmp_path, monkeypatch,
+):
+    run_id = _run(state, tmp_path, categories=("crypto", "web"), files=2)
+    wave = AgentLedger(state).create_wave(run_id)
+    host = FakeHost()
+    scheduler = AgentScheduler(state, host)
+    queued = scheduler.enqueue(run_id, wave["wave_id"])
+    reserve = scheduler._reserve_dispatch_jobs
+
+    def reserve_then_pause(*args):
+        result = reserve(*args)
+        scheduler.set_dispatch_paused(run_id, True)
+        return result
+
+    monkeypatch.setattr(scheduler, "_reserve_dispatch_jobs", reserve_then_pause)
+    result = scheduler.dispatch(run_id)
+    assert result["started"] == [] and result["queued"] == len(queued)
+    assert host.spawned == []
+    jobs = scheduler.jobs(run_id)
+    assert all(job["state"] == "queued" and job["host_job_id"] is None
+               and job["attempt_no"] == 0 for job in jobs)
+    with sqlite3.connect(state) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations WHERE run_id=?",
+                          (run_id,)).fetchone() == (0,)
+
+
+def test_dispatch_winning_run_lock_admits_job_before_concurrent_pause(state, tmp_path):
+    run_id = _run(state, tmp_path, categories=("crypto", "web"), files=2)
+    wave = AgentLedger(state).create_wave(run_id)
+    host = FakeHost()
+    scheduler = AgentScheduler(state, host)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    pause_started = threading.Event()
+    pause_done = threading.Event()
+    pause_results: list[dict[str, Any]] = []
+
+    def pause() -> None:
+        pause_started.set()
+        pause_results.append(scheduler.set_dispatch_paused(run_id, True))
+        pause_done.set()
+
+    worker = threading.Thread(target=pause)
+    with run_lock(state, run_id):
+        worker.start()
+        assert pause_started.wait(2)
+        assert not pause_done.wait(0.05)
+        result = scheduler.dispatch(run_id)
+        assert result["started"]
+    worker.join(2)
+
+    assert not worker.is_alive() and pause_done.is_set() and host.spawned
+    assert pause_results[0]["dispatch_paused"] is True
+    assert scheduler.dispatch_control(run_id)["dispatch_paused"] is True
+    assert any(job["state"] == "running" for job in scheduler.jobs(run_id))
+
+
 def test_concurrent_model_turn_reservations_respect_fixed_run_budget(state, tmp_path):
     run_id = _run(state, tmp_path, actions=100)
     scheduler = AgentScheduler(state, FakeHost(script={role: (lambda a, b: {"state": "hang"})
