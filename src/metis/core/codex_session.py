@@ -110,6 +110,10 @@ class CodexSession:
             # Several swarm workers share this database; WAL lets readers and one
             # writer proceed concurrently (the setting persists in the file).
             db.execute("PRAGMA journal_mode=WAL")
+            # Serialize schema inspection and migrations. Without taking the write
+            # lock before reading table_info, concurrent workers can both observe a
+            # missing column and race to add it.
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS codex_sessions (
                 run_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, commitment TEXT,
                 started REAL NOT NULL, max_actions INTEGER NOT NULL,
