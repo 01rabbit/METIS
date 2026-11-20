@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import time
@@ -93,6 +94,12 @@ class AgentScheduler:
                 action_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, identity TEXT NOT NULL,
                 assignment_id TEXT NOT NULL, attempt_id TEXT NOT NULL, family TEXT, created REAL NOT NULL)""")
             db.execute("CREATE TABLE IF NOT EXISTS agent_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_run_controls (
+                run_id TEXT PRIMARY KEY, dispatch_paused INTEGER NOT NULL CHECK (dispatch_paused IN (0, 1)),
+                updated REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_run_control_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('pause', 'resume')), updated REAL NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS agent_run_turn_budgets (
                 run_id TEXT PRIMARY KEY, turn_limit INTEGER NOT NULL, turns_reserved INTEGER NOT NULL DEFAULT 0,
                 created REAL NOT NULL)""")
@@ -112,6 +119,49 @@ class AgentScheduler:
 
     def _db(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database, timeout=30)
+
+    @locked
+    def dispatch_control(self, run_id: str) -> dict[str, Any]:
+        """Return persistent queued-specialist dispatch control for one run."""
+        self.session._session(run_id)
+        with self._db() as db:
+            row = db.execute("SELECT dispatch_paused FROM agent_run_controls WHERE run_id=?",
+                             (run_id,)).fetchone()
+            history = db.execute(
+                "SELECT action,updated FROM agent_run_control_log WHERE run_id=? "
+                "ORDER BY id DESC LIMIT 20", (run_id,),
+            ).fetchall()
+        paused = False if row is None else row[0]
+        if type(paused) not in (bool, int) or paused not in (0, 1):
+            raise ValueError("invalid run dispatch control")
+        if any(action not in {"pause", "resume"} or type(updated) not in (int, float)
+               or not math.isfinite(updated) for action, updated in history):
+            raise ValueError("invalid run dispatch control history")
+        return {"run_id": run_id, "dispatch_paused": bool(paused),
+                "scope": "queued_specialist_dispatch_only",
+                "history": [{"action": action, "updated": updated}
+                            for action, updated in reversed(history)]}
+
+    @locked
+    def set_dispatch_paused(self, run_id: str, paused: bool) -> dict[str, Any]:
+        """Pause or resume queued specialist admission; active jobs are unaffected."""
+        if type(paused) is not bool:
+            raise ValueError("dispatch pause must be a boolean")
+        self.session._session(run_id)
+        with self._db() as db:
+            current_row = db.execute("SELECT dispatch_paused FROM agent_run_controls WHERE run_id=?",
+                                     (run_id,)).fetchone()
+            current = False if current_row is None else current_row[0]
+            if type(current) not in (bool, int) or current not in (0, 1):
+                raise ValueError("invalid run dispatch control")
+            if bool(current) != paused:
+                now = time.time()
+                db.execute("INSERT INTO agent_run_controls(run_id,dispatch_paused,updated) VALUES (?,?,?) "
+                           "ON CONFLICT(run_id) DO UPDATE SET dispatch_paused=excluded.dispatch_paused, "
+                           "updated=excluded.updated", (run_id, int(paused), now))
+                db.execute("INSERT INTO agent_run_control_log(run_id,action,updated) VALUES (?,?,?)",
+                           (run_id, "pause" if paused else "resume", now))
+        return self.dispatch_control(run_id)
 
     # -- configuration -------------------------------------------------------------
     def config(self) -> dict[str, Any]:
@@ -338,12 +388,37 @@ class AgentScheduler:
                     # Reservation alone starts no host work; this attempt is safe to end.
                     self._end(job["assignment_id"], job["attempt_id"], "cancelled", "run cancelled before spawn")
                     continue
+                if self._dispatch_is_paused(job["run_id"]):
+                    self._defer_reserved_job(job)
+                    continue
                 started_job = self._spawn_reserved_job(job, settings)
                 if started_job is not None:
                     started.append(started_job)
         queued = sum(1 for job in self.jobs(run_id) if job["state"] == "queued")
         return {"started": started, "queued": queued, "slot_limit": limit,
                 "per_run_slots": settings["per_run_slots"], "host": self.host.name}
+
+    def _dispatch_is_paused(self, run_id: str) -> bool:
+        with self._db() as db:
+            row = db.execute("SELECT dispatch_paused FROM agent_run_controls WHERE run_id=?",
+                             (run_id,)).fetchone()
+        paused = False if row is None else row[0]
+        if type(paused) not in (bool, int) or paused not in (0, 1):
+            raise ValueError("invalid run dispatch control")
+        return bool(paused)
+
+    def _defer_reserved_job(self, job: dict[str, Any]) -> None:
+        """Return an unspawned reservation to the queue after a pause wins the run lock."""
+        with self._db() as db:
+            updated = db.execute(
+                "UPDATE agent_jobs SET state='queued',attempt_id=NULL,attempt_no=MAX(0,attempt_no-1),"
+                "host=NULL,host_job_id=NULL,"
+                "lease_until=NULL,deadline=NULL,started=NULL,finished=NULL,failure=NULL,turns_used=0 "
+                "WHERE assignment_id=? AND state='running' AND attempt_id=? AND host_job_id IS NULL",
+                (job["assignment_id"], job["attempt_id"]),
+            )
+            if updated.rowcount == 1:
+                self._log(db, job["assignment_id"], job["attempt_id"], "dispatch_deferred_paused")
 
     def _spawn_reserved_job(self, job: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any] | None:
         """The caller holds the run lock through the bounded host launch."""
@@ -402,6 +477,18 @@ class AgentScheduler:
         db.row_factory = sqlite3.Row
         try:
             db.execute("BEGIN IMMEDIATE")
+            paused_runs: set[str] = set()
+            if locked_runs:
+                placeholders = ",".join("?" for _ in locked_runs)
+                paused_rows = db.execute(
+                    "SELECT run_id,dispatch_paused FROM agent_run_controls WHERE run_id IN ("
+                    + placeholders + ")", sorted(locked_runs),
+                ).fetchall()
+                for identity, paused in paused_rows:
+                    if type(paused) is not int or paused not in (0, 1):
+                        raise ValueError("invalid run dispatch control")
+                    if paused:
+                        paused_runs.add(identity)
             busy = [dict(row) for row in db.execute("SELECT run_id FROM agent_jobs WHERE state IN "
                                                      "('running','unknown')")]
             per_run: dict[str, int] = {}
@@ -425,6 +512,8 @@ class AgentScheduler:
                                "WHERE assignment_id=? AND state='queued'",
                                ("run cancelled", now, row["assignment_id"]))
                     self._log(db, row["assignment_id"], row["attempt_id"], "cancelled", "run cancelled")
+                    continue
+                if row["run_id"] in paused_runs:
                     continue
                 if free <= 0:
                     break
@@ -807,6 +896,17 @@ class AgentScheduler:
                 self._end(assignment_id, attempt_id, "timed_out", "deadline exceeded")
                 raise ValueError("assignment deadline exceeded")
             if job["turns_used"] >= job["max_turns"]:
+                with self._db() as db:
+                    inflight = db.execute(
+                        "SELECT 1 FROM agent_action_reservations WHERE assignment_id=? AND attempt_id=? LIMIT 1",
+                        (assignment_id, attempt_id),
+                    ).fetchone()
+                    if inflight:
+                        self._log(db, assignment_id, attempt_id, "intent_turn_cap_refused", "intent in flight")
+                if inflight:
+                    # A concurrent request cannot consume another turn, but the already
+                    # admitted intent owns its reservation and must be allowed to finish.
+                    raise ValueError("assignment max turns reached")
                 self._stop(job)
                 self._end(assignment_id, attempt_id, "timed_out", "max turns reached")
                 raise ValueError("assignment max turns reached")
