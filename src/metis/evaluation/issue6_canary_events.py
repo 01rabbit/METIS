@@ -58,7 +58,11 @@ class CliUsage:
 
 @dataclass(frozen=True)
 class TurnBoundary:
-    """Verified caller observations on one monotonic clock and fresh output file."""
+    """Verified caller observations on one clock and fresh output file.
+
+    ``reaped_at`` records waiting for the direct child, not proof that its process
+    group is empty. Current canary workers prohibit creating child processes.
+    """
 
     exit_code: int | None
     reaped_at: float | None

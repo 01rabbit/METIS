@@ -10,6 +10,7 @@ from contextlib import closing
 import pytest
 from test_issue6_canary_watchdog import eventually, prepare, state
 
+from metis.evaluation import _issue6_transcript_canary as transcript_canary
 from metis.evaluation._issue6_transcript_canary import (
     _ANSWER,
     _THREAD,
@@ -97,6 +98,20 @@ def test_fresh_file_is_exclusive_empty_and_symlinks_are_refused(tmp_path):
         assert os.fstat(descriptor).st_mode & 0o777 == 0o600
     finally:
         os.close(descriptor)
+
+
+def test_prestart_cancel_closes_reservation_without_spawning_child(tmp_path, monkeypatch):
+    finalized = []
+    monkeypatch.setattr(transcript_canary, "_pending", lambda *_args: True)
+    monkeypatch.setattr(transcript_canary, "_stop", lambda *_args, **_kwargs: "cancelled")
+    monkeypatch.setattr(transcript_canary, "_finish", lambda *args: finalized.append(args))
+    status = transcript_canary._guardian(
+        1, 2, tmp_path / "ledger.sqlite", 3, "ab" * 16, tmp_path / "scratch", 10, 20, "complete",
+    )
+    assert status == 0
+    assert len(finalized) == 1
+    assert finalized[0][3].outcome.value == "cancelled"
+    assert not (tmp_path / "scratch").exists()
 
 
 @pytest.mark.parametrize(("request_stop", "outcome"), [(False, "deadline"), (True, "cancelled")])

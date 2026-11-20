@@ -157,6 +157,10 @@ def _reap(process: subprocess.Popen[bytes]) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS may report EPERM for a process group containing only a zombie.
+            # wait() below reaps the direct child; a live child still fails its timeout.
+            pass
     process.wait(timeout=1)
 
 

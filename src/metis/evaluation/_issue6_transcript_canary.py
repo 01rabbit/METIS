@@ -137,8 +137,11 @@ def _guardian(lease: int, parent: int, database: Path, reservation: int, nonce: 
         return 1
     reason = _stop(lease, parent, cutoff, wall)
     if reason is not None:
-        # There is no reaping evidence for a process that was never spawned.
-        return 1
+        # No child exists to reap; still close the charged reservation explicitly.
+        _finish(database, reservation, nonce, CanaryEvidence(
+            Outcome.DEADLINE if reason == "deadline" else Outcome.CANCELLED,
+        ), cutoff, wall, lease, parent)
+        return 0
     scratch.mkdir(mode=0o700)
     last_path = scratch / "last.json"
     last = _fresh_last_message(last_path)
@@ -191,6 +194,8 @@ def _guardian(lease: int, parent: int, database: Path, reservation: int, nonce: 
         deadline=finalizing if reason == "deadline" else cutoff, last_message_was_fresh=True,
         cancelled=reason in {"cancelled", "lease_closed"},
     )
+    # The per-run key is intentionally discarded: these HMACs redact raw values, but
+    # they are not later-verifiable commitments and must not be treated as such.
     evidence = finalize_canary(bytes(stdout), bytes(stderr), last_message, boundary,
                               commitment_key=secrets.token_bytes(32), reservation_scope=hashlib.sha256(
                                   bytes.fromhex(nonce)).digest())

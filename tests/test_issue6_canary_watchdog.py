@@ -12,7 +12,7 @@ import pytest
 
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
-from metis.evaluation._issue6_canary_process import _stop
+from metis.evaluation._issue6_canary_process import _reap, _stop
 from metis.evaluation.issue6_build_pilot import _one_assignment
 from metis.evaluation.issue6_canary_watchdog import _CANARY_TABLE, quarantine_expired, start_canary
 from metis.evaluation.issue6_pilot_admission import (
@@ -24,6 +24,28 @@ from metis.evaluation.issue6_pilot_admission import (
 )
 
 DIGEST = "a" * 64
+
+
+def test_reap_waits_when_macOS_reports_permission_error_for_exited_group(monkeypatch):
+    calls = []
+
+    class ExitedChild:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+        def wait(self, *, timeout):
+            calls.append(("wait", timeout))
+            return 0
+
+    def permission_error(_pid, _signal):
+        calls.append(("killpg",))
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("metis.evaluation._issue6_canary_process.os.killpg", permission_error)
+    _reap(ExitedChild())
+    assert calls == [("killpg",), ("wait", 1)]
 
 
 def prepare(root):
