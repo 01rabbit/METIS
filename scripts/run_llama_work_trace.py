@@ -255,11 +255,47 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
 
 
 def _write_new(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "wb") as destination:
-        destination.write(data)
-        destination.flush()
-        os.fsync(destination.fileno())
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    target_created = False
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=False) as destination:
+            destination.write(data)
+            destination.flush()
+            os.fsync(descriptor)
+
+        # Linking a fully written same-directory temporary file publishes it
+        # atomically and fails if the requested output already exists.
+        os.link(temporary, path, follow_symlinks=False)
+        target_created = True
+        source_stat = os.fstat(descriptor)
+        target_stat = os.stat(path, follow_symlinks=False)
+        if (source_stat.st_dev, source_stat.st_ino) != (target_stat.st_dev, target_stat.st_ino):
+            raise OSError("published trace receipt identity changed")
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        if target_created:
+            try:
+                source_stat = os.fstat(descriptor)
+                target_stat = os.stat(path, follow_symlinks=False)
+                if (source_stat.st_dev, source_stat.st_ino) == (target_stat.st_dev, target_stat.st_ino):
+                    os.unlink(path)
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def main() -> int:

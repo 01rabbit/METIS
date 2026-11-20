@@ -20,7 +20,7 @@ from metis.evaluation.native_work_trace import (
     validate_retry_probe,
     verify_build_manifest,
 )
-from scripts.run_llama_work_trace import MAX_LOG_BYTES, _popen_with_bounded_file_size
+from scripts.run_llama_work_trace import MAX_LOG_BYTES, _popen_with_bounded_file_size, _write_new
 
 NONCE = "0123456789abcdef0123456789abcdef"
 
@@ -245,6 +245,34 @@ def test_server_log_file_is_limited_by_child_file_size_resource(tmp_path):
         )
         process.wait(timeout=10)
     assert log_path.stat().st_size == MAX_LOG_BYTES
+
+
+def test_trace_receipt_publication_is_atomic_private_and_no_replace(tmp_path):
+    output = tmp_path / "receipt.json"
+    payload = b'{"status":"complete"}\n'
+
+    _write_new(output, payload)
+
+    assert output.read_bytes() == payload
+    assert output.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        _write_new(output, b"replacement")
+    assert output.read_bytes() == payload
+    assert not list(tmp_path.glob(".receipt.json.*.tmp"))
+
+
+def test_trace_receipt_write_failure_leaves_no_partial_output_or_temp(tmp_path, monkeypatch):
+    output = tmp_path / "receipt.json"
+
+    def fail_fsync(_descriptor):
+        raise OSError("synthetic fsync failure")
+
+    monkeypatch.setattr("scripts.run_llama_work_trace.os.fsync", fail_fsync)
+    with pytest.raises(OSError, match="synthetic fsync failure"):
+        _write_new(output, b'{"status":"partial"}\n')
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".receipt.json.*.tmp"))
 
 
 @pytest.mark.parametrize("phase", ["launch", "readiness"])
