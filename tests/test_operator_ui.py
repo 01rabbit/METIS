@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import shutil
 import sqlite3
+import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -66,6 +69,7 @@ def test_loopback_view_requires_token_and_omits_event_details(tmp_path: Path) ->
         assert headers["Content-Security-Policy"].startswith("default-src 'none'")
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit")[0] == 401
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit", token="wrong")[0] == 401
+        assert request(port, "GET", f"/api/runs/{RUN_ID}/audit", token="é" * 32)[0] == 401
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit",
                        token=TOKEN, host="evil.example")[0] == 403
         assert request(port, "GET", f"/api/runs/{RUN_ID}/audit",
@@ -95,6 +99,8 @@ def test_short_token_and_invalid_port_are_rejected(tmp_path: Path) -> None:
     database = fixture_database(tmp_path)
     with pytest.raises(ValueError, match="token"):
         create_server(database, port=0, token="short")
+    with pytest.raises(ValueError, match="ASCII"):
+        create_server(database, port=0, token="é" * 32)
     with pytest.raises(ValueError, match="port"):
         create_server(database, port=65536, token=TOKEN)
 
@@ -171,3 +177,260 @@ def test_cancel_unknown_run_and_unavailable_handler_fail_closed(tmp_path: Path) 
         assert request(port, "POST", f"/api/runs/{'b' * 32}/cancel", token=TOKEN)[0] == 404
     with server_for(database) as port:
         assert request(port, "POST", f"/api/runs/{RUN_ID}/cancel", token=TOKEN)[0] == 503
+
+
+def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    session, first_id = _start_run(database)
+    time.sleep(0.002)
+    _session, second_id = _start_run(database)
+    before = database.read_bytes()
+
+    with server_for(database, cancel_run=session.cancel) as port:
+        assert request(port, "GET", "/api/runs")[0] == 401
+        assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/runs?limit=101", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/runs?limit=2&extra=1", token=TOKEN)[0] == 400
+        status, headers, body = request(port, "GET", "/api/runs?limit=2", token=TOKEN)
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        payload = json.loads(body)
+        assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
+        assert payload["truncated"] is False
+        assert all(run["status"] == "planning" for run in payload["runs"])
+        assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
+        assert "private" not in body.decode()
+    assert database.read_bytes() == before
+
+
+def test_run_list_fails_closed_on_corrupt_selected_chain(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    _session, run_id = _start_run(database)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute("UPDATE events SET digest='corrupt' WHERE run_id=? AND sequence=0", (run_id,))
+    with server_for(database) as port:
+        status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
+        assert status == 503
+        assert b"unavailable" in body
+        assert b"private" not in body
+
+
+@pytest.mark.parametrize("field", ["run_id", "payload", "timestamp", "previous_hash", "digest"])
+def test_audit_routes_reject_blob_in_event_text_column(
+    tmp_path: Path, field: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = fixture_database(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute(f"UPDATE events SET {field} = CAST({field} AS BLOB)")
+    with server_for(database) as port:
+        status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
+        assert status == 503
+        assert body == b"run list unavailable"
+        if field != "run_id":
+            status, _headers, body = request(port, "GET", f"/api/runs/{RUN_ID}/audit", token=TOKEN)
+            assert status == 503
+            assert body == b"audit unavailable"
+    assert capsys.readouterr().err == ""
+
+
+def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to drive the operator script")
+    with server_for(fixture_database(tmp_path)) as port:
+        status, _headers, script = request(port, "GET", "/operator.js")
+        assert status == 200
+
+    subprocess.run(
+        [node, "-e", """
+        const assert = require('node:assert/strict');
+        const {readFileSync} = require('node:fs');
+        const test = require('node:test');
+        const {runInNewContext} = require('node:vm');
+
+        class Element {
+          value = '';
+          textContent = '';
+          options = [];
+          handlers = {};
+          addEventListener(event, callback) { this.handlers[event] = callback; }
+          replaceChildren(...options) { this.options = options; this.value = options[0].value; }
+          append(option) { this.options.push(option); }
+          fire(event) { return this.handlers[event](); }
+        }
+
+        const elements = Object.fromEntries(
+          ['token', 'run', 'result', 'run-list', 'refresh', 'inspect', 'cancel']
+            .map(id => [id, new Element()])
+        );
+        const document = {
+          getElementById: id => elements[id],
+          createElement: () => new Element(),
+        };
+        class Option {
+          constructor(textContent, value) { Object.assign(this, {textContent, value}); }
+        }
+        const confirmations = [];
+        const window = {
+          confirm(message) { confirmations.push(message); return true; }
+        };
+        let mockFetch;
+        runInNewContext(readFileSync(0, 'utf8'), {
+          document, Option, window, fetch: (...args) => mockFetch(...args),
+        });
+
+        const select = elements['run-list'];
+        const runId = 'a'.repeat(32);
+        const otherRunId = 'b'.repeat(32);
+        const payload = {
+          runs: [{run_id: runId, status: 'planning'}, {run_id: otherRunId, status: 'new'}],
+          truncated: false,
+        };
+        const success = () => ({ok: true, status: 200, json: async () => payload});
+        const refresh = () => elements.refresh.fire('click');
+        const inspect = () => elements.inspect.fire('click');
+        const deny = status => { mockFetch = async () => ({ok: false, status}); };
+
+        async function loadAndSelect() {
+          mockFetch = async () => success();
+          await refresh();
+          assert.equal(select.options.length, 3);
+          select.value = runId;
+          select.fire('change');
+          assert.equal(elements.run.value, runId);
+        }
+
+        function assertCleared(message) {
+          assert.equal(select.options.length, 1);
+          assert.equal(elements.run.value, '');
+          assert.equal(elements.result.textContent, message);
+        }
+
+        test('authorization failures clear the view and ignore earlier successes', async () => {
+          await loadAndSelect();
+          elements.run.value = 'b'.repeat(32);
+          elements.run.fire('input');
+          deny(401);
+          await elements.inspect.fire('click');
+          assertCleared('Audit unavailable (401)');
+
+          await loadAndSelect();
+          let resolveBody;
+          const bodyPending = new Promise(resolve => { resolveBody = resolve; });
+          mockFetch = async () => ({ok: true, status: 200, json: () => bodyPending});
+          const olderList = refresh();
+          await Promise.resolve();
+          deny(401);
+          await refresh();
+          assertCleared('Run list unavailable (401)');
+          resolveBody(payload);
+          await olderList;
+          assertCleared('Run list unavailable (401)');
+
+          await loadAndSelect();
+          let resolveResponse;
+          mockFetch = () => new Promise(resolve => { resolveResponse = resolve; });
+          const pendingList = refresh();
+          deny(403);
+          await elements.inspect.fire('click');
+          assertCleared('Audit unavailable (403)');
+          resolveResponse(success());
+          await pendingList;
+          assertCleared('Audit unavailable (403)');
+        });
+
+        test('an earlier refresh denial invalidates even a newer pending request', async () => {
+          await loadAndSelect();
+          let resolveOlder, resolveNewer;
+          mockFetch = () => new Promise(resolve => { resolveOlder = resolve; });
+          const older = refresh();
+          mockFetch = () => new Promise(resolve => { resolveNewer = resolve; });
+          const newer = refresh();
+
+          resolveOlder({ok: false, status: 401});
+          await older;
+          assertCleared('Run list unavailable (401)');
+          resolveNewer(success());
+          await newer;
+          assertCleared('Run list unavailable (401)');
+        });
+
+        test('an audit follows the selected run and cancellation confirms its actual target', async () => {
+          await loadAndSelect();
+          const audit = id => ({ok: true, status: 200, json: async () => ({run_id: id})});
+          mockFetch = async () => audit(runId);
+          await inspect();
+          assert.equal(JSON.parse(elements.result.textContent).run_id, runId);
+          let resolveOlder;
+          mockFetch = () => new Promise(resolve => { resolveOlder = resolve; });
+          const older = inspect();
+
+          select.value = otherRunId;
+          select.fire('change');
+          assert.equal(elements.result.textContent, '');
+          mockFetch = async () => audit(otherRunId);
+          await inspect();
+          resolveOlder(audit(runId));
+          await older;
+          assert.equal(JSON.parse(elements.result.textContent).run_id, otherRunId);
+
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/runs/' + otherRunId + '/cancel');
+            assert.equal(options.method, 'POST');
+            return audit(otherRunId);
+          };
+          await elements.cancel.fire('click');
+          assert.deepEqual(confirmations, ['Cancel run ' + otherRunId + '?']);
+          assert.equal(JSON.parse(elements.result.textContent).run_id, otherRunId);
+
+          mockFetch = async () => ({ok: true, json: async () => ({...payload, runs: []})});
+          await refresh();
+          assert.equal(select.value, '');
+          assert.equal(elements.run.value, '');
+        });
+
+        test('a delayed cancellation result cannot replace another run audit', async () => {
+          await loadAndSelect();
+          let resolveCancel;
+          mockFetch = (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/cancel');
+            assert.equal(options.method, 'POST');
+            return new Promise(resolve => { resolveCancel = resolve; });
+          };
+          const pendingCancel = elements.cancel.fire('click');
+          assert.equal(confirmations.at(-1), 'Cancel run ' + runId + '?');
+          assert.equal(typeof resolveCancel, 'function');
+
+          select.value = otherRunId;
+          select.fire('change');
+          const audit = {run_id: otherRunId, status: 'planning'};
+          mockFetch = async () => ({ok: true, status: 200, json: async () => audit});
+          await inspect();
+          resolveCancel({ok: true, status: 200, json: async () => ({
+            run_id: runId, status: 'cancelled',
+          })});
+          await pendingCancel;
+          assert.deepEqual(JSON.parse(elements.result.textContent), audit);
+        });
+        """],
+        input=script,
+        check=True,
+        timeout=10,
+    )
+
+
+def test_server_startup_migrates_legacy_run_discovery_index(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    _session, run_id = _start_run(database)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP INDEX events_latest_by_timestamp")
+
+    with server_for(database) as port:
+        status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
+        assert status == 200
+        assert json.loads(body)["runs"][0]["run_id"] == run_id
+    with sqlite3.connect(database) as db:
+        indexes = {row[1] for row in db.execute("PRAGMA index_list(events)")}
+    assert "events_latest_by_timestamp" in indexes

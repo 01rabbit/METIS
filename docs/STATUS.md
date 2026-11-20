@@ -627,6 +627,20 @@ were retained outside Git and disposable VMs removed. See
 
 A local operator view serves the existing count-only audit over `127.0.0.1`
 with a bearer token supplied by environment variable. Its authenticated
+`GET /api/runs?limit=N` lists at most 100 newest runs from one read-only
+SQLite snapshot after validating every selected event chain. The browser loads
+the newest 20 and exposes only run ID, status, timestamp, and bounded-action
+budget for selection; challenge metadata and event details stay out of the
+list. Aggregate history processed by one list request is capped at 4,096
+timestamp-index entries and 5 MiB of index keys during discovery, 20,000
+selected events, and 8 MiB of stored selected event fields. Discovery rejects
+index values over 512 bytes and uses a 4 KiB SQLite value limit; selected event
+fields use a 256 KiB SQLite value limit. Hitting a discovery budget returns
+the runs found so far with a `truncated` marker. The index is created by the
+writable store initializer and operator startup migration. A corrupt chain,
+invalid storage fields, unavailable index, or oversized selected set fails the
+whole list closed.
+The authenticated
 `POST /api/runs/{run_id}/cancel` delegates to the existing run-locked
 `CodexSession.cancel` path and returns only run status and worker-teardown
 status; unknown teardown remains visible as HTTP 202. It rejects non-loopback
