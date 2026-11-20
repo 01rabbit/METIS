@@ -46,11 +46,19 @@ ATTACHMENTS = {".apk", ".dex", ".jar", ".so", ".dll", ".out", ".pyc", ".wasm", "
 
 
 @contextmanager
-def _closed_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+def _closed_transaction(connection: sqlite3.Connection, *, readonly_wal_preview: bool = False) -> Iterator[sqlite3.Connection]:
     """Commit or roll back a SQLite transaction and always close its handle."""
     try:
         with connection:
             yield connection
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if readonly_wal_preview and ("readonly" in message or "read-only" in message):
+            raise ValueError(
+                "read-only credential preview does not change database rows, but SQLite WAL mode "
+                "may need write access to the database directory for -wal/-shm sidecars"
+            ) from None
+        raise
     finally:
         connection.close()
 
@@ -376,9 +384,18 @@ class WebWorkflow:
         old_origins: list[str] = []
         newer = unknown = selected_runs = removed_cookie_jars = 0
         if apply or self.database.exists():
-            connection = (sqlite3.connect(self.database) if apply else
-                          sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True))
-            with _closed_transaction(connection) as db:
+            try:
+                connection = (sqlite3.connect(self.database) if apply else
+                              sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True))
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if not apply and ("readonly" in message or "read-only" in message):
+                    raise ValueError(
+                        "read-only credential preview does not change database rows, but SQLite WAL mode "
+                        "may need write access to the database directory for -wal/-shm sidecars"
+                    ) from None
+                raise
+            with _closed_transaction(connection, readonly_wal_preview=not apply) as db:
                 if apply:
                     db.execute("PRAGMA secure_delete=ON")
                     db.execute("BEGIN IMMEDIATE")
@@ -417,8 +434,12 @@ class WebWorkflow:
                 if old_origins and "web_runs" in tables:
                     if apply:
                         for key in old_origins:
-                            db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
-                                       "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+                            generation = db.execute(
+                                "INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                                "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,),
+                            )
+                            if generation.rowcount != 1:
+                                raise sqlite3.IntegrityError("could not advance retired credential generation")
                     placeholders = ",".join("?" for _ in old_origins)
                     runs = db.execute(
                         "SELECT run_id,config,state FROM web_runs "
@@ -445,13 +466,20 @@ class WebWorkflow:
                             cookies.pop(auth_origin, None)
                             state.pop("cookie_fingerprint", None)
                             state[self._AUTH_GENERATION_STATE_KEY] = generations[auth_origin]
-                            db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
-                                       (json.dumps(state), run_id))
+                            updated = db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
+                                                 (json.dumps(state), run_id))
+                            if updated.rowcount != 1:
+                                raise sqlite3.IntegrityError("could not retire linked web run cookies")
                     if apply:
-                        db.executemany("DELETE FROM web_credentials WHERE origin=?",
-                                       [(key,) for key in old_origins])
+                        for key in old_origins:
+                            deleted = db.execute("DELETE FROM web_credentials WHERE origin=?", (key,))
+                            if deleted.rowcount != 1:
+                                raise sqlite3.IntegrityError("credential retirement did not delete every selected origin")
 
-        wal_clean = self._truncate_credential_wal() if apply and old_origins else None
+        # Re-applying the same age policy also retries a previously busy WAL cleanup.
+        wal_clean = self._truncate_credential_wal() if apply else None
+        sidecar_note = ("Read-only preview may create SQLite -wal/-shm sidecars and needs a writable "
+                        "database directory; " if not apply else "")
         return {
             "applied": apply,
             "older_than_days": older_than_days,
@@ -464,9 +492,11 @@ class WebWorkflow:
             "cookie_jars_selected": removed_cookie_jars,
             "provider_revocation_required": bool(apply and old_origins),
             "wal_cleanup_complete": wal_clean,
+            "sqlite_wal_sidecars_may_be_created": not apply,
             "limit": ("Only locally stored credentials with a known timestamp are eligible. "
                       "Environment variables, provider state, in-flight requests, snapshots and backups "
-                      f"may retain prior values; WAL cleanup "
+                      f"may retain prior values; {sidecar_note}"
+                      f"WAL cleanup "
                       f"{'completed' if wal_clean else 'not applied' if wal_clean is None else 'could not be confirmed'}"),
         }
 

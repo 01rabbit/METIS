@@ -956,14 +956,14 @@ record an update timestamp. Legacy rows migrate with unknown age and remain
 untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
 auth generations, and removes only the corresponding auth-origin cookies from
 linked runs. The command refuses more than 100 credential origins or 1,000
-linked runs, and reports counts without origin names or secret values. Eleven
-synthetic tests cover preview, migration, exact cutoff, stale-client fencing,
-rollback, limits, non-mutating legacy/missing-database previews, relative paths,
-and concurrent migration startup. Credential writes and retirement close their
-write transaction and attempt a bounded WAL truncate. The command reports when
-a concurrent reader prevents cleanup; this does not undo the committed deletion.
-The expanded web credential/request suite has 48 passing tests, including both
-successful truncation and the busy-reader path. This is local retention control
-only: provider revocation, secure physical deletion, encrypted credential
-storage and Issue #9 acceptance remain open. See
+linked runs, and reports counts without origin names or secret values. Preview
+leaves credential rows untouched; in WAL mode SQLite may create `-wal`/`-shm`
+sidecars, so the database directory must be writable. Credential writes and
+retirement close their write transaction and attempt a bounded WAL truncate. A
+busy reader leaves deletion committed and reports incomplete cleanup; repeating
+`--apply` retries cleanup after the reader exits. Triggers that suppress a
+required generation, cookie-state, or credential update abort the transaction.
+The expanded web credential/request suite covers these behaviors. This is local
+retention control only: provider revocation, secure physical deletion, encrypted
+credential storage and Issue #9 acceptance remain open. See
 `docs/reports/issue9-credential-age-retention-2026-11-20.md`.

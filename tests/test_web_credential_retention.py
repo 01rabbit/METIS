@@ -48,6 +48,8 @@ def test_retention_preview_is_read_only_redacted_and_classifies_cutoff(tmp_path)
     assert result["newer_credentials_retained"] == 1
     assert result["age_unknown_retained"] == 1
     assert result["selected_runs"] == 1 and result["cookie_jars_selected"] == 1
+    assert result["sqlite_wal_sidecars_may_be_created"] is True
+    assert "may create SQLite -wal/-shm sidecars" in result["limit"]
     assert "private-" not in json.dumps(result)
     assert "old.example" not in json.dumps(result)
     with sqlite3.connect(workflow.database) as db:
@@ -140,6 +142,20 @@ def test_cli_preview_accepts_relative_database_path(tmp_path, monkeypatch, capsy
     assert result["credentials_considered"] == 1
     assert result["eligible_credentials"] == 1
     assert workflow.database == database
+
+
+def test_readonly_wal_preview_reports_directory_permission_requirement(tmp_path, monkeypatch):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    original_connect = sqlite3.connect
+
+    def readonly_directory_failure(*args, **kwargs):
+        if kwargs.get("uri") and "mode=ro" in args[0]:
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr("metis.core.ctf_web.sqlite3.connect", readonly_directory_failure)
+    with pytest.raises(ValueError, match="WAL mode.*write access.*sidecars"):
+        workflow.credential_retention(older_than_days=30)
 
 
 def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_path):
@@ -253,6 +269,64 @@ def test_retention_apply_rolls_back_generation_and_cookie_changes_on_delete_erro
         assert db.execute("SELECT COUNT(*) FROM web_credentials WHERE origin=?", (key,)).fetchone() == (1,)
         state_after, = db.execute("SELECT state FROM web_runs WHERE run_id='run'").fetchone()
     assert key in json.loads(state_after)["cookies"]
+
+
+@pytest.mark.parametrize("blocked_table", ["web_credentials", "web_runs"])
+def test_retention_apply_rolls_back_when_trigger_suppresses_required_write(tmp_path, blocked_table):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    key = "https://old.example"
+    cutoff = 10_000_000 - 30 * 86_400
+    with sqlite3.connect(workflow.database) as db:
+        _insert_credential(db, key, cutoff - 1)
+        db.execute("INSERT INTO web_auth_generations VALUES (?,?)", (key, 4))
+        state = {"_metis_auth_generation": 4, "cookies": {key: [{"name": "s", "value": "secret"}]}}
+        config = {"origins": [key], "auth_origin": key}
+        db.execute(
+            "INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
+            ("run", json.dumps(config), json.dumps(state), "[]", "[]", "synthetic"),
+        )
+        table = "web_credentials" if blocked_table == "web_credentials" else "web_runs"
+        operation = "DELETE" if blocked_table == "web_credentials" else "UPDATE"
+        db.execute(
+            f"CREATE TRIGGER suppress_retirement BEFORE {operation} ON {table} "
+            "BEGIN SELECT RAISE(IGNORE); END",
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="retire|retired"):
+        workflow.credential_retention(older_than_days=30, apply=True, now=10_000_000)
+
+    with sqlite3.connect(workflow.database) as db:
+        assert db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (key,)).fetchone() == (4,)
+        assert db.execute("SELECT COUNT(*) FROM web_credentials WHERE origin=?", (key,)).fetchone() == (1,)
+        state_after, = db.execute("SELECT state FROM web_runs WHERE run_id='run'").fetchone()
+    assert key in json.loads(state_after)["cookies"]
+
+
+def test_retention_retries_wal_cleanup_after_busy_reader_is_released(tmp_path):
+    workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
+    key = "https://old.example"
+    with sqlite3.connect(workflow.database) as db:
+        _insert_credential(db, key, 1.0)
+    reader = sqlite3.connect(workflow.database)
+    keeper = sqlite3.connect(workflow.database)
+    reader.execute("BEGIN")
+    assert reader.execute("SELECT payload FROM web_credentials WHERE origin=?", (key,)).fetchone()
+    try:
+        first = workflow.credential_retention(older_than_days=1, apply=True, now=10_000_000)
+        assert first["eligible_credentials"] == 1
+        assert first["wal_cleanup_complete"] is False
+        wal_path = workflow.database.with_name(workflow.database.name + "-wal")
+        assert b"private-https://old.example" in wal_path.read_bytes()
+    finally:
+        reader.close()
+
+    retry = workflow.credential_retention(older_than_days=1, apply=True, now=10_000_000)
+    assert retry["eligible_credentials"] == 0
+    assert retry["wal_cleanup_complete"] is True
+    wal_path = workflow.database.with_name(workflow.database.name + "-wal")
+    assert not wal_path.exists() or wal_path.stat().st_size == 0
+    assert b"private-https://old.example" not in workflow.database.read_bytes()
+    keeper.close()
 
 
 def test_credential_retention_cli_previews_by_default_and_requires_apply_to_delete(tmp_path, monkeypatch, capsys):

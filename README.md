@@ -88,9 +88,10 @@ metis web credential-retention --older-than-days 90
 metis web credential-retention --older-than-days 90 --apply
 ```
 
-Credentials whose age is unknown are retained. This local operation does not
-revoke credentials at the CTF provider or erase prior SQLite WAL, snapshots, or
-backups.
+Credentials whose age is unknown are retained. The preview does not change
+credential rows, but SQLite WAL mode may create `-wal`/`-shm` sidecars and needs
+write access to the database directory. This local operation does not revoke
+credentials at the CTF provider or erase snapshots or backups.
 
 Services announced as `nc host port` are reached with `metis remote`: `suggest`
 lists candidates from the statement, `grant` records the endpoint the user

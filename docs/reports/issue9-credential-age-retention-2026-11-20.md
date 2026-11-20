@@ -9,7 +9,10 @@ metis web credential-retention --older-than-days 90 --apply
 ```
 
 The default preview opens a read-only SQLite transaction and reports counts
-without origins or credential values. Apply uses `BEGIN IMMEDIATE` and
+without origins or credential values. It does not write credential rows, but
+SQLite WAL mode may create `-wal`/`-shm` sidecars and requires write access to
+the database directory; a directory permission failure is reported explicitly.
+Apply uses `BEGIN IMMEDIATE` and
 `secure_delete=ON`, retires only records with a known timestamp at or before
 the cutoff, advances each affected auth generation, and removes only the
 matching authentication-origin cookie jar from linked runs. The operation is
@@ -32,15 +35,18 @@ snapshots/backups, encrypted storage, or compliance with a retention policy.
 After storing, forgetting, or applying retention, METIS closes the transaction
 connection and attempts a bounded `wal_checkpoint(TRUNCATE)`. The result includes
 `wal_cleanup_complete`; a concurrent reader can prevent truncation, and false
-is reported without undoing an already committed deletion. A successful
+is reported without undoing an already committed deletion. Repeating `--apply`
+retries the checkpoint even when the credential was already removed. A successful
 checkpoint covers the active SQLite database only; it does not erase copies in
 snapshots, backups or storage media, nor values already loaded by other
 processes. Issue #9 remains open.
 
-Synthetic local tests cover the exact cutoff, read-only preview, legacy
+Synthetic local tests cover the exact cutoff, row-read-only preview and its WAL
+sidecar requirement, legacy
 unknown-age migration, reauthentication timestamps, selective cookie removal,
 stale-client fencing, rollback, CLI preview/apply behavior, and both operation
 bounds. Additional CLI regression cases verify that previews leave missing and
 legacy databases untouched, accept relative paths, and coexist with concurrent
-schema migration. WAL tests cover successful truncation after retirement and a
-busy reader, which leaves the deletion committed but reports cleanup incomplete.
+schema migration. WAL tests cover successful truncation after retirement, a busy
+reader followed by a successful retry, and triggers that suppress required
+updates or deletion; those cases abort instead of reporting successful retirement.
