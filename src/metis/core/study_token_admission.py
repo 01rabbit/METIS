@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import sqlite3
 import stat
@@ -84,8 +85,9 @@ class TokenLaunchOutcome(_Record):
         elif self.status in ("cap_denied", "unsupported_graph"):
             valid = self.exit_status == 75 and self.observed_work is not None
         elif self.status == "server_error":
-            valid = (self.exit_status is not None and 1 <= self.exit_status <= 255
-                     and self.exit_status not in (74, 75) and self.observed_work is not None)
+            valid = (self.observed_work is None if self.exit_status is None else
+                     1 <= self.exit_status <= 255 and self.exit_status not in (74, 75)
+                     and self.observed_work is not None)
         else:
             valid = self.observed_work is None and (
                 self.status not in ("launch_failed", "lost") or self.exit_status is None
@@ -119,6 +121,8 @@ _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS study_token_launches (
         run_id TEXT NOT NULL, turn_reservation_id INTEGER NOT NULL, nonce TEXT NOT NULL UNIQUE,
         consumed INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),
+        launched INTEGER NOT NULL DEFAULT 0 CHECK (launched IN (0, 1)),
+        launch_owner TEXT,
         PRIMARY KEY (run_id, turn_reservation_id),
         FOREIGN KEY (run_id, turn_reservation_id)
             REFERENCES study_token_attempts(run_id, turn_reservation_id)
@@ -144,6 +148,11 @@ _COLUMN_MIGRATIONS = (
     ("study_token_launches", "consumed",
      ("ALTER TABLE study_token_launches ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0 "
       "CHECK (consumed IN (0, 1))")),
+    ("study_token_launches", "launched",
+     ("ALTER TABLE study_token_launches ADD COLUMN launched INTEGER NOT NULL DEFAULT 0 "
+      "CHECK (launched IN (0, 1))")),
+    ("study_token_launches", "launch_owner",
+     "ALTER TABLE study_token_launches ADD COLUMN launch_owner TEXT"),
 )
 
 
@@ -160,6 +169,8 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             db.execute(statement)
             if table == "study_token_launches":
                 db.execute("UPDATE study_token_launches SET consumed=1")
+                if column == "launched":
+                    db.execute("UPDATE study_token_launches SET launched=1")
 
 _fixture_fd_guard = Lock()
 _fixture_lock_fds: set[int] = set()
@@ -276,7 +287,11 @@ class StudyTokenAdmission:
         memory_digests = binding.get("memory_card_digests")
         if not isinstance(prefix, str) or not isinstance(memory_digests, list):
             raise ValueError("held-out prompt or memory binding unavailable")  # noqa: TRY004 -- invalid persisted binding
-        if not prompt.startswith(prefix + "\n\n"):
+        from metis.core.codex_specialist import final_handoff_schema
+        from metis.core.llama_specialist import LlamaSpecialist
+        bound_assignment = prefix + "\n\n"
+        if not any(prompt.startswith(LlamaSpecialist.native_request_prefix(schema) + bound_assignment)
+                   for schema in (None, final_handoff_schema())):
             raise ValueError("rendered prompt does not use the bound held-out prefix")
         prefix_digest = hashlib.sha256(prefix.encode("utf-8")).hexdigest()
         if prefix_digest != config.prompt_sha256:
@@ -384,6 +399,86 @@ class StudyTokenAdmission:
         """Consume a scheduler-bound claim only while its job and reservation remain live."""
         self._consume_launch_claim(claim, scheduler_bound=True)
 
+    def validate_consumed_scheduler_launch_claim(self, claim: TokenLaunchClaim) -> None:
+        """Revalidate a consumed claim at the native consumer boundary."""
+        value = TokenLaunchClaim.model_validate(claim)
+        receipt = value.receipt
+        with self._transaction() as db:
+            self._require_current_scheduler_turn(db, receipt)
+            self._require_committed_receipt(db, receipt)
+            stored = db.execute(
+                "SELECT l.nonce,l.consumed,l.launched,o.nonce FROM study_token_launches AS l "
+                "LEFT JOIN study_token_outcomes AS o ON o.nonce=l.nonce "
+                "WHERE l.run_id=? AND l.turn_reservation_id=?",
+                (receipt.slot.run_id, receipt.attempt.turn_reservation_id),
+            ).fetchone()
+            if stored != (value.nonce, 1, 0, None):
+                raise ValueError("scheduler launch claim is not consumed")
+
+    def claim_scheduler_native_launch(self, claim: TokenLaunchClaim, *, owner_id: str) -> Literal[
+        "claimed", "stale", "already_started",
+    ]:
+        """Atomically fence a consumed claim to one native consumer invocation."""
+        if not re.fullmatch(r"[0-9a-f]{32}", owner_id):
+            raise ValueError("invalid native launch owner")
+        value = TokenLaunchClaim.model_validate(claim)
+        receipt = value.receipt
+        with self._transaction() as db:
+            self._require_committed_receipt(db, receipt)
+            slot, attempt = receipt.slot, receipt.attempt
+            stored = db.execute(
+                "SELECT l.nonce,l.consumed,l.launched,l.launch_owner,o.nonce FROM study_token_launches AS l "
+                "LEFT JOIN study_token_outcomes AS o ON o.nonce=l.nonce "
+                "WHERE l.run_id=? AND l.turn_reservation_id=?",
+                (slot.run_id, attempt.turn_reservation_id),
+            ).fetchone()
+            if stored is None or stored[0] != value.nonce or stored[1] != 1:
+                raise ValueError("scheduler launch claim is invalid or unconsumed")
+            if stored[2] == 1:
+                if stored[3] != owner_id or stored[4] is not None:
+                    return "already_started"
+                try:
+                    self._require_current_scheduler_turn(db, receipt)
+                except ValueError:
+                    return "stale"
+                return "claimed"
+            if stored[4] is not None:
+                return "already_started"
+            stale = False
+            try:
+                self._require_current_scheduler_turn(db, receipt)
+            except ValueError:
+                stale = True
+            changed = db.execute(
+                "UPDATE study_token_launches SET launched=1,launch_owner=? WHERE run_id=? "
+                "AND turn_reservation_id=? AND nonce=? AND consumed=1 AND launched=0",
+                (owner_id, slot.run_id, attempt.turn_reservation_id, value.nonce),
+            )
+            if changed.rowcount != 1:
+                return "already_started"
+            return "stale" if stale else "claimed"
+
+    def is_consumed_scheduler_launch_claim(self, claim: TokenLaunchClaim) -> bool:
+        """Check exact persisted consumption even if the scheduler has since stopped."""
+        value = TokenLaunchClaim.model_validate(claim)
+        receipt = value.receipt
+        try:
+            # This is a read-only check: do not take BEGIN IMMEDIATE here, or
+            # concurrent scheduler writes could turn a valid consumed claim
+            # into a false negative and lose its terminal accounting.
+            with closing(sqlite3.connect(self.database.as_uri() + "?mode=ro",
+                                         uri=True, timeout=5)) as db:
+                self._require_committed_receipt(db, receipt)
+                stored = db.execute(
+                    "SELECT l.nonce,l.consumed,l.launched,o.nonce FROM study_token_launches AS l "
+                    "LEFT JOIN study_token_outcomes AS o ON o.nonce=l.nonce "
+                    "WHERE l.run_id=? AND l.turn_reservation_id=?",
+                    (receipt.slot.run_id, receipt.attempt.turn_reservation_id),
+                ).fetchone()
+                return stored == (value.nonce, 1, 0, None)
+        except ValueError:
+            return False
+
     def _consume_launch_claim(self, claim: TokenLaunchClaim, *, scheduler_bound: bool) -> None:
         receipt = TokenLaunchClaim.model_validate(claim)
         study, slot, attempt = receipt.receipt.study, receipt.receipt.slot, receipt.receipt.attempt
@@ -413,9 +508,9 @@ class StudyTokenAdmission:
             if scheduler_bound:
                 self._require_current_scheduler_turn(db, receipt.receipt)
             changed = db.execute(
-                "UPDATE study_token_launches SET consumed=1 WHERE run_id=? AND turn_reservation_id=? "
+                "UPDATE study_token_launches SET consumed=1, launched=? WHERE run_id=? AND turn_reservation_id=? "
                 "AND nonce=? AND consumed=0",
-                (slot.run_id, attempt.turn_reservation_id, receipt.nonce),
+                (0 if scheduler_bound else 1, slot.run_id, attempt.turn_reservation_id, receipt.nonce),
             )
             if changed.rowcount != 1:
                 raise ValueError("native launch claim is invalid or already consumed")
@@ -672,7 +767,7 @@ class StudyTokenAdmission:
         with self._transaction() as db:
             self._require_committed_receipt(db, receipt)
             stored = db.execute(
-                "SELECT nonce,consumed FROM study_token_launches WHERE run_id = ? AND turn_reservation_id = ?",
+                "SELECT nonce,consumed,launched FROM study_token_launches WHERE run_id = ? AND turn_reservation_id = ?",
                 (receipt.slot.run_id, receipt.attempt.turn_reservation_id),
             ).fetchone()
             if stored is None or stored[0] != claim.nonce:
@@ -682,9 +777,12 @@ class StudyTokenAdmission:
                     "SELECT 1 FROM study_token_fixture_claims WHERE nonce=?", (claim.nonce,),
                 ).fetchone() is not None
                 if (allow_unconsumed_fixture_claim and stored[1] == 0 and fixture_claim):
+                    # Lost fixture claims may be terminalized before consume.
                     pass
                 else:
                     raise ValueError("token launch claim has not been consumed")
+            elif stored[2] != 1:
+                raise ValueError("token launch claim has not started")
 
             inserted = db.execute(
                 """INSERT INTO study_token_outcomes (nonce, status, exit_status, observed_work, native_manifest_sha256)
