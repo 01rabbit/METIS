@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from metis.core import ctf_workflow, workflow_model_trial
+from metis.core import ctf_sandbox, ctf_workflow, workflow_model_trial
 from metis.core.codex_isolation import sandbox_command, seatbelt_profile
 from metis.core.codex_session import CodexSession
-from metis.core.ctf_sandbox import Sandbox, configure
+from metis.core.ctf_sandbox import configure
 from metis.core.ctf_workflow import (
     MAX_WORKFLOW_INPUT,
     _validate_digest_only_output,
@@ -73,8 +73,9 @@ def test_digest_only_runner_cannot_emit_answer_bytes():
         _validate_digest_only_output(json.dumps({**metadata, "output_b64": "hidden"}), expected_steps=2)
 
 
-@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
-                    reason="requires an immutable METIS_TEST_SANDBOX_IMAGE")
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+                    or not os.environ.get("METIS_TEST_SANDBOX_PLATFORM"),
+                    reason="requires an immutable image and explicit platform")
 def test_private_oracle_replay_registers_no_decoded_artifact(tmp_path):
     database = tmp_path / "state.sqlite"
     configure(database, engine="docker", image=os.environ["METIS_TEST_SANDBOX_IMAGE"],
@@ -315,8 +316,9 @@ def test_manifest_snapshots_all_cases_sorts_ids_and_projects_answer_free_results
     assert str(tmp_path) not in event_data and "decoded-private-answer" not in event_data
 
 
-@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE"),
-                    reason="requires an immutable METIS_TEST_SANDBOX_IMAGE")
+@pytest.mark.skipif(not os.environ.get("METIS_TEST_SANDBOX_IMAGE")
+                    or not os.environ.get("METIS_TEST_SANDBOX_PLATFORM"),
+                    reason="requires an immutable image and explicit platform")
 def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
     tmp_path, monkeypatch,
 ):
@@ -325,41 +327,74 @@ def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
     alpha_case, alpha = _manifest_case(tmp_path, "alpha", 2)
     manifest = _write_trial_manifest(tmp_path, [beta_case, alpha_case])
     database = tmp_path / "run-workspace" / "state.sqlite"
-    trials = {alpha.challenge: alpha, beta.challenge: beta}
+    trials = {"alpha": alpha, "beta": beta}
     isolation: list[dict[str, object]] = []
+    docker_creates: list[list[str]] = []
+    execution_counts = {"alpha": 0, "beta": 0}
+    active_case: list[str] = []
     real_run = ctf_workflow.run_workflow_in_sandbox
+    real_subprocess_run = ctf_sandbox.subprocess.run
 
     def capture_isolation(*args, **kwargs):
         result = real_run(*args, **kwargs)
         value = result.get("sandbox") if isinstance(result, dict) else None
         isolation.append(value if isinstance(value, dict) else {})
+        assert active_case
+        execution_counts[active_case[-1]] += 1
         return result
 
+    def capture_docker_create(args, *extra_args, **kwargs):
+        if (isinstance(args, (list, tuple)) and len(args) >= 2
+                and Path(args[0]).name == "docker" and args[1] == "create"):
+            docker_creates.append([str(argument) for argument in args])
+        return real_subprocess_run(args, *extra_args, **kwargs)
+
+    def propose(challenge):
+        case_id = next(key for key, trial in trials.items() if trial.challenge == challenge)
+        active_case.append(case_id)
+        return trials[case_id].workflow_json
+
     monkeypatch.setattr(ctf_workflow, "run_workflow_in_sandbox", capture_isolation)
+    monkeypatch.setattr(ctf_sandbox.subprocess, "run", capture_docker_create)
     report = run_external_fixture_manifest_trial(
         database, image=os.environ["METIS_TEST_SANDBOX_IMAGE"],
-        platform=os.environ.get("METIS_TEST_SANDBOX_PLATFORM"), manifest=manifest,
-        proposer=lambda challenge: trials[challenge].workflow_json,
+        platform=os.environ["METIS_TEST_SANDBOX_PLATFORM"], manifest=manifest,
+        proposer=propose,
     )
 
     assert [row["case_id"] for row in report["cases"]] == ["alpha", "beta"]
+    assert [row["selected_steps"] for row in report["cases"]] == [
+        ["base32_decode", "base64_decode"], ["base64_decode", "hex_decode"],
+    ]
+    assert hashlib.sha256(alpha.challenge).hexdigest() == (
+        "1564c6622ba44e09df0179d270bbbcb0b4f4bc62b57427e785c5bb2daaee6e30"
+    )
+    assert hashlib.sha256(beta.challenge).hexdigest() == (
+        "41205c811398738a5670fbeb9f94133c67da09c876222a7951d77fcb94f25164"
+    )
     assert report["summary"] == {"total": 2, "passed": 2, "failed": 0, "pass_rate": 1.0}
     assert all(row["ok"] and row["reproducible"] and row["oracle_match"]
                and row["failure"] is None for row in report["cases"])
+    assert execution_counts == {"alpha": 2, "beta": 2}
     assert len(isolation) == 4  # two independent replays for each case
     assert all(item["network"] == "none" and item["host_mounts"] is False
                and item["image"] == os.environ["METIS_TEST_SANDBOX_IMAGE"]
-               and item["platform"] == os.environ.get("METIS_TEST_SANDBOX_PLATFORM")
+               and item["platform"] == os.environ["METIS_TEST_SANDBOX_PLATFORM"]
                for item in isolation)
-
-    sandbox_command = Sandbox(database).command("issue7-multicase-isolation-probe")
-    assert "--network=none" in sandbox_command and "--read-only" in sandbox_command
-    assert "--cap-drop=ALL" in sandbox_command
-    assert "--security-opt=no-new-privileges" in sandbox_command
-    assert "--pull=never" in sandbox_command
-    assert not any(argument in {"-v", "--volume", "--mount"}
-                   or argument.startswith(("--volume=", "--mount="))
-                   for argument in sandbox_command)
+    assert len(docker_creates) == 4
+    for argv in docker_creates:
+        assert "--network=none" in argv and "--read-only" in argv
+        assert "--cap-drop=ALL" in argv
+        assert "--security-opt=no-new-privileges" in argv
+        assert "--pull=never" in argv
+        platform_index = argv.index("--platform")
+        assert argv[platform_index + 1] == os.environ["METIS_TEST_SANDBOX_PLATFORM"]
+        assert os.environ["METIS_TEST_SANDBOX_IMAGE"] in argv
+        assert not any(
+            argument.startswith(("-v", "--volume=", "--mount=", "--volumes-from="))
+            or argument in {"--volume", "--mount", "--volumes-from"}
+            for argument in argv
+        )
 
     session = CodexSession(database)
     with sqlite3.connect(database) as db:
@@ -369,22 +404,39 @@ def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
     serialized = json.dumps(report, sort_keys=True)
     artifact_bytes = b""
     expected_answers = {}
-    for trial, seed in ((alpha, 2), (beta, 3)):
+    for trial, seed, intermediate in (
+        (alpha, 2, None), (beta, 3, "hex"),
+    ):
         answer = f"CTF{{{hashlib.sha256(f'metis-p6-workflow-v1:{seed}'.encode()).hexdigest()[:24]}}}".encode()
         expected_answers[seed] = answer
-        assert answer not in (serialized + events).encode()
+        private_derived_values = [answer, answer.removeprefix(b"CTF{").removesuffix(b"}")]
+        if intermediate == "hex":
+            private_derived_values.append(answer.hex().encode())
+        else:
+            private_derived_values.append(base64.b64encode(answer))
+        assert all(value not in (serialized + events).encode()
+                   for value in private_derived_values)
         assert trial.oracle_sha256 not in serialized + events
     assert str(tmp_path) not in serialized + events
+    assert "metis-unseen-fixture-" not in serialized + events
     for run_id in run_ids:
         root = session.artifact_root(run_id)
         assert root is not None
         assert sorted(path.name for path in root.iterdir()) == ["00-challenge.txt", "01-workflow.json"]
         artifact_bytes += b"".join(path.read_bytes() for path in root.iterdir() if path.is_file())
     persisted_database = b"".join(path.read_bytes() for path in database.parent.iterdir() if path.is_file())
-    for trial, seed in ((alpha, 2), (beta, 3)):
-        assert expected_answers[seed] not in artifact_bytes + persisted_database
+    for trial, seed, intermediate in ((alpha, 2, None), (beta, 3, "hex")):
+        answer = expected_answers[seed]
+        private_derived_values = [answer, answer.removeprefix(b"CTF{").removesuffix(b"}")]
+        if intermediate == "hex":
+            private_derived_values.append(answer.hex().encode())
+        else:
+            private_derived_values.append(base64.b64encode(answer))
+        assert all(value not in artifact_bytes + persisted_database
+                   for value in private_derived_values)
         assert trial.oracle_sha256.encode() not in artifact_bytes + persisted_database
     assert str(tmp_path).encode() not in artifact_bytes + persisted_database
+    assert b"metis-unseen-fixture-" not in artifact_bytes + persisted_database
 
 
 @pytest.mark.parametrize("invalid", [
