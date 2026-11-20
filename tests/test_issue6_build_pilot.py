@@ -11,6 +11,7 @@ from metis.core.agent_host import FakeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexTurn
+from metis.evaluation import issue6_build_pilot as pilot
 from metis.evaluation import issue6_build_preflight as preflight
 from metis.evaluation.issue6_build_artifact import canonical_artifact
 from metis.evaluation.issue6_build_oracle import BuildFixture, Cause, Job, Observation
@@ -226,6 +227,67 @@ def test_receipt_reconciliation_refuses_wrong_or_missing_join(tmp_path, tamper):
             db.execute("DELETE FROM issue6_build_pilot_receipts WHERE phase = 1")
     with pytest.raises(RuntimeError, match="does not reconcile"):
         _reconcile(database, row.run_id, list(row.phases), row.actions)
+
+
+def test_initial_receipt_insert_failure_rolls_back_turn_reservation(tmp_path, monkeypatch):
+    root = tmp_path / "arm"
+    runner = ScriptedTurns(INITIAL, FINAL)
+
+    def fail_insert(_db, _run_id, _receipt):
+        raise RuntimeError("injected receipt persistence failure")
+
+    monkeypatch.setattr("metis.evaluation.issue6_build_pilot._insert_receipt", fail_insert)
+    with pytest.raises(RuntimeError, match="injected receipt persistence failure"):
+        _run_arm(root, "opaque", FIXTURE, runner, "scripted", KEY, "owner_note")
+
+    with sqlite3.connect(root / "ledger.sqlite") as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
+        assert db.execute("SELECT turns_reserved FROM agent_run_turn_budgets").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM issue6_build_pilot_receipts").fetchone() == (0,)
+        assert db.execute("SELECT state FROM agent_jobs").fetchone() == ("failed",)
+    assert runner.prompts == []
+
+
+def test_later_receipt_insert_failure_preserves_only_prior_turns(tmp_path, monkeypatch):
+    root = tmp_path / "arm"
+    runner = ScriptedTurns(INITIAL, FINAL)
+    insert_receipt = pilot._insert_receipt
+    insert_count = 0
+
+    def fail_second_insert(db, run_id, receipt):
+        nonlocal insert_count
+        insert_count += 1
+        if insert_count == 2:
+            raise RuntimeError("injected second-phase receipt failure")
+        insert_receipt(db, run_id, receipt)
+
+    monkeypatch.setattr(pilot, "_insert_receipt", fail_second_insert)
+    with pytest.raises(RuntimeError, match="injected second-phase receipt failure"):
+        _run_arm(root, "opaque", FIXTURE, runner, "scripted", KEY, "owner_note")
+
+    with sqlite3.connect(root / "ledger.sqlite") as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (1,)
+        assert db.execute("SELECT turns_reserved FROM agent_run_turn_budgets").fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM issue6_build_pilot_receipts").fetchone() == (1,)
+        reservation, assignment, attempt, phase, payload = db.execute(
+            "SELECT turns.id,turns.assignment_id,turns.attempt_id,receipts.phase,receipts.payload "
+            "FROM agent_turn_reservations turns JOIN issue6_build_pilot_receipts receipts "
+            "ON receipts.run_id=turns.run_id AND receipts.reservation=turns.id "
+            "AND receipts.assignment_id=turns.assignment_id AND receipts.attempt_id=turns.attempt_id "
+            "ORDER BY turns.id"
+        ).fetchone()
+        prior_receipt = json.loads(payload)
+        assert (phase, prior_receipt["phase"], prior_receipt["reservation"],
+                prior_receipt["assignment_id"], prior_receipt["attempt_id"],
+                prior_receipt["outcome"]) == (
+            1, 1, reservation, assignment, attempt, "accepted",
+        )
+        assert db.execute(
+            "SELECT state FROM agent_jobs WHERE assignment_id=? AND attempt_id=?",
+            (assignment, attempt),
+        ).fetchone() == ("completed",)
+        assert db.execute("SELECT COUNT(*) FROM agent_jobs WHERE state='failed'").fetchone() == (1,)
+    assert len(runner.prompts) == 1
 
 
 def _queued_scheduler_run(scheduler, session, artifact: Path, title: str):

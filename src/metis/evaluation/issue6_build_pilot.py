@@ -131,6 +131,10 @@ class ArmResult:
     phases: tuple[PhaseReceipt, ...]
 
 
+class _PilotReceiptPersistenceError(RuntimeError):
+    """The reservation transaction could not persist its initial phase receipt."""
+
+
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
@@ -280,9 +284,13 @@ def _charge_receipt(database: Path, run_id: str, receipt: PhaseReceipt, *, termi
             if changed.rowcount != 1:
                 raise RuntimeError("pilot launch receipt mismatch")
         else:
-            db.execute("INSERT INTO issue6_build_pilot_receipts VALUES (?,?,?,?,?,?)",
-                       (run_id, receipt.phase, receipt.assignment_id, receipt.attempt_id,
-                        receipt.reservation, _json(asdict(receipt))))
+            _insert_receipt(db, run_id, receipt)
+
+
+def _insert_receipt(db: sqlite3.Connection, run_id: str, receipt: PhaseReceipt) -> None:
+    db.execute("INSERT INTO issue6_build_pilot_receipts VALUES (?,?,?,?,?,?)",
+               (run_id, receipt.phase, receipt.assignment_id, receipt.attempt_id,
+                receipt.reservation, _json(asdict(receipt))))
 
 
 def _usage(turn: CodexTurn, key: str) -> int | None:
@@ -359,18 +367,54 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
         budget_before = scheduler.model_turn_budget(run_id)
         if budget_before is None or budget_before["reserved"] != phase - 1:
             raise RuntimeError("pilot phase must begin with exactly one reservation per prior phase")
-        reserved = scheduler.reserve_model_turn(run_id, assignment, attempt)
+
+        receipt: PhaseReceipt | None = None
+
+        def persist_receipt(
+            db: sqlite3.Connection,
+            reservation_id: int,
+            *,
+            receipt_phase: int = phase,
+            receipt_assignment: str = assignment,
+            receipt_attempt: str = attempt,
+            receipt_prompt: str = prompt,
+            receipt_brief: dict[str, Any] = brief,
+            receipt_artifact: bytes = artifact,
+            receipt_schema: dict[str, Any] = schema,
+        ) -> None:
+            nonlocal receipt
+            try:
+                if receipt is not None:
+                    raise RuntimeError("pilot initial receipt was persisted more than once")
+                receipt = PhaseReceipt(
+                    receipt_phase, receipt_assignment, receipt_attempt, reservation_id,
+                    _mac(receipt_key, b"prompt", receipt_prompt.encode()),
+                    hashlib.sha256(_json(receipt_brief).encode()).hexdigest(),
+                    _mac(receipt_key, b"artifact", receipt_artifact),
+                    hashlib.sha256(_json(receipt_schema).encode()).hexdigest(),
+                    None, None, "launching",
+                )
+                _insert_receipt(db, run_id, receipt)
+            except Exception as error:
+                raise _PilotReceiptPersistenceError(
+                    f"pilot initial receipt persistence failed: {error}"
+                ) from error
+
+        try:
+            reserved = scheduler.reserve_model_turn(
+                run_id, assignment, attempt, persist_receipt=persist_receipt,
+            )
+        except _PilotReceiptPersistenceError:
+            try:
+                scheduler.fail(assignment, attempt, "pilot reservation receipt persistence failed")
+            except Exception as recovery_error:
+                raise RuntimeError("pilot receipt persistence and failure recording both failed") from recovery_error
+            raise
         if (reserved is None or reserved["turn"] != phase or reserved["limit"] != MAX_PHASES
                 or reserved["remaining"] != MAX_PHASES - phase):
             raise RuntimeError("pilot model-call reservation mismatch")
-        receipt = PhaseReceipt(
-            phase, assignment, attempt, reserved["reservation_id"],
-            _mac(receipt_key, b"prompt", prompt.encode()),
-            hashlib.sha256(_json(brief).encode()).hexdigest(),
-            _mac(receipt_key, b"artifact", artifact), hashlib.sha256(_json(schema).encode()).hexdigest(),
-            None, None, "launching",
-        )
-        _charge_receipt(database, run_id, receipt)
+        if receipt is None or receipt.reservation != reserved["reservation_id"]:
+            raise RuntimeError("pilot atomic reservation receipt mismatch")
         timeout = deadline - clock()
         if timeout <= 0:
             receipt = replace(receipt, outcome="deadline_before_launch")

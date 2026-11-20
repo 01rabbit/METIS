@@ -56,6 +56,18 @@ launched, and the result does not satisfy Issue #6's measured-gain gate or its
 Issue #7 dependency. See
 [`issue6-transcript-canary-2026-11-20.md`](reports/issue6-transcript-canary-2026-11-20.md).
 
+## Issue #6 build-pilot receipt admission
+
+The synthetic build-pilot now writes its initial phase receipt from the
+scheduler's reservation transaction. A receipt-write fault rolls back the
+reservation and run turn count, marks the affected job failed, and leaves the
+scripted response unconsumed; 25 focused tests pass, including rollback
+isolation after a later phase fails.
+This verifies an offline controller path only; the live invocation path still
+requires its own admission check. No real model was launched, and Issue #6's
+measured-gain acceptance remains unmet. See
+[`issue6-build-triage-pilot-preflight-2026-11-19.md`](reports/issue6-build-triage-pilot-preflight-2026-11-19.md).
+
 ## Issue #9 artifact registration audit (2026-11-20)
 
 `metis audit` now reports bounded, count-only artifact registrations from the
