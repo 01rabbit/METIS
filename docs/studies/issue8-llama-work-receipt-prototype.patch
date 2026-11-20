@@ -1,0 +1,620 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 6bf9355fb..c684b15d2 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -11,7 +11,6 @@
+ #include "log.h"
+ #include "sampling.h"
+ #include "speculative.h"
+-#include "preset.h"
+ 
+ #include <algorithm>
+ #include <cinttypes>
+@@ -724,60 +723,14 @@ void common_models_handler_apply(common_models_handler & handler, common_params
+ // CLI argument parsing functions
+ //
+ 
+-// apply config files (if present), a later file overrides an earlier one:
+-// 1. system-wide: /etc/llama.cpp/config.ini (%PROGRAMDATA%\llama.cpp\config.ini on windows)
+-// 2. user-level: ${XDG_CONFIG_HOME:-~/.config}/llama.cpp/config.ini (%APPDATA%\llama.cpp\config.ini on windows)
+-static void common_params_apply_system_config(common_params & params, llama_example ex) {
+-    std::vector<std::filesystem::path> paths;
+-
+-#if defined(_WIN32)
+-    const std::filesystem::path program_data = common_get_env("PROGRAMDATA");
+-    if (!program_data.empty()) {
+-        paths.push_back(program_data / "llama.cpp" / "config.ini");
+-    }
+-#else
+-    paths.push_back("/etc/llama.cpp/config.ini");
+-#endif
+-
+-    try {
+-        paths.push_back(fs_get_config_directory() / "config.ini");
+-    } catch (const std::exception & e) {
+-        LOG_DBG("cannot read user-level config file, skipping: %s\n", e.what());
+-    }
+-
+-    std::vector<std::filesystem::path> found;
+-    for (const auto & path : paths) {
+-        std::error_code ec;
+-        if (std::filesystem::exists(path, ec)) {
+-            found.push_back(path);
+-        }
+-    }
+-    if (found.empty()) {
+-        return;
+-    }
+-
+-    common_preset_context ctx(ex);
+-    ctx.ignore_unknown_keys = true; // the same config file is shared by all programs
+-    for (const auto & path : found) {
+-        LOG_INF("using config file: %s\n", path.string().c_str());
+-        common_preset global;
+-        common_presets presets = ctx.load_from_ini(path, global);
+-        global.apply_to_params(params);
+-        auto it = presets.find(COMMON_PRESET_DEFAULT_NAME);
+-        if (it != presets.end()) {
+-            it->second.apply_to_params(params);
+-        }
+-    }
+-}
+-
+ static bool common_params_parse_ex(int argc, char ** argv, common_params_context & ctx_arg) {
+     common_params & params = ctx_arg.params;
+ 
+     // setup log directly from params.verbosity: see tools/cli/cli.cpp
+     common_log_set_verbosity_thold(params.verbosity);
+ 
+-    // config file applies first, so env variables and CLI arguments override it
+-    common_params_apply_system_config(params, ctx_arg.ex);
++    // This dedicated build accepts its sealed launcher arguments without
++    // merging ambient configuration files or argument environment variables.
+ 
+     std::unordered_map<std::string, std::pair<common_arg *, bool>> arg_to_options;
+     for (auto & opt : ctx_arg.options) {
+@@ -789,31 +742,6 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
+         }
+     }
+ 
+-    // handle environment variables
+-    for (auto & opt : ctx_arg.options) {
+-        std::string value;
+-        if (opt.get_value_from_env(value)) {
+-            try {
+-                if (opt.handler_void && is_truthy(value)) {
+-                    opt.handler_void(params);
+-                }
+-                if (opt.handler_int) {
+-                    opt.handler_int(params, std::stoi(value));
+-                }
+-                if (opt.handler_bool) {
+-                    opt.handler_bool(params, parse_bool_value(value));
+-                }
+-                if (opt.handler_string) {
+-                    opt.handler_string(params, value);
+-                    continue;
+-                }
+-            } catch (std::exception & e) {
+-                throw std::invalid_argument(string_format(
+-                    "error while handling environment variable \"%s\": %s\n\n", opt.env, e.what()));
+-            }
+-        }
+-    }
+-
+     // handle command line arguments
+     auto check_arg = [&](int i) {
+         if (i+1 >= argc) {
+@@ -844,9 +772,6 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
+             auto & tmp = arg_to_options[arg];
+             auto opt = *tmp.first;
+             bool is_positive = tmp.second;
+-            if (opt.has_value_from_env()) {
+-                fprintf(stderr, "warn: %s environment variable is set, but will be overwritten by command line argument %s\n", opt.env, arg.c_str());
+-            }
+             try {
+                 if (opt.handler_void) {
+                     opt.handler_void(params);
+@@ -3312,19 +3237,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+         }
+     ).set_examples({LLAMA_EXAMPLE_EMBEDDING}));
+     add_opt(common_arg(
+-        {"--host"}, "HOST",
+-        string_format("IP addresses to listen on, comma-separated, or UNIX socket paths ending in .sock; with multiple TCP addresses, :: binds IPv6 only; overlapping addresses result in undefined behavior (default: %s)", params.hostnames[0].c_str()),
++        {"--host"}, "SOCKET",
++        "METIS private Unix socket path",
+         [](common_params & params, const std::string & value) {
+-            params.hostnames.clear();
+-            for (auto & host : parse_csv_row(value)) {
+-                host = string_strip(host);
+-                if (!host.empty()) {
+-                    params.hostnames.push_back(host);
+-                }
+-            }
+-            if (params.hostnames.empty()) {
+-                throw std::invalid_argument("--host requires at least one address");
+-            }
++            // Preserve the exact path checked by the dedicated launcher.
++            params.hostnames = {value};
+         }
+     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_HOST"));
+     add_opt(common_arg(
+diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
+index c3bc92679..bb3ac716b 100644
+--- a/ggml/src/ggml-backend-reg.cpp
++++ b/ggml/src/ggml-backend-reg.cpp
+@@ -569,6 +569,9 @@ void ggml_backend_load_all() {
+ }
+ 
+ void ggml_backend_load_all_from_path(const char * dir_path) {
++    // Use the built-in CPU registry only. The upstream path also tries the
++    // working directory and executable directory for plugins.
++    return;
+ #ifdef NDEBUG
+     bool silent = true;
+ #else
+diff --git a/include/llama.h b/include/llama.h
+index 181d840a6..3d6dcdd11 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -962,6 +962,11 @@ extern "C" {
+             struct llama_context * ctx,
+               struct llama_batch   batch);
+ 
++    // Configure the process-wide limit and terminal receipt before backend startup.
++    LLAMA_API bool llama_metis_set_work_budget(uint64_t tokens, int receipt_fd, const char * nonce);
++    LLAMA_API int llama_metis_finish_work_budget(int server_status);
++    GGML_NORETURN LLAMA_API void llama_metis_abort_unmetered_work(void);
++
+     // Process a batch of tokens.
+     // Requires the context to have a memory.
+     // For encode-decoder contexts, processes the batch using the decoder.
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9066e061e..5bc706921 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -13,16 +13,85 @@
+ #include "llama-ext.h"
+ #include "llama-sampler.h"
+ #include "llama.h"
++#include "metis-work-budget.h"
+ 
+ #include <algorithm>
++#include <array>
++#include <cerrno>
+ #include <cinttypes>
++#include <cstdio>
++#include <cstdlib>
+ #include <cmath>
+ #include <cstring>
+ #include <limits>
++#include <mutex>
+ #include <stdexcept>
+ #include <string>
+ #include <unordered_map>
+ 
++#include <unistd.h>
++
++static metis_work_budget work_budget;
++static uint64_t work_cap = 0;
++static int work_receipt_fd = -1;
++static std::array<char, 33> work_nonce{};
++static std::mutex work_finish_mutex;
++static bool work_finished = false;
++
++bool llama_metis_set_work_budget(uint64_t tokens, int receipt_fd, const char * nonce) {
++    if (receipt_fd < 3 || nonce == nullptr || std::strlen(nonce) != work_nonce.size() - 1
++            || std::strspn(nonce, "0123456789abcdef") != work_nonce.size() - 1
++            || !work_budget.initialize(tokens)) {
++        return false;
++    }
++    work_cap = tokens;
++    work_receipt_fd = receipt_fd;
++    std::memcpy(work_nonce.data(), nonce, work_nonce.size());
++    return true;
++}
++
++static void metis_report_work(const char * reason) {
++    const std::lock_guard<std::mutex> lock(work_finish_mutex);
++    if (work_finished) {
++        return;
++    }
++    const uint64_t remaining = work_budget.seal();
++    if (work_receipt_fd < 0 || remaining > work_cap) {
++        std::_Exit(74);
++    }
++    std::array<char, 256> message{};
++    const int length = std::snprintf(message.data(), message.size(),
++        "{\"version\":1,\"nonce\":\"%s\",\"cap\":%" PRIu64
++        ",\"charged\":%" PRIu64 ",\"reason\":\"%s\"}\n",
++        work_nonce.data(), work_cap, work_cap - remaining, reason);
++    if (length <= 0 || static_cast<size_t>(length) >= message.size()) {
++        std::_Exit(74);
++    }
++
++    // The launcher accepts only a nonblocking pipe. This single record is
++    // smaller than PIPE_BUF, so the pipe accepts it atomically or fails.
++    ssize_t written;
++    do {
++        written = write(work_receipt_fd, message.data(), static_cast<size_t>(length));
++    } while (written < 0 && errno == EINTR);
++    if (written != length) {
++        std::_Exit(74);
++    }
++    close(work_receipt_fd);
++    work_receipt_fd = -1;
++    work_finished = true;
++}
++
++int llama_metis_finish_work_budget(int server_status) {
++    metis_report_work(server_status == 0 ? "shutdown" : "server_error");
++    return server_status;
++}
++
++void llama_metis_abort_unmetered_work(void) {
++    metis_report_work("unsupported_graph");
++    std::_Exit(75);
++}
++
+ //
+ // llama_context
+ //
+@@ -1877,7 +1946,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+ 
+-    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
++    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1, ubatch.n_tokens);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
+         ret = status;
+@@ -3122,7 +3191,8 @@ void llama_context::sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph
+ 
+ ggml_status llama_context::graph_compute(
+             ggml_cgraph * gf,
+-                   bool   batched) {
++                   bool   batched,
++               uint32_t   n_tokens) {
+     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
+     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
+ 
+@@ -3141,6 +3211,18 @@ ggml_status llama_context::graph_compute(
+ 
+     copy_experts.reset();
+ 
++    // Debit the actual submitted microbatch, including re-evaluated positions.
++    // A backend error cannot refund work that may already have executed.
++    if (!work_budget.reserve(n_tokens)) {
++        if (n_tokens == 0) {
++            std::fputs("METIS unmetered graph denied\n", stderr);
++        } else {
++            std::fprintf(stderr, "METIS token work budget denied, requested=%" PRIu32 "\n", n_tokens);
++        }
++        std::fflush(stderr);
++        metis_report_work(n_tokens == 0 ? "unsupported_graph" : "cap_denied");
++        std::_Exit(75);
++    }
+     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+@@ -4349,7 +4431,9 @@ void llama_context::opt_epoch_iter(
+                 }
+             }
+             copy_experts.reset();
+-            ggml_opt_eval(opt_ctx, result);
++            std::fputs("METIS training graph denied\n", stderr);
++            std::fflush(stderr);
++            llama_metis_abort_unmetered_work();
+             if (callback) {
+                 callback(train, opt_ctx, dataset, result, idata_in_loop + (pos_ctx + pos_batch)/n_ubatch + 1, ndata_in_loop, t_loop_start);
+             }
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 45eca4566..94d09afa5 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -277,7 +277,7 @@ public:
+     llm_graph_result * get_gf_res_reserve() const;
+ 
+     // returns the result of ggml_backend_sched_graph_compute_async execution
+-    ggml_status graph_compute(ggml_cgraph * gf, bool batched);
++    ggml_status graph_compute(ggml_cgraph * gf, bool batched, uint32_t n_tokens);
+ 
+     // reserve a graph with a dummy ubatch of the specified size
+     ggml_cgraph * graph_reserve(
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 4ec7fb89c..986896086 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -929,7 +929,7 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
+ 
+             res->set_inputs(nullptr);
+ 
+-            if (lctx->graph_compute(gf, false) != GGML_STATUS_SUCCESS) {
++            if (lctx->graph_compute(gf, false, 0) != GGML_STATUS_SUCCESS) {
+                 LLAMA_LOG_ERROR("%s: failed to compute K-shift\n", __func__);
+                 return updated;
+             }
+diff --git a/src/metis-work-budget.h b/src/metis-work-budget.h
+new file mode 100644
+index 000000000..923faac27
+--- /dev/null
++++ b/src/metis-work-budget.h
+@@ -0,0 +1,38 @@
++#pragma once
++
++#include <atomic>
++#include <cstdint>
++#include <limits>
++
++class metis_work_budget {
++public:
++    bool initialize(uint64_t tokens) {
++        if (tokens == 0 || tokens >= sealed) {
++            return false;
++        }
++        auto expected = uninitialized;
++        return remaining.compare_exchange_strong(expected, tokens, std::memory_order_relaxed);
++    }
++
++    bool reserve(uint32_t tokens) {
++        if (tokens == 0) {
++            return false;
++        }
++        auto available = remaining.load(std::memory_order_relaxed);
++        while (available < sealed && available >= tokens) {
++            if (remaining.compare_exchange_weak(available, available - tokens, std::memory_order_relaxed)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    uint64_t seal() {
++        return remaining.exchange(sealed, std::memory_order_relaxed);
++    }
++
++private:
++    static constexpr auto uninitialized = std::numeric_limits<uint64_t>::max();
++    static constexpr auto sealed = uninitialized - 1;
++    std::atomic<uint64_t> remaining{uninitialized};
++};
+diff --git a/tools/mtmd/mtmd-subcontext.cpp b/tools/mtmd/mtmd-subcontext.cpp
+index 7f13b7f62..28977e37c 100644
+--- a/tools/mtmd/mtmd-subcontext.cpp
++++ b/tools/mtmd/mtmd-subcontext.cpp
+@@ -1,3 +1,7 @@
++#include "llama.h"
++
++#include <cstdio>
++
+ #include "mtmd-subcontext.h"
+ #include "mtmd-graph.h"
+ #include "models/models.h"
+@@ -12,7 +16,6 @@
+ #include <algorithm>
+ #include <cfloat>
+ #include <cmath>
+-#include <cstdlib>
+ #include <cstring>
+ #include <map>
+ #include <memory>
+@@ -351,6 +354,10 @@ bool mtmd_audio_log_mel(const mtmd_audio_mel_config & config, const float * samp
+         ggml_backend_tensor_set(inp_dft,     dft.data(),                        0, ggml_nbytes(inp_dft));
+         ggml_backend_tensor_set(inp_filters, filters.data(),                    0, ggml_nbytes(inp_filters));
+ 
++        // This server meters text-model microbatches only.
++        std::fputs("METIS multimodal graph denied\n", stderr);
++        std::fflush(stderr);
++        llama_metis_abort_unmetered_work();
+         auto status = ggml_backend_sched_graph_compute(sched, gf);
+         if (status != GGML_STATUS_SUCCESS) {
+             LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
+@@ -2273,6 +2280,10 @@ bool mtmd_subcontext::encode(mtmd_subctx_encode_params * params) {
+ 
+     mtmd_backend_cpu_set_n_threads(backends.backend_cpu, params->n_threads);
+ 
++    // This server meters text-model microbatches only.
++    std::fputs("METIS multimodal graph denied\n", stderr);
++    std::fflush(stderr);
++    llama_metis_abort_unmetered_work();
+     auto status = ggml_backend_sched_graph_compute(backends.sched.get(), gf);
+     if (status != GGML_STATUS_SUCCESS) {
+         LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
+diff --git a/tools/server/main.cpp b/tools/server/main.cpp
+index 7f17c56a8..c3d22b96b 100644
+--- a/tools/server/main.cpp
++++ b/tools/server/main.cpp
+@@ -1,5 +1,117 @@
++#include "llama.h"
++
++#include <algorithm>
++#include <cerrno>
++#include <charconv>
++#include <csignal>
++#include <cstdio>
++#include <filesystem>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++extern char ** environ;
++
+ int llama_server(int argc, char ** argv);
+ 
++static bool metis_private_socket(const std::filesystem::path & socket_path) {
++    const auto & literal = socket_path.native();
++    const auto is_control = [](unsigned char c) { return c < 32 || c == 127; };
++    if (!socket_path.is_absolute() || socket_path.extension() != ".sock"
++            || literal.size() >= sizeof(sockaddr_un{}.sun_path)
++            || std::any_of(literal.begin(), literal.end(), is_control)) {
++        return false;
++    }
++    const auto parent = socket_path.parent_path();
++    std::error_code error;
++    if (std::filesystem::canonical(parent, error) != parent || error) {
++        return false;
++    }
++    struct stat parent_stat{};
++    if (lstat(parent.c_str(), &parent_stat) != 0 || !S_ISDIR(parent_stat.st_mode)
++            || parent_stat.st_uid != geteuid() || (parent_stat.st_mode & 07777) != 0700) {
++        return false;
++    }
++    struct stat socket_stat{};
++    return lstat(socket_path.c_str(), &socket_stat) == -1 && errno == ENOENT;
++}
++
++static bool metis_prepare_receipt_pipe(int fd) {
++    struct stat receipt_stat{};
++    if (fd < 3 || fstat(fd, &receipt_stat) != 0 || !S_ISFIFO(receipt_stat.st_mode)) {
++        return false;
++    }
++    const int status = fcntl(fd, F_GETFL);
++    const int descriptor = fcntl(fd, F_GETFD);
++    return status >= 0 && descriptor >= 0 && (status & O_ACCMODE) == O_WRONLY
++        && fcntl(fd, F_SETFL, status | O_NONBLOCK) == 0
++        && fcntl(fd, F_SETFD, descriptor | FD_CLOEXEC) == 0;
++}
++
++// This binary accepts only the local, single-model, text-only CPU profile.
+ int main(int argc, char ** argv) {
+-    return llama_server(argc, argv);
++    if (argc != 11 || std::string_view(argv[1]) != "--metis-work-budget"
++            || std::string_view(argv[3]) != "--model" || std::string_view(argv[5]) != "--socket"
++            || std::string_view(argv[7]) != "--metis-receipt-fd" || std::string_view(argv[9]) != "--metis-launch-nonce") {
++        std::fputs("Usage: llama-server --metis-work-budget TOKENS --model LOCAL_GGUF --socket PATH.sock "
++                   "--metis-receipt-fd FD --metis-launch-nonce HEX32\n", stderr);
++        return 2;
++    }
++
++    for (auto entry = environ; *entry != nullptr; ++entry) {
++        const std::string_view variable(*entry);
++        if (variable.substr(0, 6) == "LLAMA_" || variable.substr(0, 5) == "GGML_"
++                || variable.substr(0, 5) == "MTMD_" || variable.substr(0, 4) == "AIP_") {
++            std::fputs("METIS inference and server environment overrides are disabled\n", stderr);
++            return 2;
++        }
++    }
++
++    const std::string_view budget_arg(argv[2]);
++    uint64_t budget = 0;
++    const auto end = budget_arg.data() + budget_arg.size();
++    const auto parsed = std::from_chars(budget_arg.data(), end, budget);
++    if (parsed.ec != std::errc{} || parsed.ptr != end) {
++        std::fputs("Invalid METIS work budget\n", stderr);
++        return 2;
++    }
++
++    std::error_code model_error;
++    if (!std::filesystem::is_regular_file(argv[4], model_error)) {
++        std::fputs("METIS requires a regular local model file\n", stderr);
++        return 2;
++    }
++
++    if (!metis_private_socket(argv[6])) {
++        std::fputs("METIS requires a new socket in a private controller-owned directory\n", stderr);
++        return 2;
++    }
++    const std::string_view receipt_arg(argv[8]);
++    int receipt_fd = -1;
++    const auto receipt_end = receipt_arg.data() + receipt_arg.size();
++    const auto receipt = std::from_chars(receipt_arg.data(), receipt_end, receipt_fd);
++    if (receipt.ec != std::errc{} || receipt.ptr != receipt_end || !metis_prepare_receipt_pipe(receipt_fd)
++            || std::signal(SIGPIPE, SIG_IGN) == SIG_ERR || !llama_metis_set_work_budget(budget, receipt_fd, argv[10])) {
++        std::fputs("Invalid METIS work budget or terminal receipt channel\n", stderr);
++        return 2;
++    }
++
++    // Options are fixed. Model and private socket paths are the only forwarded values.
++    std::vector<std::string> strict_args{
++        argv[0], "--model", argv[4], "--host", argv[6],
++        "--parallel", "1", "--ctx-size", "4096", "--gpu-layers", "0", "--fit", "off",
++        "--no-warmup", "--no-context-shift", "--no-ui", "--offline",
++        "--spec-type", "none", "--no-mmproj", "--cors-origins", "localhost",
++    };
++    std::vector<char *> strict_argv;
++    for (auto & arg : strict_args) {
++        strict_argv.push_back(arg.data());
++    }
++    strict_argv.push_back(nullptr);
++    return llama_metis_finish_work_budget(llama_server(static_cast<int>(strict_args.size()), strict_argv.data()));
+ }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a6059ab38..bc930784d 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1320,6 +1320,11 @@ private:
+             return false;
+         }
+ 
++        if (llama_model_has_encoder(model_tgt) || !llama_model_has_decoder(model_tgt)) {
++            SRV_ERR("%s", "METIS requires a decoder-only text model\n");
++            return false;
++        }
++
+         vocab = llama_model_get_vocab(model_tgt);
+ 
+         try {
+diff --git a/tools/server/server-http.cpp b/tools/server/server-http.cpp
+index 5bdece55b..093899350 100644
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -607,37 +607,25 @@ self.addEventListener('activate', (e) => e.waitUntil((async () => {
+ }
+ 
+ bool server_http_context::start() {
+-    // Bind and listen
+-
+     listening_addresses.clear();
+-    for (size_t i = 0; i < pimpl->servers.size(); ++i) {
+-        const auto & srv = pimpl->servers[i];
+-        const auto & host = pimpl->hosts[i];
+-        const bool is_sock = string_ends_with(host, ".sock");
+-        bool was_bound;
+-        if (is_sock) {
+-            SRV_TRC("%s", "setting address family to AF_UNIX\n");
+-            srv->set_address_family(AF_UNIX);
+-            // AF_UNIX ignores the port, but bind_to_port requires a nonzero value.
+-            was_bound = srv->bind_to_port(host, 8080);
+-        } else if (port == 0) {
+-            const auto bound_port = srv->bind_to_any_port(host);
+-            was_bound = bound_port >= 0;
+-            if (was_bound) {
+-                port = bound_port;
+-            }
+-        } else {
+-            was_bound = srv->bind_to_port(host, port);
+-        }
+-        if (!was_bound) {
+-            SRV_ERR("couldn't bind HTTP server socket, hostname: %s, port: %d\n", host.c_str(), port);
+-            stop();
+-            listening_addresses.clear();
+-            return false;
+-        }
+-        listening_addresses.push_back(is_sock ? string_format("unix://%s", host.c_str())
+-                                              : string_format("%s://%s:%d", is_ssl ? "https" : "http", common_http_format_host(host).c_str(), port));
++    if (pimpl->servers.size() != 1 || pimpl->hosts.size() != 1) {
++        SRV_ERR("%s", "METIS requires exactly one listener\n");
++        return false;
++    }
++    const auto & listener = pimpl->servers.front();
++    const auto & host = pimpl->hosts.front();
++    if (host.empty() || host.front() != '/' || !string_ends_with(host, ".sock")) {
++        SRV_ERR("%s", "METIS requires an absolute Unix socket listener\n");
++        return false;
++    }
++    listener->set_address_family(AF_UNIX);
++    // AF_UNIX ignores the port, but bind_to_port requires a nonzero value.
++    if (!listener->bind_to_port(host, 8080)) {
++        SRV_ERR("%s", "couldn't bind METIS Unix socket listener\n");
++        stop();
++        return false;
+     }
++    listening_addresses.push_back(string_format("unix://%s", host.c_str()));
+ 
+     // n_threads_http fixed threads (always alive), plus up to 1024 dynamic threads destroyed after each request
+     // ref: https://github.com/yhirose/cpp-httplib/pull/2368

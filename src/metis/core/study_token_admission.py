@@ -104,6 +104,13 @@ class TokenLaunchOutcome(_Record):
             raise ValueError("terminal observations do not match outcome")
         return self
 
+    def validate_admitted_work(self, reserved_tokens: int) -> None:
+        """Check recorded work against its allowance, including native output headroom."""
+        # Native graph work leaves one reserved token for the final sampled output.
+        limit = reserved_tokens - int(self.native_manifest_sha256 is not None)
+        if self.observed_work is not None and self.observed_work > limit:
+            raise ValueError("observed work exceeds admitted token allowance")
+
 
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS study_token_pins (
@@ -770,8 +777,7 @@ class StudyTokenAdmission:
         receipt = claim.receipt
         if outcome.native_manifest_sha256 != receipt.study.native_manifest_sha256:
             raise ValueError("outcome does not match committed native manifest")
-        if outcome.observed_work is not None and outcome.observed_work > receipt.attempt.tokens:
-            raise ValueError("observed work exceeds admitted token allowance")
+        outcome.validate_admitted_work(receipt.attempt.tokens)
         with self._transaction() as db:
             self._require_committed_receipt(db, receipt)
             stored = db.execute(
