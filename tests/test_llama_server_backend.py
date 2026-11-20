@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import socket
 import sqlite3
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -171,6 +173,50 @@ def test_startup_cancellation_stops_server_before_health(backend_files):
         backend.__enter__()
     assert backend._process is None and backend._private is None
     assert not backend_files["database"].exists()
+
+
+def test_startup_cancellation_terminates_sigterm_ignoring_group_member(backend_files):
+    binary = backend_files["binary"]
+    observer = None
+    with tempfile.TemporaryDirectory(prefix="metis-llama-test-") as directory, socket.socket(
+            socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        address = str(Path(directory) / "child.sock")
+        listener.bind(address)
+        listener.listen()
+        listener.setblocking(False)
+        binary.write_text(f"""#!/usr/bin/env python3
+import os, signal, socket, time
+if os.fork() == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as witness:
+        witness.settimeout(5)
+        witness.connect({address!r})
+        witness.recv(1)
+else:
+    time.sleep(5)
+""")
+        backend_files["binary_sha256"] = _hash(binary)
+
+        def connected() -> bool:
+            nonlocal observer
+            if observer is None:
+                try:
+                    observer, _address = listener.accept()
+                except BlockingIOError:
+                    return False
+            return True
+
+        backend = LlamaServerBackend(**backend_files, startup_seconds=4,
+                                     startup_should_stop=connected)
+        try:
+            with pytest.raises(LlamaBackendStopped), backend:
+                pytest.fail("the fixture has no health server")
+            assert observer is not None
+            observer.settimeout(1)
+            assert observer.recv(1) == b""
+        finally:
+            if observer is not None:
+                observer.close()
 
 
 def test_startup_deadline_after_artifact_hash_prevents_process_launch(backend_files, monkeypatch):

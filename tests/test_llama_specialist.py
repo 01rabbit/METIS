@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from metis.core.codex_specialist import _decision
-from metis.core.llama_server_backend import LlamaBackendError, LlamaBackendStopped
+from metis.core.llama_server_backend import (
+    LlamaBackendError,
+    LlamaBackendStopped,
+    LlamaServerBackend,
+)
 from metis.core.llama_specialist import LlamaSpecialist
 from metis.core.study_token_admission import (
     SlotTokenPin,
@@ -376,7 +381,11 @@ def test_untrusted_deep_json_does_not_overwrite_completed_outcome(tmp_path, monk
     assert outcomes[0].status == "completed" and outcomes[0].observed_work == 15
 
 
-def test_server_startup_timeout_is_launch_failure_not_model_timeout(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("reason", "status"), [
+    ("server startup timed out", "timeout"),
+    ("server exited during startup", "launch_failed"),
+])
+def test_server_startup_outcomes_distinguish_timeout_and_exit(tmp_path, monkeypatch, reason, status):
     prompt = LlamaSpecialist.build_native_request("assignment")
     runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
         binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
@@ -390,13 +399,15 @@ def test_server_startup_timeout_is_launch_failure_not_model_timeout(tmp_path, mo
         def record_outcome(self, _claim, outcome): outcomes.append(outcome)
     class StartupFailure:
         def __init__(self, **_kwargs): pass
-        def __enter__(self): raise LlamaBackendError("server startup timed out")
+        def __enter__(self): raise LlamaBackendError(reason)
         def __exit__(self, *_args): pass
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", StartupFailure)
+    standalone = runner.run("assignment", model=runner.model_id, timeout=5)
     turn = runner.run_admitted(prompt, model=runner.model_id, timeout=5,
         token_claim=_claim(runner, prompt), admission=Admission())
-    assert turn.returncode == 1 and not turn.timed_out
-    assert outcomes[0].status == "launch_failed"
+    assert standalone.returncode == turn.returncode == 1
+    assert standalone.timed_out == turn.timed_out == (status == "timeout")
+    assert outcomes[0].status == status
     assert outcomes[0].exit_status is None and outcomes[0].observed_work is None
 
 
@@ -450,3 +461,49 @@ def test_admitted_startup_time_counts_against_total_call_deadline(tmp_path, monk
         token_claim=_claim(runner, prompt), admission=Admission())
     assert turn.returncode == 1 and turn.timed_out
     assert outcomes[0].status == "timeout"
+
+
+def test_admitted_cancellation_before_completion_response_records_cancelled(tmp_path, monkeypatch):
+    prompt = LlamaSpecialist.build_native_request("assignment")
+    runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    outcomes = []
+    completion_started = threading.Event()
+    waiting_for_response = threading.Event()
+    cancelled = threading.Event()
+
+    class Admission:
+        database = tmp_path / "state.db"
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, outcome): outcomes.append(outcome)
+
+    def stop() -> bool:
+        already_cancelled = cancelled.is_set()
+        if completion_started.is_set():
+            waiting_for_response.set()
+        return already_cancelled
+
+    def request(backend, route, payload, *, timeout):
+        if route == "/tokenize":
+            return {"tokens": [1]}
+        assert route == "/completion"
+        completion_started.set()
+        if not waiting_for_response.wait(2):
+            raise LlamaBackendError("completion fixture did not reach the cancellation check")
+        cancelled.set()
+        return {"content": "late response", "tokens_evaluated": 1, "tokens_predicted": 1,
+                "generation_settings": {"n_predict": payload["n_predict"]},
+                "model": str(backend.model)}
+
+    monkeypatch.setattr(LlamaServerBackend, "__enter__", lambda backend: backend)
+    monkeypatch.setattr(LlamaServerBackend, "_request", request)
+    turn = runner.run_admitted(prompt, model=runner.model_id, timeout=5,
+        token_claim=_claim(runner, prompt), admission=Admission(), should_stop=stop)
+
+    assert cancelled.is_set()
+    assert turn.returncode == 1 and turn.stopped and turn.message is None
+    assert [outcome.status for outcome in outcomes] == ["cancelled"]
+    assert outcomes[0].observed_work is None

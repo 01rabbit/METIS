@@ -2,14 +2,16 @@
 
 Both `LlamaSpecialist.run()` and the scheduler-admitted `run_admitted()` compute
 one monotonic call deadline before native server startup and pass it, with the
-run stop callback, into the backend. Health polling uses the same bounded,
+run stop callback, into the backend. For an admitted call, time spent validating
+and fencing its launch claim counts against the deadline. Health polling uses the same bounded,
 cancellable request path as tokenization and completion. Artifact hashing and
 the shared SQLite reservation check the deadline and cancellation between
 bounded operations, and expiry is checked immediately before the child process
-is launched. The backend terminates the process group on cancellation or
-timeout. A startup cancellation records a cancelled outcome, while deadline
-expiry records a timeout. An admitted token reservation already committed by
-the scheduler is retained.
+is launched. Cleanup escalates to SIGKILL for any surviving members of the
+process group after SIGTERM and waits for the server child. Cancellation
+observed before a response is accepted records a cancelled outcome. Expiry of
+the call deadline or the backend startup limit records a timeout. The scheduler
+retains committed token reservations.
 
 Validation on the PR branch:
 
