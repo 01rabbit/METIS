@@ -51,6 +51,10 @@ def test_matched_phases_share_public_input_and_only_owner_receives_private_note(
             assert receipt.prompt_hmac == _mac(KEY, b"prompt", prompt.encode())
             assert receipt.artifact_hmac == _mac(
                 KEY, b"artifact", canonical_artifact(FIXTURE, include_submission_rule=False))
+        for receipt, schema in zip(row.phases, runner.schemas, strict=True):
+            assert receipt.schema_sha256 == hashlib.sha256(
+                json.dumps(schema, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
+            ).hexdigest()
         with sqlite3.connect(root / "ledger.sqlite") as db:
             assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (2,)
             assert db.execute("SELECT COUNT(*) FROM issue6_build_pilot_receipts").fetchone() == (2,)
@@ -149,6 +153,25 @@ def test_failed_second_phase_cannot_receive_oracle_credit(tmp_path):
     assert result.oracle_checks == 0 and result.calls_reserved == 2 and result.actions == 1
 
 
+def test_bounded_phase_delivery_value_error_fails_closed(tmp_path, monkeypatch):
+    def reject(*_args, **_kwargs):
+        raise ValueError("private delivery detail must not be retained")
+
+    monkeypatch.setattr("metis.evaluation.issue6_build_pilot._ScriptedBoundaryHost.deliver_phase", reject)
+    runner = ScriptedTurns(INITIAL, FINAL)
+    result = _run_arm(tmp_path / "arm", "opaque", FIXTURE, runner, "scripted", KEY, "owner_note")
+    assert not result.complete and not result.verified
+    assert result.calls_reserved == 1 and result.oracle_checks == 0
+    assert result.phases[0].outcome == "prompt_delivery_rejected"
+    assert runner.prompts == []
+    with sqlite3.connect(tmp_path / "arm" / "ledger.sqlite") as db:
+        assert db.execute("SELECT state, failure FROM agent_jobs").fetchone() == (
+            "failed", "prompt_delivery_rejected",
+        )
+        payload, = db.execute("SELECT payload FROM issue6_build_pilot_receipts").fetchone()
+        assert "private delivery detail" not in payload
+
+
 def test_rehearsal_rejects_duck_typed_wrapper_before_claim(tmp_path):
     class ExternalWrapper:
         calls = 0
@@ -226,6 +249,16 @@ def _one_artifact_plan(plan):
     return plan
 
 
+def _two_artifact_plan(plan):
+    plan = _one_artifact_plan(plan)
+    first = plan["assignments"][0]
+    second = dict(first)
+    second["objective"] = "Check the same synthetic input independently."
+    plan["assignments"] = [first, second]
+    plan["decision"]["required_roles"] = ["artifact-triage", "artifact-triage"]
+    return plan
+
+
 def test_dispatch_preflight_refuses_when_model_call_budget_is_short(tmp_path):
     host = FakeHost(max_parallel=1)
     scheduler = AgentScheduler(tmp_path / "ledger.sqlite", host)
@@ -259,6 +292,29 @@ def test_dispatch_preflight_refuses_when_global_slot_is_busy(tmp_path):
         _dispatch_phase(scheduler, queued_run, required_calls=1)
     assert host.spawned == spawned_before
     assert all(job["state"] == "queued" for job in scheduler.jobs(queued_run))
+
+
+def test_dispatch_preflight_refuses_when_per_run_slot_is_busy(tmp_path):
+    host = FakeHost(max_parallel=2)
+    scheduler = AgentScheduler(tmp_path / "ledger.sqlite", host)
+    scheduler.configure(global_slots=2, per_run_slots=1, specialist_turn_budget=2,
+                        catalog=[{"id": "scripted", "tier": "standard"}], current_model="scripted",
+                        memory_retrieval=False)
+    source = tmp_path / "fixture.json"
+    source.write_bytes(canonical_artifact(FIXTURE, include_submission_rule=False))
+    session = CodexSession(scheduler.database)
+    run_id = session.intake(title="Per-run slot refusal", description="Public synthetic fixture.",
+                            paths=[source], categories=["misc"], max_actions=2,
+                            wall_seconds=120, evaluation_split="practice")["run_id"]
+    wave = scheduler.ledger.create_wave(run_id, mode="delegated", plan_policy=_two_artifact_plan)
+    scheduler.enqueue(run_id, wave["wave_id"])
+    first = scheduler.dispatch(run_id)
+    assert len(first["started"]) == 1 and first["queued"] == 1
+    spawned_before = list(host.spawned)
+    with pytest.raises(ValueError, match="no dispatch slot"):
+        _dispatch_phase(scheduler, run_id, required_calls=1)
+    assert host.spawned == spawned_before
+    assert sorted(job["state"] for job in scheduler.jobs(run_id)) == ["queued", "running"]
 
 
 def test_unpinned_executable_is_never_invoked(tmp_path, monkeypatch):

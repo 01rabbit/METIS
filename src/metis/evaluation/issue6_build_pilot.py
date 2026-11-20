@@ -78,12 +78,24 @@ class _ScriptedBoundaryHost(FakeHost):
         job = self.jobs.get(host_job_id)
         if (job is None or job["brief"].get("assignment_id") != assignment_id
                 or job["brief"].get("attempt_id") != attempt_id):
-            raise RuntimeError("phase prompt did not match the dispatched scheduler attempt")
+            raise ValueError("phase prompt did not match the dispatched scheduler attempt")
         if not 0 < timeout <= PHASE_SECONDS or len(prompt.encode("utf-8")) > 256_000:
             raise ValueError("phase prompt or deadline exceeds the bounded fake-host contract")
         job["prompt"] = prompt
-        job["schema"] = schema
+        job["schema"] = json.loads(_json(schema))
         job["timeout"] = timeout
+
+    def consume_phase(self, host_job_id: str, assignment_id: str, attempt_id: str
+                      ) -> tuple[str, dict[str, Any], float]:
+        job = self.jobs.get(host_job_id)
+        if (job is None or job["brief"].get("assignment_id") != assignment_id
+                or job["brief"].get("attempt_id") != attempt_id or job.get("consumed")):
+            raise ValueError("captured phase prompt did not match one unconsumed scheduler attempt")
+        prompt, schema, timeout = job.get("prompt"), job.get("schema"), job.get("timeout")
+        if not isinstance(prompt, str) or not isinstance(schema, dict) or not isinstance(timeout, float):
+            raise TypeError("captured phase prompt is incomplete")
+        job["consumed"] = True
+        return prompt, schema, timeout
 
 
 def _require_scripted(runner: ScriptedTurns) -> None:
@@ -221,7 +233,12 @@ def _reconcile(database: Path, run_id: str, receipts: list[PhaseReceipt], action
 
 
 def _ensure_dispatch_capacity(scheduler: AgentScheduler, run_id: str, required_calls: int) -> None:
-    """Refuse before host dispatch unless all remaining calls and one slot are available."""
+    """Refuse before dispatch unless calls and a slot are available.
+
+    This is a model-free preflight for one private pilot ledger, not an atomic slot
+    lease. AgentScheduler.dispatch remains authoritative; any intervening capacity
+    change must fail closed when exactly one assignment does not start.
+    """
     if required_calls < 1:
         raise ValueError("pilot preflight requires a positive remaining-call count")
     budget = scheduler.model_turn_budget(run_id)
@@ -362,10 +379,23 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
             scheduler.fail(assignment, attempt, "deadline after reservation")
             break
         try:
-            # This is the model boundary: exact prompt bytes are handed to an allowlisted
-            # in-process script only after scheduler dispatch and durable reservation.
+            # The scripted response consumes the exact prompt/schema captured for this
+            # scheduler attempt; it has no route to a model or provider.
             host.deliver_phase(job["host_job_id"], assignment, attempt, prompt, schema, timeout)
-            turn = ScriptedTurns._next_turn(runner, prompt, schema, timeout)
+            captured_prompt, captured_schema, captured_timeout = host.consume_phase(
+                job["host_job_id"], assignment, attempt)
+            if (_mac(receipt_key, b"prompt", captured_prompt.encode()) != receipt.prompt_hmac
+                    or hashlib.sha256(_json(captured_schema).encode()).hexdigest() != receipt.schema_sha256
+                    or captured_timeout != timeout):
+                raise ValueError("captured phase input did not match its pre-dispatch receipt")
+        except (TypeError, ValueError):
+            receipt = replace(receipt, outcome="prompt_delivery_rejected")
+            _charge_receipt(database, run_id, receipt, terminal=True)
+            receipts.append(receipt)
+            scheduler.fail(assignment, attempt, receipt.outcome)
+            break
+        try:
+            turn = ScriptedTurns._next_turn(runner, captured_prompt, captured_schema, captured_timeout)
         except RuntimeError:
             receipt = replace(receipt, outcome="script_interrupted")
             _charge_receipt(database, run_id, receipt, terminal=True)
