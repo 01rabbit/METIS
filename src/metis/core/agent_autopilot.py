@@ -17,16 +17,18 @@ from typing import Any
 from metis.core.agent_scheduler import MAX_ATTEMPTS, AgentScheduler
 from metis.core.codex_specialist import CodexRunner, run_assignment
 from metis.core.run_lock import run_lock
+from metis.core.study_token_admission import StudyTokenAdmission
 
 
 def autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, max_waves: int,
               drive: Callable[..., dict[str, Any]] = run_assignment,
-              continuations: list[dict[str, str]] | None = None) -> dict[str, Any]:
+              continuations: list[dict[str, str]] | None = None,
+              study_token_admission: StudyTokenAdmission | None = None) -> dict[str, Any]:
     lock_id = "autopilot-" + hashlib.sha256(run_id.encode()).hexdigest()
     with run_lock(scheduler.database, lock_id, timeout=0):
         started = time.time()
         result = _autopilot(scheduler, run_id, runner, max_waves=max_waves, drive=drive,
-                            continuations=continuations)
+                            continuations=continuations, study_token_admission=study_token_admission)
         result["metrics"] = _record_metrics(scheduler, run_id, max_waves, started, result)
         return result
 
@@ -87,7 +89,8 @@ def _record_metrics(scheduler: AgentScheduler, run_id: str, max_waves: int, star
 
 
 def _autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, max_waves: int,
-               drive: Callable[..., dict[str, Any]], continuations: list[dict[str, str]] | None) -> dict[str, Any]:
+               drive: Callable[..., dict[str, Any]], continuations: list[dict[str, str]] | None,
+               study_token_admission: StudyTokenAdmission | None) -> dict[str, Any]:
     if not 1 <= max_waves <= 10:
         raise ValueError("max-waves must be 1..10")
     continuations = continuations or []
@@ -158,8 +161,14 @@ def _autopilot(scheduler: AgentScheduler, run_id: str, runner: CodexRunner, *, m
                 break
             result["operations"]["specialists_started"] += len(started)
             with ThreadPoolExecutor(max_workers=len(started)) as pool:
-                futures = [pool.submit(drive, scheduler, run_id, j["assignment_id"], j["attempt_id"], runner)
-                           for j in started]
+                if study_token_admission is None:
+                    futures = [pool.submit(drive, scheduler, run_id, j["assignment_id"], j["attempt_id"], runner)
+                               for j in started]
+                else:
+                    futures = [pool.submit(
+                        drive, scheduler, run_id, j["assignment_id"], j["attempt_id"], runner,
+                        study_token_admission=study_token_admission,
+                    ) for j in started]
                 driver_failed = False
                 for future in futures:
                     try:

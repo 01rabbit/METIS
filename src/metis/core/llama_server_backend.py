@@ -20,6 +20,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Self, TypeGuard
 
+from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
+
 
 class LlamaBackendError(RuntimeError):
     """Sanitized backend failure; never includes prompts or model output."""
@@ -100,7 +102,8 @@ class LlamaServerBackend:
                          "TMPDIR": self._private.name, "LANG": "C"}
             self._process = subprocess.Popen(
                 [str(self.binary), "--model", str(self.model), "--host", self._socket,
-                 "--parallel", "1", "--no-webui", "--ctx-size", "4096",
+                 "--parallel", "1", "--no-webui", "--ctx-size",
+                 str(FULL_CONTEXT_RESERVATION_TOKENS),
                  "--no-context-shift", "--no-warmup"],
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT,
                 start_new_session=True, close_fds=True, env=child_env,
@@ -212,10 +215,13 @@ class LlamaServerBackend:
         if not isinstance(tokens, list) or not tokens or len(tokens) > self.token_limit:
             raise LlamaBackendError("unusable prompt token count")
         prompt_count = len(tokens)
+        if self.context_reservation and prompt_count > FULL_CONTEXT_RESERVATION_TOKENS:
+            raise LlamaBackendError("prompt exceeds reserved context")
         # In conservative mode, reserve the complete configured context before
         # inference. This is independent of /tokenize parity. The extra output
         # allowance covers a server that evaluates generated tokens separately.
-        self._reserve((4096 if self.context_reservation else prompt_count) + n_predict)
+        reserved_input = FULL_CONTEXT_RESERVATION_TOKENS if self.context_reservation else prompt_count
+        self._reserve(reserved_input + n_predict)
         if should_stop is not None and should_stop():
             self.close()
             raise LlamaBackendStopped("model call cancelled")
@@ -230,7 +236,8 @@ class LlamaServerBackend:
         evaluated, predicted = result.get("tokens_evaluated"), result.get("tokens_predicted")
         settings = result.get("generation_settings")
         if (not _integer(evaluated)
-                or (evaluated > 4096 if self.context_reservation else evaluated != prompt_count)
+                or (evaluated > FULL_CONTEXT_RESERVATION_TOKENS
+                    if self.context_reservation else evaluated != prompt_count)
                 or not _integer(predicted)
                 or predicted > n_predict or not isinstance(settings, dict)
                 or settings.get("n_predict") != n_predict or result.get("model") != str(self.model)

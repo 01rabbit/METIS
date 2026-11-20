@@ -207,6 +207,27 @@ def test_full_context_reservation_covers_tokenizer_disagreement(backend_files, m
         assert db.execute("SELECT reserved FROM llama_token_budgets").fetchone() == (4098,)
 
 
+def test_full_context_reservation_rejects_oversized_prompt_before_completion(backend_files, monkeypatch):
+    backend_files.update(token_limit=5000, context_reservation=True)
+    completed = []
+    with LlamaServerBackend(**backend_files) as backend:
+        original = backend._request
+
+        def track_completion(route, payload, *, timeout):
+            if route == "/completion":
+                completed.append(True)
+            return original(route, payload, timeout=timeout)
+
+        monkeypatch.setattr(backend, "_request", track_completion)
+        with pytest.raises(LlamaBackendError, match="exceeds reserved context"):
+            backend.complete("one " * 4097, n_predict=2, timeout_seconds=5)
+        assert completed == []
+    with sqlite3.connect(backend_files["database"]) as db:
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE name=?",
+                           ("llama_token_budgets",)).fetchone()
+        assert table is None or db.execute("SELECT COUNT(*) FROM llama_token_budgets").fetchone() == (0,)
+
+
 def test_full_context_reservation_is_shared_across_processes(backend_files):
     backend_files.update(token_limit=4098, context_reservation=True)
     results = []

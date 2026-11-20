@@ -23,12 +23,13 @@ def _pin(runner: LlamaSpecialist) -> dict:
             "database_path": str(config["database"].resolve()),
             "budget_key": config["budget_key"], "token_limit": config["token_limit"],
             "max_output_tokens": config["max_output_tokens"],
-            "context_reservation": config["context_reservation"]}
+            "context_reservation": config["context_reservation"],
+            "native_manifest_sha256": runner.native_manifest_sha256}
 
 
 @pytest.mark.parametrize("changed", ["binary_sha256", "model_sha256", "database_path",
                                      "budget_key", "token_limit", "max_output_tokens",
-                                     "context_reservation"])
+                                     "context_reservation", "native_manifest_sha256"])
 def test_heldout_llama_pin_rejects_each_mismatch(tmp_path, changed):
     runner = LlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
                              binary_sha256="a" * 64, model_path=tmp_path / "model.gguf",
@@ -179,7 +180,7 @@ def test_real_heldout_binding_rejects_adapter_before_reservation(tmp_path, monke
             bound["llama_backend"]["budget_key"] = "other-study"
     monkeypatch.setattr("metis.evaluation.heldout_arm.binding", lambda _db, _run: bound)
     expected = {"missing": "backend pin missing", "mismatched": "preregistered pin",
-                "matched": "token cap is not enforceable"}[pin_state]
+                "matched": "token-admitted runner"}[pin_state]
     with pytest.raises(ValueError, match=expected):
         run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"],
                        runner)
