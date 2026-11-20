@@ -1,6 +1,7 @@
 import fcntl
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import pytest
 
 from metis.core.agent_host import BridgeHost
 from metis.core.agent_scheduler import AgentScheduler
+from metis.evaluation._issue6_canary_process import _stop
 from metis.evaluation.issue6_build_pilot import _one_assignment
 from metis.evaluation.issue6_canary_watchdog import _CANARY_TABLE, quarantine_expired, start_canary
 from metis.evaluation.issue6_pilot_admission import (
@@ -86,6 +88,26 @@ def live_marker(workspace):
         except FileNotFoundError:
             continue
     return None
+
+
+def test_guardian_stop_poll_supports_file_descriptors_above_select_limit():
+    peer, control = socket.socketpair()
+    lease = -1
+    try:
+        try:
+            lease = fcntl.fcntl(control.fileno(), fcntl.F_DUPFD, 1100)
+        except OSError:
+            pytest.skip("host descriptor limit does not permit a high-numbered fd")
+        cutoff = time.monotonic() + 2
+        wall = time.time() + 2
+        assert _stop(lease, os.getppid(), cutoff, wall, wait=0.01) is None
+        peer.send(b"C")
+        assert _stop(lease, os.getppid(), cutoff, wall, wait=0.01) == "cancelled"
+    finally:
+        if lease >= 0:
+            os.close(lease)
+        peer.close()
+        control.close()
 
 
 @pytest.mark.parametrize(("behavior", "seconds", "outcome"), [
