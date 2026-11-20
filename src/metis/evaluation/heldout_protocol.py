@@ -265,20 +265,23 @@ def _reconcile_native_reservation_coverage(
 ) -> None:
     """Check for ledger rows outside the scheduler jobs examined for this run."""
     limit = len(reconciled) + 1
-    reservations = db.execute(
-        "SELECT id,assignment_id,attempt_id FROM agent_turn_reservations WHERE run_id=? LIMIT ?",
-        (run_id, limit),
-    ).fetchall()
-    # A run that stopped before reserving its first turn may have no native tables.
-    admissions = []
-    if db.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='study_token_attempts'"
-    ).fetchone():
-        admissions = db.execute(
-            "SELECT turn_reservation_id,assignment_id,attempt_id FROM study_token_attempts "
-            "WHERE run_id=? LIMIT ?",
+    try:
+        reservations = db.execute(
+            "SELECT id,assignment_id,attempt_id FROM agent_turn_reservations WHERE run_id=? LIMIT ?",
             (run_id, limit),
         ).fetchall()
+        # A run that stopped before reserving its first turn may have no native tables.
+        admissions = []
+        if db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='study_token_attempts'"
+        ).fetchone():
+            admissions = db.execute(
+                "SELECT turn_reservation_id,assignment_id,attempt_id FROM study_token_attempts "
+                "WHERE run_id=? LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        raise ValueError("held-out native reservation coverage mismatch") from None
     if any(len(rows) != len(reconciled) or set(rows) != reconciled for rows in (reservations, admissions)):
         raise ValueError("held-out native reservation coverage mismatch")
 

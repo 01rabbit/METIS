@@ -320,18 +320,69 @@ def test_reconcile_native_dispatch_requires_exact_terminal_outcome(tmp_path, mon
             reconcile_arm_dispatch(protocol, bindings, database)
 
 
-def test_reconcile_native_dispatch_without_any_reservation_or_admission_schema(tmp_path):
+def test_reconcile_native_dispatch_covers_multiple_reservations_for_one_run(tmp_path, monkeypatch):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
-    scheduler.cancel(assignment_id=job["assignment_id"])
+    _, other_scheduler, _, other_run_id, other_job = _running_slot(tmp_path, protocol=protocol)
+    admission = StudyTokenAdmission(database)
+    pin = protocol.llama_backend
+    runner = LlamaSpecialist(
+        model_id=protocol.model_pin, binary=tmp_path / "server", binary_sha256=pin.binary_sha256,
+        model_path=tmp_path / "model.gguf", model_sha256=pin.model_sha256, database=database,
+        budget_key=pin.budget_key, token_limit=pin.token_limit, max_output_tokens=pin.max_output_tokens,
+        context_reservation=True, native_manifest_sha256=pin.native_manifest_sha256,
+    )
+    give_up = json.dumps({
+        "action": "fail", "intent": None, "report": None, "reason": "synthetic", "candidate": None,
+    })
+    # An invalid first decision triggers a second turn through the real assignment driver.
+    responses = iter(("{}", give_up, give_up))
+
+    class FakeBackend:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def complete_admitted(self, _prompt, **_kwargs):
+            return next(responses), 100, 1
+        def collect_native_work(self, *, generated, evaluated=None):
+            assert (generated, evaluated) == (1, 100)
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=117)
+
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
+                   study_token_admission=admission)
+    run_assignment(other_scheduler, other_run_id, other_job["assignment_id"], other_job["attempt_id"], runner,
+                   study_token_admission=admission)
+
     with sqlite3.connect(database) as db:
-        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
-        assert db.execute("SELECT 1 FROM sqlite_schema WHERE name='study_token_attempts'").fetchone() is None
+        counts = dict(db.execute("SELECT run_id, COUNT(*) FROM study_token_attempts GROUP BY run_id"))
+        assert counts == {run_id: 2, other_run_id: 1}
+        assert db.execute("SELECT COUNT(*) FROM study_token_outcomes").fetchone() == (3,)
+
     slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
     bindings = Bindings.model_construct(
         protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
     )
     reconcile_arm_dispatch(protocol, bindings, database)
 
+
+@pytest.mark.parametrize("bad_native_schema", [False, True])
+def test_reconcile_native_dispatch_without_any_reservation(tmp_path, bad_native_schema):
+    database, scheduler, protocol, run_id, job = _running_slot(tmp_path, arm="single_agent")
+    scheduler.cancel(assignment_id=job["assignment_id"])
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
+        assert db.execute("SELECT 1 FROM sqlite_schema WHERE name='study_token_attempts'").fetchone() is None
+        if bad_native_schema:
+            db.execute("CREATE TABLE study_token_attempts (run_id TEXT)")
+    slot = next(item for item in schedule(protocol) if item["arm"] == "single_agent")
+    bindings = Bindings.model_construct(
+        protocol_sha256=digest(protocol), runs=[RunAssignment(run_id=run_id, **slot)],
+    )
+    if bad_native_schema:
+        with pytest.raises(ValueError, match="^held-out native reservation coverage mismatch$"):
+            reconcile_arm_dispatch(protocol, bindings, database)
+    else:
+        reconcile_arm_dispatch(protocol, bindings, database)
 
 def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path, monkeypatch):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
