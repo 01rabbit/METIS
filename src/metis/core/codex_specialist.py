@@ -852,12 +852,15 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             break
         latest = _job(scheduler, assignment_id)
         call_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
-        if call_remaining <= 0:
+        # Native admission rechecks the assignment deadline while consuming its claim and
+        # persists the unconsumed refusal; keep that authoritative path intact.
+        if call_remaining <= 0 and token_claim is None:
             scheduler.tick()
             outcome = stop_outcome("deadline exceeded before the provider call")
             break
-        requested_timeout = min(turn_timeout, call_remaining)
-        deadline_limited_turn = call_remaining <= _effective_runner_timeout(runner, requested_timeout)
+        requested_timeout = min(turn_timeout, call_remaining if call_remaining > 0 else remaining)
+        deadline_limited_turn = (call_remaining > 0
+                                 and call_remaining <= _effective_runner_timeout(runner, requested_timeout))
         turn = invoke(reservation, requested_timeout, prompt, token_claim)
         if isinstance(turn, dict):
             outcome = turn
@@ -898,12 +901,13 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 break
             latest = _job(scheduler, assignment_id)
             call_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
-            if call_remaining <= 0:
+            if call_remaining <= 0 and retry_claim is None:
                 scheduler.tick()
                 outcome = stop_outcome("deadline exceeded before the retry provider call")
                 break
-            requested_timeout = min(turn_timeout, call_remaining)
-            deadline_limited_turn = call_remaining <= _effective_runner_timeout(runner, requested_timeout)
+            requested_timeout = min(turn_timeout, call_remaining if call_remaining > 0 else retry_remaining)
+            deadline_limited_turn = (call_remaining > 0
+                                     and call_remaining <= _effective_runner_timeout(runner, requested_timeout))
             turn = invoke(retry_reservation, requested_timeout, retry_prompt, retry_claim)
             if isinstance(turn, dict):
                 outcome = turn
