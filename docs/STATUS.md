@@ -947,3 +947,25 @@ identity check with an exact SAN match. The change is code and workflow
 validation only; it does not produce a release or independently validate a
 newly generated GitHub attestation. Issue #9 remains open for release execution,
 host recovery, retention/secret controls, and the Issue #8 dependency.
+
+## Issue #9 local credential age retention (2026-11-20)
+
+`metis web credential-retention --older-than-days N` now previews a bounded
+age-based selection; deletion requires `--apply`. New and replaced credentials
+record an update timestamp. Legacy rows migrate with unknown age and remain
+untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
+auth generations, and removes only the corresponding auth-origin cookies from
+linked runs. The command refuses more than 100 credential origins or 1,000
+linked runs, and reports counts without origin names or secret values. Preview
+leaves credential rows untouched. Checkpointed WAL state uses immutable
+read-only mode and creates no sidecars; an uncheckpointed WAL may create/update
+`-wal`/`-shm` coordination files and requires a writable DB directory. A pending
+rollback journal is refused. Credential writes and
+retirement close their write transaction and attempt a bounded WAL truncate. A
+busy reader leaves deletion committed and reports incomplete cleanup; repeating
+`--apply` retries cleanup after the reader exits. Triggers that suppress a
+required generation, cookie-state, or credential update abort the transaction.
+The expanded web credential/request suite covers these behaviors. This is local
+retention control only: provider revocation, secure physical deletion, encrypted
+credential storage and Issue #9 acceptance remain open. See
+`docs/reports/issue9-credential-age-retention-2026-11-20.md`.
