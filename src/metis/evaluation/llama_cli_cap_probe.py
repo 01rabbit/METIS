@@ -11,10 +11,12 @@ import os
 import re
 import stat
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 _COMPLETION_LIMIT = 1
+_USAGE_FIELDS = {"prompt_tokens", "completion_tokens"}
 type _FileIdentity = tuple[int, int, int, int, int, int]
 
 
@@ -59,6 +61,19 @@ def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return fields
 
 
+def _contains_usage_fields(values: Iterable[object]) -> bool:
+    pending = list(values)
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if not _USAGE_FIELDS.isdisjoint(value):
+                return True
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return False
+
+
 def assess_cli_output(stdout: str, stderr: str, *, precount_tokens: int,
                       returncode: int) -> dict[str, Any]:
     """Check reported usage against the precount, request, and process exit."""
@@ -68,12 +83,21 @@ def assess_cli_output(stdout: str, stderr: str, *, precount_tokens: int,
     for line in output.splitlines():
         try:
             item = json.loads(line, object_pairs_hook=_unique_fields)
-        except (ValueError, RecursionError):
+        except json.JSONDecodeError:
             if '"prompt_tokens"' in line or '"completion_tokens"' in line:
                 malformed_usage = True
             continue
-        if isinstance(item, dict) and ("prompt_tokens" in item or "completion_tokens" in item):
-            records.append(item)
+        except (ValueError, RecursionError):
+            # Ambiguous or excessively nested JSON cannot be cleared of usage keys.
+            malformed_usage = True
+            continue
+        if isinstance(item, dict):
+            if not _USAGE_FIELDS.isdisjoint(item):
+                records.append(item)
+            if _contains_usage_fields(item.values()):
+                malformed_usage = True
+        elif isinstance(item, list) and _contains_usage_fields(item):
+            malformed_usage = True
 
     prompt_tokens = completion_tokens = None
     if len(records) == 1 and not malformed_usage:

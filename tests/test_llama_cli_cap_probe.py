@@ -48,6 +48,33 @@ def test_duplicate_or_ambiguous_usage_fails_closed(other):
     assert result["usage_observed"] is False
 
 
+@pytest.mark.parametrize("other", [
+    '{"usage":{"prompt_tokens":99,"completion_tokens":9}}',
+    '[{"prompt_tokens":99,"completion_tokens":9}]',
+    '{"events":[[{"completion_tokens":9}]]}',
+    '[{"usage":{"prompt_tokens":99}}]',
+    r'{"usage":[{"\u0070rompt_tokens":99}]}',
+])
+def test_nested_usage_invalidates_an_otherwise_compatible_record(other):
+    row = '{"prompt_tokens":3,"completion_tokens":1}'
+    result = assess_cli_output(row, other, precount_tokens=3, returncode=0)
+    assert result["usage_protocol_compatible"] is False
+    assert result["usage_observed"] is False
+
+
+def test_usage_in_top_level_record_cannot_shadow_nested_usage():
+    row = '{"prompt_tokens":3,"completion_tokens":1,"usage":{"completion_tokens":2}}'
+    result = assess_cli_output(row, "", precount_tokens=3, returncode=0)
+    assert result["usage_protocol_compatible"] is False
+    assert result["usage_observed"] is False
+
+
+def test_nested_metadata_without_usage_keys_is_allowed():
+    row = '{"prompt_tokens":3,"completion_tokens":1,"metadata":{"samples":[[{"duration":1}]]}}'
+    result = assess_cli_output(row, '[{"messages":["prompt_tokens"]}]', precount_tokens=3, returncode=0)
+    assert result["usage_protocol_compatible"] is True
+
+
 def _files(tmp_path):
     files = [tmp_path / name for name in ("model", "cli", "tokenizer")]
     for file in files:

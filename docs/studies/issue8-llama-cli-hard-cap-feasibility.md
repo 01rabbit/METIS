@@ -17,8 +17,9 @@ The direct CLI route therefore cannot presently establish that the separately
 counted raw prompt is the prompt actually consumed by the model. It also cannot
 reconcile actual usage after the call. The probe's `strict_cap_ready` result is
 always false. `usage_protocol_compatible` requires a zero exit status and exactly
-one unambiguous usage record without a chat wrapper. Its nonnegative prompt
-count must match the tokenizer's count, and its completion count must be at
+one unambiguous top-level usage record without a chat wrapper. Usage keys
+inside nested objects or arrays invalidate the output. The nonnegative prompt
+count must match the tokenizer's count, and the completion count must be at
 most the requested one token. Invalid UTF-8 on the generator's stdout or
 stderr makes the output incompatible. The two historical observations supply
 no compatible evidence. The hardened probe was checked with simulated
