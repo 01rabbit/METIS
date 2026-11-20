@@ -59,7 +59,12 @@ from metis.core.codex_isolation import (
     wrap,
 )
 from metis.core.ctf_artifacts import ALLOWED_OPTIONS
-from metis.core.study_token_admission import StudyTokenAdmission, TokenLaunchClaim
+from metis.core.run_lock import run_lock
+from metis.core.study_token_admission import (
+    SchedulerLaunchDeadlineExpired,
+    StudyTokenAdmission,
+    TokenLaunchClaim,
+)
 
 # Features turned off for every specialist turn when the installed CLI knows them. Some
 # collaboration tool names can remain visible; the configured host refusal is tested below.
@@ -676,7 +681,7 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
         return prompt
 
     def invoke(reservation: dict[str, Any], timeout: float, prompt: str,
-               token_claim: TokenLaunchClaim | None = None) -> CodexTurn:
+               token_claim: TokenLaunchClaim | None = None) -> CodexTurn | dict[str, Any]:
         reservation_id = reservation["reservation_id"]
         final_call = final_handoff_call_limit is not None and len(turns) + 1 >= final_handoff_call_limit
         if heldout is not None and token_claim is None:
@@ -693,6 +698,15 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 raise ValueError("native launch claim has no admission controller")
             try:
                 study_token_admission.consume_scheduler_launch_claim(token_claim)
+            except SchedulerLaunchDeadlineExpired as exc:
+                _log(scheduler, assignment_id, attempt_id, "model_turn_abandoned",
+                     json.dumps({"reservation_id": reservation_id}))
+                scheduler.tick()
+                with run_lock(scheduler.database, run_id):
+                    latest = _job(scheduler, assignment_id)
+                    if latest["attempt_id"] == attempt_id and latest["state"] == "running":
+                        return scheduler.fail(assignment_id, attempt_id, str(exc))
+                return stop_outcome(str(exc))
             except ValueError:
                 if not stopped():
                     raise
@@ -790,6 +804,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
             outcome = stop_outcome("run or attempt stopped before provider call")
             break
         turn = invoke(reservation, min(turn_timeout, remaining), prompt, token_claim)
+        if isinstance(turn, dict):
+            outcome = turn
+            break
         if scheduler.run_cancelled(run_id):
             outcome = stop_outcome("run cancelled during a Codex turn; result discarded")
             break
@@ -825,6 +842,9 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                 outcome = stop_outcome("run or attempt stopped before transient retry")
                 break
             turn = invoke(retry_reservation, min(turn_timeout, retry_remaining), retry_prompt, retry_claim)
+            if isinstance(turn, dict):
+                outcome = turn
+                break
             if scheduler.run_cancelled(run_id):
                 outcome = stop_outcome("run cancelled during retry; result discarded")
                 break

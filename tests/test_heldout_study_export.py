@@ -335,6 +335,48 @@ def test_real_model_rejects_missing_or_changed_arm_dispatch(tmp_path: Path) -> N
         finalize(real, bound, database, expected_sha256=digest(real))
 
 
+@pytest.mark.parametrize("variant", ["previous_format", "previous_llama_format", "partial",
+                                     "mismatched", "native_without_fields"])
+def test_real_model_checks_admission_fields_without_rejecting_old_v1_bindings(
+    tmp_path: Path, variant: str,
+) -> None:
+    database, original, bindings = _protocol_fixture(tmp_path)
+    source = real_prompt_config({**original.model_dump(), "measurement": "real_model"})
+    if variant in {"previous_llama_format", "native_without_fields"}:
+        backend = {
+            "binary_sha256": "a" * 64, "model_sha256": "b" * 64,
+            "database_path": str(database.resolve()), "budget_key": "shared-study",
+            "token_limit": 800, "max_output_tokens": 2,
+            "context_reservation": True,
+        }
+        if variant == "native_without_fields":
+            backend["native_manifest_sha256"] = "c" * 64
+        source["llama_backend"] = backend
+    protocol = Protocol.model_validate(source)
+    bound = bindings.model_copy(update={"protocol_sha256": digest(protocol)})
+    attest_fixture(database, protocol, bound)
+    with sqlite3.connect(database) as db:
+        for run_id, raw in db.execute("SELECT run_id,payload FROM heldout_arm_bindings").fetchall():
+            payload = json.loads(raw)
+            if variant in {"previous_format", "previous_llama_format", "native_without_fields"}:
+                for field in ("study_id", "measurement", "memory_card_digests"):
+                    payload.pop(field)
+            elif variant == "partial":
+                payload.pop("study_id")
+            else:
+                payload["study_id"] = "unrelated-study"
+            db.execute("UPDATE heldout_arm_bindings SET payload=? WHERE run_id=?",
+                       (json.dumps(payload), run_id))
+    expected_digest = digest(protocol)
+    if variant in {"previous_format", "previous_llama_format"}:
+        assert finalize(protocol, bound, database, expected_sha256=expected_digest)[
+            "protocol_sha256"
+        ] == expected_digest
+    else:
+        with pytest.raises(ValueError, match="held-out arm binding mismatch"):
+            finalize(protocol, bound, database, expected_sha256=expected_digest)
+
+
 def test_llama_backend_pin_is_committed_and_bounded_by_study(tmp_path: Path) -> None:
     database, original, _ = _protocol_fixture(tmp_path)
     source = real_prompt_config({**original.model_dump(), "measurement": "real_model"})

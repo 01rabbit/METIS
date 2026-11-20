@@ -35,8 +35,15 @@ study/slot pins from those records and stores only the SHA-256 of the exact
 rendered prompt. A mismatch rolls back the scheduler turn and token receipt
 before any runner call. Immediately before `run_admitted`, the controller
 revalidates the full receipt, confirms the scheduler job and reservation remain
-current, and atomically marks the claim consumed; replay and concurrent
-consumers fail. A timeout or failed admitted runner leaves both charges intact.
+current, checks the persisted assignment deadline and any active run deadline,
+and atomically marks the claim consumed. Replay and concurrent consumers fail.
+Expiry after reservation, a timeout, or a failed runner leaves both charges
+intact.
+If the scheduler abandons a reserved turn before launch, dispatch
+reconciliation accepts the prompt and abandonment events only when the
+matching native claim remains unconsumed and has no terminal outcome. Older
+v1 bindings without admission fields remain verifiable for protocols without
+a native manifest pin.
 The future runner hook will receive a controller-consumed claim and must only be
 reachable through this controller; direct or replayed invocation is outside the
 supported path.
