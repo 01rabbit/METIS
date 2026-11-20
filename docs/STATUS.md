@@ -627,6 +627,20 @@ were retained outside Git and disposable VMs removed. See
 
 A local operator view serves the existing count-only audit over `127.0.0.1`
 with a bearer token supplied by environment variable. Its authenticated
+`GET /api/runs?limit=N` lists at most 100 newest runs from one read-only
+SQLite snapshot after validating every selected event chain. The browser loads
+the newest 20 and exposes only run ID, status, timestamp, and bounded-action
+budget for selection; challenge metadata and event details stay out of the
+list. Aggregate history processed by one list request is capped at 4,096
+timestamp-index entries and 5 MiB of index keys during discovery, 20,000
+selected events, and 8 MiB of stored selected event fields. Discovery rejects
+index values over 512 bytes and uses a 4 KiB SQLite value limit; selected event
+fields use a 256 KiB SQLite value limit. Hitting a discovery budget returns
+the runs found so far with a `truncated` marker. The index is created by the
+writable store initializer and operator startup migration. A corrupt chain,
+invalid storage fields, unavailable index, or oversized selected set fails the
+whole list closed.
+The authenticated
 `POST /api/runs/{run_id}/cancel` delegates to the existing run-locked
 `CodexSession.cancel` path and returns only run status and worker-teardown
 status; unknown teardown remains visible as HTTP 202. It rejects non-loopback
@@ -664,6 +678,17 @@ The offline release validator also checks a staged wheel, sdist and canonical
 checksum manifest as an exact bundle using `--verify-checksums`. This confirms
 local bundle consistency; signed installer and recipient provenance evidence
 remain open. See the [release bundle checks](reports/issue9-release-checksum-portability-2026-11-19.md#offline-bundle-verification).
+
+PR #111, now merged, provides the offline verifier. Main-based integration
+PR #125 applies it to the tag-triggered release and the nonpublishing
+attestation drill after checksum generation and before attestation or
+publication. Synthetic CLI coverage rejects a changed archive, and
+workflow-order tests keep verification ahead of those release steps. The
+integration commit `b71e79f` passed 46 focused tests, Ruff, repository
+validation (0 findings), and `git diff --check`; exact-head CI and review are
+pending. No tag or release was run. Bundle consistency does not authenticate
+source provenance or prove OIDC/attestation publication. See
+[`issue9-release-bundle-workflow-gate-2026-11-20.md`](reports/issue9-release-bundle-workflow-gate-2026-11-20.md).
 
 Sandbox recovery now revokes persisted operation identities after confirmed
 teardown. A stale caller must pass its original identity under the launch lock
@@ -915,6 +940,18 @@ monitoring, not an enforced token or cost budget. See
 `docs/reports/issue9-model-usage-audit-2026-11-19.md`. Issues #6 through #9
 remain open pending their separate evidence gates.
 
+## Pinned llama.cpp work trace probe (2026-11-20)
+
+A test-only instrumented CPU build now records aggregate `llama_process`, graph,
+and server-retry work for one fixed public model fixture. A local Darwin arm64
+probe observed 22 request graph positions; a synthetic precompute refusal
+recorded one failed process call and one retry while graph positions remained
+22. The synthetic branch is not a real KV/allocator failure, and the manifest
+does not independently prove binary provenance. This trace establishes no
+hard token budget, held-out eligibility, MUNIN gain, CTF solve, or Issue #8
+acceptance. Capability flags remain false. See
+`docs/reports/issue8-native-work-trace-2026-11-20.md`.
+
 ## Issue #9 local web credential retirement (2026-11-19)
 
 Credential replacement and `web forget`/`forget-all --apply` enable SQLite
@@ -925,3 +962,36 @@ The local regression checks recreate the workflow object over the same
 database after forgetting; they do not exercise a fresh process or reboot.
 This remains best-effort local retirement, not physical erasure, automatic
 provider revocation, a retention policy, or completion of Issue #9.
+
+## Issue #9 release attestation identity pins (2026-11-20)
+
+The tag release workflow and nonpublishing main-branch attestation drill now
+require GitHub CLI verification to match the expected repository, exact signer
+certificate identity and OIDC issuer, source ref and source commit; both also
+reject self-hosted runners. This replaces the previous repository-only
+identity check with an exact SAN match. The change is code and workflow
+validation only; it does not produce a release or independently validate a
+newly generated GitHub attestation. Issue #9 remains open for release execution,
+host recovery, retention/secret controls, and the Issue #8 dependency.
+
+## Issue #9 local credential age retention (2026-11-20)
+
+`metis web credential-retention --older-than-days N` now previews a bounded
+age-based selection; deletion requires `--apply`. New and replaced credentials
+record an update timestamp. Legacy rows migrate with unknown age and remain
+untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
+auth generations, and removes only the corresponding auth-origin cookies from
+linked runs. The command refuses more than 100 credential origins or 1,000
+linked runs, and reports counts without origin names or secret values. Preview
+leaves credential rows untouched. Checkpointed WAL state uses immutable
+read-only mode and creates no sidecars; an uncheckpointed WAL may create/update
+`-wal`/`-shm` coordination files and requires a writable DB directory. A pending
+rollback journal is refused. Credential writes and
+retirement close their write transaction and attempt a bounded WAL truncate. A
+busy reader leaves deletion committed and reports incomplete cleanup; repeating
+`--apply` retries cleanup after the reader exits. Triggers that suppress a
+required generation, cookie-state, or credential update abort the transaction.
+The expanded web credential/request suite covers these behaviors. This is local
+retention control only: provider revocation, secure physical deletion, encrypted
+credential storage and Issue #9 acceptance remain open. See
+`docs/reports/issue9-credential-age-retention-2026-11-20.md`.

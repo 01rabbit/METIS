@@ -10,10 +10,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
-from metis.core.store import RunStore
+from metis.core.store import RunStore, ensure_run_audit_list_index
 
 RUN_AUDIT = re.compile(r"/api/runs/([0-9a-f]{32})/audit")
 RUN_CANCEL = re.compile(r"/api/runs/([0-9a-f]{32})/cancel")
+RUN_LIST = re.compile(r"/api/runs(?:\?limit=(\d{1,3}))?")
 
 
 def create_server(database: Path, *, port: int, token: str,
@@ -24,8 +25,9 @@ def create_server(database: Path, *, port: int, token: str,
         raise ValueError("operator database unavailable")
     if not 0 <= port <= 65_535:
         raise ValueError("invalid operator port")
-    if len(token) < 32 or len(token) > 512 or any(ord(char) < 33 for char in token):
-        raise ValueError("operator token must be 32..512 visible characters")
+    if len(token) < 32 or len(token) > 512 or any(not 33 <= ord(char) <= 126 for char in token):
+        raise ValueError("operator token must be 32..512 visible ASCII characters")
+    ensure_run_audit_list_index(database)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format: str, *args: Any) -> None:
@@ -53,6 +55,14 @@ def create_server(database: Path, *, port: int, token: str,
             expected = f"http://127.0.0.1:{cast(ThreadingHTTPServer, self.server).server_port}"
             return origin is None or origin == expected
 
+        def _authenticated(self) -> bool:
+            supplied = self.headers.get("Authorization", "")
+            try:
+                supplied_bytes = supplied.encode("ascii")
+            except UnicodeEncodeError:
+                return False
+            return secrets.compare_digest(supplied_bytes, ("Bearer " + token).encode("ascii"))
+
         def do_GET(self) -> None:
             if not self._host_ok() or self.headers.get("Origin") is not None:
                 self._send(403, b"forbidden", "text/plain; charset=utf-8")
@@ -63,12 +73,41 @@ def create_server(database: Path, *, port: int, token: str,
             if self.path == "/operator.js":
                 self._send(200, _SCRIPT, "text/javascript; charset=utf-8")
                 return
+            if self.path == "/api/runs" or self.path.startswith("/api/runs?"):
+                if not self._authenticated():
+                    self._send(401, b"unauthorized", "text/plain; charset=utf-8")
+                    return
+                match = RUN_LIST.fullmatch(self.path)
+                if match is None:
+                    self._send(400, b"invalid run list query", "text/plain; charset=utf-8")
+                    return
+                limit = int(match.group(1) or "20")
+                if not 1 <= limit <= 100:
+                    self._send(400, b"invalid run list query", "text/plain; charset=utf-8")
+                    return
+                try:
+                    summaries, truncated = RunStore(database, read_only=True).list_audit_summaries(
+                        limit=limit,
+                    )
+                except (OSError, ValueError, sqlite3.Error):
+                    self._send(503, b"run list unavailable", "text/plain; charset=utf-8")
+                    return
+                runs = []
+                for summary in summaries:
+                    run_id = summary["run_id"]
+                    if not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+                        continue
+                    runs.append({"run_id": run_id, "status": summary["status"],
+                                 "last_timestamp": summary["last_timestamp"],
+                                 "codex_budget": summary["codex_budget"]})
+                body = json.dumps({"runs": runs, "truncated": truncated}, sort_keys=True).encode()
+                self._send(200, body, "application/json; charset=utf-8")
+                return
             match = RUN_AUDIT.fullmatch(self.path)
             if match is None:
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
-            supplied = self.headers.get("Authorization", "")
-            if not secrets.compare_digest(supplied, "Bearer " + token):
+            if not self._authenticated():
                 self._send(401, b"unauthorized", "text/plain; charset=utf-8")
                 return
             try:
@@ -93,8 +132,7 @@ def create_server(database: Path, *, port: int, token: str,
                     return
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
-            supplied = self.headers.get("Authorization", "")
-            if not secrets.compare_digest(supplied, "Bearer " + token):
+            if not self._authenticated():
                 self._send(401, b"unauthorized", "text/plain; charset=utf-8")
                 return
             if (self.headers.get("Transfer-Encoding") is not None
@@ -138,32 +176,118 @@ def create_server(database: Path, *, port: int, token: str,
 _PAGE = """<!doctype html><html lang="ja"><meta charset="utf-8"><title>METIS operator</title>
 <h1>METIS operator</h1><p>認証済みローカル操作: 監査表示とrunのキャンセル。</p>
 <label>Operator token <input id="token" type="password" autocomplete="off"></label>
+<button id="refresh">List recent runs</button>
+<label>Recent runs <select id="run-list"><option value="">Select a run</option></select></label>
 <label>Run ID <input id="run" maxlength="32" spellcheck="false"></label>
 <button id="inspect">Inspect</button><button id="cancel">Cancel run</button><pre id="result"></pre>
 <script src="/operator.js"></script></html>""".encode()
 
-_SCRIPT = b"""document.getElementById('inspect').addEventListener('click', async () => {
-  const token = document.getElementById('token').value;
-  const run = document.getElementById('run').value;
-  const output = document.getElementById('result');
-  if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
+_SCRIPT = b"""const tokenInput = document.getElementById('token');
+const runInput = document.getElementById('run');
+const output = document.getElementById('result');
+const select = document.getElementById('run-list');
+let authorizationGeneration = 0;
+let latestListRequest = 0;
+let latestRunRequest = 0;
+let selectedRunId = '';
+
+function clearProtectedView() {
+  authorizationGeneration++;
+  select.replaceChildren(new Option('Select a run', ''));
+  runInput.value = '';
+  selectedRunId = '';
+  output.textContent = '';
+}
+
+tokenInput.addEventListener('input', clearProtectedView);
+
+async function operatorRequest(path, method, label, render, isLatest = () => true) {
+  const generation = authorizationGeneration;
+  const token = tokenInput.value;
+  const sameAuthorization = () => generation === authorizationGeneration && token === tokenInput.value;
   try {
-    const response = await fetch('/api/runs/' + run + '/audit',
-      {headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
-    output.textContent = response.ok ? JSON.stringify(await response.json(), null, 2)
-      : 'Audit unavailable (' + response.status + ')';
-  } catch (_) { output.textContent = 'Audit unavailable'; }
+    const response = await fetch(path,
+      {method, headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
+    if (!sameAuthorization()) return;
+    if (response.status === 401 || response.status === 403) {
+      clearProtectedView();
+      output.textContent = label + ' unavailable (' + response.status + ')';
+      return;
+    }
+    if (!isLatest()) return;
+    if (!response.ok) {
+      output.textContent = label + ' unavailable (' + response.status + ')';
+      return;
+    }
+    const payload = await response.json();
+    if (sameAuthorization() && isLatest()) render(payload);
+  } catch (_) {
+    if (sameAuthorization() && isLatest()) output.textContent = label + ' unavailable';
+  }
+}
+
+function invalidateRunView() {
+  latestRunRequest++;
+  output.textContent = '';
+}
+
+document.getElementById('refresh').addEventListener('click', () => {
+  const request = ++latestListRequest;
+  return operatorRequest('/api/runs?limit=20', 'GET', 'Run list', payload => {
+    if (!Array.isArray(payload.runs)) { output.textContent = 'Run list unavailable'; return; }
+    select.replaceChildren(new Option('Select a run', ''));
+    for (const run of payload.runs) {
+      if (!/^[0-9a-f]{32}$/.test(run.run_id) || typeof run.status !== 'string') continue;
+      const option = document.createElement('option');
+      option.value = run.run_id;
+      const budget = run.codex_budget;
+      const timestamp = typeof run.last_timestamp === 'string' ? ' | ' + run.last_timestamp : '';
+      const remaining = budget ? ' | ' + budget.actions_remaining + '/' + budget.max_actions + ' actions' : '';
+      option.textContent = run.status + ' | ' + run.run_id.slice(0, 8) + timestamp + remaining;
+      select.append(option);
+    }
+    if (Array.from(select.options).some(option => option.value === selectedRunId)) {
+      select.value = selectedRunId;
+    } else {
+      selectedRunId = '';
+      runInput.value = '';
+      invalidateRunView();
+    }
+    const count = select.options.length - 1;
+    output.textContent = payload.truncated
+      ? 'Loaded ' + count + ' recent runs; list is partial at the safety limit'
+      : 'Loaded ' + count + ' runs';
+  }, () => request === latestListRequest);
 });
-document.getElementById('cancel').addEventListener('click', async () => {
-  const token = document.getElementById('token').value;
-  const run = document.getElementById('run').value;
-  const output = document.getElementById('result');
+select.addEventListener('change', () => {
+  selectedRunId = select.value;
+  runInput.value = selectedRunId;
+  invalidateRunView();
+});
+runInput.addEventListener('input', () => {
+  invalidateRunView();
+  if (runInput.value !== selectedRunId) {
+    selectedRunId = '';
+    select.value = '';
+  }
+});
+
+function showResult(payload) {
+  output.textContent = JSON.stringify(payload, null, 2);
+}
+
+document.getElementById('inspect').addEventListener('click', () => {
+  const request = ++latestRunRequest;
+  const run = runInput.value;
   if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
-  if (!window.confirm('Cancel this run?')) return;
-  try {
-    const response = await fetch('/api/runs/' + run + '/cancel',
-      {method: 'POST', headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
-    output.textContent = response.ok ? JSON.stringify(await response.json(), null, 2)
-      : 'Cancellation unavailable (' + response.status + ')';
-  } catch (_) { output.textContent = 'Cancellation unavailable'; }
+  return operatorRequest('/api/runs/' + run + '/audit', 'GET', 'Audit', showResult,
+    () => request === latestRunRequest && run === runInput.value);
+});
+document.getElementById('cancel').addEventListener('click', () => {
+  const run = runInput.value;
+  if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
+  if (!window.confirm('Cancel run ' + run + '?')) return;
+  const request = ++latestRunRequest;
+  return operatorRequest('/api/runs/' + run + '/cancel', 'POST', 'Cancellation', showResult,
+    () => request === latestRunRequest && run === runInput.value);
 });"""
