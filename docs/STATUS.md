@@ -1024,18 +1024,20 @@ enabled and Issue #8 remains open. Evidence:
 
 ## Issue #9 current-main release attestation drill (2026-11-20)
 
-The non-release `release attestation drill` succeeded on current main
-`353aac7`. It built the wheel and source archive with pinned uv 0.13.5 (the
+The separate non-release `release attestation drill` workflow succeeded on
+current main `353aac7`. It built the wheel and source archive with pinned uv 0.13.5 (the
 isolated `hatchling>=1.25` build backend was not lockfile-pinned), validated
 release metadata, generated and then verified the checksum manifest, and
-installed the wheel in a fresh Python 3.12 environment. `metis doctor` passed
-with `ready: true` and `mode: codex-native`; the sandbox was not configured, so
+installed the wheel in a fresh Python 3.12 environment. `metis doctor` exited
+0 with `ready: true` and `mode: codex-native`; the sandbox was not configured, so
 this smoke test did not exercise sandbox execution. One Build Provenance
 attestation contains all three subjects. Verification checked the repository,
 workflow identity, OIDC issuer, main ref, source commit, and rejection of
-self-hosted runners. The attestation was uploaded to the repository and Rekor;
-no tag, GitHub Release or release assets were created. This supplies one
-current-main provenance rehearsal, not release publication or P8 acceptance.
+self-hosted runners in the same workflow job. The attestation is publicly
+recorded in the repository and Rekor (log index `4019447095`). This separate
+drill did not exercise production `release.yml`; no tag, GitHub Release or
+release assets were created. It is one non-release provenance drill, not
+release publication or P8 acceptance.
 Issue #8/P7, host reboot, credential lifecycle and retention gates remain open.
 Evidence: [run 44685127951](https://github.com/01rabbit/METIS/actions/runs/44685127951)
 and [`issue9-main-attestation-drill-2026-11-20.md`](reports/issue9-main-attestation-drill-2026-11-20.md).

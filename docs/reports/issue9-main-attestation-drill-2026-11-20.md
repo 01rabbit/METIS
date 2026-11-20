@@ -15,27 +15,32 @@ All workflow steps succeeded:
    is not pinned by the project lockfile. The workflow validated release
    metadata and generated `SHA256SUMS`.
 2. Installed the wheel into a fresh virtual environment using the locked
-   runtime wheelhouse. `metis --version` and `metis doctor` passed; doctor
-   reported `ready: true` and `mode: codex-native`. The sandbox was not
-   configured, so this smoke test did not exercise sandbox execution.
+   runtime wheelhouse. `metis --version` exited successfully. `metis doctor`
+   exited with status 0 and printed `ready: true` and `mode: codex-native`.
+   The sandbox was not configured, so this smoke test did not exercise sandbox
+   execution.
 3. Recomputed the wheel and source archive digests, confirmed `SHA256SUMS`
    matched them exactly, and revalidated release metadata and bundle contents.
 4. Created one GitHub Build Provenance attestation containing all three
-   subjects. The
-   run log confirms the signatures were uploaded to the repository and the
-   Rekor transparency log. The attestation bundle is visible at
-   [attestation 70008857](https://github.com/01rabbit/METIS/attestations/70008857).
-5. The workflow's verification step succeeded for each subject while checking
-   the exact repository, drill workflow certificate identity, GitHub Actions
-   OIDC issuer, `refs/heads/main`, source commit above, and rejecting
-   self-hosted runners.
+   subjects. Its repository record is
+   [attestation 70008857](https://github.com/01rabbit/METIS/attestations/70008857);
+   the Rekor transparency-log entry has index `4019447095`. The attestation is
+   publicly recorded in both places. The build files themselves were ephemeral
+   and were not retained in the repository.
+5. The same workflow job then verified each subject against the exact
+   repository, drill-workflow certificate identity, GitHub Actions OIDC
+   issuer, `refs/heads/main`, and source commit above, while rejecting
+   self-hosted runners. This is an in-job verification, not an independent
+   post-run verification by a third party.
 
 ## Scope and limits
 
 This is current-main evidence that the non-release workflow can build, install,
-smoke-test, attest, and verify an exact candidate bundle. It produces
-attestations, but it did not create a tag, GitHub Release, or publish package
-assets. The ephemeral distribution files were not attached to a release.
+smoke-test, attest, and verify an exact candidate bundle. It produces public
+attestations, but it did not exercise the production `release.yml` workflow or
+its tag-triggered ancestry checks, `release.yml@<tag>` signer identity, write
+permission, or `gh release create` path. It did not create a tag, GitHub
+Release, or publish package assets.
 
 The run does not establish the Apple Silicon controller plus isolated Linux VM
 deployment, a host-reboot recovery, physical erasure or backup retention,
