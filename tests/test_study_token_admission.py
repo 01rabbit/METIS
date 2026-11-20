@@ -243,6 +243,25 @@ def test_outcome_requires_exact_nonce_and_receipt_and_can_only_be_written_once(t
         ).fetchall() == [(claim.nonce, "completed", 0, 2)]
 
 
+@pytest.mark.parametrize(("manifest_sha256", "output_headroom"), [(None, 0), ("1" * 64, 1)])
+def test_outcome_write_enforces_the_admitted_work_ceiling(tmp_path, manifest_sha256, output_headroom):
+    admission = StudyTokenAdmission(tmp_path / "state.sqlite")
+    study = STUDY.model_copy(update={"native_manifest_sha256": manifest_sha256})
+    receipt = admission.reserve(study, SLOT, ATTEMPT)
+    claim = admission.claim_for_launch(receipt)
+    admission.consume_launch_claim(claim)
+    limit = ATTEMPT.tokens - output_headroom
+    with pytest.raises(ValueError, match="exceeds admitted token allowance"):
+        admission.record_outcome(claim, TokenLaunchOutcome(
+            status="completed", exit_status=0, observed_work=limit + 1, native_manifest_sha256=manifest_sha256,
+        ))
+    admission.record_outcome(claim, TokenLaunchOutcome(
+        status="completed", exit_status=0, observed_work=limit, native_manifest_sha256=manifest_sha256,
+    ))
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT observed_work FROM study_token_outcomes").fetchall() == [(limit,)]
+
+
 @pytest.mark.parametrize(("status", "exit_status", "work"), [
     ("unknown", 0, 0), ("completed", 1, 0), ("completed", 0, None),
     ("cap_denied", 0, 0), ("unsupported_graph", 75, None),
