@@ -122,7 +122,7 @@ API-key requirement in XDG user config that must not
 change the controlled launch, and a SIGSTOP-induced client timeout followed by
 server SIGKILL with no receipt.
 
-A concurrent-client probe starts two completion requests together at the exact cap. This pinned launch uses `--parallel 1`, so requests queue rather than decoding simultaneously; it does not test overlapping server work. On the pinned fixture and linux/arm64 target, the native counter denied a request at the cap and the terminal receipt reported the full cap. Since denial exits the process, the other request may also disconnect; the smoke accepts zero or one valid completion and requires the cap-denial receipt. This is fixture-specific evidence, not concurrency qualification across models or platforms.
+A concurrent-client probe releases two client threads together to request completion at the exact cap. This pinned launch uses `--parallel 1`, so requests queue rather than decoding simultaneously; it does not test overlapping server work. On the pinned fixture and linux/arm64 target, the native counter denied a request at the cap and the terminal receipt reported the full cap. Since denial exits the process, the other request may also disconnect; the smoke accepts zero or one valid completion and requires the cap-denial receipt. This is fixture-specific evidence, not concurrency qualification across models or platforms.
 
 This builds on the native gate in METIS PR #87. The admitted
 `LlamaSpecialist` path now binds the scheduler-consumed claim to the cap,

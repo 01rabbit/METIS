@@ -259,7 +259,7 @@ def main() -> None:
         server.expect_no_receipt(-signal.SIGKILL)
 
     print(f"Verified work receipts on Unix socket shutdown and denial at prompt/decode cap {exact_cap}.")
-    print("Verified simultaneous client arrivals at cap; denial receipt charged the full cap.")
+    print("Verified two client threads released together at cap; denial receipt charged the full cap.")
     print("Verified literal comma path, single Unix listener, and stale/symlink/public paths refused.")
     print("Verified broken receipt pipe refusal and missing receipt after a deadline and SIGKILL.")
 

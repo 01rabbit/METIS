@@ -15,4 +15,4 @@ This launch fixes `--parallel 1`. Server requests queue, so this probe does not 
 - `stories260K.gguf` SHA-256: `270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d`
 - Output: `Verified work receipts on Unix socket shutdown and denial at prompt/decode cap 22`; `Verified simultaneous client arrivals at cap; denial receipt charged the full cap`; all remaining smoke cases passed.
 
-The source patch, smoke script, and fixture digest are committed in this repository. The built executable and downloaded model were temporary local artifacts and were removed after recording their digests.
+The source patch, smoke script, and fixture digest are committed in this repository. The built executable and downloaded model were temporary local artifacts; their hashes were recorded, and both were removed after the probe.
