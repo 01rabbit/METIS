@@ -300,32 +300,42 @@ def test_retention_apply_rolls_back_generation_and_cookie_changes_on_delete_erro
     assert key in json.loads(state_after)["cookies"]
 
 
-@pytest.mark.parametrize("blocked_table", ["web_credentials", "web_runs"])
-def test_retention_apply_rolls_back_when_trigger_suppresses_required_write(tmp_path, blocked_table):
+@pytest.mark.parametrize("blocked_write", [
+    "credential_delete", "run_update", "generation_insert", "generation_update",
+])
+def test_retention_apply_rolls_back_when_trigger_suppresses_required_write(tmp_path, blocked_write):
     workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
     key = "https://old.example"
     cutoff = 10_000_000 - 30 * 86_400
     with sqlite3.connect(workflow.database) as db:
         _insert_credential(db, key, cutoff - 1)
-        db.execute("INSERT INTO web_auth_generations VALUES (?,?)", (key, 4))
+        if blocked_write != "generation_insert":
+            db.execute("INSERT INTO web_auth_generations VALUES (?,?)", (key, 4))
         state = {"_metis_auth_generation": 4, "cookies": {key: [{"name": "s", "value": "secret"}]}}
         config = {"origins": [key], "auth_origin": key}
         db.execute(
             "INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
             ("run", json.dumps(config), json.dumps(state), "[]", "[]", "synthetic"),
         )
-        table = "web_credentials" if blocked_table == "web_credentials" else "web_runs"
-        operation = "DELETE" if blocked_table == "web_credentials" else "UPDATE"
+        table, operation = {
+            "credential_delete": ("web_credentials", "DELETE"),
+            "run_update": ("web_runs", "UPDATE"),
+            "generation_insert": ("web_auth_generations", "INSERT"),
+            "generation_update": ("web_auth_generations", "UPDATE"),
+        }[blocked_write]
         db.execute(
             f"CREATE TRIGGER suppress_retirement BEFORE {operation} ON {table} "
             "BEGIN SELECT RAISE(IGNORE); END",
         )
 
-    with pytest.raises(sqlite3.IntegrityError, match="retire|retired"):
+    with pytest.raises(sqlite3.IntegrityError, match="retire|retired|advance"):
         workflow.credential_retention(older_than_days=30, apply=True, now=10_000_000)
 
     with sqlite3.connect(workflow.database) as db:
-        assert db.execute("SELECT generation FROM web_auth_generations WHERE origin=?", (key,)).fetchone() == (4,)
+        expected_generation = None if blocked_write == "generation_insert" else (4,)
+        assert db.execute(
+            "SELECT generation FROM web_auth_generations WHERE origin=?", (key,),
+        ).fetchone() == expected_generation
         assert db.execute("SELECT COUNT(*) FROM web_credentials WHERE origin=?", (key,)).fetchone() == (1,)
         state_after, = db.execute("SELECT state FROM web_runs WHERE run_id='run'").fetchone()
     assert key in json.loads(state_after)["cookies"]
