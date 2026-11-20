@@ -279,22 +279,26 @@ def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path
     # Server construction prepares this lookup index before it starts serving.
     ensure_run_audit_list_index(database)
 
-    with server_for(database, cancel_run=session.cancel) as port:
-        before = database.read_bytes()
-        assert request(port, "GET", "/api/runs")[0] == 401
-        assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
-        assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
-        assert request(port, "GET", "/api/runs?limit=101", token=TOKEN)[0] == 400
-        assert request(port, "GET", "/api/runs?limit=2&extra=1", token=TOKEN)[0] == 400
-        status, headers, body = request(port, "GET", "/api/runs?limit=2", token=TOKEN)
-        assert status == 200 and headers["Cache-Control"] == "no-store"
-        payload = json.loads(body)
-        assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
-        assert payload["truncated"] is False
-        assert all(run["status"] == "planning" for run in payload["runs"])
-        assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
-        assert "private" not in body.decode()
-        assert database.read_bytes() == before
+    observer = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        before = observer.execute("PRAGMA data_version").fetchone()[0]
+        with server_for(database, cancel_run=session.cancel) as port:
+            assert request(port, "GET", "/api/runs")[0] == 401
+            assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
+            assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
+            assert request(port, "GET", "/api/runs?limit=101", token=TOKEN)[0] == 400
+            assert request(port, "GET", "/api/runs?limit=2&extra=1", token=TOKEN)[0] == 400
+            status, headers, body = request(port, "GET", "/api/runs?limit=2", token=TOKEN)
+            assert status == 200 and headers["Cache-Control"] == "no-store"
+            payload = json.loads(body)
+            assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
+            assert payload["truncated"] is False
+            assert all(run["status"] == "planning" for run in payload["runs"])
+            assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
+            assert "private" not in body.decode()
+        assert observer.execute("PRAGMA data_version").fetchone()[0] == before
+    finally:
+        observer.close()
 
 
 def test_credential_retention_preview_is_authenticated_bounded_redacted_and_read_only(
