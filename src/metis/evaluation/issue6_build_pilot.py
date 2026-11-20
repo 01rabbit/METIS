@@ -404,11 +404,32 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
             reserved = scheduler.reserve_model_turn(
                 run_id, assignment, attempt, persist_receipt=persist_receipt,
             )
-        except _PilotReceiptPersistenceError:
+        except Exception as reservation_error:
+            recovery_error: Exception | None = None
             try:
-                scheduler.fail(assignment, attempt, "pilot reservation receipt persistence failed")
-            except Exception as recovery_error:
-                raise RuntimeError("pilot receipt persistence and failure recording both failed") from recovery_error
+                current = next((item for item in scheduler.jobs(run_id)
+                                if item["assignment_id"] == assignment
+                                and item.get("attempt_id") == attempt), None)
+                if current is not None and current["state"] == "running":
+                    reason = ("pilot reservation receipt persistence failed"
+                              if isinstance(reservation_error, _PilotReceiptPersistenceError)
+                              else "pilot model-turn reservation transaction failed")
+                    try:
+                        scheduler.fail(assignment, attempt, reason)
+                    except Exception as error:  # noqa: BLE001 - preserve recovery failure for diagnosis
+                        recovery_error = error
+            except Exception as error:  # noqa: BLE001 - job lookup failure also prevents safe recovery
+                recovery_error = error
+            if recovery_error is not None:
+                try:
+                    latest = next((item for item in scheduler.jobs(run_id)
+                                   if item["assignment_id"] == assignment
+                                   and item.get("attempt_id") == attempt), None)
+                except Exception:  # noqa: BLE001 - retain the original recovery failure
+                    latest = None
+                if latest is not None and latest["state"] != "running":
+                    raise
+                raise RuntimeError("pilot reservation failed and job recovery also failed") from recovery_error
             raise
         if (reserved is None or reserved["turn"] != phase or reserved["limit"] != MAX_PHASES
                 or reserved["remaining"] != MAX_PHASES - phase):

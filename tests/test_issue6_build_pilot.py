@@ -248,6 +248,30 @@ def test_initial_receipt_insert_failure_rolls_back_turn_reservation(tmp_path, mo
     assert runner.prompts == []
 
 
+def test_initial_reservation_log_failure_rolls_back_and_fails_job(tmp_path, monkeypatch):
+    root = tmp_path / "arm"
+    runner = ScriptedTurns(INITIAL, FINAL)
+    original_log = AgentScheduler._log
+
+    def fail_reserved_log(self, db, assignment_id, attempt_id, event, detail=""):
+        if event == "model_turn_reserved":
+            raise sqlite3.OperationalError("injected reservation log failure")
+        original_log(self, db, assignment_id, attempt_id, event, detail)
+
+    monkeypatch.setattr(AgentScheduler, "_log", fail_reserved_log)
+    with pytest.raises(sqlite3.OperationalError, match="injected reservation log failure"):
+        _run_arm(root, "opaque", FIXTURE, runner, "scripted", KEY, "owner_note")
+
+    with sqlite3.connect(root / "ledger.sqlite") as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_turn_reservations").fetchone() == (0,)
+        assert db.execute("SELECT turns_reserved FROM agent_run_turn_budgets").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM issue6_build_pilot_receipts").fetchone() == (0,)
+        assert db.execute("SELECT state,failure FROM agent_jobs").fetchone() == (
+            "failed", "pilot model-turn reservation transaction failed",
+        )
+    assert runner.prompts == []
+
+
 def test_later_receipt_insert_failure_preserves_only_prior_turns(tmp_path, monkeypatch):
     root = tmp_path / "arm"
     runner = ScriptedTurns(INITIAL, FINAL)
