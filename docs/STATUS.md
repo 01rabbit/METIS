@@ -1021,3 +1021,25 @@ submitted graph positions for the pinned patch, not provider billing tokens or
 other models. Both hard-cap capability flags remain false; no held-out study is
 enabled and Issue #8 remains open. Evidence:
 [`issue8-admitted-native-work-receipts-2026-11-20.md`](reports/issue8-admitted-native-work-receipts-2026-11-20.md).
+
+## Issue #9 current-main release attestation drill (2026-11-20)
+
+The separate non-release `release attestation drill` workflow succeeded on
+current main `353aac7`. It built the wheel and source archive with pinned uv 0.13.5 (the
+isolated `hatchling>=1.25` build backend was not lockfile-pinned), validated
+release metadata, generated and then verified the checksum manifest, and
+installed the wheel in a fresh Python 3.12 environment. `metis doctor` exited
+0 with `ready: true` and `mode: codex-native`; the sandbox was not configured, so
+this smoke test did not exercise sandbox execution. One Build Provenance
+attestation contains all three subjects. In the same workflow job,
+`gh attestation verify` checked the repository, workflow identity, OIDC
+issuer, main ref, and source commit, and used `--deny-self-hosted-runners`.
+The loop's success is evidenced by the step's zero exit status. The attestation
+is publicly recorded in the repository and [Rekor (log index
+`4019447095`)](https://search.sigstore.dev/?logIndex=4019447095). This separate
+drill did not exercise production `release.yml`; no tag, GitHub Release or
+release assets were created. It is one non-release provenance drill, not
+release publication or P8 acceptance.
+Issue #8/P7, host reboot, credential lifecycle and retention gates remain open.
+Evidence: [run 44685127951](https://github.com/01rabbit/METIS/actions/runs/44685127951)
+and [`issue9-main-attestation-drill-2026-11-20.md`](reports/issue9-main-attestation-drill-2026-11-20.md).
