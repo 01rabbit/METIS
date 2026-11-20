@@ -5,9 +5,11 @@
 `metis codex purge-added RUN_ID` now previews removal of registered `.metis-added`
 files; `--apply` is required to delete them. It shares the locked terminal-run
 purge path, rejects active runs/workers, symlinks and unregistered entries, and
-bounds the operation to 100 files. Original inputs and `.metis-derived` outputs
-are preserved; missing files are safe to retry. `add-file` uses the same per-run
-cap, bounds collision-name allocation to 101 exclusive attempts, and keeps
+limits each deletion batch to 100 files. Original inputs and `.metis-derived`
+outputs are preserved; missing files are safe to retry. Legacy directories
+with 101..4096 registered entries can be purged in multiple batches; larger or
+unregistered directories fail closed. `add-file` limits new registrations to
+100 per run, bounds collision-name allocation to 101 exclusive attempts, and keeps
 new names within 60 characters while accepting safe legacy names up to 255 bytes.
 Add-file opens the destination directory without following symlinks. This is
 manual per-run cleanup, not age-based retention or physical

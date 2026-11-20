@@ -4,7 +4,7 @@
 `.metis-added`; deletion requires `--apply`. The shared purge implementation
 requires a terminal run with no active operation or worker, checks the manifest
 and directory through no-follow file descriptors, rejects symlinks and
-unregistered entries, bounds each run to 100 files, and removes only
+unregistered entries, bounds each invocation to 100 deletions, and removes only
 `.metis-added` manifest entries. Missing registered files are accepted on
 retry, so an interrupted unlink can be completed idempotently. Original
 challenge inputs and `.metis-derived` files remain intact. `add-file` now also
@@ -23,6 +23,13 @@ It also covers a fully colliding bounded name range, 100 repeated additions of
 a maximum-length name followed by preview and applied purge, and cleanup of a
 legacy collision name with a 20-digit counter. A symlinked destination
 directory is refused without writing into its target.
+
+Legacy `.metis-added` inventories with more than 100 registered files can be
+removed in batches of at most 100. Each operation validates the complete
+registered directory and is capped at 4,096 legacy entries; larger or
+unregistered inventories fail closed for manual handling. Tests cover the
+105-file batch path, the unregistered-entry preflight at that size, and the
+4,097-registration safety cap without mutation.
 
 Observed checks on the implementation head:
 

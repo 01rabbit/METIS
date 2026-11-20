@@ -13,6 +13,7 @@ from metis.core.codex_session import (
     MAX_ADDED_ARTIFACT_NAME,
     MAX_ADDED_ARTIFACTS_PER_RUN,
     MAX_DERIVED_ARTIFACTS_PER_RUN,
+    MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE,
     CodexSession,
     DerivedArtifactLimitError,
     transform,
@@ -348,6 +349,80 @@ def test_added_purge_accepts_legacy_overlong_collision_name(tmp_path):
     result = session.purge_added(run_id, apply=True)
     assert result["files"] == [{"path": ".metis-added/" + old_name,
                                 "state": "deleted", "size": len("download")}]
+
+
+def test_added_purge_processes_legacy_over_limit_runs_in_bounded_batches(tmp_path):
+    source = tmp_path / "input.txt"
+    source.write_text("original")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="legacy-added-batch", description="fixture", paths=[source])["run_id"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    folder = root / ".metis-added"
+    folder.mkdir(mode=0o700)
+    paths = [f".metis-added/legacy-{index:04d}.bin" for index in range(105)]
+    for index, relative in enumerate(paths):
+        (root / relative).write_bytes(f"legacy-{index}".encode())
+    manifest = ChallengeManifest.model_validate_json(session._session(run_id)[0])
+    data = manifest.model_dump()
+    data["artifacts"] = [*manifest.artifacts, *paths]
+    updated = ChallengeManifest.model_validate(data)
+    with sqlite3.connect(session.database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                   (updated.model_dump_json(), run_id))
+    session._emit(run_id, RunStatus.CANCELLED)
+
+    unregistered = folder / "unregistered.bin"
+    unregistered.write_bytes(b"must remain")
+    with pytest.raises(ValueError, match="contains unregistered entries"):
+        session.purge_added(run_id, apply=True)
+    assert all((root / path).is_file() for path in paths)
+    assert unregistered.read_bytes() == b"must remain"
+    unregistered.unlink()
+
+    preview = session.purge_added(run_id)
+    assert preview["applied"] is False
+    assert len(preview["files"]) == MAX_ADDED_ARTIFACTS_PER_RUN
+    assert preview["remaining_registered"] == 5
+
+    first = session.purge_added(run_id, apply=True)
+    assert first["manifest_entries_removed"] == MAX_ADDED_ARTIFACTS_PER_RUN
+    assert first["remaining_registered"] == 5
+    remaining = [path for path in session.context(run_id)["challenge"]["artifacts"]
+                 if path.startswith(".metis-added/")]
+    assert len(remaining) == 5
+    assert all((root / path).is_file() for path in remaining)
+
+    second = session.purge_added(run_id, apply=True)
+    assert second["manifest_entries_removed"] == 5
+    assert second["remaining_registered"] == 0
+    assert all(not (root / path).exists() for path in remaining)
+
+
+def test_added_purge_rejects_legacy_manifest_over_safety_limit_without_changes(tmp_path):
+    source = tmp_path / "input.txt"
+    source.write_text("original")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="legacy-added-safety-cap", description="fixture",
+                            paths=[source])["run_id"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    paths = [f".metis-added/legacy-{index:04d}.bin"
+             for index in range(MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE + 1)]
+    manifest = ChallengeManifest.model_validate_json(session._session(run_id)[0])
+    data = manifest.model_dump()
+    data["artifacts"] = [*manifest.artifacts, *paths]
+    updated = ChallengeManifest.model_validate(data)
+    with sqlite3.connect(session.database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                   (updated.model_dump_json(), run_id))
+    session._emit(run_id, RunStatus.CANCELLED)
+
+    before = session._session(run_id)[0]
+    with pytest.raises(ValueError, match="manifest exceeds legacy purge safety limit"):
+        session.purge_added(run_id, apply=True)
+    assert session._session(run_id)[0] == before
+    assert not (root / ".metis-added").exists()
 
 
 def test_added_collision_preserves_short_extension(tmp_path):

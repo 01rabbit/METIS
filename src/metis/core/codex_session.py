@@ -36,6 +36,7 @@ from metis.core.store import RunStore
 NATIVE_TOOLS = DATA_TOOLS
 MAX_DERIVED_ARTIFACTS_PER_RUN = 100
 MAX_ADDED_ARTIFACTS_PER_RUN = 100
+MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE = 4096
 MAX_ADDED_ARTIFACT_NAME = 60
 MAX_LEGACY_ADDED_ARTIFACT_NAME_BYTES = 255
 
@@ -583,10 +584,11 @@ class CodexSession:
             manifest_text = self._session(run_id)[0]
             manifest = ChallengeManifest.model_validate_json(manifest_text)
             artifact_paths = sorted(path for path in manifest.artifacts if path.startswith(prefix))
-            if len(artifact_paths) > limit:
-                if kind == "derived":
-                    raise DerivedArtifactLimitError(len(artifact_paths))
-                raise ValueError("added artifact count exceeds per-run limit")
+            if kind == "derived" and len(artifact_paths) > limit:
+                raise DerivedArtifactLimitError(len(artifact_paths))
+            if kind == "added" and len(artifact_paths) > MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE:
+                raise ValueError("added artifact manifest exceeds legacy purge safety limit")
+            selected_paths = artifact_paths[:limit]
             expected_names: set[str] = set()
             for path in artifact_paths:
                 name = path.removeprefix(prefix)
@@ -609,7 +611,8 @@ class CodexSession:
             if root is None:
                 if expected_names:
                     raise ValueError("run has no registered artifact root")
-                return {"run_id": run_id, "applied": apply, "files": [], "bytes": 0}
+                return {"run_id": run_id, "applied": apply, "files": [], "bytes": 0,
+                        "remaining_registered": 0}
             root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             artifact_fd: int | None = None
             entries: list[dict[str, str | int]]
@@ -619,7 +622,7 @@ class CodexSession:
                                           dir_fd=root_fd)
                 except FileNotFoundError:
                     entries = [
-                        {"path": path, "state": "missing", "size": 0} for path in artifact_paths
+                        {"path": path, "state": "missing", "size": 0} for path in selected_paths
                     ]
                     directory_exists = False
                 else:
@@ -627,12 +630,14 @@ class CodexSession:
                     with os.scandir(artifact_fd) as directory_entries:
                         for directory_entry in directory_entries:
                             seen_entries += 1
-                            if seen_entries > limit:
+                            scan_limit = (MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE
+                                          if kind == "added" else limit)
+                            if seen_entries > scan_limit:
                                 raise ValueError(f"{kind} directory exceeds per-run artifact limit")
                             if directory_entry.name not in expected_names:
                                 raise ValueError(f"{kind} directory contains unregistered entries")
                     entries = []
-                    for path in artifact_paths:
+                    for path in selected_paths:
                         name = path.removeprefix(prefix)
                         try:
                             file_stat = os.stat(name, dir_fd=artifact_fd, follow_symlinks=False)
@@ -646,7 +651,8 @@ class CodexSession:
 
                 total_bytes = sum(int(item["size"]) for item in entries)
                 if not apply:
-                    return {"run_id": run_id, "applied": False, "files": entries, "bytes": total_bytes}
+                    return {"run_id": run_id, "applied": False, "files": entries, "bytes": total_bytes,
+                            "remaining_registered": len(artifact_paths) - len(selected_paths)}
 
                 if directory_exists and artifact_fd is not None:
                     for item in entries:
@@ -656,13 +662,15 @@ class CodexSession:
                     os.fsync(artifact_fd)
 
                 data = manifest.model_dump()
-                data["artifacts"] = [path for path in manifest.artifacts if not path.startswith(prefix)]
+                selected_set = set(selected_paths)
+                data["artifacts"] = [path for path in manifest.artifacts if path not in selected_set]
                 updated = ChallengeManifest.model_validate(data)
                 with closing(sqlite3.connect(self.database)) as db, db:
                     db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
                                (updated.model_dump_json(), run_id))
                 return {"run_id": run_id, "applied": True, "files": entries, "bytes": total_bytes,
-                        "manifest_entries_removed": len(artifact_paths)}
+                        "manifest_entries_removed": len(selected_paths),
+                        "remaining_registered": len(artifact_paths) - len(selected_paths)}
             finally:
                 if artifact_fd is not None:
                     os.close(artifact_fd)
