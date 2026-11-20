@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from metis.core.contracts import RunEvent, RunStatus
 from metis.core.store import RunStore
-from metis.evaluation.heldout_analysis import Study, analyze, main
+from metis.evaluation.heldout_analysis import Study, _analyze_with_verified_controls, analyze, main
 
 
 def fixture_metrics() -> dict:
@@ -76,6 +76,9 @@ def test_paired_cluster_analysis_retains_repetitions_and_unknown_cost():
     assert summary["distinct_task_clusters"] == 3
     assert summary["arms"]["full"]["scored_solves"] == 6
     assert summary["arms"]["single_agent"]["scored_solves"] == 2
+    assert summary["acceptance_control_attestation_verified"] is False
+    assert summary["unauthenticated_control_excluded_trials"] == 24
+    assert summary["arms"]["full"]["acceptance_eligible_solves"] is None
     comparison = summary["comparisons"]["full_minus_single_agent"]
     assert comparison["paired_solve_rate_difference"] == pytest.approx(2 / 3)
     assert comparison["paired_cluster_bootstrap_95_interval"] == [0.0, 1.0]
@@ -151,7 +154,7 @@ def test_acceptance_scoring_requires_complete_resources_and_a_cost_cap(missing):
             budget["cost_usd"] = None
     elif missing is not None:
         data["trials"][0][missing] = None
-    result = analyze(Study.model_validate(data), samples=100)
+    result = _analyze_with_verified_controls(Study.model_validate(data), samples=100)
     arm = result["arms"]["full"]
     assert arm["trials"] == 6
     assert arm["scored_solves"] == 6  # A diagnostic correctness count, not acceptance.

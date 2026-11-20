@@ -1070,6 +1070,21 @@ other models. Both hard-cap capability flags remain false; no held-out study is
 enabled and Issue #8 remains open. Evidence:
 [`issue8-admitted-native-work-receipts-2026-11-20.md`](reports/issue8-admitted-native-work-receipts-2026-11-20.md).
 
+## Issue #8 signed control acceptance gate (2026-11-20)
+
+Generic analysis and exploratory finalization now keep unsigned solvability/exposure
+declarations out of acceptance scores while preserving diagnostic outcomes; the
+acceptance fields are null until the controls are authenticated. A separate
+`finalize-acceptance` command requires a detached signature and reviewer key whose
+SHA-256 fingerprint is part of the committed protocol digest and run bindings.
+It records only manifest/signature digests and the key fingerprint. This
+authenticates the declaration's signer and protocol binding; it does not validate
+source evidence, official verdicts, task exposure, execution-time registration,
+or external pre-dispatch timestamping of the protocol. No real reviewer key or
+held-out trial was used.
+Issue #8 remains open. Evidence:
+[`issue8-signed-control-acceptance-gate-2026-11-20.md`](reports/issue8-signed-control-acceptance-gate-2026-11-20.md).
+
 ## Issue #9 current-main release attestation drill (2026-11-20)
 
 The separate non-release `release attestation drill` workflow succeeded on
