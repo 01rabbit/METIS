@@ -807,6 +807,15 @@ class AgentScheduler:
                 self._end(assignment_id, attempt_id, "timed_out", "deadline exceeded")
                 raise ValueError("assignment deadline exceeded")
             if job["turns_used"] >= job["max_turns"]:
+                with self._db() as db:
+                    inflight = db.execute(
+                        "SELECT 1 FROM agent_action_reservations WHERE assignment_id=? AND attempt_id=? LIMIT 1",
+                        (assignment_id, attempt_id),
+                    ).fetchone()
+                if inflight:
+                    # A concurrent request cannot consume another turn, but the already
+                    # admitted intent owns its reservation and must be allowed to finish.
+                    raise ValueError("assignment max turns reached")
                 self._stop(job)
                 self._end(assignment_id, attempt_id, "timed_out", "max turns reached")
                 raise ValueError("assignment max turns reached")

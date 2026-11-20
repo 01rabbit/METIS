@@ -264,35 +264,50 @@ def test_derived_artifact_scope_stays_with_its_creating_assignment(tmp_path):
                                other_report)["state"] == "completed"
 
 
-def test_concurrent_intents_cannot_exceed_turn_cap(env):
+def test_concurrent_intents_cannot_exceed_turn_cap(env, monkeypatch):
     scheduler, run_id, jobs, names, _root = env
     job = jobs[0]
     with sqlite3.connect(scheduler.database) as db:
         db.execute("UPDATE agent_jobs SET max_turns=1, turns_used=0 WHERE assignment_id=?",
                    (job["assignment_id"],))
-    barrier = threading.Barrier(3)
+    entered = threading.Event()
+    release = threading.Event()
+    original_artifact = scheduler.session.artifact
+
+    def slow_artifact(*args, **kwargs):
+        entered.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test intent release timed out")
+        return original_artifact(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler.session, "artifact", slow_artifact)
     outcomes = []
 
-    def call(index):
-        barrier.wait()
+    def call():
         try:
             outcomes.append(("ok", _intent(scheduler, run_id, job, {
-                "kind": "artifact", "tool": "text", "artifact": names[index],
+                "kind": "artifact", "tool": "text", "artifact": names[0],
             })))
         except ValueError as exc:
             outcomes.append(("error", str(exc)))
 
-    threads = [threading.Thread(target=call, args=(index,)) for index in (0, 1)]
-    for thread in threads:
-        thread.start()
-    barrier.wait()
-    for thread in threads:
+    thread = threading.Thread(target=call)
+    thread.start()
+    try:
+        assert entered.wait(timeout=5)
+        with pytest.raises(ValueError, match="assignment max turns reached"):
+            _intent(scheduler, run_id, job, {
+                "kind": "artifact", "tool": "text", "artifact": names[1],
+            })
+    finally:
+        release.set()
         thread.join(timeout=10)
-    assert all(not thread.is_alive() for thread in threads)
+    assert not thread.is_alive()
     assert sum(kind == "ok" for kind, _ in outcomes) == 1
-    assert sum(kind == "error" and "max turns" in result for kind, result in outcomes) == 1
+    assert sum(kind == "error" for kind, _ in outcomes) == 0
     actual = next(item for item in scheduler.jobs(run_id) if item["assignment_id"] == job["assignment_id"])
     assert actual["turns_used"] == 1
+    assert actual["state"] == "running"
 
 
 def test_derived_persistence_and_scope_commit_precede_concurrent_cancel(tmp_path, monkeypatch):
