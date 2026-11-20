@@ -254,9 +254,9 @@ class LlamaSpecialist:
                     terminal = None
             if terminal is not None and terminal.status in (
                     "receipt_invalid", "cap_denied", "unsupported_graph", "server_error",
-                    "request_incomplete"):
+            ):
                 outcome = terminal.model_copy(update={"native_manifest_sha256": outcome_manifest})
-            elif terminal is not None and terminal.status == "completed":
+            elif terminal is not None and terminal.status in ("completed", "request_incomplete"):
                 outcome = terminal.model_copy(update={
                     "status": "cancelled", "native_manifest_sha256": outcome_manifest,
                 })

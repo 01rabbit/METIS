@@ -515,7 +515,7 @@ def test_admitted_cancellation_before_completion_response_records_cancelled(tmp_
     monkeypatch.setattr(
         LlamaServerBackend, "collect_native_work",
         lambda _backend, *, generated, evaluated=None: TokenLaunchOutcome(
-            status="completed", exit_status=0, observed_work=2,
+            status="request_incomplete", exit_status=0, observed_work=2,
         ),
     )
     turn = runner.run_admitted(prompt, model=runner.model_id, timeout=5,
