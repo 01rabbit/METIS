@@ -303,7 +303,9 @@ def test_credential_retention_preview_rejects_malformed_callback_results(tmp_pat
     malformed = [
         lambda days: {**valid, "older_than_days": days, "applied": True},
         lambda days: {**valid, "older_than_days": days + 1},
+        lambda days: {**valid, "older_than_days": True},
         lambda days: {**valid, "older_than_days": days, "eligible_credentials": -1},
+        lambda days: {**valid, "older_than_days": days, "wal_cleanup_complete": True},
         lambda days: {key: value for key, value in {**valid, "older_than_days": days}.items()
                       if key != "sqlite_wal_sidecars_may_be_created"},
         None,
