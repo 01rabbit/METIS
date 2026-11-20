@@ -10,7 +10,10 @@ from contextlib import contextmanager
 import pytest
 
 from metis.core.codex_session import (
+    MAX_ADDED_ARTIFACT_NAME,
+    MAX_ADDED_ARTIFACTS_PER_RUN,
     MAX_DERIVED_ARTIFACTS_PER_RUN,
+    MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE,
     CodexSession,
     DerivedArtifactLimitError,
     transform,
@@ -151,6 +154,343 @@ def test_purge_derived_keeps_original_and_user_added_artifacts(tmp_path):
     assert repeated["manifest_entries_removed"] == 0
 
 
+def test_purge_added_preview_and_apply_preserve_original_and_derived_artifacts(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    original = tmp_path / "original.txt"
+    added = tmp_path / "download.txt"
+    original.write_bytes(b"original challenge input")
+    added.write_bytes(b"operator download")
+    session = CodexSession(database)
+    run_id = session.intake(title="added-retention", description="local fixture", paths=[original])["run_id"]
+    derived = session.store_artifact(run_id, b"generated intermediate")
+    added_relative = session.add_file(run_id, added)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    added_file = root / added_relative
+    derived_file = root / derived
+    before_manifest = session._session(run_id)[0]
+
+    preview = session.purge_added(run_id)
+    assert preview["applied"] is False
+    assert preview["files"] == [{"path": added_relative, "state": "present", "size": 17}]
+    assert session._session(run_id)[0] == before_manifest
+    assert added_file.read_bytes() == b"operator download"
+
+    result = session.purge_added(run_id, apply=True)
+    assert result["applied"] is True
+    assert result["manifest_entries_removed"] == 1
+    assert result["files"] == [{"path": added_relative, "state": "deleted", "size": 17}]
+    assert not added_file.exists()
+    assert derived_file.read_bytes() == b"generated intermediate"
+    assert session.context(run_id)["challenge"]["artifacts"] == ["00-original.txt", derived]
+    assert (root / "00-original.txt").read_bytes() == b"original challenge input"
+
+    repeated = session.purge_added(run_id, apply=True)
+    assert repeated["files"] == []
+    assert repeated["manifest_entries_removed"] == 0
+
+
+def test_purge_added_recovers_after_file_unlink_before_manifest_update(tmp_path):
+    source = tmp_path / "download.bin"
+    source.write_bytes(b"download")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="retry-added", description="fixture", paths=[source])["run_id"]
+    added = session.add_file(run_id, source)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    (root / added).unlink()
+
+    result = session.purge_added(run_id, apply=True)
+    assert result["files"] == [{"path": added, "state": "missing", "size": 0}]
+    assert result["manifest_entries_removed"] == 1
+    assert added not in session.context(run_id)["challenge"]["artifacts"]
+
+
+def test_purge_added_rejects_symlinks_and_unregistered_entries(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "download.txt"
+    external = tmp_path / "outside.txt"
+    source.write_text("download")
+    external.write_text("must remain")
+    session = CodexSession(database)
+    run_id = session.intake(title="added-symlink", description="fixture", paths=[source])["run_id"]
+    added = session.add_file(run_id, source)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    target = root / added
+    target.unlink()
+    target.symlink_to(external)
+    with pytest.raises(ValueError, match="added artifact is not a private regular file"):
+        session.purge_added(run_id, apply=True)
+    assert external.read_text() == "must remain"
+
+    target.unlink()
+    target.write_text("download")
+    unregistered = root / ".metis-added" / "unregistered.txt"
+    unregistered.write_text("leave untouched")
+    with pytest.raises(ValueError, match="added directory contains unregistered entries"):
+        session.purge_added(run_id, apply=True)
+    assert target.read_text() == "download"
+    assert unregistered.read_text() == "leave untouched"
+
+
+def test_purge_added_rejects_hardlinks_without_changing_manifest(tmp_path):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "download.txt"
+    external = tmp_path / "outside.txt"
+    source.write_text("download")
+    external.write_text("must remain")
+    session = CodexSession(database)
+    run_id = session.intake(title="added-hardlink", description="fixture", paths=[source])["run_id"]
+    added = session.add_file(run_id, source)["artifact"]
+    session._emit(run_id, RunStatus.CANCELLED)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    target = root / added
+    manifest_before = session.context(run_id)["challenge"]["artifacts"]
+    target.unlink()
+    os.link(external, target)
+
+    with pytest.raises(ValueError, match="added artifact is not a private regular file"):
+        session.purge_added(run_id, apply=True)
+
+    assert external.read_text() == "must remain"
+    assert target.samefile(external)
+    assert session.context(run_id)["challenge"]["artifacts"] == manifest_before
+
+
+def test_add_file_and_added_purge_enforce_bounded_entries(tmp_path, monkeypatch):
+    database = tmp_path / "sessions.sqlite"
+    source = tmp_path / "download.bin"
+    source.write_bytes(b"download")
+    session = CodexSession(database)
+    run_id = session.intake(title="added-cap", description="fixture", paths=[source])["run_id"]
+    added = [session.add_file(run_id, source)["artifact"]
+             for _ in range(MAX_ADDED_ARTIFACTS_PER_RUN)]
+    with pytest.raises(ValueError, match="added artifact count exceeds per-run limit"):
+        session.add_file(run_id, source)
+    root = session.artifact_root(run_id)
+    assert root is not None
+    folder = root / ".metis-added"
+    for index in range(MAX_ADDED_ARTIFACTS_PER_RUN + 1):
+        (folder / f"unregistered-{index:03d}.bin").write_bytes(b"leave")
+    session._emit(run_id, RunStatus.CANCELLED)
+    original_scandir = os.scandir
+    examined = 0
+
+    @contextmanager
+    def counted_scandir(directory):
+        with original_scandir(directory) as entries:
+            def observed_entries():
+                nonlocal examined
+                for entry in entries:
+                    examined += 1
+                    yield entry
+            yield observed_entries()
+
+    monkeypatch.setattr(os, "scandir", counted_scandir)
+    with pytest.raises(ValueError, match="added directory"):
+        session.purge_added(run_id, apply=True)
+    assert 1 <= examined <= MAX_ADDED_ARTIFACTS_PER_RUN + 1
+    assert all((root / path).is_file() for path in added)
+
+
+def test_add_file_stops_after_bounded_name_collisions(tmp_path):
+    source = tmp_path / "same.txt"
+    source.write_text("download")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="collision-cap", description="fixture", paths=[source])["run_id"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    folder = root / ".metis-added"
+    folder.mkdir(mode=0o700)
+    for index in range(1, MAX_ADDED_ARTIFACTS_PER_RUN + 2):
+        name = "same.txt" if index == 1 else f"same-{index}.txt"
+        (folder / name).write_text("collision")
+
+    with pytest.raises(ValueError, match="collision limit"):
+        session.add_file(run_id, source)
+
+
+def test_add_file_refuses_symlinked_added_directory(tmp_path):
+    source = tmp_path / "download.txt"
+    source.write_text("download")
+    external = tmp_path / "external"
+    external.mkdir()
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="symlinked-added-dir", description="fixture", paths=[source])["run_id"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    (root / ".metis-added").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="invalid snapshot directory"):
+        session.add_file(run_id, source)
+    assert list(external.iterdir()) == []
+
+
+def test_added_purge_accepts_collision_name_at_maximum_length(tmp_path):
+    source = tmp_path / ("x." + "a" * 58)
+    source.write_text("download")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="long-collision", description="fixture", paths=[source])["run_id"]
+    added = [session.add_file(run_id, source)["artifact"]
+             for _ in range(MAX_ADDED_ARTIFACTS_PER_RUN)]
+    assert len({path.removeprefix(".metis-added/") for path in added}) == MAX_ADDED_ARTIFACTS_PER_RUN
+    assert all(len(path.removeprefix(".metis-added/")) <= MAX_ADDED_ARTIFACT_NAME
+               for path in added)
+    session._emit(run_id, RunStatus.CANCELLED)
+
+    preview = session.purge_added(run_id)
+    assert preview["applied"] is False
+    assert len(preview["files"]) == MAX_ADDED_ARTIFACTS_PER_RUN
+    applied = session.purge_added(run_id, apply=True)
+    assert applied["applied"] is True
+    assert len(applied["files"]) == MAX_ADDED_ARTIFACTS_PER_RUN
+    assert all(item["state"] == "deleted" for item in applied["files"])
+
+
+def test_added_purge_accepts_legacy_overlong_collision_name(tmp_path):
+    source = tmp_path / ("a" * 56 + ".bin")
+    source.write_text("download")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="legacy-collision", description="fixture", paths=[source])["run_id"]
+    added = session.add_file(run_id, source)["artifact"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    old_name = "a" * 56 + "-12345678901234567890.bin"
+    (root / added).rename(root / ".metis-added" / old_name)
+    manifest = ChallengeManifest.model_validate_json(session._session(run_id)[0])
+    old_data = manifest.model_dump()
+    old_data["artifacts"] = [".metis-added/" + old_name]
+    updated = ChallengeManifest.model_validate(old_data)
+    with sqlite3.connect(session.database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                   (updated.model_dump_json(), run_id))
+    session._emit(run_id, RunStatus.CANCELLED)
+
+    result = session.purge_added(run_id, apply=True)
+    assert result["files"] == [{"path": ".metis-added/" + old_name,
+                                "state": "deleted", "size": len("download")}]
+
+
+def test_added_purge_processes_legacy_over_limit_runs_in_bounded_batches(tmp_path):
+    source = tmp_path / "input.txt"
+    source.write_text("original")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="legacy-added-batch", description="fixture", paths=[source])["run_id"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    folder = root / ".metis-added"
+    folder.mkdir(mode=0o700)
+    paths = [f".metis-added/legacy-{index:04d}.bin" for index in range(105)]
+    for index, relative in enumerate(paths):
+        (root / relative).write_bytes(f"legacy-{index}".encode())
+    manifest = ChallengeManifest.model_validate_json(session._session(run_id)[0])
+    data = manifest.model_dump()
+    data["artifacts"] = [*manifest.artifacts, *paths]
+    updated = ChallengeManifest.model_validate(data)
+    with sqlite3.connect(session.database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                   (updated.model_dump_json(), run_id))
+    session._emit(run_id, RunStatus.CANCELLED)
+
+    unregistered = folder / "unregistered.bin"
+    unregistered.write_bytes(b"must remain")
+    with pytest.raises(ValueError, match="contains unregistered entries"):
+        session.purge_added(run_id, apply=True)
+    assert all((root / path).is_file() for path in paths)
+    assert unregistered.read_bytes() == b"must remain"
+    unregistered.unlink()
+
+    preview = session.purge_added(run_id)
+    assert preview["applied"] is False
+    assert len(preview["files"]) == MAX_ADDED_ARTIFACTS_PER_RUN
+    assert preview["remaining_registered"] == 5
+
+    first = session.purge_added(run_id, apply=True)
+    assert first["manifest_entries_removed"] == MAX_ADDED_ARTIFACTS_PER_RUN
+    assert first["remaining_registered"] == 5
+    remaining = [path for path in session.context(run_id)["challenge"]["artifacts"]
+                 if path.startswith(".metis-added/")]
+    assert len(remaining) == 5
+    assert all((root / path).is_file() for path in remaining)
+
+    second = session.purge_added(run_id, apply=True)
+    assert second["manifest_entries_removed"] == 5
+    assert second["remaining_registered"] == 0
+    assert all(not (root / path).exists() for path in remaining)
+
+
+def test_added_purge_rejects_legacy_manifest_over_safety_limit_without_changes(tmp_path):
+    source = tmp_path / "input.txt"
+    source.write_text("original")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="legacy-added-safety-cap", description="fixture",
+                            paths=[source])["run_id"]
+    root = session.artifact_root(run_id)
+    assert root is not None
+    paths = [f".metis-added/legacy-{index:04d}.bin"
+             for index in range(MAX_LEGACY_ADDED_ARTIFACTS_FOR_PURGE + 1)]
+    manifest = ChallengeManifest.model_validate_json(session._session(run_id)[0])
+    data = manifest.model_dump()
+    data["artifacts"] = [*manifest.artifacts, *paths]
+    updated = ChallengeManifest.model_validate(data)
+    with sqlite3.connect(session.database) as db:
+        db.execute("UPDATE codex_sessions SET manifest=? WHERE run_id=?",
+                   (updated.model_dump_json(), run_id))
+    session._emit(run_id, RunStatus.CANCELLED)
+
+    before = session._session(run_id)[0]
+    with pytest.raises(ValueError, match="manifest exceeds legacy purge safety limit"):
+        session.purge_added(run_id, apply=True)
+    assert session._session(run_id)[0] == before
+    assert not (root / ".metis-added").exists()
+
+
+def test_added_collision_preserves_short_extension(tmp_path):
+    source = tmp_path / "challenge.zip"
+    source.write_bytes(b"archive")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="extension-collision", description="fixture", paths=[source])["run_id"]
+
+    first = session.add_file(run_id, source)["artifact"]
+    second = session.add_file(run_id, source)["artifact"]
+
+    assert first == ".metis-added/challenge.zip"
+    assert second == ".metis-added/challenge-2.zip"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "expected_suffix"),
+    [
+        ("A" * 80 + ".pcap", ".pcap"),
+        ("あ" * 70 + ".txt", ".txt"),
+        ("x" * 55 + ".tar.gz", ".gz"),
+        ("ab.c" + "d" * 70, ""),
+    ],
+)
+def test_added_filename_bounds_and_preserves_valid_short_extension(
+    tmp_path, source_name, expected_suffix,
+):
+    source = tmp_path / source_name
+    source.write_bytes(b"fixture")
+    session = CodexSession(tmp_path / "sessions.sqlite")
+    run_id = session.intake(title="bounded-name", description="fixture", paths=[source])["run_id"]
+
+    added = [session.add_file(run_id, source)["artifact"] for _ in range(2)]
+    names = [item.removeprefix(".metis-added/") for item in added]
+    assert all(len(name) <= MAX_ADDED_ARTIFACT_NAME for name in names)
+    assert all(len(os.fsencode(name)) <= 255 for name in names)
+    if expected_suffix:
+        assert all(name.endswith(expected_suffix) for name in names)
+    else:
+        assert names[1].endswith("-2")
+    assert len(set(names)) == 2
+
+
 def test_store_artifact_caps_derived_entries_and_keeps_purge_recoverable(tmp_path):
     database = tmp_path / "sessions.sqlite"
     source = tmp_path / "source.txt"
@@ -217,6 +557,8 @@ def test_purge_derived_refuses_active_runs_and_registered_workers(tmp_path):
     session._emit(active_run, RunStatus.EXECUTING)
     with pytest.raises(ValueError, match="terminal"):
         session.purge_derived(active_run, apply=True)
+    with pytest.raises(ValueError, match="terminal"):
+        session.purge_added(active_run, apply=True)
     assert (active_root / active_artifact).exists()
 
     worker_run = session.intake(title="worker", description="fixture", paths=[source])["run_id"]
@@ -229,6 +571,8 @@ def test_purge_derived_refuses_active_runs_and_registered_workers(tmp_path):
         db.execute("INSERT INTO sandbox_workers VALUES (?, 'docker', 'test-worker', 1.0)", (worker_run,))
     with pytest.raises(ValueError, match="active operations or workers"):
         session.purge_derived(worker_run, apply=True)
+    with pytest.raises(ValueError, match="active operations or workers"):
+        session.purge_added(worker_run, apply=True)
     assert (worker_root / worker_artifact).exists()
 
     with sqlite3.connect(database) as db:

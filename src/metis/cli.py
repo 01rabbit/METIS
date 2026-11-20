@@ -700,6 +700,9 @@ def main() -> int:
     purge_derived = commands.add_parser("purge-derived", help="dry-run removal of generated run artifacts")
     purge_derived.add_argument("run_id")
     purge_derived.add_argument("--apply", action="store_true", help="unlink registered .metis-derived files")
+    purge_added = commands.add_parser("purge-added", help="dry-run removal of user-added run artifacts")
+    purge_added.add_argument("run_id")
+    purge_added.add_argument("--apply", action="store_true", help="unlink registered .metis-added files")
     retention = commands.add_parser("retention-derived", help="preview age-based generated-artifact removal")
     retention.add_argument("--older-than-days", type=int, required=True)
     retention.add_argument("--apply", action="store_true", help="purge eligible inactive runs")
@@ -1165,6 +1168,8 @@ def main() -> int:
                 output = session.add_file(args.run_id, args.path)
             elif args.codex_command == "purge-derived":
                 output = session.purge_derived(args.run_id, apply=args.apply)
+            elif args.codex_command == "purge-added":
+                output = session.purge_added(args.run_id, apply=args.apply)
             elif args.codex_command == "retention-derived":
                 retention_result = retain_derived(args.database,
                                                   older_than_days=args.older_than_days,

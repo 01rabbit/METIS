@@ -1,5 +1,24 @@
 # METIS implementation status
 
+## Issue #9 user-added artifact purge (2026-11-20)
+
+`metis codex purge-added RUN_ID` now previews removal of registered `.metis-added`
+files; `--apply` is required to delete them. It shares the locked terminal-run
+purge path, rejects active runs/workers, symlinks and unregistered entries, and
+limits each deletion batch to 100 files. Original inputs and `.metis-derived`
+outputs are preserved; missing files are safe to retry. Legacy directories
+with 101..4096 registered entries can be purged in multiple batches; larger or
+unregistered directories fail closed. `add-file` limits new registrations to
+100 per run, bounds collision-name allocation to 101 exclusive attempts, and keeps
+new names within 60 characters while accepting safe legacy names up to 255 bytes.
+Add-file opens the destination directory without following symlinks. This is
+manual per-run cleanup, not age-based retention or physical
+erasure from backups. An unregistered file left by a crash during `add-file` is
+refused for manual review rather than automatically deleted. Issue #9 remains
+open for its P7 dependency, host reboot, signed public release and full
+lifecycle controls. See
+[`issue9-user-added-artifact-purge-2026-11-20.md`](reports/issue9-user-added-artifact-purge-2026-11-20.md).
+
 ## Issue #6 fixed-transcript guardian canary (2026-11-20)
 
 An offline fixed JSONL stub now exercises the guardian's sanitized evidence
