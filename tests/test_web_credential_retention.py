@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -45,7 +47,7 @@ def test_retention_preview_is_read_only_redacted_and_classifies_cutoff(tmp_path)
     assert result["eligible_credentials"] == 2
     assert result["newer_credentials_retained"] == 1
     assert result["age_unknown_retained"] == 1
-    assert result["selected_runs"] == 1 and result["cookie_jars_removed"] == 1
+    assert result["selected_runs"] == 1 and result["cookie_jars_selected"] == 1
     assert "private-" not in json.dumps(result)
     assert "old.example" not in json.dumps(result)
     with sqlite3.connect(workflow.database) as db:
@@ -89,6 +91,81 @@ def test_legacy_credential_age_migrates_as_unknown_and_reauth_refreshes_timestam
     assert json.loads(payload)["token"] == "private-replacement"
 
 
+def test_cli_preview_does_not_create_missing_database_or_parent(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "missing-parent" / "state.sqlite"
+    monkeypatch.setattr(sys, "argv", [
+        "metis", "web", "--database", str(database),
+        "credential-retention", "--older-than-days", "30",
+    ])
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is False and result["credentials_considered"] == 0
+    assert not database.exists() and not database.parent.exists()
+
+
+def test_cli_preview_does_not_migrate_legacy_credential_table(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        db.execute("INSERT INTO web_credentials VALUES (?,?)",
+                   ("https://legacy.example", '{"token":"private-legacy"}'))
+    before = database.stat().st_mtime_ns
+    monkeypatch.setattr(sys, "argv", [
+        "metis", "web", "--database", str(database),
+        "credential-retention", "--older-than-days", "1",
+    ])
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["age_unknown_retained"] == 1
+    assert database.stat().st_mtime_ns == before
+    with sqlite3.connect(database) as db:
+        assert [row[1] for row in db.execute("PRAGMA table_info(web_credentials)")] == [
+            "origin", "payload",
+        ]
+
+
+def test_cli_preview_accepts_relative_database_path(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "relative.sqlite"
+    workflow = WebWorkflow(database)
+    with sqlite3.connect(database) as db:
+        _insert_credential(db, "https://old.example", 1.0)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "metis", "web", "--database", "relative.sqlite",
+        "credential-retention", "--older-than-days", "1",
+    ])
+
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["credentials_considered"] == 1
+    assert result["eligible_credentials"] == 1
+    assert workflow.database == database
+
+
+def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_path):
+    database = tmp_path / "legacy-concurrent.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        db.execute("INSERT INTO web_credentials VALUES (?,?)",
+                   ("https://legacy.example", '{"token":"private-legacy"}'))
+    barrier = Barrier(3)
+
+    def initialize() -> WebWorkflow:
+        barrier.wait()
+        return WebWorkflow(database)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(initialize) for _ in range(2)]
+        barrier.wait()
+        workflows = [future.result(timeout=10) for future in futures]
+
+    assert len(workflows) == 2
+    with sqlite3.connect(database) as db:
+        assert [row[1] for row in db.execute("PRAGMA table_info(web_credentials)")] == [
+            "origin", "payload", "updated_at",
+        ]
+
+
 def test_apply_retires_only_old_credentials_and_fences_linked_clients(tmp_path):
     workflow = WebWorkflow(tmp_path / "state" / "metis.sqlite")
     now = 10_000_000.0
@@ -127,7 +204,7 @@ def test_apply_retires_only_old_credentials_and_fences_linked_clients(tmp_path):
     assert result["applied"] is True
     assert result["eligible_credentials"] == 1
     assert result["selected_runs"] == 1
-    assert result["cookie_jars_removed"] == 1
+    assert result["cookie_jars_selected"] == 1
     assert result["provider_revocation_required"] is True
     with pytest.raises(ValueError, match="authentication has been forgotten"):
         stale_client.request(old + "/after-retirement")

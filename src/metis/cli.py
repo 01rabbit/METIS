@@ -901,6 +901,12 @@ def main() -> int:
             parser.exit(2, "Agent command rejected: " + agent_reason + "\n")
     if args.command == "web":
         try:
+            if args.web_command == "credential-retention" and not args.apply:
+                output = WebWorkflow.preview_credential_retention(
+                    args.database, older_than_days=args.older_than_days,
+                )
+                print(json.dumps(output))
+                return 0
             workflow = WebWorkflow(args.database)
             if args.web_command == "catalog":
                 output = workflow.catalog(args.url, token_env=args.token_env,

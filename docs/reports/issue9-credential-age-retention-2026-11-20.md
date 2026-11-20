@@ -17,6 +17,12 @@ bounded to 100 credential origins and 1,000 linked runs; overflow fails before
 commit. Any failure rolls back credential deletion, generation changes, and
 cookie updates together.
 
+CLI previews do not construct the mutating workflow or migrate the database.
+An absent database yields an empty preview without creating its parent path;
+legacy credential rows without timestamps remain age-unknown without schema
+changes. Relative database paths are supported, and concurrent workflow startup
+serializes the credential-column migration.
+
 New and replaced credentials receive an `updated_at` timestamp. Existing rows
 gain a nullable column during schema migration; their age remains unknown and
 they are preserved until an operator reauthenticates or explicitly forgets
@@ -28,4 +34,6 @@ policy. Issue #9 remains open.
 Synthetic local tests cover the exact cutoff, read-only preview, legacy
 unknown-age migration, reauthentication timestamps, selective cookie removal,
 stale-client fencing, rollback, CLI preview/apply behavior, and both operation
-bounds.
+bounds. Additional CLI regression cases verify that previews leave missing and
+legacy databases untouched, accept relative paths, and coexist with concurrent
+schema migration.

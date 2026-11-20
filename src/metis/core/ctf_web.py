@@ -138,6 +138,7 @@ class WebWorkflow:
         self.session = CodexSession(database)
         self.knowledge = KnowledgeBase(database)
         with sqlite3.connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS web_runs (
                 run_id TEXT PRIMARY KEY, config TEXT NOT NULL, state TEXT NOT NULL,
                 forms TEXT NOT NULL, links TEXT NOT NULL, salt TEXT NOT NULL,
@@ -315,6 +316,14 @@ class WebWorkflow:
             ))
         return result
 
+    @classmethod
+    def preview_credential_retention(cls, database: Path, *, older_than_days: int,
+                                     now: float | None = None) -> dict:
+        """Run a credential-age preview without constructing or migrating workflow state."""
+        preview = cls.__new__(cls)
+        preview.database = database
+        return preview.credential_retention(older_than_days=older_than_days, now=now)
+
     def credential_retention(self, *, older_than_days: int, apply: bool = False,
                              now: float | None = None) -> dict:
         """Preview or retire locally stored credentials with a known old timestamp."""
@@ -324,70 +333,85 @@ class WebWorkflow:
         if isinstance(current, bool) or not isinstance(current, (int, float)) or not math.isfinite(current):
             raise ValueError("credential retention clock must be a finite timestamp")
         cutoff = float(current) - older_than_days * 86_400
-        self._check_auth_storage(private=False)
-        with sqlite3.connect(self.database) as db:
-            if apply:
-                db.execute("PRAGMA secure_delete=ON")
-                db.execute("BEGIN IMMEDIATE")
-            else:
-                db.execute("PRAGMA query_only=ON")
-                db.execute("BEGIN")
-            rows = db.execute(
-                "SELECT origin,updated_at FROM web_credentials ORDER BY origin LIMIT 101",
-            ).fetchall()
-            if len(rows) > 100:
-                raise ValueError("credential retention exceeds 100 origins")
-            old_origins: list[str] = []
-            newer = 0
-            unknown = 0
-            for key, updated_at in rows:
-                known_timestamp = (type(updated_at) in (int, float)
-                                   and math.isfinite(float(updated_at)))
-                if not known_timestamp:
-                    unknown += 1
-                elif float(updated_at) <= cutoff:
-                    old_origins.append(key)
+        self._check_auth_storage(private=False, allow_missing=not apply)
+        rows: list[tuple[str, float | None]] = []
+        old_origins: list[str] = []
+        newer = unknown = selected_runs = removed_cookie_jars = 0
+        if apply or self.database.exists():
+            connection = (sqlite3.connect(self.database) if apply else
+                          sqlite3.connect(self.database.absolute().as_uri() + "?mode=ro", uri=True))
+            with connection as db:
+                if apply:
+                    db.execute("PRAGMA secure_delete=ON")
+                    db.execute("BEGIN IMMEDIATE")
                 else:
-                    newer += 1
+                    db.execute("PRAGMA query_only=ON")
+                    db.execute("BEGIN")
+                tables = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'",
+                )}
+                credential_columns = ({row[1] for row in db.execute("PRAGMA table_info(web_credentials)")}
+                                      if "web_credentials" in tables else set())
+                if "web_credentials" in tables:
+                    if "updated_at" in credential_columns:
+                        rows = db.execute(
+                            "SELECT origin,updated_at FROM web_credentials ORDER BY origin LIMIT 101",
+                        ).fetchall()
+                    else:
+                        rows = db.execute(
+                            "SELECT origin,NULL FROM web_credentials ORDER BY origin LIMIT 101",
+                        ).fetchall()
+                if len(rows) > 100:
+                    raise ValueError("credential retention exceeds 100 origins")
+                for key, updated_at in rows:
+                    if (updated_at is None or isinstance(updated_at, bool)
+                            or not isinstance(updated_at, (int, float))):
+                        unknown += 1
+                    else:
+                        timestamp = float(updated_at)
+                        if not math.isfinite(timestamp):
+                            unknown += 1
+                        elif timestamp <= cutoff:
+                            old_origins.append(key)
+                        else:
+                            newer += 1
 
-            selected_runs = 0
-            removed_cookie_jars = 0
-            if old_origins:
-                if apply:
-                    for key in old_origins:
-                        db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
-                                   "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
-                placeholders = ",".join("?" for _ in old_origins)
-                runs = db.execute(
-                    "SELECT run_id,config,state FROM web_runs "
-                    f"WHERE json_extract(config,'$.auth_origin') IN ({placeholders}) LIMIT 1001",
-                    old_origins,
-                ).fetchall()
-                if len(runs) > 1000:
-                    raise ValueError("credential retention exceeds 1000 linked runs")
-                selected_runs = len(runs)
-                generations = ({
-                    key: db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
-                                    (key,)).fetchone()[0]
-                    for key in old_origins
-                } if apply else {})
-                for run_id, raw_config, raw_state in runs:
-                    config, state = json.loads(raw_config), json.loads(raw_state)
-                    key = config.get("auth_origin") if isinstance(config, dict) else None
-                    if (key not in old_origins or not isinstance(state, dict)
-                            or not isinstance(state.get("cookies", {}), dict)):
-                        raise TypeError("stored web authentication state is invalid")
-                    cookies = state.get("cookies", {})
-                    removed_cookie_jars += int(key in cookies)
-                    cookies.pop(key, None)
+                if old_origins and "web_runs" in tables:
                     if apply:
-                        state.pop("cookie_fingerprint", None)
-                        state[self._AUTH_GENERATION_STATE_KEY] = generations[key]
-                        db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
-                                   (json.dumps(state), run_id))
-                if apply:
-                    db.executemany("DELETE FROM web_credentials WHERE origin=?",
-                                   [(key,) for key in old_origins])
+                        for key in old_origins:
+                            db.execute("INSERT INTO web_auth_generations(origin,generation) VALUES (?,1) "
+                                       "ON CONFLICT(origin) DO UPDATE SET generation=generation+1", (key,))
+                    placeholders = ",".join("?" for _ in old_origins)
+                    runs = db.execute(
+                        "SELECT run_id,config,state FROM web_runs "
+                        f"WHERE json_extract(config,'$.auth_origin') IN ({placeholders}) LIMIT 1001",
+                        old_origins,
+                    ).fetchall()
+                    if len(runs) > 1000:
+                        raise ValueError("credential retention exceeds 1000 linked runs")
+                    selected_runs = len(runs)
+                    generations = ({
+                        key: db.execute("SELECT generation FROM web_auth_generations WHERE origin=?",
+                                        (key,)).fetchone()[0]
+                        for key in old_origins
+                    } if apply else {})
+                    for run_id, raw_config, raw_state in runs:
+                        config, state = json.loads(raw_config), json.loads(raw_state)
+                        auth_origin = config.get("auth_origin") if isinstance(config, dict) else None
+                        if (auth_origin not in old_origins or not isinstance(state, dict)
+                                or not isinstance(state.get("cookies", {}), dict)):
+                            raise TypeError("stored web authentication state is invalid")
+                        cookies = state.get("cookies", {})
+                        removed_cookie_jars += int(auth_origin in cookies)
+                        if apply:
+                            cookies.pop(auth_origin, None)
+                            state.pop("cookie_fingerprint", None)
+                            state[self._AUTH_GENERATION_STATE_KEY] = generations[auth_origin]
+                            db.execute("UPDATE web_runs SET state=? WHERE run_id=?",
+                                       (json.dumps(state), run_id))
+                    if apply:
+                        db.executemany("DELETE FROM web_credentials WHERE origin=?",
+                                       [(key,) for key in old_origins])
 
         return {
             "applied": apply,
@@ -398,7 +422,7 @@ class WebWorkflow:
             "newer_credentials_retained": newer,
             "age_unknown_retained": unknown,
             "selected_runs": selected_runs,
-            "cookie_jars_removed": removed_cookie_jars,
+            "cookie_jars_selected": removed_cookie_jars,
             "provider_revocation_required": bool(apply and old_origins),
             "limit": ("Only locally stored credentials with a known timestamp are eligible. "
                       "Environment variables, provider state, in-flight requests, SQLite WAL, "

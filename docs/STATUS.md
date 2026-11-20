@@ -956,9 +956,10 @@ record an update timestamp. Legacy rows migrate with unknown age and remain
 untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
 auth generations, and removes only the corresponding auth-origin cookies from
 linked runs. The command refuses more than 100 credential origins or 1,000
-linked runs, and reports counts without origin names or secret values. Seven
+linked runs, and reports counts without origin names or secret values. Eleven
 synthetic tests cover preview, migration, exact cutoff, stale-client fencing,
-rollback, and limits. This is local retention control only: provider
+rollback, limits, non-mutating legacy/missing-database previews, relative paths,
+and concurrent migration startup. This is local retention control only: provider
 revocation, secure physical deletion, encrypted credential storage and Issue
 #9 acceptance remain open. See
 `docs/reports/issue9-credential-age-retention-2026-11-20.md`.
