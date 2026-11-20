@@ -16,7 +16,7 @@ import pytest
 from metis.core import ctf_workflow, workflow_model_trial
 from metis.core.codex_isolation import sandbox_command, seatbelt_profile
 from metis.core.codex_session import CodexSession
-from metis.core.ctf_sandbox import configure
+from metis.core.ctf_sandbox import Sandbox, configure
 from metis.core.ctf_workflow import (
     MAX_WORKFLOW_INPUT,
     _validate_digest_only_output,
@@ -326,14 +326,13 @@ def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
     manifest = _write_trial_manifest(tmp_path, [beta_case, alpha_case])
     database = tmp_path / "run-workspace" / "state.sqlite"
     trials = {alpha.challenge: alpha, beta.challenge: beta}
-    isolation: list[dict] = []
+    isolation: list[dict[str, object]] = []
     real_run = ctf_workflow.run_workflow_in_sandbox
 
     def capture_isolation(*args, **kwargs):
         result = real_run(*args, **kwargs)
         value = result.get("sandbox") if isinstance(result, dict) else None
-        assert isinstance(value, dict)
-        isolation.append(value)
+        isolation.append(value if isinstance(value, dict) else {})
         return result
 
     monkeypatch.setattr(ctf_workflow, "run_workflow_in_sandbox", capture_isolation)
@@ -350,8 +349,17 @@ def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
     assert len(isolation) == 4  # two independent replays for each case
     assert all(item["network"] == "none" and item["host_mounts"] is False
                and item["image"] == os.environ["METIS_TEST_SANDBOX_IMAGE"]
+               and item["platform"] == os.environ.get("METIS_TEST_SANDBOX_PLATFORM")
                for item in isolation)
-    assert len({item["platform"] for item in isolation}) == 1
+
+    sandbox_command = Sandbox(database).command("issue7-multicase-isolation-probe")
+    assert "--network=none" in sandbox_command and "--read-only" in sandbox_command
+    assert "--cap-drop=ALL" in sandbox_command
+    assert "--security-opt=no-new-privileges" in sandbox_command
+    assert "--pull=never" in sandbox_command
+    assert not any(argument in {"-v", "--volume", "--mount"}
+                   or argument.startswith(("--volume=", "--mount="))
+                   for argument in sandbox_command)
 
     session = CodexSession(database)
     with sqlite3.connect(database) as db:
@@ -359,13 +367,24 @@ def test_multi_case_manifest_replays_in_real_sandbox_without_leaking_oracle(
     assert len(run_ids) == 2
     events = "".join(session.store.export_jsonl(run_id) for run_id in run_ids)
     serialized = json.dumps(report, sort_keys=True)
-    for trial in (alpha, beta):
+    artifact_bytes = b""
+    expected_answers = {}
+    for trial, seed in ((alpha, 2), (beta, 3)):
+        answer = f"CTF{{{hashlib.sha256(f'metis-p6-workflow-v1:{seed}'.encode()).hexdigest()[:24]}}}".encode()
+        expected_answers[seed] = answer
+        assert answer not in (serialized + events).encode()
         assert trial.oracle_sha256 not in serialized + events
     assert str(tmp_path) not in serialized + events
     for run_id in run_ids:
         root = session.artifact_root(run_id)
         assert root is not None
         assert sorted(path.name for path in root.iterdir()) == ["00-challenge.txt", "01-workflow.json"]
+        artifact_bytes += b"".join(path.read_bytes() for path in root.iterdir() if path.is_file())
+    persisted_database = b"".join(path.read_bytes() for path in database.parent.iterdir() if path.is_file())
+    for trial, seed in ((alpha, 2), (beta, 3)):
+        assert expected_answers[seed] not in artifact_bytes + persisted_database
+        assert trial.oracle_sha256.encode() not in artifact_bytes + persisted_database
+    assert str(tmp_path).encode() not in artifact_bytes + persisted_database
 
 
 @pytest.mark.parametrize("invalid", [
