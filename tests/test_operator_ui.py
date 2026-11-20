@@ -14,18 +14,25 @@ from typing import Any
 
 import pytest
 
+from metis.core.agent_host import FakeHost
+from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
+from metis.core.ctf_web import WebWorkflow
 from metis.core.operator_ui import create_server
-from metis.core.store import RunStore
+from metis.core.store import RunStore, ensure_run_audit_list_index
 
 RUN_ID = "a" * 32
 TOKEN = "secret-operator-token-with-32-chars-minimum"
 
 
 @contextmanager
-def server_for(database: Path, *, cancel_run=None):
-    server = create_server(database, port=0, token=TOKEN, cancel_run=cancel_run)
+def server_for(database: Path, *, cancel_run=None, dispatch_control=None, dispatch_status=None,
+               credential_retention_preview=None):
+    server = create_server(database, port=0, token=TOKEN, cancel_run=cancel_run,
+                           dispatch_control=dispatch_control,
+                           dispatch_status=dispatch_status,
+                           credential_retention_preview=credential_retention_preview)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -179,28 +186,245 @@ def test_cancel_unknown_run_and_unavailable_handler_fail_closed(tmp_path: Path) 
         assert request(port, "POST", f"/api/runs/{RUN_ID}/cancel", token=TOKEN)[0] == 503
 
 
+def test_dispatch_pause_resume_routes_require_auth_origin_and_empty_body(tmp_path: Path, monkeypatch) -> None:
+    database = tmp_path / "state.sqlite"
+    session, run_id = _start_run(database)
+    scheduler = AgentScheduler(database, FakeHost())
+    monkeypatch.setattr("metis.core.ctf_sandbox.cancel_registered_worker",
+                        lambda *_args: {"status": "not_running"})
+    path = f"/api/runs/{run_id}/dispatch/pause"
+    with server_for(database, dispatch_control=scheduler.set_dispatch_paused,
+                    dispatch_status=scheduler.dispatch_control,
+                    cancel_run=session.cancel) as port:
+        assert request(port, "POST", path)[0] == 401
+        assert request(port, "POST", path, token="wrong")[0] == 401
+        assert request(port, "POST", path, token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "POST", path, token=TOKEN, origin="https://evil.example")[0] == 403
+        assert request(port, "POST", path + "?extra=1", token=TOKEN)[0] == 404
+        assert request(port, "POST", f"/api/runs/{'b' * 32}/dispatch/pause", token=TOKEN)[0] == 404
+        assert request(port, "POST", path, token=TOKEN, body=b"unexpected")[0] == 400
+        status, headers, body = request(port, "POST", path, token=TOKEN,
+                                        origin=f"http://127.0.0.1:{port}")
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        paused_payload = json.loads(body)
+        assert paused_payload["run_id"] == run_id and paused_payload["dispatch_paused"] is True
+        assert paused_payload["scope"] == "queued_specialist_dispatch_only"
+        assert [event["action"] for event in paused_payload["history"]] == ["pause"]
+        assert AgentScheduler(database, FakeHost()).dispatch_control(run_id)["dispatch_paused"] is True
+
+        status_path = f"/api/runs/{run_id}/dispatch"
+        assert request(port, "GET", status_path)[0] == 401
+        assert request(port, "GET", status_path, token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "GET", status_path, token=TOKEN,
+                       origin="https://evil.example")[0] == 403
+        assert request(port, "GET", f"/api/runs/{'b' * 32}/dispatch", token=TOKEN)[0] == 404
+
+        cancel_status, _headers, cancel_body = request(
+            port, "POST", f"/api/runs/{run_id}/cancel", token=TOKEN,
+        )
+        assert cancel_status == 200 and json.loads(cancel_body)["status"] == "cancelled"
+        resume_status, _headers, resume_body = request(
+            port, "POST", f"/api/runs/{run_id}/dispatch/resume", token=TOKEN,
+        )
+        assert resume_status == 200
+        assert [event["action"] for event in json.loads(resume_body)["history"]] == ["pause", "resume"]
+        status, _headers, body = request(port, "GET", status_path, token=TOKEN)
+        assert status == 200
+        status_payload = json.loads(body)
+        assert status_payload["dispatch_paused"] is False
+        assert [event["action"] for event in status_payload["history"]] == ["pause", "resume"]
+
+    with server_for(database) as port:
+        status, _headers, body = request(port, "POST", path, token=TOKEN)
+        assert status == 503 and body == b"dispatch control unavailable"
+        status, _headers, body = request(port, "GET", f"/api/runs/{run_id}/dispatch", token=TOKEN)
+        assert status == 503 and body == b"dispatch status unavailable"
+
+    with server_for(database, dispatch_control=lambda candidate, paused: {
+        "run_id": candidate, "dispatch_paused": not paused,
+    }) as port:
+        status, _headers, body = request(port, "POST", path, token=TOKEN)
+        assert status == 503 and body == b"dispatch control status unavailable"
+
+    with server_for(database, dispatch_status=lambda candidate: {
+        "run_id": candidate, "dispatch_paused": False,
+        "scope": "queued_specialist_dispatch_only", "history": [{"action": "secret", "updated": 1.0}],
+    }) as port:
+        status, _headers, body = request(port, "GET", f"/api/runs/{run_id}/dispatch", token=TOKEN)
+        assert status == 503 and body == b"dispatch status unavailable"
+
+
+def test_malformed_dispatch_control_history_fails_closed_and_is_redacted(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    _session, run_id = _start_run(database)
+    scheduler = AgentScheduler(database, FakeHost())
+    scheduler.set_dispatch_paused(run_id, True)
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA ignore_check_constraints=ON")
+        db.execute("UPDATE agent_run_control_log SET action=? WHERE run_id=?", (
+            "secret-audit-corruption-sentinel", run_id,
+        ))
+    with pytest.raises(ValueError, match="history"):
+        scheduler.dispatch_control(run_id)
+    with server_for(database, dispatch_status=scheduler.dispatch_control) as port:
+        status, _headers, body = request(port, "GET", f"/api/runs/{run_id}/dispatch", token=TOKEN)
+        assert status == 503 and body == b"dispatch status unavailable"
+        assert b"secret-audit-corruption-sentinel" not in body
+
 def test_run_list_is_authenticated_bounded_redacted_and_read_only(tmp_path: Path) -> None:
     database = tmp_path / "state.sqlite"
     session, first_id = _start_run(database)
     time.sleep(0.002)
     _session, second_id = _start_run(database)
-    before = database.read_bytes()
+    # Server construction prepares this lookup index before it starts serving.
+    ensure_run_audit_list_index(database)
 
-    with server_for(database, cancel_run=session.cancel) as port:
-        assert request(port, "GET", "/api/runs")[0] == 401
-        assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
-        assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
-        assert request(port, "GET", "/api/runs?limit=101", token=TOKEN)[0] == 400
-        assert request(port, "GET", "/api/runs?limit=2&extra=1", token=TOKEN)[0] == 400
-        status, headers, body = request(port, "GET", "/api/runs?limit=2", token=TOKEN)
+    observer = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        before = observer.execute("PRAGMA data_version").fetchone()[0]
+        with server_for(database, cancel_run=session.cancel) as port:
+            assert request(port, "GET", "/api/runs")[0] == 401
+            assert request(port, "GET", "/api/runs", token=TOKEN, host="evil.example")[0] == 403
+            assert request(port, "GET", "/api/runs?limit=0", token=TOKEN)[0] == 400
+            assert request(port, "GET", "/api/runs?limit=101", token=TOKEN)[0] == 400
+            assert request(port, "GET", "/api/runs?limit=2&extra=1", token=TOKEN)[0] == 400
+            status, headers, body = request(port, "GET", "/api/runs?limit=2", token=TOKEN)
+            assert status == 200 and headers["Cache-Control"] == "no-store"
+            payload = json.loads(body)
+            assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
+            assert payload["truncated"] is False
+            assert all(run["status"] == "planning" for run in payload["runs"])
+            assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
+            assert "private" not in body.decode()
+        assert observer.execute("PRAGMA data_version").fetchone()[0] == before
+    finally:
+        observer.close()
+
+
+def test_credential_retention_preview_is_authenticated_bounded_redacted_and_read_only(
+    tmp_path: Path,
+) -> None:
+    database = fixture_database(tmp_path)
+    WebWorkflow(database)
+    now = 10_000_000.0
+    old_origin = "https://private-origin.example"
+    newer_origin = "https://newer-origin.example"
+    unknown_origin = "https://unknown-origin.example"
+    old_token = "private-retention-token-sentinel"
+    cookie_secret = "private-retention-cookie-sentinel"
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,?)",
+                   (old_origin, json.dumps({"token": old_token}), now - 31 * 86_400))
+        db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,?)",
+                   (newer_origin, json.dumps({"token": "newer-private-token"}), now))
+        db.execute("INSERT INTO web_credentials(origin,payload,updated_at) VALUES (?,?,NULL)",
+                   (unknown_origin, json.dumps({"token": "unknown-private-token"})))
+        db.execute(
+            "INSERT INTO web_runs(run_id,config,state,forms,links,salt) VALUES (?,?,?,?,?,?)",
+            ("retention-preview-run", json.dumps({"auth_origin": old_origin}),
+             json.dumps({"cookies": {old_origin: [{"value": cookie_secret}]}}),
+             "[]", "[]", "fixture-salt"),
+        )
+        credentials_before = db.execute(
+            "SELECT origin,payload,updated_at FROM web_credentials ORDER BY origin",
+        ).fetchall()
+        state_before = db.execute(
+            "SELECT state FROM web_runs WHERE run_id='retention-preview-run'",
+        ).fetchone()
+        generations_before = db.execute(
+            "SELECT * FROM web_auth_generations ORDER BY origin",
+        ).fetchall()
+
+    preview_calls: list[int] = []
+
+    def preview(days: int) -> dict[str, Any]:
+        preview_calls.append(days)
+        return WebWorkflow.preview_credential_retention(database, older_than_days=days, now=now)
+
+    with server_for(database, credential_retention_preview=preview) as port:
+        path = "/api/credentials/retention?older_than_days=30"
+        assert request(port, "GET", path)[0] == 401
+        assert request(port, "GET", path, token=TOKEN, host="evil.example")[0] == 403
+        assert request(port, "GET", path, token=TOKEN,
+                       origin="https://evil.example")[0] == 403
+        assert request(port, "GET", "/api/credentials/retention", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/credentials/retention?older_than_days=0", token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/credentials/retention?older_than_days=36501",
+                       token=TOKEN)[0] == 400
+        assert request(port, "GET", "/api/credentials/retention?older_than_days=030",
+                       token=TOKEN)[0] == 400
+        assert request(port, "GET", path + "&extra=1", token=TOKEN)[0] == 400
+        assert preview_calls == []
+
+        status, headers, body = request(port, "GET", path, token=TOKEN)
         assert status == 200 and headers["Cache-Control"] == "no-store"
         payload = json.loads(body)
-        assert [run["run_id"] for run in payload["runs"]] == [second_id, first_id]
-        assert payload["truncated"] is False
-        assert all(run["status"] == "planning" for run in payload["runs"])
-        assert all(run["codex_budget"]["actions_remaining"] == 40 for run in payload["runs"])
-        assert "private" not in body.decode()
-    assert database.read_bytes() == before
+        assert payload["applied"] is False
+        assert payload["older_than_days"] == 30
+        assert payload["credentials_considered"] == 3
+        assert payload["eligible_credentials"] == 1
+        assert payload["newer_credentials_retained"] == 1
+        assert payload["age_unknown_retained"] == 1
+        assert payload["selected_runs"] == 1 and payload["cookie_jars_selected"] == 1
+        assert "private-origin.example" not in body.decode()
+        assert "private-retention-token-sentinel" not in body.decode()
+        assert "private-retention-cookie-sentinel" not in body.decode()
+        assert TOKEN.encode() not in body
+        assert set(payload) == {
+            "applied", "older_than_days", "credentials_considered", "eligible_credentials",
+            "newer_credentials_retained", "age_unknown_retained", "selected_runs",
+            "cookie_jars_selected", "sqlite_wal_sidecars_may_be_created", "note",
+        }
+
+    assert preview_calls == [30]
+    with sqlite3.connect(database) as db:
+        assert db.execute(
+            "SELECT origin,payload,updated_at FROM web_credentials ORDER BY origin",
+        ).fetchall() == credentials_before
+        assert db.execute(
+            "SELECT state FROM web_runs WHERE run_id='retention-preview-run'",
+        ).fetchone() == state_before
+        assert db.execute("SELECT * FROM web_auth_generations ORDER BY origin").fetchall() == generations_before
+
+
+def test_credential_retention_preview_rejects_malformed_callback_results(tmp_path: Path) -> None:
+    database = fixture_database(tmp_path)
+    valid = {
+        "applied": False, "older_than_days": 1,
+        "credentials_considered": 0, "eligible_credentials": 0,
+        "newer_credentials_retained": 0, "age_unknown_retained": 0,
+        "selected_runs": 0, "cookie_jars_selected": 0,
+        "sqlite_wal_sidecars_may_be_created": False, "wal_cleanup_complete": None,
+    }
+    malformed = [
+        lambda days: {**valid, "older_than_days": days, "applied": True},
+        lambda days: {**valid, "older_than_days": days + 1},
+        lambda days: {**valid, "older_than_days": True},
+        lambda days: {**valid, "older_than_days": days, "eligible_credentials": -1},
+        lambda days: {**valid, "older_than_days": days, "wal_cleanup_complete": True},
+        lambda days: {key: value for key, value in {**valid, "older_than_days": days}.items()
+                      if key != "sqlite_wal_sidecars_may_be_created"},
+        None,
+        sqlite3.Error("private callback failure"),
+    ]
+    calls = 0
+
+    def callback(_days: int):
+        nonlocal calls
+        item = malformed[calls]
+        calls += 1
+        if isinstance(item, sqlite3.Error):
+            raise item
+        return item(_days) if callable(item) else item
+
+    with server_for(database, credential_retention_preview=callback) as port:
+        for age in range(1, len(malformed) + 1):
+            status, _headers, body = request(
+                port, "GET", f"/api/credentials/retention?older_than_days={age}", token=TOKEN,
+            )
+            assert status == 503
+            assert body == b"credential retention preview unavailable"
+    assert calls == len(malformed)
 
 
 def test_run_list_fails_closed_on_corrupt_selected_chain(tmp_path: Path) -> None:
@@ -262,7 +486,10 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
         }
 
         const elements = Object.fromEntries(
-          ['token', 'run', 'result', 'run-list', 'refresh', 'inspect', 'cancel']
+          ['token', 'run', 'result', 'dispatch-result', 'run-list', 'refresh', 'inspect',
+           'dispatch-status', 'cancel',
+           'pause-dispatch', 'resume-dispatch',
+           'retention-age', 'retention-preview']
             .map(id => [id, new Element()])
         );
         const document = {
@@ -291,6 +518,10 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
         const success = () => ({ok: true, status: 200, json: async () => payload});
         const refresh = () => elements.refresh.fire('click');
         const inspect = () => elements.inspect.fire('click');
+        const dispatchStatus = () => elements['dispatch-status'].fire('click');
+        const pauseDispatch = () => elements['pause-dispatch'].fire('click');
+        const resumeDispatch = () => elements['resume-dispatch'].fire('click');
+        const retentionPreview = () => elements['retention-preview'].fire('click');
         const deny = status => { mockFetch = async () => ({ok: false, status}); };
 
         async function loadAndSelect() {
@@ -391,6 +622,121 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           assert.equal(elements.run.value, '');
         });
 
+        test('dispatch pause and resume are scoped to the selected run and disclose their limit', async () => {
+          await loadAndSelect();
+          elements.token.value = 'operator-secret';
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/dispatch');
+            assert.equal(options.method, 'GET');
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: false,
+              scope: 'queued_specialist_dispatch_only', history: [],
+            })};
+          };
+          await dispatchStatus();
+          assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, false);
+          mockFetch = async (path, options) => {
+            assert.ok(path === '/api/runs/' + runId + '/dispatch/pause'
+              || path === '/api/runs/' + runId + '/dispatch');
+            if (options.method === 'GET') return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 1}],
+            })};
+            assert.equal(options.method, 'POST');
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+            })};
+          };
+          await pauseDispatch();
+          assert.equal(confirmations.at(-1),
+            'Pause new specialist dispatch for run ' + runId + '? Running specialists continue.');
+          assert.equal(JSON.parse(elements.result.textContent).dispatch_paused, true);
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
+            ['pause']);
+          mockFetch = async (path, options) => {
+            assert.ok(path === '/api/runs/' + runId + '/dispatch/resume'
+              || path === '/api/runs/' + runId + '/dispatch');
+            if (options.method === 'GET') return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 1}, {action: 'resume', updated: 2}],
+            })};
+            assert.equal(options.method, 'POST');
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
+            })};
+          };
+          await resumeDispatch();
+          assert.equal(JSON.parse(elements.result.textContent).dispatch_paused, false);
+          mockFetch = async path => ({ok: true, status: 200, json: async () => ({
+            run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only',
+            history: [{action: 'pause', updated: 1}, {action: 'resume', updated: 2}],
+          })});
+          await dispatchStatus();
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
+            ['pause', 'resume']);
+        });
+
+        test('pause invalidates stale status and reloads the committed status and history', async () => {
+          await loadAndSelect();
+          elements.token.value = 'operator-secret';
+          let resolveOldStatus;
+          mockFetch = (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/dispatch');
+            assert.equal(options.method, 'GET');
+            return new Promise(resolve => { resolveOldStatus = resolve; });
+          };
+          const oldStatus = dispatchStatus();
+          let refreshed = 0;
+          mockFetch = async (path, options) => {
+            if (options.method === 'POST') {
+              assert.equal(path, '/api/runs/' + runId + '/dispatch/pause');
+              return {ok: true, status: 200, json: async () => ({
+                run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+              })};
+            }
+            assert.equal(path, '/api/runs/' + runId + '/dispatch');
+            refreshed++;
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 50}],
+            })};
+          };
+          await pauseDispatch();
+          assert.equal(refreshed, 1);
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent), {
+            run_id: runId, dispatch_paused: true, scope: 'queued_specialist_dispatch_only',
+            history: [{action: 'pause', updated: 50}],
+          });
+          resolveOldStatus({ok: true, status: 200, json: async () => ({
+            run_id: runId, dispatch_paused: false, scope: 'queued_specialist_dispatch_only', history: [],
+          })});
+          await oldStatus;
+          assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, true);
+        });
+
+        test('selected dispatch state and control history reload on selection and refresh', async () => {
+          const calls = [];
+          mockFetch = async path => {
+            calls.push(path);
+            if (path === '/api/runs?limit=20') return success();
+            return {ok: true, status: 200, json: async () => ({
+              run_id: runId, dispatch_paused: true,
+              scope: 'queued_specialist_dispatch_only',
+              history: [{action: 'pause', updated: 10}, {action: 'resume', updated: 20}],
+            })};
+          };
+          await refresh();
+          select.value = runId;
+          select.fire('change');
+          await dispatchStatus();
+          assert.equal(calls.at(-1), '/api/runs/' + runId + '/dispatch');
+          assert.deepEqual(JSON.parse(elements['dispatch-result'].textContent).history.map(item => item.action),
+            ['pause', 'resume']);
+          await refresh();
+          assert.equal(calls.at(-1), '/api/runs/' + runId + '/dispatch');
+          assert.equal(JSON.parse(elements['dispatch-result'].textContent).dispatch_paused, true);
+        });
+
         test('a delayed cancellation result cannot replace another run audit', async () => {
           await loadAndSelect();
           let resolveCancel;
@@ -413,6 +759,83 @@ def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> N
           })});
           await pendingCancel;
           assert.deepEqual(JSON.parse(elements.result.textContent), audit);
+        });
+
+        test('credential retention preview ignores stale age and authorization responses', async () => {
+          elements.token.value = 'operator-secret';
+          elements['retention-age'].value = '30';
+          let resolveOlder;
+          mockFetch = (path, options) => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=30');
+            assert.equal(options.method, 'GET');
+            return new Promise(resolve => { resolveOlder = resolve; });
+          };
+          const older = retentionPreview();
+          elements['retention-age'].value = '31';
+          elements['retention-age'].fire('input');
+          assert.equal(elements.result.textContent, '');
+
+          const current = {applied: false, older_than_days: 31, eligible_credentials: 2};
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=31');
+            assert.equal(options.method, 'GET');
+            return {ok: true, status: 200, json: async () => current};
+          };
+          await retentionPreview();
+          resolveOlder({ok: true, status: 200, json: async () => ({
+            applied: false, older_than_days: 30, eligible_credentials: 1,
+          })});
+          await older;
+          assert.deepEqual(JSON.parse(elements.result.textContent), current);
+
+          let resolveProtected;
+          mockFetch = () => new Promise(resolve => { resolveProtected = resolve; });
+          const pending = retentionPreview();
+          elements.token.value = '';
+          elements.token.fire('input');
+          assert.equal(elements.result.textContent, '');
+          resolveProtected({ok: true, status: 200, json: async () => ({
+            applied: false, older_than_days: 31, eligible_credentials: 99,
+          })});
+          await pending;
+          assert.equal(elements.result.textContent, '');
+        });
+
+        test('retention and run views share one output freshness generation', async () => {
+          await loadAndSelect();
+          elements.token.value = 'operator-secret';
+          elements['retention-age'].value = '30';
+          let resolveRetention;
+          mockFetch = path => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=30');
+            return new Promise(resolve => { resolveRetention = resolve; });
+          };
+          const pendingRetention = retentionPreview();
+
+          const audit = {run_id: runId, status: 'planning'};
+          mockFetch = async path => {
+            assert.equal(path, '/api/runs/' + runId + '/audit');
+            return {ok: true, status: 200, json: async () => audit};
+          };
+          await inspect();
+          resolveRetention({ok: true, status: 200, json: async () => ({
+            applied: false, older_than_days: 30, eligible_credentials: 1,
+          })});
+          await pendingRetention;
+          assert.deepEqual(JSON.parse(elements.result.textContent), audit);
+
+          let resolveAudit;
+          mockFetch = () => new Promise(resolve => { resolveAudit = resolve; });
+          const pendingAudit = inspect();
+          const retention = {applied: false, older_than_days: 30, eligible_credentials: 2};
+          mockFetch = async path => {
+            assert.equal(path, '/api/credentials/retention?older_than_days=30');
+            return {ok: true, status: 200, json: async () => retention};
+          };
+          await retentionPreview();
+          resolveAudit({ok: true, status: 200, json: async () => audit});
+          await pendingAudit;
+          assert.deepEqual(JSON.parse(elements.result.textContent), retention);
         });
         """],
         input=script,
