@@ -211,9 +211,10 @@ def test_run_assignment_native_consumer_hashes_exact_bytes_sent_to_backend(tmp_p
             requests.append(prompt)
             return (json.dumps({"action": "fail", "intent": None, "report": None,
                                 "reason": "synthetic", "candidate": None}), 100, 1)
-        def collect_native_work(self, *, generated):
+        def collect_native_work(self, *, generated, evaluated=None):
             assert generated == 1
-            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=101)
+            assert evaluated == 100
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=117)
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
 
     run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
@@ -223,7 +224,9 @@ def test_run_assignment_native_consumer_hashes_exact_bytes_sent_to_backend(tmp_p
     request_digest = hashlib.sha256(requests[0].encode()).hexdigest()
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT prompt_sha256 FROM study_token_attempts").fetchone() == (request_digest,)
-        assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == ("completed",)
+        assert db.execute("SELECT status,observed_work FROM study_token_outcomes").fetchone() == (
+            "completed", 117,
+        )
 
 
 def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path, monkeypatch):
@@ -244,9 +247,10 @@ def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path,
         def __exit__(self, *_args): pass
         def complete_admitted(self, _prompt, **_kwargs):
             return deep_json, 100, 1
-        def collect_native_work(self, *, generated):
+        def collect_native_work(self, *, generated, evaluated=None):
             assert generated == 1
-            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=101)
+            assert evaluated == 100
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=119)
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
     result = run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
                             study_token_admission=admission, final_handoff_call_limit=1)
@@ -254,12 +258,13 @@ def test_driver_handles_deep_invalid_native_json_after_recording_usage(tmp_path,
     assert any("recursion" in json.dumps(item).lower() for item in result["intents"])
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT status,observed_work FROM study_token_outcomes").fetchone() == (
-            "completed", 101,
+            "completed", 119,
         )
 
 
 @pytest.mark.parametrize(("failure", "expected"), [
     ("deadline", "timeout"), ("usage", "server_error"), ("refused", "receipt_invalid"),
+    ("cap_denied", "cap_denied"),
 ])
 def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, monkeypatch, failure, expected):
     database, scheduler, protocol, run_id, job = _running_slot(tmp_path)
@@ -287,14 +292,18 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
             native_requests.append(prompt)
             if failure == "refused":
                 raise LlamaBackendRefused("prompt exceeds reserved context")
+            if failure == "cap_denied":
+                raise LlamaBackendError("native process denied work at its cap")
             reason = "model call deadline exceeded" if failure == "deadline" else "completion usage mismatch"
             raise LlamaBackendError(reason)
-        def collect_native_work(self, *, generated):
+        def collect_native_work(self, *, generated, evaluated=None):
             assert generated is None
             if failure == "deadline":
                 return TokenLaunchOutcome(status="timeout")
             if failure == "usage":
                 return TokenLaunchOutcome(status="server_error", exit_status=1, observed_work=3)
+            if failure == "cap_denied":
+                return TokenLaunchOutcome(status="cap_denied", exit_status=75, observed_work=4096)
             return TokenLaunchOutcome(status="receipt_invalid")
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
     run_assignment(scheduler, run_id, job["assignment_id"], job["attempt_id"], runner,
@@ -307,12 +316,14 @@ def test_admitted_backend_failures_record_terminal_and_cannot_retry(tmp_path, mo
         assert db.execute("SELECT status FROM study_token_outcomes").fetchone() == (expected,)
         assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (4098,)
         assert db.execute("SELECT COUNT(*) FROM study_token_attempts").fetchone() == (1,)
-        expected_observed = 3 if expected == "server_error" else None
+        expected_observed = (3 if expected == "server_error" else
+                             4096 if expected == "cap_denied" else None)
         assert db.execute("SELECT observed_work FROM study_token_outcomes").fetchone() == (
             expected_observed,
         )
-        if expected == "server_error":
-            assert db.execute("SELECT exit_status FROM study_token_outcomes").fetchone() == (1,)
+        if expected in ("server_error", "cap_denied"):
+            expected_exit = 1 if expected == "server_error" else 75
+            assert db.execute("SELECT exit_status FROM study_token_outcomes").fetchone() == (expected_exit,)
     assert hashlib.sha256(request.encode()).hexdigest() == stored_hash
     # The exact committed bytes are rejected after a terminal outcome, before
     # any second backend launch.
@@ -351,7 +362,7 @@ def test_concurrent_native_consumers_start_backend_once(tmp_path, monkeypatch):
             native_calls.append(1)
             return (json.dumps({"action": "fail", "intent": None, "report": None,
                                 "reason": "synthetic", "candidate": None}), 100, 1)
-        def collect_native_work(self, *, generated):
+        def collect_native_work(self, *, generated, evaluated=None):
             assert generated == 1
             return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=101)
     monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)

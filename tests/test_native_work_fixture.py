@@ -155,7 +155,7 @@ with socketserver.UnixStreamServer(str(socket_path), Handler) as server:
 def _setup(tmp_path, monkeypatch, mode, *, n_predict=1, end="limit", cap=30):
     binary = tmp_path / "server"
     script = (_FAKE_SERVER.replace("MODENAME", repr(mode)).replace("PROFILE_LIMIT", str(n_predict))
-              .replace("PROFILE_END", repr(end)).replace("EXPECTED_CAP", str(cap - n_predict)))
+              .replace("PROFILE_END", repr(end)).replace("EXPECTED_CAP", str(cap - 1)))
     binary.write_text(f"#!{sys.executable}\n" + script)
     model = tmp_path / "fixture.gguf"
     model.write_bytes(b"fixture test bytes")
@@ -412,11 +412,20 @@ def test_budget_and_profile_mismatches_do_not_claim_or_spawn(tmp_path, monkeypat
         pytest.fail("unverified output policy reached Popen")
 
     monkeypatch.setattr(fixture.subprocess, "Popen", unexpected)
-    for limit, end, message in [(1, "limit", "sampling profile"), (3, "word", "sampling profile"),
-                                (3, "limit", "no positive native cap")]:
+    for limit, end, message in [(1, "limit", "sampling profile"), (3, "word", "sampling profile")]:
         with pytest.raises(ValueError, match=message):
             fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval,
                                           n_predict=limit, end=end)
+    low_root = tmp_path / "low"
+    low_root.mkdir()
+    low_admission, low_receipt, low_binary, low_model, low_approval = _setup(
+        low_root, monkeypatch, "valid", n_predict=1, cap=1,
+    )
+    with pytest.raises(ValueError, match="no positive native cap"):
+        fixture.qualify_native_launch(
+            low_admission, low_receipt, binary=low_binary, model=low_model, **low_approval,
+            n_predict=1,
+        )
     with closing(sqlite3.connect(admission.database)) as db:
         assert db.execute("SELECT count(*) FROM study_token_launches").fetchone() == (0,)
 

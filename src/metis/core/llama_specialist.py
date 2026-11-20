@@ -10,7 +10,6 @@ import secrets
 import sqlite3
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -163,7 +162,6 @@ class LlamaSpecialist:
         consumed = False
         launch_owned = False
         launch_start_attempted = False
-        backend_entered = False
         backend: LlamaServerBackend | None = None
         launch_owner = secrets.token_hex(16)
 
@@ -206,12 +204,13 @@ class LlamaSpecialist:
                 raise ValueError("native launch claim was already started")
             launch_owned = True
             call_deadline = time.monotonic() + min(timeout, 120)
-            native_work_cap = receipt.attempt.tokens - self.max_output_tokens
+            # Graph work already charges prompt and decode positions. Only
+            # the final sampled token may leave without another graph.
+            native_work_cap = receipt.attempt.tokens - 1
             backend = LlamaServerBackend(
                 **self.backend_config, startup_deadline=call_deadline,
                 startup_should_stop=should_stop, native_work_budget_cap=native_work_cap)
             with backend:
-                backend_entered = True
                 remaining = call_deadline - time.monotonic()
                 if remaining <= 0:
                     raise LlamaBackendError("model call deadline exceeded during server startup")
@@ -219,7 +218,9 @@ class LlamaSpecialist:
                     prompt, n_predict=self.max_output_tokens,
                     token_cap=receipt.attempt.tokens, timeout_seconds=remaining,
                     should_stop=should_stop, call_deadline=call_deadline)
-            native_outcome = backend.collect_native_work(generated=output_tokens)
+            native_outcome = backend.collect_native_work(
+                generated=output_tokens, evaluated=input_tokens,
+            )
             if native_outcome.status != "completed":
                 outcome = native_outcome.model_copy(update={"native_manifest_sha256": outcome_manifest})
                 raise LlamaBackendError("native terminal work receipt was not successful")
@@ -232,13 +233,23 @@ class LlamaSpecialist:
             return CodexTurn(returncode=0, message=message, usage=usage,
                              item_types=["agent_message"], isolation=isolation)
         except LlamaBackendStopped:
-            outcome = TokenLaunchOutcome(status="cancelled", native_manifest_sha256=outcome_manifest)
+            terminal = None
+            if backend is not None:
+                try:
+                    terminal = backend.collect_native_work(generated=None)
+                except Exception:  # noqa: BLE001 -- failed receipt parsing cannot be reported as a solve
+                    terminal = None
+            outcome = (terminal.model_copy(update={"native_manifest_sha256": outcome_manifest})
+                       if terminal is not None else
+                       TokenLaunchOutcome(status="cancelled", native_manifest_sha256=outcome_manifest))
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         except LlamaBackendRefused:
             native_outcome = None
-            if backend_entered and backend is not None:
-                with suppress(Exception):
+            if backend is not None:
+                try:
                     native_outcome = backend.collect_native_work(generated=None)
+                except Exception:  # noqa: BLE001 -- fail closed if terminal accounting fails
+                    native_outcome = TokenLaunchOutcome(status="receipt_invalid")
             if native_outcome is None:
                 outcome = TokenLaunchOutcome(status="launch_failed", native_manifest_sha256=outcome_manifest)
             else:
@@ -251,15 +262,16 @@ class LlamaSpecialist:
         except LlamaBackendError as exc:
             detail = str(exc).lower()
             native_outcome = None
-            if backend_entered and backend is not None:
+            if backend is not None:
                 try:
                     native_outcome = backend.collect_native_work(generated=None)
                 except Exception:  # noqa: BLE001 -- invalid native accounting must fail closed
                     native_outcome = TokenLaunchOutcome(status="receipt_invalid")
             if native_outcome is not None and native_outcome.status in (
-                    "cap_denied", "unsupported_graph", "server_error"):
+                    "cap_denied", "unsupported_graph", "server_error", "request_incomplete"):
                 outcome = native_outcome.model_copy(update={"native_manifest_sha256": outcome_manifest})
                 return CodexTurn(returncode=1, message=None,
+                                 timed_out="deadline" in detail,
                                  stderr_tail="local admitted model call failed", isolation=isolation)
             if native_outcome is not None and native_outcome.status == "receipt_invalid":
                 if "deadline" in detail:
@@ -285,7 +297,7 @@ class LlamaSpecialist:
             if consumed:
                 failure_status: Literal["receipt_invalid", "launch_failed", "server_error"] = (
                     "receipt_invalid" if not launch_start_attempted else
-                    "launch_failed" if not backend_entered else "server_error")
+                    "launch_failed" if backend is None else "server_error")
                 if failure_status == "server_error":
                     outcome = TokenLaunchOutcome(status=failure_status,
                                                  native_manifest_sha256=outcome_manifest)
@@ -297,7 +309,7 @@ class LlamaSpecialist:
             if consumed:
                 failure_status = (
                     "receipt_invalid" if not launch_start_attempted else
-                    "launch_failed" if not backend_entered else "server_error")
+                    "launch_failed" if backend is None else "server_error")
                 if failure_status == "server_error":
                     outcome = TokenLaunchOutcome(status=failure_status,
                                                  native_manifest_sha256=outcome_manifest)
@@ -306,9 +318,18 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None,
                              stderr_tail="local admitted model call failed", isolation=isolation)
         finally:
-            if backend is not None and hasattr(backend, "collect_native_work"):
-                with suppress(Exception):  # close the native receipt channel during cleanup
-                    backend.collect_native_work(generated=None)
+            if backend is not None:
+                try:
+                    terminal = backend.collect_native_work(generated=None)
+                    if outcome is None:
+                        outcome = terminal.model_copy(
+                            update={"native_manifest_sha256": outcome_manifest},
+                        )
+                except Exception:  # noqa: BLE001 -- fail closed if terminal receipt accounting fails
+                    if outcome is None:
+                        outcome = TokenLaunchOutcome(
+                            status="receipt_invalid", native_manifest_sha256=outcome_manifest,
+                        )
             if consumed and not launch_owned:
                 try:
                     launch_state = admission.claim_scheduler_native_launch(claim, owner_id=launch_owner)

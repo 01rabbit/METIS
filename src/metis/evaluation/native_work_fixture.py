@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from metis.core.native_work_receipt import (
+    MAX_NATIVE_WORK_RECEIPT_BYTES,
+    parse_native_work_receipt,
+)
 from metis.core.study_token_admission import (
     StudyTokenAdmission,
     TokenAdmissionReceipt,
@@ -31,7 +35,6 @@ _FIXTURE_TOKEN_IDS = (1, 385, 328, 432, 261, 352, 412, 430, 430, 275, 352, 303, 
 _FIXTURE_PREFILL_TOKENS = len(_FIXTURE_TOKEN_IDS)
 _FIXTURE_STARTUP_TOKENS = 2
 _MAX_RESPONSE_BYTES = 65_536
-_MAX_RECEIPT_BYTES = 256
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,13 @@ class _FixtureRequest:
     end: Literal["limit", "word", "eos"]
     body: bytes
     protocol_sha256: str
+
+
+def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise ValueError("duplicate response fields")
+    return fields
 
 
 def _fixture_request(n_predict: int, end: Literal["limit", "word", "eos"]) -> _FixtureRequest:
@@ -180,42 +190,23 @@ def _finish_process(process: subprocess.Popen[bytes], *, request_completed: bool
         return process.wait(timeout=2)
 
 
-def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    fields = dict(pairs)
-    if len(fields) != len(pairs):
-        raise ValueError("duplicate receipt fields")
-    return fields
-
-
 def _receipt_outcome(
     fd: int, claim: TokenLaunchClaim, status: int, generated: int | None, native_cap: int,
 ) -> TokenLaunchOutcome:
-    invalid = TokenLaunchOutcome(status="receipt_invalid", exit_status=status)
     try:
         os.set_blocking(fd, False)
-        raw = os.read(fd, _MAX_RECEIPT_BYTES + 1)
-        if len(raw) > _MAX_RECEIPT_BYTES or raw.count(b"\n") != 1 or not raw.endswith(b"\n") or os.read(fd, 1):
-            return invalid
-        value = json.loads(raw.decode("ascii"), object_pairs_hook=_unique_fields)
-    except (OSError, ValueError):
-        return invalid
-    if (not isinstance(value, dict) or set(value) != {"version", "nonce", "cap", "charged", "reason"}
-            or type(value["version"]) is not int or value["version"] != 1 or value["nonce"] != claim.nonce
-            or type(value["cap"]) is not int or value["cap"] != native_cap
-            or type(value["charged"]) is not int or not 0 <= value["charged"] <= value["cap"]):
-        return invalid
-    reason, charged = value["reason"], value["charged"]
-    if (reason == "shutdown" and status == 0 and generated is not None
-            and charged >= _FIXTURE_STARTUP_TOKENS + _FIXTURE_PREFILL_TOKENS + generated - 1
-            and charged + generated <= claim.receipt.attempt.tokens):
-        return TokenLaunchOutcome(status="completed", exit_status=status, observed_work=charged)
-    if reason == "cap_denied" and status == 75 and generated is None:
-        return TokenLaunchOutcome(status="cap_denied", exit_status=status, observed_work=charged)
-    if reason == "unsupported_graph" and status == 75 and generated is None:
-        return TokenLaunchOutcome(status="unsupported_graph", exit_status=status, observed_work=charged)
-    if reason == "server_error" and 1 <= status <= 255 and status not in (74, 75) and generated is None:
-        return TokenLaunchOutcome(status="server_error", exit_status=status, observed_work=charged)
-    return invalid
+        raw = os.read(fd, MAX_NATIVE_WORK_RECEIPT_BYTES + 1)
+        if os.read(fd, 1):
+            return TokenLaunchOutcome(status="receipt_invalid", exit_status=status)
+    except OSError:
+        return TokenLaunchOutcome(status="receipt_invalid", exit_status=status)
+    minimum = None
+    if generated is not None:
+        minimum = _FIXTURE_STARTUP_TOKENS + _FIXTURE_PREFILL_TOKENS + generated - 1
+    return parse_native_work_receipt(
+        raw, nonce=claim.nonce, cap=native_cap, exit_status=status, generated=generated,
+        minimum_completed_work=minimum, maximum_completed_work=native_cap,
+    )
 
 
 def _run_claim(
@@ -284,9 +275,9 @@ def qualify_native_launch(
     request = _fixture_request(n_predict, end)
     if receipt.study.protocol_sha256 != request.protocol_sha256:
         raise ValueError("public fixture sampling profile does not match admission")
-    # Charge every allowed sampled output separately, including the last
-    # token that can leave the API without entering another model graph.
-    native_cap = receipt.attempt.tokens - request.n_predict
+    # Graph work meters prompt and decode positions; reserve one for the last
+    # sampled token that can leave without another graph evaluation.
+    native_cap = receipt.attempt.tokens - 1
     if native_cap <= 0:
         raise ValueError("admission leaves no positive native cap after output headroom")
     if not 0 < seconds <= 30:

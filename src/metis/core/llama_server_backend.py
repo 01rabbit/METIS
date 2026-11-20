@@ -19,33 +19,14 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Self, TypeGuard
+from typing import Any, Self, TypeGuard
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
+from metis.core.native_work_receipt import (
+    MAX_NATIVE_WORK_RECEIPT_BYTES,
+    parse_native_work_receipt,
+)
 from metis.core.study_token_admission import TokenLaunchOutcome
 from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
-
-_MAX_WORK_RECEIPT_BYTES = 256
-
-
-class _NativeWorkReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    version: Literal[1]
-    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
-    cap: int = Field(ge=1, le=10_000_000)
-    charged: int = Field(ge=0, le=10_000_000)
-    reason: Literal["shutdown", "cap_denied", "unsupported_graph", "server_error"]
-
-
-def _unique_receipt_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("duplicate receipt field")
-        value[key] = item
-    return value
 
 
 class LlamaBackendError(RuntimeError):
@@ -152,14 +133,15 @@ class LlamaServerBackend:
         self._check_startup_abort(deadline, deadline_error)
         try:
             self._private = tempfile.TemporaryDirectory(prefix="metis-llama-", dir=None)
-            os.chmod(self._private.name, 0o700)
-            self._socket = str(Path(self._private.name) / "server.sock")
+            private_path = Path(self._private.name).resolve(strict=True)
+            os.chmod(private_path, 0o700)
+            self._socket = str(private_path / "server.sock")
             self._log = open(os.devnull, "wb")
             # Never inherit LLAMA_ARG_* (draft model, context shift, warmup,
             # endpoints, etc.) or proxy/plugin environment from the parent.
             # The child receives no prompt before complete() reserves tokens.
-            child_env = {"PATH": "/usr/bin:/bin", "HOME": self._private.name,
-                         "TMPDIR": self._private.name, "LANG": "C"}
+            child_env = {"PATH": "/usr/bin:/bin", "HOME": str(private_path),
+                         "TMPDIR": str(private_path), "LANG": "C"}
             self._check_startup_abort(deadline, deadline_error)
             pass_fds: tuple[int, ...] = ()
             if self.native_work_budget_cap is None:
@@ -169,7 +151,6 @@ class LlamaServerBackend:
                         "--no-context-shift", "--no-warmup"]
             else:
                 self._receipt_read_fd, self._receipt_write_fd = os.pipe()
-                os.set_inheritable(self._receipt_write_fd, True)
                 args = [str(self.binary), "--metis-work-budget", str(self.native_work_budget_cap),
                         "--model", str(self.model), "--socket", self._socket,
                         "--metis-receipt-fd", str(self._receipt_write_fd),
@@ -204,9 +185,6 @@ class LlamaServerBackend:
             raise LlamaBackendError(deadline_error)
         except BaseException:
             self.close()
-            if self._receipt_read_fd is not None:
-                os.close(self._receipt_read_fd)
-                self._receipt_read_fd = None
             raise
 
     def _check_startup_abort(self, deadline: float, deadline_error: str) -> None:
@@ -434,59 +412,51 @@ class LlamaServerBackend:
             raise LlamaBackendError("completion usage or settings mismatch")
         return result["content"], evaluated, predicted
 
-    def collect_native_work(self, *, generated: int | None) -> TokenLaunchOutcome:
+    def collect_native_work(
+        self, *, generated: int | None, evaluated: int | None = None,
+    ) -> TokenLaunchOutcome:
         """Validate the one-shot native receipt after the server process exits."""
         if self.native_work_budget_cap is None:
             raise LlamaBackendError("native work receipt was not requested")
         if self._native_outcome is not None:
             return self._native_outcome
-        invalid = TokenLaunchOutcome(status="receipt_invalid")
         fd = self._receipt_read_fd
         self._receipt_read_fd = None
-        if not self._native_launch_started or self._process_status is None or fd is None:
+        if not self._native_launch_started:
             if fd is not None:
                 os.close(fd)
-            self._native_outcome = invalid
-            return invalid
+            self._native_outcome = TokenLaunchOutcome(status="launch_failed")
+            return self._native_outcome
+        if self._process_status is None or fd is None:
+            if fd is not None:
+                os.close(fd)
+            self._native_outcome = TokenLaunchOutcome(status="receipt_invalid")
+            return self._native_outcome
         try:
             os.set_blocking(fd, False)
-            raw = os.read(fd, _MAX_WORK_RECEIPT_BYTES + 1)
+            raw = os.read(fd, MAX_NATIVE_WORK_RECEIPT_BYTES + 1)
             extra = os.read(fd, 1)
-            if (len(raw) > _MAX_WORK_RECEIPT_BYTES or extra or raw.count(b"\n") != 1
-                    or not raw.endswith(b"\n")):
-                self._native_outcome = invalid
-                return invalid
-            record = json.loads(raw.decode("ascii"), object_pairs_hook=_unique_receipt_fields)
-            receipt = _NativeWorkReceipt.model_validate(record)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, ValidationError):
-            self._native_outcome = invalid
-            return invalid
+        except OSError:
+            self._native_outcome = TokenLaunchOutcome(
+                status="receipt_invalid", exit_status=self._process_status,
+            )
+            return self._native_outcome
         finally:
             os.close(fd)
-        if (receipt.nonce != self._native_work_nonce
-                or receipt.cap != self.native_work_budget_cap
-                or receipt.charged > receipt.cap):
-            self._native_outcome = invalid
-        elif (receipt.reason == "shutdown" and self._process_status == 0
-              and type(generated) is int and 0 <= generated <= self.max_output_tokens
-              and receipt.charged + generated <= receipt.cap + self.max_output_tokens):
+        if extra:
             self._native_outcome = TokenLaunchOutcome(
-                status="completed", exit_status=0, observed_work=receipt.charged)
-        elif (receipt.reason == "cap_denied" and self._process_status == 75 and generated is None):
-            self._native_outcome = TokenLaunchOutcome(
-                status="cap_denied", exit_status=75, observed_work=receipt.charged)
-        elif (receipt.reason == "unsupported_graph" and self._process_status == 75
-              and generated is None):
-            self._native_outcome = TokenLaunchOutcome(
-                status="unsupported_graph", exit_status=75, observed_work=receipt.charged)
-        elif (receipt.reason == "server_error" and type(self._process_status) is int
-              and 1 <= self._process_status <= 255 and self._process_status not in (74, 75)
-              and generated is None):
-            self._native_outcome = TokenLaunchOutcome(
-                status="server_error", exit_status=self._process_status,
-                observed_work=receipt.charged)
-        else:
-            self._native_outcome = invalid
+                status="receipt_invalid", exit_status=self._process_status,
+            )
+            return self._native_outcome
+        minimum = None
+        if type(evaluated) is int and type(generated) is int and generated > 0:
+            minimum = evaluated + generated - 1
+        budget = self.native_work_budget_cap
+        self._native_outcome = parse_native_work_receipt(
+            raw, nonce=self._native_work_nonce or "", cap=budget,
+            exit_status=self._process_status, generated=generated,
+            minimum_completed_work=minimum, maximum_completed_work=budget,
+        )
         return self._native_outcome
 
     def close(self) -> None:
