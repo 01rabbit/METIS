@@ -51,7 +51,9 @@ def _wait_for(path: Path) -> None:
 
 
 def _crash_after_claim(database: Path, receipt: TokenAdmissionReceipt, scratch: Path | None) -> None:
-    with StudyTokenAdmission(database).claim_fixture_launch(receipt):
+    admission = StudyTokenAdmission(database)
+    with admission.claim_fixture_launch(receipt) as claim:
+        admission.consume_launch_claim(claim)
         if scratch is not None:
             ready, release, exited = (scratch / marker for marker in ("ready", "release", "exited"))
             subprocess.Popen(
@@ -63,7 +65,9 @@ def _crash_after_claim(database: Path, receipt: TokenAdmissionReceipt, scratch: 
 
 
 def _crash_after_raw_fork(database: Path, receipt: TokenAdmissionReceipt, scratch: Path) -> None:
-    with StudyTokenAdmission(database).claim_fixture_launch(receipt):
+    admission = StudyTokenAdmission(database)
+    with admission.claim_fixture_launch(receipt) as claim:
+        admission.consume_launch_claim(claim)
         ready, release, exited = (scratch / marker for marker in ("ready", "release", "exited"))
         if os.fork() == 0:
             ready.touch()
@@ -77,6 +81,7 @@ def _crash_after_raw_fork(database: Path, receipt: TokenAdmissionReceipt, scratc
 def _finish_with_lock(database: Path, receipt: TokenAdmissionReceipt, ready, release) -> None:
     admission = StudyTokenAdmission(database)
     with admission.claim_fixture_launch(receipt) as claim:
+        admission.consume_launch_claim(claim)
         ready.set()
         if not release.wait(timeout=10):
             raise RuntimeError("fixture controller release not received")
@@ -133,6 +138,28 @@ def test_crashed_controller_reconciles_once_with_full_charge(reserved, tmp_path,
     process.close()
 
 
+def test_reconciles_fixture_claim_lost_before_consumption(reserved):
+    admission, receipt = reserved
+    with admission.claim_fixture_launch(receipt) as claim:
+        pass
+
+    outcome = admission.reconcile_lost_fixture_claim(receipt)
+
+    assert (outcome.status, outcome.exit_status, outcome.observed_work) == ("lost", None, None)
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute(
+            "SELECT consumed FROM study_token_launches WHERE nonce=?", (claim.nonce,),
+        ).fetchone() == (0,)
+        assert db.execute(
+            "SELECT status FROM study_token_outcomes WHERE nonce=?", (claim.nonce,),
+        ).fetchone() == ("lost",)
+        assert db.execute("SELECT SUM(tokens) FROM study_token_attempts").fetchone() == (15,)
+    with pytest.raises(ValueError, match="invalid or already consumed"):
+        admission.consume_launch_claim(claim)
+    with pytest.raises(ValueError, match="outcome already recorded"):
+        admission.reconcile_lost_fixture_claim(receipt)
+
+
 def test_reconcile_refuses_a_live_controller_and_keeps_its_terminal_outcome(reserved):
     admission, receipt = reserved
     context = get_context("spawn")
@@ -156,8 +183,8 @@ def test_reconcile_refuses_a_live_controller_and_keeps_its_terminal_outcome(rese
 
 def test_racing_reconcilers_record_exactly_one_loss(reserved):
     admission, receipt = reserved
-    with admission.claim_fixture_launch(receipt):
-        pass
+    with admission.claim_fixture_launch(receipt) as claim:
+        admission.consume_launch_claim(claim)
     context = get_context("spawn")
     with context.Manager() as manager, ProcessPoolExecutor(max_workers=2, mp_context=context) as pool:
         barrier = manager.Barrier(2)
@@ -245,8 +272,8 @@ def test_migrate_legacy_ledger_and_reconcile_separate_pinned_fixture_without_ref
     new_study = _STUDY.model_copy(update={"study_id": "new-study", "protocol_sha256": "f" * 64})
     new_slot = _SLOT.model_copy(update={"run_id": "new-run"})
     receipt = admission.reserve(new_study, new_slot, _ATTEMPT)
-    with admission.claim_fixture_launch(receipt):
-        pass
+    with admission.claim_fixture_launch(receipt) as claim:
+        admission.consume_launch_claim(claim)
     result = admission.reconcile_lost_fixture_claim(receipt)
     assert result.status == "lost"
     assert result.native_manifest_sha256 == new_study.native_manifest_sha256

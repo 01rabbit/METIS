@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, model_validator
 
 from metis.core.ctf_knowledge import validate_heldout_snapshot_source
+from metis.core.token_reservation import FULL_CONTEXT_RESERVATION_TOKENS
 from metis.evaluation.heldout_analysis import (
     Arm,
     Budget,
@@ -45,6 +46,7 @@ class ArmConfig(Record):
 class LlamaBackendPin(Record):
     binary_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     model_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    native_manifest_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     database_path: str
     budget_key: Identifier
     token_limit: Annotated[int, Field(ge=1, le=10_000_000)]
@@ -125,7 +127,12 @@ class Bindings(Record):
 def digest(protocol: Protocol) -> str:
     """Hash the fully validated, canonical design without run IDs or answers."""
     protocol = Protocol.model_validate(protocol.model_dump())
-    canonical = json.dumps(protocol.model_dump(mode="json"), sort_keys=True,
+    payload = protocol.model_dump(mode="json")
+    # Preserve the v1 digest for existing llama pins that predate the optional
+    # native manifest field. A present manifest is included in the commitment.
+    if protocol.llama_backend is not None and protocol.llama_backend.native_manifest_sha256 is None:
+        payload["llama_backend"].pop("native_manifest_sha256", None)
+    canonical = json.dumps(payload, sort_keys=True,
                            separators=(",", ":"), ensure_ascii=True).encode("ascii")
     return hashlib.sha256(canonical).hexdigest()
 
@@ -153,12 +160,15 @@ def bind_run(protocol: Protocol, database: Path, run_id: str, *, task_id: str,
     if slot not in schedule(protocol):
         raise ValueError("run is outside held-out schedule")
     bind(database, run_id, {"protocol_sha256": expected_sha256, **slot,
+                            "study_id": protocol.study_id,
+                            "measurement": protocol.measurement,
                             "arm_config": protocol.arm_config[arm].model_dump(mode="json"),
+                            "memory_card_digests": protocol.memory_card_digests,
                             "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
-                            "llama_backend": (protocol.llama_backend.model_dump(mode="json")
+                            "llama_backend": (protocol.llama_backend.model_dump(mode="json", exclude_none=True)
                                               if protocol.llama_backend is not None else None),
                             "budget": protocol.budgets[arm].model_dump(mode="json"),
-                            "measurement": protocol.measurement, "prompt_text": prompt_text})
+                            "prompt_text": prompt_text})
 
 
 def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database: Path) -> None:
@@ -185,12 +195,46 @@ def reconcile_memory_snapshots(protocol: Protocol, bindings: Bindings, database:
                 validate_heldout_snapshot_source(db, assignment.run_id, card_id, payload, card_digest)
 
 
+def _unconsumed_native_claim_matches(
+    db: sqlite3.Connection, protocol: Protocol, slot: RunAssignment, *,
+    assignment_id: str, attempt_id: str, reservation_id: int, prompt_sha256: str,
+) -> bool:
+    backend = protocol.llama_backend
+    if backend is None or backend.native_manifest_sha256 is None:
+        return False
+    try:
+        receipt = db.execute(
+            "SELECT p.protocol_sha256,p.runtime_sha256,p.model_sha256,p.token_limit,"
+            "p.native_manifest_sha256,s.task_id,s.repetition,s.arm,s.token_limit,"
+            "a.assignment_id,a.attempt_id,a.prompt_sha256,a.tokens "
+            "FROM study_token_launches l "
+            "JOIN study_token_attempts a USING (run_id,turn_reservation_id) "
+            "JOIN study_token_slots s USING (study_id,run_id) "
+            "JOIN study_token_pins p USING (study_id) "
+            "WHERE l.run_id=? AND l.turn_reservation_id=? AND p.study_id=? AND l.consumed=0 "
+            "AND NOT EXISTS (SELECT 1 FROM study_token_outcomes o WHERE o.nonce=l.nonce) "
+            "AND NOT EXISTS (SELECT 1 FROM study_token_fixture_claims f WHERE f.nonce=l.nonce)",
+            (slot.run_id, reservation_id, protocol.study_id),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return receipt == (
+        digest(protocol), backend.binary_sha256, backend.model_sha256, backend.token_limit,
+        backend.native_manifest_sha256, slot.task_id, slot.repetition, slot.arm,
+        protocol.budgets[slot.arm].tokens, assignment_id, attempt_id, prompt_sha256,
+        FULL_CONTEXT_RESERVATION_TOKENS + backend.max_output_tokens,
+    )
+
+
 def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Path) -> None:
     """Require each real-model run to carry its bound treatment into host jobs."""
     if protocol.measurement != "real_model":
         return
     expected_digest = digest(protocol)
+    backend = protocol.llama_backend
+    native_admission = backend is not None and backend.native_manifest_sha256 is not None
     with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        db.execute("BEGIN")
         for assignment in bindings.runs:
             recorded = binding(database, assignment.run_id)
             if recorded is None:
@@ -206,8 +250,15 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                 "model_pin": protocol.model_pin, "runtime_pin": protocol.runtime_pin,
                 "budget": protocol.budgets[assignment.arm].model_dump(mode="json"),
             }
-            if protocol.llama_backend is not None:
-                expected_binding["llama_backend"] = protocol.llama_backend.model_dump(mode="json")
+            admission_fields = {
+                "study_id": protocol.study_id, "measurement": protocol.measurement,
+                "memory_card_digests": protocol.memory_card_digests,
+            }
+            # V1 bindings issued before admission stored none of these fields.
+            if native_admission or admission_fields.keys() & recorded.keys():
+                expected_binding.update(admission_fields)
+            if backend is not None:
+                expected_binding["llama_backend"] = backend.model_dump(mode="json", exclude_none=True)
             if {key: value for key, value in recorded.items() if key != "prompt_text"} != expected_binding:
                 raise ValueError("held-out arm binding mismatch")
             jobs = db.execute("SELECT assignment_id,state FROM agent_jobs WHERE run_id=?",
@@ -247,16 +298,23 @@ def reconcile_arm_dispatch(protocol: Protocol, bindings: Bindings, database: Pat
                     if any(recorded_attempt != attempt for recorded_attempt, _, _ in matched):
                         raise ValueError("held-out prompt dispatch mismatch")
                     kinds = sorted(event for _, event, _ in matched)
-                    if kinds == ["model_turn_abandoned"]:
+                    if kinds == ["model_turn_abandoned"] and not native_admission:
                         continue
-                    if kinds != ["codex_turn", "heldout_prompt_applied"]:
+                    abandoned_native = kinds == ["heldout_prompt_applied", "model_turn_abandoned"]
+                    if not abandoned_native and kinds != ["codex_turn", "heldout_prompt_applied"]:
                         raise ValueError("held-out prompt dispatch mismatch")
                     prompt = next(detail for _, event, detail in matched if event == "heldout_prompt_applied")
+                    prompt_sha256 = prompt.get("prompt_sha256")
                     if (prompt.get("prefix_sha256") != protocol.arm_config[assignment.arm].prompt_sha256
-                            or not isinstance(prompt.get("prompt_sha256"), str)
-                            or len(prompt["prompt_sha256"]) != 64
+                            or not isinstance(prompt_sha256, str)
+                            or not re.fullmatch(r"[0-9a-f]{64}", prompt_sha256)
                             or prompt.get("model") != protocol.model_pin
                             or prompt.get("runtime") != protocol.runtime_pin):
+                        raise ValueError("held-out prompt dispatch mismatch")
+                    if abandoned_native and not _unconsumed_native_claim_matches(
+                        db, protocol, assignment, assignment_id=assignment_id, attempt_id=attempt,
+                        reservation_id=identity, prompt_sha256=prompt_sha256,
+                    ):
                         raise ValueError("held-out prompt dispatch mismatch")
                 expected_cards = len(protocol.memory_card_digests) if protocol.arm_config[assignment.arm].memory_enabled else 0
                 for _, detail in rows:

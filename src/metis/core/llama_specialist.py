@@ -37,7 +37,8 @@ class LlamaSpecialist:
     def __init__(self, *, model_id: str, binary: Path, binary_sha256: str,
                  model_path: Path, model_sha256: str, database: Path,
                  budget_key: str, token_limit: int, max_output_tokens: int,
-                 context_reservation: bool = False):
+                 context_reservation: bool = False,
+                 native_manifest_sha256: str | None = None):
         if not model_id or len(model_id) > 128:
             raise ValueError("invalid pinned model id")
         self.model_id = model_id
@@ -46,6 +47,7 @@ class LlamaSpecialist:
                                "database": database, "budget_key": budget_key,
                                "token_limit": token_limit, "max_output_tokens": max_output_tokens,
                                "context_reservation": context_reservation}
+        self.native_manifest_sha256 = native_manifest_sha256
         self.max_output_tokens = max_output_tokens
 
     def assert_heldout_binding(self, heldout: dict[str, Any], database: Path,
@@ -54,6 +56,13 @@ class LlamaSpecialist:
         pin = heldout.get("llama_backend")
         if not isinstance(pin, dict) or selected_model != self.model_id:
             raise ValueError("held-out llama backend pin missing or model mismatch")
+        from metis.evaluation.heldout_protocol import LlamaBackendPin
+        try:
+            canonical_pin = LlamaBackendPin.model_validate(pin).model_dump(
+                mode="json", exclude_none=True,
+            )
+        except ValueError:
+            raise ValueError("held-out llama backend differs from preregistered pin") from None
         expected = {"binary_sha256": self.backend_config["binary_sha256"],
                     "model_sha256": self.backend_config["model_sha256"],
                     "database_path": str(self.backend_config["database"].resolve()),
@@ -61,7 +70,9 @@ class LlamaSpecialist:
                     "token_limit": self.backend_config["token_limit"],
                     "max_output_tokens": self.backend_config["max_output_tokens"],
                     "context_reservation": self.backend_config["context_reservation"]}
-        if (pin != expected or self.backend_config["database"].resolve() != database.resolve()
+        if self.native_manifest_sha256 is not None:
+            expected["native_manifest_sha256"] = self.native_manifest_sha256
+        if (canonical_pin != expected or self.backend_config["database"].resolve() != database.resolve()
                 or not self.backend_config["context_reservation"]):
             raise ValueError("held-out llama backend differs from preregistered pin")
 
