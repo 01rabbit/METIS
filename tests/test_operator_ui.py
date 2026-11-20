@@ -217,7 +217,9 @@ def test_run_list_fails_closed_on_corrupt_selected_chain(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("field", ["run_id", "payload", "timestamp", "previous_hash", "digest"])
-def test_run_list_rejects_blob_in_event_text_column(tmp_path: Path, field: str) -> None:
+def test_audit_routes_reject_blob_in_event_text_column(
+    tmp_path: Path, field: str, capsys: pytest.CaptureFixture[str],
+) -> None:
     database = fixture_database(tmp_path)
     with sqlite3.connect(database) as db:
         db.execute("DROP TRIGGER deny_update")
@@ -226,9 +228,14 @@ def test_run_list_rejects_blob_in_event_text_column(tmp_path: Path, field: str) 
         status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
         assert status == 503
         assert body == b"run list unavailable"
+        if field != "run_id":
+            status, _headers, body = request(port, "GET", f"/api/runs/{RUN_ID}/audit", token=TOKEN)
+            assert status == 503
+            assert body == b"audit unavailable"
+    assert capsys.readouterr().err == ""
 
 
-def test_script_clears_protected_view_after_auth_failure(tmp_path: Path) -> None:
+def test_operator_script_handles_auth_and_selection_changes(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required to drive the operator script")
@@ -265,20 +272,31 @@ def test_script_clears_protected_view_after_auth_failure(tmp_path: Path) -> None
         class Option {
           constructor(textContent, value) { Object.assign(this, {textContent, value}); }
         }
+        const confirmations = [];
+        const window = {
+          confirm(message) { confirmations.push(message); return true; }
+        };
         let mockFetch;
-        runInNewContext(readFileSync(0, 'utf8'), {document, Option, fetch: () => mockFetch()});
+        runInNewContext(readFileSync(0, 'utf8'), {
+          document, Option, window, fetch: (...args) => mockFetch(...args),
+        });
 
         const select = elements['run-list'];
         const runId = 'a'.repeat(32);
-        const payload = {runs: [{run_id: runId, status: 'planning'}], truncated: false};
+        const otherRunId = 'b'.repeat(32);
+        const payload = {
+          runs: [{run_id: runId, status: 'planning'}, {run_id: otherRunId, status: 'new'}],
+          truncated: false,
+        };
         const success = () => ({ok: true, status: 200, json: async () => payload});
         const refresh = () => elements.refresh.fire('click');
+        const inspect = () => elements.inspect.fire('click');
         const deny = status => { mockFetch = async () => ({ok: false, status}); };
 
         async function loadAndSelect() {
           mockFetch = async () => success();
           await refresh();
-          assert.equal(select.options.length, 2);
+          assert.equal(select.options.length, 3);
           select.value = runId;
           select.fire('change');
           assert.equal(elements.run.value, runId);
@@ -321,6 +339,80 @@ def test_script_clears_protected_view_after_auth_failure(tmp_path: Path) -> None
           resolveResponse(success());
           await pendingList;
           assertCleared('Audit unavailable (403)');
+        });
+
+        test('an earlier refresh denial invalidates even a newer pending request', async () => {
+          await loadAndSelect();
+          let resolveOlder, resolveNewer;
+          mockFetch = () => new Promise(resolve => { resolveOlder = resolve; });
+          const older = refresh();
+          mockFetch = () => new Promise(resolve => { resolveNewer = resolve; });
+          const newer = refresh();
+
+          resolveOlder({ok: false, status: 401});
+          await older;
+          assertCleared('Run list unavailable (401)');
+          resolveNewer(success());
+          await newer;
+          assertCleared('Run list unavailable (401)');
+        });
+
+        test('an audit follows the selected run and cancellation confirms its actual target', async () => {
+          await loadAndSelect();
+          const audit = id => ({ok: true, status: 200, json: async () => ({run_id: id})});
+          mockFetch = async () => audit(runId);
+          await inspect();
+          assert.equal(JSON.parse(elements.result.textContent).run_id, runId);
+          let resolveOlder;
+          mockFetch = () => new Promise(resolve => { resolveOlder = resolve; });
+          const older = inspect();
+
+          select.value = otherRunId;
+          select.fire('change');
+          assert.equal(elements.result.textContent, '');
+          mockFetch = async () => audit(otherRunId);
+          await inspect();
+          resolveOlder(audit(runId));
+          await older;
+          assert.equal(JSON.parse(elements.result.textContent).run_id, otherRunId);
+
+          mockFetch = async (path, options) => {
+            assert.equal(path, '/api/runs/' + otherRunId + '/cancel');
+            assert.equal(options.method, 'POST');
+            return audit(otherRunId);
+          };
+          await elements.cancel.fire('click');
+          assert.deepEqual(confirmations, ['Cancel run ' + otherRunId + '?']);
+          assert.equal(JSON.parse(elements.result.textContent).run_id, otherRunId);
+
+          mockFetch = async () => ({ok: true, json: async () => ({...payload, runs: []})});
+          await refresh();
+          assert.equal(select.value, '');
+          assert.equal(elements.run.value, '');
+        });
+
+        test('a delayed cancellation result cannot replace another run audit', async () => {
+          await loadAndSelect();
+          let resolveCancel;
+          mockFetch = (path, options) => {
+            assert.equal(path, '/api/runs/' + runId + '/cancel');
+            assert.equal(options.method, 'POST');
+            return new Promise(resolve => { resolveCancel = resolve; });
+          };
+          const pendingCancel = elements.cancel.fire('click');
+          assert.equal(confirmations.at(-1), 'Cancel run ' + runId + '?');
+          assert.equal(typeof resolveCancel, 'function');
+
+          select.value = otherRunId;
+          select.fire('change');
+          const audit = {run_id: otherRunId, status: 'planning'};
+          mockFetch = async () => ({ok: true, status: 200, json: async () => audit});
+          await inspect();
+          resolveCancel({ok: true, status: 200, json: async () => ({
+            run_id: runId, status: 'cancelled',
+          })});
+          await pendingCancel;
+          assert.deepEqual(JSON.parse(elements.result.textContent), audit);
         });
         """],
         input=script,

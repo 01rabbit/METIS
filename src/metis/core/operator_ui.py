@@ -188,6 +188,7 @@ const output = document.getElementById('result');
 const select = document.getElementById('run-list');
 let authorizationGeneration = 0;
 let latestListRequest = 0;
+let latestRunRequest = 0;
 let selectedRunId = '';
 
 function clearProtectedView() {
@@ -203,22 +204,31 @@ tokenInput.addEventListener('input', clearProtectedView);
 async function operatorRequest(path, method, label, render, isLatest = () => true) {
   const generation = authorizationGeneration;
   const token = tokenInput.value;
-  const isCurrent = () => generation === authorizationGeneration
-    && token === tokenInput.value && isLatest();
+  const sameAuthorization = () => generation === authorizationGeneration && token === tokenInput.value;
   try {
     const response = await fetch(path,
       {method, headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
-    if (!isCurrent()) return;
+    if (!sameAuthorization()) return;
+    if (response.status === 401 || response.status === 403) {
+      clearProtectedView();
+      output.textContent = label + ' unavailable (' + response.status + ')';
+      return;
+    }
+    if (!isLatest()) return;
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) clearProtectedView();
       output.textContent = label + ' unavailable (' + response.status + ')';
       return;
     }
     const payload = await response.json();
-    if (isCurrent()) render(payload);
+    if (sameAuthorization() && isLatest()) render(payload);
   } catch (_) {
-    if (isCurrent()) output.textContent = label + ' unavailable';
+    if (sameAuthorization() && isLatest()) output.textContent = label + ' unavailable';
   }
+}
+
+function invalidateRunView() {
+  latestRunRequest++;
+  output.textContent = '';
 }
 
 document.getElementById('refresh').addEventListener('click', () => {
@@ -238,6 +248,10 @@ document.getElementById('refresh').addEventListener('click', () => {
     }
     if (Array.from(select.options).some(option => option.value === selectedRunId)) {
       select.value = selectedRunId;
+    } else {
+      selectedRunId = '';
+      runInput.value = '';
+      invalidateRunView();
     }
     const count = select.options.length - 1;
     output.textContent = payload.truncated
@@ -248,8 +262,10 @@ document.getElementById('refresh').addEventListener('click', () => {
 select.addEventListener('change', () => {
   selectedRunId = select.value;
   runInput.value = selectedRunId;
+  invalidateRunView();
 });
 runInput.addEventListener('input', () => {
+  invalidateRunView();
   if (runInput.value !== selectedRunId) {
     selectedRunId = '';
     select.value = '';
@@ -261,13 +277,17 @@ function showResult(payload) {
 }
 
 document.getElementById('inspect').addEventListener('click', () => {
+  const request = ++latestRunRequest;
   const run = runInput.value;
   if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
-  return operatorRequest('/api/runs/' + run + '/audit', 'GET', 'Audit', showResult);
+  return operatorRequest('/api/runs/' + run + '/audit', 'GET', 'Audit', showResult,
+    () => request === latestRunRequest && run === runInput.value);
 });
 document.getElementById('cancel').addEventListener('click', () => {
   const run = runInput.value;
   if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
-  if (!window.confirm('Cancel this run?')) return;
-  return operatorRequest('/api/runs/' + run + '/cancel', 'POST', 'Cancellation', showResult);
+  if (!window.confirm('Cancel run ' + run + '?')) return;
+  const request = ++latestRunRequest;
+  return operatorRequest('/api/runs/' + run + '/cancel', 'POST', 'Cancellation', showResult,
+    () => request === latestRunRequest && run === runInput.value);
 });"""

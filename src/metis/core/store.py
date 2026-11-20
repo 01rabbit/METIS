@@ -264,6 +264,10 @@ class RunStore:
         events = []
         parent = ""
         for expected, (sequence, payload, timestamp, previous, digest) in enumerate(rows):
+            if type(sequence) is not int or any(
+                not isinstance(field, str) for field in (payload, timestamp, previous, digest)
+            ):
+                raise ValueError("event chain contains invalid storage fields")
             if (sequence != expected or previous != parent
                     or digest != self._digest(payload, timestamp, parent)):
                 raise ValueError("event chain is corrupt")
