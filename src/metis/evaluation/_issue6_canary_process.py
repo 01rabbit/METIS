@@ -157,6 +157,10 @@ def _reap(process: subprocess.Popen[bytes]) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS may report EPERM for a process group containing only a zombie.
+            # wait() below reaps the direct child; a live child still fails its timeout.
+            pass
     process.wait(timeout=1)
 
 
@@ -270,6 +274,12 @@ def main() -> int:
         lease, parent, database, reservation, nonce, scratch, cutoff, wall, source = args
         return _runtime_guardian(int(lease), int(parent), Path(database), int(reservation), nonce,
                                  Path(scratch), float(cutoff), float(wall), Path(source))
+    if role in ("transcript_guardian", "transcript_stub"):
+        # -I -S ignores external paths; import only the sibling package in this source tree.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from metis.evaluation._issue6_transcript_canary import dispatch
+
+        return dispatch(role, args)
     if role == "worker":
         lease, parent, scratch, cutoff, wall, behavior = args
         return _worker(int(lease), int(parent), Path(scratch), float(cutoff), float(wall), behavior)

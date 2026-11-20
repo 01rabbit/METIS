@@ -1,5 +1,18 @@
 # METIS implementation status
 
+## Issue #6 fixed-transcript guardian canary (2026-11-20)
+
+An offline fixed JSONL stub now exercises the guardian's sanitized evidence
+path, output limits, cancellation/deadline, and terminal-record rollback. A
+macOS `killpg`/zombie `EPERM` race now falls through to bounded direct-child
+wait; deterministic regression coverage and ten repeated deadline/overflow
+checks passed. HMAC fields use a discarded per-run key and are therefore
+privacy redactions, not later-verifiable commitments. Reap evidence covers the
+direct child; child processes are prohibited in these canaries. No model is
+launched, and the result does not satisfy Issue #6's measured-gain gate or its
+Issue #7 dependency. See
+[`issue6-transcript-canary-2026-11-20.md`](reports/issue6-transcript-canary-2026-11-20.md).
+
 ## Issue #9 artifact registration audit (2026-11-20)
 
 `metis audit` now reports bounded, count-only artifact registrations from the
