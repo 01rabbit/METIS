@@ -91,9 +91,10 @@ class TokenLaunchOutcome(_Record):
         elif self.status == "request_incomplete":
             valid = self.exit_status == 0 and self.observed_work is not None
         elif self.status == "cancelled":
-            # Cancellation can race with a clean native exit. Preserve measured
-            # graph work when that terminal receipt is available.
-            valid = ((self.exit_status is None and self.observed_work is None)
+            # Cancellation can leave a known process status without a terminal
+            # receipt (for example, SIGKILL returns -9). Preserve measured graph
+            # work when a clean native receipt is available.
+            valid = (self.observed_work is None
                      or (self.exit_status == 0 and self.observed_work is not None))
         else:
             valid = self.observed_work is None and (

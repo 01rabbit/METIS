@@ -361,6 +361,26 @@ def test_failed_spawn_keeps_claim_and_records_terminal_failure(tmp_path, monkeyp
     with pytest.raises(ValueError, match="already claimed"):
         fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
 
+
+def test_interrupted_launch_records_cancelled_exit_without_receipt(tmp_path, monkeypatch):
+    admission, receipt, binary, model, approval = _setup(tmp_path, monkeypatch, "valid")
+
+    def interrupt(coroutine):
+        coroutine.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fixture.asyncio, "run", interrupt)
+    outcome = fixture.qualify_native_launch(admission, receipt, binary=binary, model=model, **approval)
+
+    assert outcome.status == "cancelled"
+    assert outcome.exit_status == -9
+    assert outcome.observed_work is None
+    with closing(sqlite3.connect(admission.database)) as db:
+        assert db.execute("SELECT consumed FROM study_token_launches").fetchone() == (1,)
+        assert db.execute(
+            "SELECT status, exit_status, observed_work FROM study_token_outcomes",
+        ).fetchone() == ("cancelled", -9, None)
+
 def test_public_native_fixture_cap_matrix(tmp_path):
     binary_file = os.environ.get("METIS_NATIVE_FIXTURE_BINARY")
     model_file = os.environ.get("METIS_NATIVE_FIXTURE_MODEL")
