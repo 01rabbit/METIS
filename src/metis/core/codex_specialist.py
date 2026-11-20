@@ -95,6 +95,14 @@ FailureCategory = Literal[
 ]
 
 
+def _effective_runner_timeout(runner: object, requested: float) -> float:
+    """Account for an optional runner-enforced per-call timeout ceiling."""
+    cap = getattr(runner, "max_call_timeout", None)
+    if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0:
+        return min(requested, float(cap))
+    return requested
+
+
 def _failure_category(state: str, failure: str | None) -> FailureCategory:
     """Return a fixed answer-free failure class without copying private failure text."""
     reason = (failure or "").casefold()
@@ -842,8 +850,15 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                  json.dumps({"reservation_id": reservation["reservation_id"]}))
             outcome = stop_outcome("run or attempt stopped before provider call")
             break
-        deadline_limited_turn = remaining <= turn_timeout
-        turn = invoke(reservation, min(turn_timeout, remaining), prompt, token_claim)
+        latest = _job(scheduler, assignment_id)
+        call_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
+        if call_remaining <= 0:
+            scheduler.tick()
+            outcome = stop_outcome("deadline exceeded before the provider call")
+            break
+        requested_timeout = min(turn_timeout, call_remaining)
+        deadline_limited_turn = call_remaining <= _effective_runner_timeout(runner, requested_timeout)
+        turn = invoke(reservation, requested_timeout, prompt, token_claim)
         if isinstance(turn, dict):
             outcome = turn
             break
@@ -881,8 +896,15 @@ def run_assignment(scheduler: AgentScheduler, run_id: str, assignment_id: str, a
                      json.dumps({"reservation_id": retry_reservation["reservation_id"]}))
                 outcome = stop_outcome("run or attempt stopped before transient retry")
                 break
-            deadline_limited_turn = retry_remaining <= turn_timeout
-            turn = invoke(retry_reservation, min(turn_timeout, retry_remaining), retry_prompt, retry_claim)
+            latest = _job(scheduler, assignment_id)
+            call_remaining = (latest["deadline"] or clock() + turn_timeout) - clock()
+            if call_remaining <= 0:
+                scheduler.tick()
+                outcome = stop_outcome("deadline exceeded before the retry provider call")
+                break
+            requested_timeout = min(turn_timeout, call_remaining)
+            deadline_limited_turn = call_remaining <= _effective_runner_timeout(runner, requested_timeout)
+            turn = invoke(retry_reservation, requested_timeout, retry_prompt, retry_claim)
             if isinstance(turn, dict):
                 outcome = turn
                 break

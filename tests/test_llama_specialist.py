@@ -33,6 +33,65 @@ def _runner(tmp_path: Path) -> LlamaSpecialist:
                            budget_key="shared-run", token_limit=1000, max_output_tokens=16)
 
 
+def test_runner_call_paths_apply_the_configured_timeout_cap(tmp_path, monkeypatch):
+    class ShortTimeoutLlamaSpecialist(LlamaSpecialist):
+        max_call_timeout = 10.0
+
+    runner = ShortTimeoutLlamaSpecialist(model_id="pinned-shisa", binary=tmp_path / "server",
+        binary_sha256="a" * 64, model_path=tmp_path / "model.gguf", model_sha256="b" * 64,
+        database=tmp_path / "state.db", budget_key="study", token_limit=100_000,
+        max_output_tokens=16, context_reservation=True, native_manifest_sha256="d" * 64)
+    deadlines = []
+
+    class FakeBackend:
+        def __init__(self, **config):
+            deadlines.append((config["deadline_monotonic"], time.monotonic()))
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def complete(self, _prompt, **_kwargs):
+            return json.dumps({"action": "fail", "intent": None, "report": None,
+                               "reason": "No supported hypothesis.", "candidate": None}), 4, 2
+        def complete_admitted(self, _prompt, **_kwargs):
+            response = json.dumps({"action": "fail", "intent": None, "report": None,
+                                   "reason": "No supported hypothesis.", "candidate": None})
+            return response, 4, 2
+        def collect_native_work(self, *, generated, evaluated=None):
+            return TokenLaunchOutcome(status="completed", exit_status=0, observed_work=1)
+
+    monkeypatch.setattr("metis.core.llama_specialist.LlamaServerBackend", FakeBackend)
+    ordinary = runner.run("assignment", model=runner.model_id, timeout=30)
+    assert ordinary.returncode == 0
+    native_prompt = runner.build_native_request("assignment")
+
+    class Admission:
+        database = runner.backend_config["database"]
+        def is_consumed_scheduler_launch_claim(self, _claim): return True
+        def claim_scheduler_native_launch(self, _claim, *, owner_id): return "claimed"
+        def record_outcome(self, _claim, _outcome): pass
+
+    admitted = runner.run_admitted(native_prompt, model=runner.model_id, timeout=30,
+                                   token_claim=_claim(runner, native_prompt),
+                                   admission=Admission())
+    assert admitted.returncode == 0
+    assert len(deadlines) == 2
+    assert all(runner.max_call_timeout - 1.0 < deadline - observed <= runner.max_call_timeout
+               for deadline, observed in deadlines)
+
+
+@pytest.mark.parametrize("cap", [0, -1, float("inf"), float("nan"), True, None])
+def test_invalid_llama_call_timeout_caps_are_rejected(tmp_path, cap):
+    class InvalidTimeoutLlamaSpecialist(LlamaSpecialist):
+        max_call_timeout = cap
+
+    with pytest.raises(ValueError, match="timeout cap"):
+        InvalidTimeoutLlamaSpecialist(
+            model_id="pinned-shisa", binary=tmp_path / "server",
+            binary_sha256="a" * 64, model_path=tmp_path / "model.gguf",
+            model_sha256="b" * 64, database=tmp_path / "state.db",
+            budget_key="study", token_limit=100_000, max_output_tokens=16,
+        )
+
+
 def _pin(runner: LlamaSpecialist) -> dict:
     config = runner.backend_config
     return {"binary_sha256": config["binary_sha256"],

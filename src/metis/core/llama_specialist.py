@@ -45,6 +45,7 @@ def _timed_out(error: LlamaBackendError) -> bool:
 class LlamaSpecialist:
     model_turn_budget_enforced = True
     hard_token_budget_enforced = False
+    max_call_timeout: float = 120.0
 
     @staticmethod
     def native_request_prefix(output_schema: dict[str, Any] | None = None) -> str:
@@ -65,6 +66,10 @@ class LlamaSpecialist:
                  native_manifest_sha256: str | None = None):
         if not model_id or len(model_id) > 128:
             raise ValueError("invalid pinned model id")
+        if (isinstance(self.max_call_timeout, bool)
+                or not isinstance(self.max_call_timeout, (int, float))
+                or not math.isfinite(self.max_call_timeout) or self.max_call_timeout <= 0):
+            raise ValueError("invalid Llama specialist call timeout cap")
         self.model_id = model_id
         self.backend_config: _BackendConfig = {"binary": binary, "binary_sha256": binary_sha256,
                                "model": model_path, "model_sha256": model_sha256,
@@ -115,7 +120,7 @@ class LlamaSpecialist:
             return CodexTurn(returncode=1, message=None, stopped=True, isolation=isolation)
         if timeout <= 0:
             return CodexTurn(returncode=1, message=None, timed_out=True, isolation=isolation)
-        call_deadline = time.monotonic() + min(timeout, 120)
+        call_deadline = time.monotonic() + min(timeout, self.max_call_timeout)
         # The schema is an instruction to the model; the parsed decision is checked
         # independently below. No tool affordance is passed to the native server.
         request = self.build_native_request(prompt, output_schema)
@@ -192,7 +197,7 @@ class LlamaSpecialist:
                     or not isinstance(timeout, (int, float)) or not math.isfinite(timeout)
                     or timeout <= 0):
                 raise ValueError("admitted input refused")
-            call_deadline = started + min(timeout, 120)
+            call_deadline = started + min(timeout, self.max_call_timeout)
             digest = hashlib.sha256(prompt.encode()).hexdigest()
             if digest != receipt.attempt.prompt_sha256:
                 raise ValueError("admitted prompt digest mismatch")

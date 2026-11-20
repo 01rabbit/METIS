@@ -833,12 +833,17 @@ def test_transient_service_failure_retries_the_turn_once(setup, monkeypatch):
     assert "codex exited 1" in result["failure"] and len(hard.prompts) == 1
 
 
-@pytest.mark.parametrize(("deadline_offset", "turn_timeout", "category"), [
-    (60.0, 300.0, "deadline"),
-    (600.0, 1.0, "provider_failure"),
+@pytest.mark.parametrize(("deadline_offset", "turn_timeout", "runner_cap", "category"), [
+    (60.0, 300.0, None, "deadline"),
+    (60.0, 300.0, 120.0, "deadline"),
+    (200.0, 300.0, None, "deadline"),
+    (200.0, 300.0, 120.0, "provider_failure"),
+    (60.0, 30.0, 120.0, "provider_failure"),
+    (600.0, 30.0, 120.0, "provider_failure"),
+    (600.0, 1.0, None, "provider_failure"),
 ])
 def test_timed_out_turn_category_uses_effective_deadline(
-    setup, deadline_offset, turn_timeout, category,
+    setup, deadline_offset, turn_timeout, runner_cap, category,
 ):
     database, scheduler, run_id, _wave, started, _artifact = setup
     job = started[0]
@@ -847,7 +852,9 @@ def test_timed_out_turn_category_uses_effective_deadline(
                    (time.time() + deadline_offset, job["assignment_id"]))
 
     class TimedOutRunner:
-        timeout = None
+        def __init__(self):
+            self.timeout = None
+            self.max_call_timeout = runner_cap
 
         def run(self, _prompt, *, model, timeout, should_stop, images):
             self.timeout = timeout
@@ -860,18 +867,23 @@ def test_timed_out_turn_category_uses_effective_deadline(
     assert result["job_state"] == "failed"
     assert result["failure_category"] == category
     assert runner.timeout is not None
-    if category == "deadline":
-        assert runner.timeout <= turn_timeout
-    else:
-        assert runner.timeout == turn_timeout
+    assert runner.timeout == pytest.approx(min(turn_timeout, deadline_offset), abs=1.0)
 
 
-@pytest.mark.parametrize(("deadline_offset", "turn_timeout", "category"), [
-    (60.0, 300.0, "deadline"),
-    (600.0, 1.0, "provider_failure"),
+@pytest.mark.parametrize(("deadline_offset", "retry_deadline_offset", "turn_timeout",
+                         "runner_cap", "category"), [
+    (60.0, 60.0, 300.0, None, "deadline"),
+    (60.0, 60.0, 300.0, 120.0, "deadline"),
+    (200.0, 60.0, 300.0, 120.0, "deadline"),
+    (60.0, 600.0, 300.0, 120.0, "provider_failure"),
+    (200.0, 200.0, 300.0, None, "deadline"),
+    (200.0, 200.0, 300.0, 120.0, "provider_failure"),
+    (60.0, 60.0, 30.0, 120.0, "provider_failure"),
+    (600.0, 600.0, 30.0, 120.0, "provider_failure"),
+    (600.0, 600.0, 1.0, None, "provider_failure"),
 ])
 def test_retry_timed_out_turn_category_uses_effective_deadline(
-    setup, monkeypatch, deadline_offset, turn_timeout, category,
+    setup, monkeypatch, deadline_offset, retry_deadline_offset, turn_timeout, runner_cap, category,
 ):
     import metis.core.codex_specialist as driver
 
@@ -886,11 +898,15 @@ def test_retry_timed_out_turn_category_uses_effective_deadline(
         def __init__(self):
             self.calls = 0
             self.timeouts = []
+            self.max_call_timeout = runner_cap
 
         def run(self, _prompt, *, model, timeout, should_stop, images):
             self.calls += 1
             self.timeouts.append(timeout)
             if self.calls == 1:
+                with sqlite3.connect(database) as db:
+                    db.execute("UPDATE agent_jobs SET deadline=? WHERE assignment_id=?",
+                               (time.time() + retry_deadline_offset, job["assignment_id"]))
                 return CodexTurn(returncode=1, message=None, stderr_tail="503 transient")
             return CodexTurn(returncode=1, message=None, timed_out=True,
                              stderr_tail="controlled timeout")
@@ -901,11 +917,10 @@ def test_retry_timed_out_turn_category_uses_effective_deadline(
     assert result["job_state"] == "failed"
     assert result["failure_category"] == category
     assert runner.calls == 2
-    assert len(runner.timeouts) == 2
-    if category == "deadline":
-        assert runner.timeouts[1] <= turn_timeout
-    else:
-        assert runner.timeouts[1] == turn_timeout
+    assert runner.timeouts[0] == pytest.approx(min(turn_timeout, deadline_offset), abs=1.0)
+    assert runner.timeouts[1] == pytest.approx(
+        min(turn_timeout, retry_deadline_offset), abs=1.0,
+    )
 
 
 def test_transient_retry_does_not_start_after_deadline(setup, monkeypatch):
