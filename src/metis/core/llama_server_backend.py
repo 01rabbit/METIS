@@ -368,10 +368,13 @@ class LlamaServerBackend:
                     return
                 except ProcessLookupError:
                     return
+                except PermissionError:
+                    # The group may be in the short transition after its leader exits.
+                    return
                 except KeyboardInterrupt:
                     interrupted = True
 
-        def wait_for(timeout: float) -> bool:
+        def wait_for(timeout: float, *, continue_after_interrupt: bool = False) -> bool:
             nonlocal interrupted
             assert process is not None
             deadline = time.monotonic() + timeout
@@ -383,11 +386,16 @@ class LlamaServerBackend:
                         group_alive = True
                     except ProcessLookupError:
                         group_alive = False
+                    except PermissionError:
+                        # macOS can report EPERM briefly while a terminated
+                        # group is disappearing; keep waiting before escalation.
+                        group_alive = True
                     if process_reaped and not group_alive:
                         return True
                 except KeyboardInterrupt:
                     interrupted = True
-                    return False
+                    if not continue_after_interrupt:
+                        return False
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
@@ -395,7 +403,17 @@ class LlamaServerBackend:
                     time.sleep(min(_PROCESS_GROUP_POLL_INTERVAL_SECONDS, remaining))
                 except KeyboardInterrupt:
                     interrupted = True
-                    return False
+                    if not continue_after_interrupt:
+                        return False
+
+        def finish_cleanup(action: Callable[[], None]) -> None:
+            nonlocal interrupted
+            while True:
+                try:
+                    action()
+                    return
+                except KeyboardInterrupt:
+                    interrupted = True
 
         try:
             if process is not None:
@@ -404,20 +422,30 @@ class LlamaServerBackend:
                 reaped = wait_for(_PROCESS_TERMINATION_GRACE_SECONDS)
                 if not reaped:
                     signal_group(signal.SIGKILL)
-                    reaped = wait_for(_PROCESS_KILL_REAP_TIMEOUT_SECONDS)
+                    reaped = wait_for(
+                        _PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+                        continue_after_interrupt=True,
+                    )
         finally:
-            if process is not None and process.poll() is not None:
-                reaped = True
+            if process is not None and not reaped:
+                reaped = wait_for(0, continue_after_interrupt=True) or wait_for(
+                    _PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+                    continue_after_interrupt=True,
+                )
             if reaped:
                 self._process = None
                 if self._log is not None:
-                    self._log.close()
+                    finish_cleanup(self._log.close)
                     self._log = None
                 if self._private is not None:
-                    self._private.cleanup()
+                    finish_cleanup(self._private.cleanup)
                     self._private = None
                     self._socket = None
         if not reaped:
+            if interrupted:
+                error = KeyboardInterrupt()
+                error.add_note("llama process group did not finish cleanup; resources remain retained")
+                raise error
             raise LlamaBackendError("server process did not stop")
         if interrupted:
             raise KeyboardInterrupt

@@ -348,11 +348,15 @@ def test_close_kills_descendant_that_outlives_wrapper(backend_files, monkeypatch
     process = WrapperProcess()
     group_alive = True
     signals = []
+    group_probes = 0
 
     def killpg(_pid, value):
-        nonlocal group_alive
+        nonlocal group_alive, group_probes
         signals.append(value)
         if value == 0:
+            group_probes += 1
+            if group_probes == 1:
+                raise PermissionError
             if group_alive:
                 return
             raise ProcessLookupError
@@ -377,6 +381,161 @@ def test_close_kills_descendant_that_outlives_wrapper(backend_files, monkeypatch
     assert signals[0] == signal.SIGTERM and signal.SIGKILL in signals
     assert not group_alive and backend._process is None
     assert not private_path.exists()
+
+
+def test_close_keeps_resources_if_descendant_survives_sigkill(backend_files, monkeypatch, tmp_path):
+    from metis.core import llama_server_backend as module
+
+    class WrapperProcess:
+        pid = 654
+        returncode = -signal.SIGTERM
+
+        def poll(self):
+            return self.returncode
+
+    process = WrapperProcess()
+    signals = []
+
+    def killpg(_pid, value):
+        signals.append(value)
+        if value == 0:
+            return
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    monkeypatch.setattr(module, "_PROCESS_TERMINATION_GRACE_SECONDS", 0)
+    monkeypatch.setattr(module, "_PROCESS_KILL_REAP_TIMEOUT_SECONDS", 0)
+    backend = LlamaServerBackend(**backend_files)
+    backend._process = process
+    private = module.tempfile.TemporaryDirectory(dir=tmp_path)
+    private_path = Path(private.name)
+    backend._private = private
+
+    with pytest.raises(LlamaBackendError, match="did not stop"):
+        backend.close()
+
+    assert signal.SIGKILL in signals
+    assert backend._process is process and backend._private is private
+    assert private_path.exists()
+
+
+def test_close_waits_through_interrupt_after_sigkill(backend_files, monkeypatch, tmp_path):
+    from metis.core import llama_server_backend as module
+
+    class DelayedProcess:
+        pid = 987
+        returncode = None
+        kill_sent = False
+        interrupted_poll = False
+
+        def poll(self):
+            if self.kill_sent and not self.interrupted_poll:
+                self.interrupted_poll = True
+                raise KeyboardInterrupt
+            return self.returncode
+
+    process = DelayedProcess()
+    group_alive = True
+
+    def killpg(_pid, value):
+        nonlocal group_alive
+        if value == 0:
+            if group_alive:
+                return
+            raise ProcessLookupError
+        if value == signal.SIGKILL:
+            process.kill_sent = True
+
+    def finish_kill(_seconds):
+        nonlocal group_alive
+        process.returncode = -signal.SIGKILL
+        group_alive = False
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    monkeypatch.setattr(module.time, "sleep", finish_kill)
+    monkeypatch.setattr(module, "_PROCESS_TERMINATION_GRACE_SECONDS", 0)
+    monkeypatch.setattr(module, "_PROCESS_GROUP_POLL_INTERVAL_SECONDS", .001)
+    backend = LlamaServerBackend(**backend_files)
+    backend._process = process
+    private = module.tempfile.TemporaryDirectory(dir=tmp_path)
+    private_path = Path(private.name)
+    backend._private = private
+
+    with pytest.raises(KeyboardInterrupt):
+        backend.close()
+
+    assert process.interrupted_poll and not group_alive
+    assert backend._process is None and backend._private is None
+    assert not private_path.exists()
+
+
+def test_close_defers_final_poll_and_cleanup_interrupts(backend_files, monkeypatch, tmp_path):
+    from metis.core import llama_server_backend as module
+
+    class InterruptedPollProcess:
+        pid = 789
+        poll_calls = 0
+
+        def poll(self):
+            self.poll_calls += 1
+            if self.poll_calls == 3:
+                raise KeyboardInterrupt
+            if self.poll_calls >= 4:
+                return -signal.SIGKILL
+            return None
+
+    class InterruptOnce:
+        def __init__(self):
+            self.calls = 0
+            self.closed = False
+
+        def close(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
+            self.closed = True
+
+    class PrivateDirectory:
+        def __init__(self, path):
+            self.name = str(path)
+            Path(self.name).mkdir()
+            self.calls = 0
+
+        def cleanup(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
+            Path(self.name).rmdir()
+
+    process = InterruptedPollProcess()
+    group_alive = True
+
+    def killpg(_pid, value):
+        nonlocal group_alive
+        if value == 0:
+            if group_alive:
+                return
+            raise ProcessLookupError
+        if value == signal.SIGKILL:
+            group_alive = False
+
+    monkeypatch.setattr(module.os, "killpg", killpg)
+    monkeypatch.setattr(module, "_PROCESS_TERMINATION_GRACE_SECONDS", 0)
+    monkeypatch.setattr(module, "_PROCESS_KILL_REAP_TIMEOUT_SECONDS", 0)
+    backend = LlamaServerBackend(**backend_files)
+    backend._process = process
+    log = InterruptOnce()
+    private = PrivateDirectory(tmp_path / "private")
+    backend._log = log
+    backend._private = private
+    backend._socket = str(Path(private.name) / "server.sock")
+
+    with pytest.raises(KeyboardInterrupt):
+        backend.close()
+
+    assert backend._process is None and backend._log is None and backend._private is None
+    assert log.closed and log.calls == 2
+    assert private.calls == 2 and not Path(private.name).exists()
+    assert not group_alive
 
 
 def test_shared_concurrent_reservation(backend_files):
