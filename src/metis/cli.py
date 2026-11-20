@@ -415,6 +415,11 @@ def main() -> int:
     forget_all.add_argument("--apply", action="store_true", help="apply the bounded bulk forgetting operation")
     forget_all.add_argument("--include-run-cookies", action="store_true",
                             help="also retire saved cookies from every origin in the selected runs")
+    retention = web_commands.add_parser(
+        "credential-retention", help="preview or retire old locally stored platform credentials",
+    )
+    retention.add_argument("--older-than-days", type=int, required=True)
+    retention.add_argument("--apply", action="store_true", help="apply the bounded local retirement")
     web_context = web_commands.add_parser("context")
     web_context.add_argument("run_id")
     web_grant = web_commands.add_parser("grant", help="add a user-authorized challenge origin to a run")
@@ -917,6 +922,10 @@ def main() -> int:
                 output = workflow.forget_auth(args.url)
             elif args.web_command == "forget-all":
                 output = workflow.forget_all_auth(apply=args.apply, include_run_cookies=args.include_run_cookies)
+            elif args.web_command == "credential-retention":
+                output = workflow.credential_retention(
+                    older_than_days=args.older_than_days, apply=args.apply,
+                )
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
             elif args.web_command == "prepare-browser":

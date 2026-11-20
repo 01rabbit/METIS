@@ -947,3 +947,18 @@ identity check with an exact SAN match. The change is code and workflow
 validation only; it does not produce a release or independently validate a
 newly generated GitHub attestation. Issue #9 remains open for release execution,
 host recovery, retention/secret controls, and the Issue #8 dependency.
+
+## Issue #9 local credential age retention (2026-11-20)
+
+`metis web credential-retention --older-than-days N` now previews a bounded
+age-based selection; deletion requires `--apply`. New and replaced credentials
+record an update timestamp. Legacy rows migrate with unknown age and remain
+untouched. Apply runs transactionally, enables SQLite `secure_delete`, advances
+auth generations, and removes only the corresponding auth-origin cookies from
+linked runs. The command refuses more than 100 credential origins or 1,000
+linked runs, and reports counts without origin names or secret values. Seven
+synthetic tests cover preview, migration, exact cutoff, stale-client fencing,
+rollback, and limits. This is local retention control only: provider
+revocation, secure physical deletion, encrypted credential storage and Issue
+#9 acceptance remain open. See
+`docs/reports/issue9-credential-age-retention-2026-11-20.md`.
