@@ -182,15 +182,48 @@ _PAGE = """<!doctype html><html lang="ja"><meta charset="utf-8"><title>METIS ope
 <button id="inspect">Inspect</button><button id="cancel">Cancel run</button><pre id="result"></pre>
 <script src="/operator.js"></script></html>""".encode()
 
-_SCRIPT = b"""document.getElementById('refresh').addEventListener('click', async () => {
-  const token = document.getElementById('token').value;
-  const output = document.getElementById('result');
-  const select = document.getElementById('run-list');
+_SCRIPT = b"""const tokenInput = document.getElementById('token');
+const runInput = document.getElementById('run');
+const output = document.getElementById('result');
+const select = document.getElementById('run-list');
+let authorizationGeneration = 0;
+let latestListRequest = 0;
+let selectedRunId = '';
+
+function clearProtectedView() {
+  authorizationGeneration++;
+  select.replaceChildren(new Option('Select a run', ''));
+  if (runInput.value === selectedRunId) runInput.value = '';
+  selectedRunId = '';
+  output.textContent = '';
+}
+
+tokenInput.addEventListener('input', clearProtectedView);
+
+async function operatorRequest(path, method, label, render, isLatest = () => true) {
+  const generation = authorizationGeneration;
+  const token = tokenInput.value;
+  const isCurrent = () => generation === authorizationGeneration
+    && token === tokenInput.value && isLatest();
   try {
-    const response = await fetch('/api/runs?limit=20',
-      {headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
-    if (!response.ok) { output.textContent = 'Run list unavailable (' + response.status + ')'; return; }
+    const response = await fetch(path,
+      {method, headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
+    if (!isCurrent()) return;
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) clearProtectedView();
+      output.textContent = label + ' unavailable (' + response.status + ')';
+      return;
+    }
     const payload = await response.json();
+    if (isCurrent()) render(payload);
+  } catch (_) {
+    if (isCurrent()) output.textContent = label + ' unavailable';
+  }
+}
+
+document.getElementById('refresh').addEventListener('click', () => {
+  const request = ++latestListRequest;
+  return operatorRequest('/api/runs?limit=20', 'GET', 'Run list', payload => {
     if (!Array.isArray(payload.runs)) { output.textContent = 'Run list unavailable'; return; }
     select.replaceChildren(new Option('Select a run', ''));
     for (const run of payload.runs) {
@@ -203,37 +236,38 @@ _SCRIPT = b"""document.getElementById('refresh').addEventListener('click', async
       option.textContent = run.status + ' | ' + run.run_id.slice(0, 8) + timestamp + remaining;
       select.append(option);
     }
+    if (Array.from(select.options).some(option => option.value === selectedRunId)) {
+      select.value = selectedRunId;
+    }
     const count = select.options.length - 1;
     output.textContent = payload.truncated
       ? 'Loaded ' + count + ' recent runs; list is partial at the safety limit'
       : 'Loaded ' + count + ' runs';
-  } catch (_) { output.textContent = 'Run list unavailable'; }
+  }, () => request === latestListRequest);
 });
-document.getElementById('run-list').addEventListener('change', () => {
-  document.getElementById('run').value = document.getElementById('run-list').value;
+select.addEventListener('change', () => {
+  selectedRunId = select.value;
+  runInput.value = selectedRunId;
 });
-document.getElementById('inspect').addEventListener('click', async () => {
-  const token = document.getElementById('token').value;
-  const run = document.getElementById('run').value;
-  const output = document.getElementById('result');
+runInput.addEventListener('input', () => {
+  if (runInput.value !== selectedRunId) {
+    selectedRunId = '';
+    select.value = '';
+  }
+});
+
+function showResult(payload) {
+  output.textContent = JSON.stringify(payload, null, 2);
+}
+
+document.getElementById('inspect').addEventListener('click', () => {
+  const run = runInput.value;
   if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
-  try {
-    const response = await fetch('/api/runs/' + run + '/audit',
-      {headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
-    output.textContent = response.ok ? JSON.stringify(await response.json(), null, 2)
-      : 'Audit unavailable (' + response.status + ')';
-  } catch (_) { output.textContent = 'Audit unavailable'; }
+  return operatorRequest('/api/runs/' + run + '/audit', 'GET', 'Audit', showResult);
 });
-document.getElementById('cancel').addEventListener('click', async () => {
-  const token = document.getElementById('token').value;
-  const run = document.getElementById('run').value;
-  const output = document.getElementById('result');
+document.getElementById('cancel').addEventListener('click', () => {
+  const run = runInput.value;
   if (!/^[0-9a-f]{32}$/.test(run)) { output.textContent = 'Invalid run ID'; return; }
   if (!window.confirm('Cancel this run?')) return;
-  try {
-    const response = await fetch('/api/runs/' + run + '/cancel',
-      {method: 'POST', headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
-    output.textContent = response.ok ? JSON.stringify(await response.json(), null, 2)
-      : 'Cancellation unavailable (' + response.status + ')';
-  } catch (_) { output.textContent = 'Cancellation unavailable'; }
+  return operatorRequest('/api/runs/' + run + '/cancel', 'POST', 'Cancellation', showResult);
 });"""

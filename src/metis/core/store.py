@@ -447,9 +447,10 @@ class RunStore:
             # the selected-run chain limits below.
             db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SQLITE_INDEX_VALUE_BYTES)
             cursor = db.execute(
-                f"SELECT substr(CAST(run_id AS BLOB), 1, ?), "
+                "SELECT CASE WHEN typeof(run_id)='text' THEN substr(CAST(run_id AS BLOB), 1, ?) END, "
                 "length(CAST(run_id AS BLOB)), "
-                "substr(CAST(timestamp AS BLOB), 1, ?), length(CAST(timestamp AS BLOB)) "
+                "CASE WHEN typeof(timestamp)='text' THEN substr(CAST(timestamp AS BLOB), 1, ?) END, "
+                "length(CAST(timestamp AS BLOB)) "
                 f"FROM events INDEXED BY {_RUN_AUDIT_LATEST_INDEX} "
                 "ORDER BY timestamp DESC, run_id DESC "
                 "LIMIT ?", (_MAX_RUN_INDEX_FIELD_BYTES, _MAX_RUN_INDEX_FIELD_BYTES,
@@ -495,15 +496,15 @@ class RunStore:
                 payloads = db.execute(
                     "SELECT typeof(sequence), "
                     "CASE WHEN typeof(sequence)='integer' THEN sequence ELSE NULL END, "
-                    "CASE WHEN run_id IS NULL THEN NULL ELSE "
+                    "CASE WHEN typeof(run_id)='text' THEN "
                     "COALESCE(substr(CAST(run_id AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN payload IS NULL THEN NULL ELSE "
+                    "CASE WHEN typeof(payload)='text' THEN "
                     "COALESCE(substr(CAST(payload AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN timestamp IS NULL THEN NULL ELSE "
+                    "CASE WHEN typeof(timestamp)='text' THEN "
                     "COALESCE(substr(CAST(timestamp AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN previous_hash IS NULL THEN NULL ELSE "
+                    "CASE WHEN typeof(previous_hash)='text' THEN "
                     "COALESCE(substr(CAST(previous_hash AS BLOB), 1, ?), X'') END, "
-                    "CASE WHEN digest IS NULL THEN NULL ELSE "
+                    "CASE WHEN typeof(digest)='text' THEN "
                     "COALESCE(substr(CAST(digest AS BLOB), 1, ?), X'') END "
                     "FROM events WHERE run_id=? ORDER BY sequence LIMIT ?",
                     ((byte_limit + 1,) * 5 + (run_id, event_limit + 1)),

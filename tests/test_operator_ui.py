@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import http.client
 import json
+import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -212,6 +214,112 @@ def test_run_list_fails_closed_on_corrupt_selected_chain(tmp_path: Path) -> None
         assert status == 503
         assert b"unavailable" in body
         assert b"private" not in body
+
+
+@pytest.mark.parametrize("field", ["run_id", "payload", "timestamp", "previous_hash", "digest"])
+def test_run_list_rejects_blob_in_event_text_column(tmp_path: Path, field: str) -> None:
+    database = fixture_database(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TRIGGER deny_update")
+        db.execute(f"UPDATE events SET {field} = CAST({field} AS BLOB)")
+    with server_for(database) as port:
+        status, _headers, body = request(port, "GET", "/api/runs", token=TOKEN)
+        assert status == 503
+        assert body == b"run list unavailable"
+
+
+def test_script_clears_protected_view_after_auth_failure(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to drive the operator script")
+    with server_for(fixture_database(tmp_path)) as port:
+        status, _headers, script = request(port, "GET", "/operator.js")
+        assert status == 200
+
+    subprocess.run(
+        [node, "-e", """
+        const assert = require('node:assert/strict');
+        const {readFileSync} = require('node:fs');
+        const test = require('node:test');
+        const {runInNewContext} = require('node:vm');
+
+        class Element {
+          value = '';
+          textContent = '';
+          options = [];
+          handlers = {};
+          addEventListener(event, callback) { this.handlers[event] = callback; }
+          replaceChildren(...options) { this.options = options; this.value = options[0].value; }
+          append(option) { this.options.push(option); }
+          fire(event) { return this.handlers[event](); }
+        }
+
+        const elements = Object.fromEntries(
+          ['token', 'run', 'result', 'run-list', 'refresh', 'inspect', 'cancel']
+            .map(id => [id, new Element()])
+        );
+        const document = {
+          getElementById: id => elements[id],
+          createElement: () => new Element(),
+        };
+        class Option {
+          constructor(textContent, value) { Object.assign(this, {textContent, value}); }
+        }
+        let mockFetch;
+        runInNewContext(readFileSync(0, 'utf8'), {document, Option, fetch: () => mockFetch()});
+
+        const select = elements['run-list'];
+        const runId = 'a'.repeat(32);
+        const payload = {runs: [{run_id: runId, status: 'planning'}], truncated: false};
+        const success = () => ({ok: true, status: 200, json: async () => payload});
+        const refresh = () => elements.refresh.fire('click');
+        const deny = status => { mockFetch = async () => ({ok: false, status}); };
+
+        async function loadAndSelect() {
+          mockFetch = async () => success();
+          await refresh();
+          assert.equal(select.options.length, 2);
+          select.value = runId;
+          select.fire('change');
+          assert.equal(elements.run.value, runId);
+        }
+
+        function assertCleared(message) {
+          assert.equal(select.options.length, 1);
+          assert.equal(elements.run.value, '');
+          assert.equal(elements.result.textContent, message);
+        }
+
+        test('authorization failures clear the view and ignore earlier successes', async () => {
+          await loadAndSelect();
+          let resolveBody;
+          const bodyPending = new Promise(resolve => { resolveBody = resolve; });
+          mockFetch = async () => ({ok: true, status: 200, json: () => bodyPending});
+          const olderList = refresh();
+          await Promise.resolve();
+          deny(401);
+          await refresh();
+          assertCleared('Run list unavailable (401)');
+          resolveBody(payload);
+          await olderList;
+          assertCleared('Run list unavailable (401)');
+
+          await loadAndSelect();
+          let resolveResponse;
+          mockFetch = () => new Promise(resolve => { resolveResponse = resolve; });
+          const pendingList = refresh();
+          deny(403);
+          await elements.inspect.fire('click');
+          assertCleared('Audit unavailable (403)');
+          resolveResponse(success());
+          await pendingList;
+          assertCleared('Audit unavailable (403)');
+        });
+        """],
+        input=script,
+        check=True,
+        timeout=10,
+    )
 
 
 def test_server_startup_migrates_legacy_run_discovery_index(tmp_path: Path) -> None:
