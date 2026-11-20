@@ -203,18 +203,19 @@ def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_
         db.execute("CREATE TABLE web_credentials (origin TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         db.execute("INSERT INTO web_credentials VALUES (?,?)",
                    ("https://legacy.example", '{"token":"private-legacy"}'))
-    barrier = Barrier(3)
+    worker_count = 8
+    barrier = Barrier(worker_count + 1)
 
     def initialize() -> WebWorkflow:
         barrier.wait()
         return WebWorkflow(database)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(initialize) for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [pool.submit(initialize) for _ in range(worker_count)]
         barrier.wait()
-        workflows = [future.result(timeout=10) for future in futures]
+        workflows = [future.result(timeout=30) for future in futures]
 
-    assert len(workflows) == 2
+    assert len(workflows) == worker_count
     with sqlite3.connect(database) as db:
         assert [row[1] for row in db.execute("PRAGMA table_info(web_credentials)")] == [
             "origin", "payload", "updated_at",
