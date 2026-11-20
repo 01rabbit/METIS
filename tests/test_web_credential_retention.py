@@ -187,6 +187,16 @@ def test_preview_reports_sidecar_requirement_for_uncheckpointed_wal(tmp_path, ha
     assert shm.exists() is has_shm
 
 
+def test_preview_refuses_pending_rollback_journal_even_with_wal_frames(tmp_path):
+    database = tmp_path / "synthetic.sqlite"
+    database.write_bytes(b"0" * 18 + b"\x02\x02")
+    database.with_name(database.name + "-wal").write_bytes(b"nonempty")
+    database.with_name(database.name + "-journal").write_bytes(b"pending journal")
+
+    with pytest.raises(ValueError, match="pending SQLite journal"):
+        _credential_preview_source(database)
+
+
 def test_concurrent_workflow_startup_serializes_credential_column_migration(tmp_path):
     database = tmp_path / "legacy-concurrent.sqlite"
     with sqlite3.connect(database) as db:

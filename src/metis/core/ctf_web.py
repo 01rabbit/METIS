@@ -101,13 +101,13 @@ def _credential_preview_source(database: Path) -> tuple[str, tuple[object, ...] 
     shm_signature = _sqlite_file_signature(shm_path)
     journal_signature = _sqlite_file_signature(journal_path)
     signature = (main_signature, wal_signature, shm_signature, journal_signature)
+    if journal_signature is not None and journal_signature[2] > 0:
+        raise ValueError("credential preview will not recover a pending SQLite journal; close the writer cleanly")
     if header[18:20] == b"\x02\x02" and wal_signature is not None and wal_signature[2] > 0:
         # A read-only WAL connection must coordinate through SQLite's
         # shared-memory index. SQLite may create/recreate sidecars here.
         return uri + "?mode=ro", None, True
 
-    if journal_signature is not None and journal_signature[2] > 0:
-        raise ValueError("credential preview will not recover a pending SQLite journal; close the writer cleanly")
     # Immutable mode avoids SQLite creating lock sidecars just to read a stable
     # snapshot. A file-signature check after the transaction detects concurrent changes.
     return uri + "?mode=ro&immutable=1", signature, False
