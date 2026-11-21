@@ -566,6 +566,10 @@ class AgentScheduler:
 
             challenge = context["challenge"]
             categories = challenge.get("categories", [])
+            if not categories:
+                # Fall back to the planner's triage category so unrelated cards stay out.
+                inferred = (assignment.get("inputs") or {}).get("category")
+                categories = [inferred] if isinstance(inferred, str) and inferred else []
             query = " ".join([challenge.get("title", ""), *[str(item) for item in categories],
                               challenge.get("description", "")[:512]])
             prior_knowledge = KnowledgeBase(self.database).search_for_run(
