@@ -25,3 +25,9 @@ def test_magic_leads_and_keywords_follow_without_duplicates():
 def test_no_magics_keeps_keyword_behaviour():
     assert triage(_manifest("Gatekeeper", ["00-checker"]))["suggested_categories"] == ["misc"]
     assert magic_categories({"x": b"plain text"}) == []
+
+
+def test_elf_with_exploitation_words_is_pwn_first():
+    manifest = _manifest("Exploit the buffer overflow", ["00-vuln"])
+    result = triage(manifest, {"00-vuln": b"\x7fELF\x02\x01\x01\x00"})
+    assert result["suggested_categories"][:2] == ["pwn", "rev"]

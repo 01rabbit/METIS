@@ -76,13 +76,18 @@ def triage(manifest: ChallengeManifest, magics: dict[str, bytes] | None = None) 
         "forensics": (".png", ".jpg", ".pcap", ".zip", ".gz", "forensic", "steg", ".evtx", ".eml", ".mbox",
                       "cloudtrail", "event log", "incident", "phish", "browser history", "siem", "splunk"),
         "rev": ("reverse", "crackme", "elf", ".exe", ".wasm"),
-        "pwn": ("pwn", "stack", "heap", "overflow", "canary"),
+        "pwn": ("pwn", "stack", "heap", "overflow", "canary", "exploit", "rop", "shellcode",
+                "format string", "bof", "ret2", "libc", "use-after-free"),
     }
     from_magic = magic_categories(magics)
     if not categories:
         # Real file magic is stronger evidence than words, so it leads; keywords follow.
         keyword = [category for category, keywords in hints.items() if any(word in text for word in keywords)]
         categories = [*from_magic, *(item for item in keyword if item not in from_magic)]
+        if "pwn" in keyword and "rev" in from_magic:
+            # A binary plus exploitation words is pwn first; rev stays as the second lens.
+            categories.remove("pwn")
+            categories.insert(categories.index("rev"), "pwn")
     categories = categories or ["misc"]
     remote = bool(re.search(r"\b(?:nc|ncat|netcat)\s+\S+\s+[0-9]{1,5}\b", manifest.description))
     return {"suggested_categories": categories,
