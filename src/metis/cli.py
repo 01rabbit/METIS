@@ -490,6 +490,9 @@ def main() -> int:
     grant.add_argument("host")
     grant.add_argument("port", type=int)
     grant.add_argument("--tls", action="store_true")
+    grant.add_argument("--tls-insecure", action="store_true",
+                       help="with --tls: skip certificate verification for this endpoint (self-signed CTF service)")
+    grant.add_argument("--sni", help="with --tls: server name to send and verify instead of the host")
     grant.add_argument("--replace", action="store_true",
                        help="revoke this run's other endpoints (new instance of the same challenge)")
     endpoints_parser = remote_commands.add_parser("list", help="granted endpoints of a run (active, latest)")
@@ -506,6 +509,8 @@ def main() -> int:
     connect.add_argument("run_id")
     connect.add_argument("index", help="index, host:port or latest (newest active grant)")
     connect.add_argument("--timeout", type=float, default=3600)
+    connect.add_argument("--idle-timeout", type=float, default=10,
+                         help="seconds of server silence after stdin EOF before closing")
     ssh = remote_commands.add_parser("ssh", help="run a command and/or download files over SSH on a granted endpoint")
     ssh.add_argument("run_id")
     ssh.add_argument("index", help="index, host:port or latest (newest active grant)")
@@ -1037,14 +1042,16 @@ def main() -> int:
                 output = remote_workflow.suggest(args.run_id)
             elif args.remote_command == "grant":
                 output = remote_workflow.grant(args.run_id, args.host, args.port, tls=args.tls,
-                                               replace=args.replace)
+                                               replace=args.replace, tls_insecure=args.tls_insecure,
+                                               sni=args.sni)
             elif args.remote_command == "list":
                 output = remote_workflow.endpoints(args.run_id)
             elif args.remote_command == "revoke":
                 output = remote_workflow.revoke(args.run_id, args.endpoint)
             elif args.remote_command == "connect":
                 # stdout carries the raw stream; the summary goes to stderr.
-                summary = remote_workflow.connect_stdio(args.run_id, args.index, timeout=args.timeout)
+                summary = remote_workflow.connect_stdio(args.run_id, args.index, timeout=args.timeout,
+                                                     idle_timeout=args.idle_timeout)
                 print(json.dumps(summary), file=sys.stderr)
                 return 0
             elif args.remote_command == "ssh":

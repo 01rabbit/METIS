@@ -40,6 +40,7 @@ MAX_PIPE_BYTES = 16 * 1_048_576
 TRANSCRIPT_KEEP = 1_048_576
 PREVIEW = 8_192
 
+SNI_PATTERN = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
 NC_PATTERN = re.compile(
     r"\b(?:nc|ncat|netcat|telnet)\s+(?:-[a-zA-Z]+\s+)*(?P<ssl>--ssl\s+)?"
     r"(?P<host>[A-Za-z0-9.-]{1,253}|\[[0-9a-fA-F:]+\])\s+(?P<port>[0-9]{1,5})\b")
@@ -123,6 +124,27 @@ def _resolve(host: str, port: int) -> list[str]:
     return values
 
 
+def _private_resolution(host: str, port: int) -> list[str]:
+    """Non-global addresses a hostname resolves to (empty for literal IPs or unresolvable names)."""
+    try:
+        ipaddress.ip_address(host)
+        return []
+    except ValueError:
+        pass
+    try:
+        values = {str(item[4][0]).split("%")[0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
+    except (OSError, UnicodeError):
+        return []
+    private = []
+    for value in sorted(values):
+        try:
+            if not ipaddress.ip_address(value).is_global:
+                private.append(value)
+        except ValueError:
+            continue
+    return private
+
+
 class RemoteWorkflow:
     def __init__(self, database: Path):
         self.last_route = "direct"
@@ -136,6 +158,10 @@ class RemoteWorkflow:
             columns = {row[1] for row in db.execute("PRAGMA table_info(remote_endpoints)")}
             if "revoked" not in columns:
                 db.execute("ALTER TABLE remote_endpoints ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0")
+            if "tls_insecure" not in columns:
+                db.execute("ALTER TABLE remote_endpoints ADD COLUMN tls_insecure INTEGER NOT NULL DEFAULT 0")
+            if "sni" not in columns:
+                db.execute("ALTER TABLE remote_endpoints ADD COLUMN sni TEXT")
             db.execute("""CREATE TABLE IF NOT EXISTS remote_host_keys (
                 run_id TEXT NOT NULL, idx INTEGER NOT NULL, key_type TEXT NOT NULL,
                 fingerprint TEXT NOT NULL, PRIMARY KEY(run_id, idx))""")
@@ -158,18 +184,23 @@ class RemoteWorkflow:
                 "next": "grant only an endpoint the user authorized for this challenge"}
 
     def grant(self, run_id: str, host: str, port: int, *, tls: bool = False,
-              replace: bool = False) -> dict[str, Any]:
+              replace: bool = False, tls_insecure: bool = False,
+              sni: str | None = None) -> dict[str, Any]:
         """Record a user-authorized endpoint. ``replace`` revokes the run's other endpoints
         (a respawned challenge instance usually gets a new host:port)."""
         self.session.context(run_id)
+        if (tls_insecure or sni) and not tls:
+            raise ValueError("--tls-insecure and --sni require --tls")
+        if sni is not None and not SNI_PATTERN.fullmatch(sni):
+            raise ValueError("invalid SNI name")
         endpoint = AllowedEndpoint(hostname=host.strip("[]").lower(), port=port)
         with sqlite3.connect(self.database) as db:
             existing = db.execute("SELECT idx FROM remote_endpoints WHERE run_id=? AND host=? AND port=? AND tls=?",
                                   (run_id, endpoint.hostname, endpoint.port, int(tls))).fetchone()
             if existing:
                 index = existing[0]
-                db.execute("UPDATE remote_endpoints SET revoked=0, created=? WHERE run_id=? AND idx=?",
-                           (time.time(), run_id, index))
+                db.execute("UPDATE remote_endpoints SET revoked=0, created=?, tls_insecure=?, sni=? "
+                           "WHERE run_id=? AND idx=?", (time.time(), int(tls_insecure), sni, run_id, index))
             else:
                 active, total, highest = db.execute(
                     "SELECT COALESCE(SUM(revoked=0),0), COUNT(*), COALESCE(MAX(idx),-1) "
@@ -177,25 +208,42 @@ class RemoteWorkflow:
                 if (active >= MAX_ENDPOINTS and not replace) or total >= MAX_ENDPOINTS * 8:
                     raise ValueError("remote endpoint limit reached; use --replace or remote revoke")
                 index = highest + 1
-                db.execute("INSERT INTO remote_endpoints(run_id,idx,host,port,tls,created) VALUES (?,?,?,?,?,?)",
-                           (run_id, index, endpoint.hostname, endpoint.port, int(tls), time.time()))
+                db.execute("INSERT INTO remote_endpoints(run_id,idx,host,port,tls,created,tls_insecure,sni) "
+                           "VALUES (?,?,?,?,?,?,?,?)",
+                           (run_id, index, endpoint.hostname, endpoint.port, int(tls), time.time(),
+                            int(tls_insecure), sni))
             revoked = []
             if replace:
                 revoked = [row[0] for row in db.execute(
                     "SELECT idx FROM remote_endpoints WHERE run_id=? AND idx<>? AND revoked=0", (run_id, index))]
                 db.execute("UPDATE remote_endpoints SET revoked=1 WHERE run_id=? AND idx<>?", (run_id, index))
-        return {"run_id": run_id, "index": index, "host": endpoint.hostname, "port": endpoint.port,
-                "tls": tls, "granted": True, "selector": f"{endpoint.hostname}:{endpoint.port}",
-                **({"revoked": revoked} if replace else {})}
+        output: dict[str, Any] = {
+            "run_id": run_id, "index": index, "host": endpoint.hostname, "port": endpoint.port,
+            "tls": tls, "tls_insecure": tls_insecure, "sni": sni, "granted": True,
+            "selector": f"{endpoint.hostname}:{endpoint.port}", **({"revoked": revoked} if replace else {})}
+        warnings = []
+        if tls_insecure:
+            warnings.append("TLS certificate verification is disabled for this endpoint")
+        private = _private_resolution(endpoint.hostname, endpoint.port)
+        if private or endpoint.hostname == "localhost":
+            literal = private[0] if private else "127.0.0.1"
+            output["private_address"] = private or [literal]
+            warnings.append(f"hostname resolves to a private address ({', '.join(private or [literal])}); "
+                            f"connections will be refused. Grant the literal IP instead, e.g. {literal}")
+        if warnings:
+            output["warnings"] = warnings
+        return output
 
     def endpoints(self, run_id: str) -> dict[str, Any]:
         self.session.context(run_id)
         with sqlite3.connect(self.database) as db:
-            rows = db.execute("SELECT idx,host,port,tls,created,revoked FROM remote_endpoints WHERE run_id=? "
+            rows = db.execute("SELECT idx,host,port,tls,created,revoked,tls_insecure,sni FROM remote_endpoints "
+                              "WHERE run_id=? "
                               "ORDER BY idx", (run_id,)).fetchall()
         latest = max((row for row in rows if not row[5]), key=lambda row: row[4], default=None)
         return {"run_id": run_id, "endpoints": [
             {"index": row[0], "host": row[1], "port": row[2], "tls": bool(row[3]),
+             "tls_insecure": bool(row[6]), "sni": row[7],
              "active": not row[5], "latest": latest is not None and row[0] == latest[0]} for row in rows]}
 
     def revoke(self, run_id: str, selector: str) -> dict[str, Any]:
@@ -235,14 +283,25 @@ class RemoteWorkflow:
             raise ValueError(f"endpoint {index} ({row[0]}:{row[1]}) was revoked; use latest or the new host:port")
         return row[0], int(row[1]), bool(row[2])
 
-    def _connect(self, host: str, port: int, tls: bool, timeout: float) -> socket.socket:
+    def _tls_settings(self, run_id: str, index: int) -> tuple[bool, str | None]:
+        with sqlite3.connect(self.database) as db:
+            row = db.execute("SELECT tls_insecure,sni FROM remote_endpoints WHERE run_id=? AND idx=?",
+                             (run_id, index)).fetchone()
+        return (bool(row[0]), row[1]) if row else (False, None)
+
+    def _tls_kwargs(self, run_id: str, index: int) -> dict[str, Any]:
+        insecure, sni = self._tls_settings(run_id, index)
+        return {"tls_insecure": insecure, "sni": sni}
+
+    def _connect(self, host: str, port: int, tls: bool, timeout: float, *,
+                 tls_insecure: bool = False, sni: str | None = None) -> socket.socket:
         proxy = proxy_for(host)
         if proxy is not None:
             # Sandboxed agents only reach the network through their proxy, which also
             # resolves names and enforces the destination allowlist.
             raw = open_tunnel(host, port, timeout, proxy)
             self.last_route = proxy.describe()
-            return self._wrap(raw, host, tls)
+            return self._wrap(raw, host, tls, tls_insecure, sni)
         addresses = _resolve(host, port)
         error: OSError | None = None
         for address in addresses:
@@ -252,31 +311,40 @@ class RemoteWorkflow:
                 error = exc
                 continue
             self.last_route = "direct"
-            return self._wrap(raw, host, tls)
+            return self._wrap(raw, host, tls, tls_insecure, sni)
         raise error or OSError("connection failed")
 
     @staticmethod
-    def _wrap(raw: socket.socket, host: str, tls: bool) -> socket.socket:
+    def _wrap(raw: socket.socket, host: str, tls: bool, insecure: bool = False,
+              sni: str | None = None) -> socket.socket:
         if not tls:
             return raw
         try:
-            return ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+            context = ssl.create_default_context()
+            if insecure:
+                # Only reachable through an explicit per-endpoint grant (--tls-insecure).
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+            return context.wrap_socket(raw, server_hostname=sni or host)
         except BaseException:
             raw.close()
             raise
 
-    def connect_stdio(self, run_id: str, index: int, *, timeout: float = 3600.0) -> dict[str, Any]:
+    def connect_stdio(self, run_id: str, index: int, *, timeout: float = 3600.0,
+                      idle_timeout: float = 10.0) -> dict[str, Any]:
         """Bridge this process's stdin/stdout to a granted endpoint, like ``nc``.
 
         Intended as an ssh ``ProxyCommand`` or for another client that expects a
-        byte stream; the scope check, proxy routing and budget still apply.
+        byte stream; the scope check, proxy routing and budget still apply. After
+        stdin reaches EOF the write side is half-closed and the bridge ends once the
+        server closes or stays silent for ``idle_timeout`` seconds.
         """
-        if not 1 <= timeout <= 4 * 3600:
+        if not 1 <= timeout <= 4 * 3600 or not 0.1 <= idle_timeout <= 4 * 3600:
             raise ValueError("invalid timeout")
         host, port, tls = self._endpoint(run_id, index)
         self.session._reserve(run_id, "remote_service_stdio_bridge", endpoint=f"{host}:{port}")
         try:
-            connection = self._connect(host, port, tls, 15)
+            connection = self._connect(host, port, tls, 15, **self._tls_kwargs(run_id, index))
         except (OSError, ValueError, ssl.SSLError) as exc:
             self._finish(run_id, False, b"", hashlib.sha256().hexdigest(), [])
             raise OSError("connection failed: " + type(exc).__name__ + ": " + str(exc)[:200]) from exc
@@ -288,26 +356,47 @@ class RemoteWorkflow:
         selector.register(stdin, selectors.EVENT_READ, "stdin")
         deadline = time.monotonic() + timeout
         open_streams = 2
+        stdin_closed_at: float | None = None
+        last_activity = time.monotonic()
+        reason = "closed"
         try:
             while open_streams and time.monotonic() < deadline:
-                for key, _ in selector.select(timeout=1):
+                if stdin_closed_at is not None and time.monotonic() - last_activity >= idle_timeout:
+                    reason = "idle_timeout"
+                    break
+                for key, _ in selector.select(timeout=min(1.0, idle_timeout)):
                     if key.data == "socket":
                         try:
                             data = connection.recv(65_536)
-                        except (BlockingIOError, ssl.SSLWantReadError):
+                            while isinstance(connection, ssl.SSLSocket) and connection.pending():
+                                data += connection.recv(65_536)
+                        except (BlockingIOError, ssl.SSLWantReadError, TimeoutError):
                             continue
+                        except OSError as exc:
+                            reason = "socket_error:" + type(exc).__name__
+                            data = b""
                         if not data:
                             selector.unregister(connection)
                             open_streams = 0
                             break
                         received.update(data)
                         counts[1] += len(data)
-                        os.write(stdout, data)
+                        last_activity = time.monotonic()
+                        try:
+                            os.write(stdout, data)
+                        except OSError as exc:
+                            reason = "stdout_error:" + type(exc).__name__
+                            open_streams = 0
+                            break
                     else:
-                        data = os.read(stdin, 65_536)
+                        try:
+                            data = os.read(stdin, 65_536)
+                        except OSError:
+                            data = b""
                         if not data:
                             selector.unregister(stdin)
                             open_streams -= 1
+                            stdin_closed_at = last_activity = time.monotonic()
                             try:
                                 connection.shutdown(socket.SHUT_WR)
                             except OSError:
@@ -315,18 +404,24 @@ class RemoteWorkflow:
                             continue
                         sent.update(data)
                         counts[0] += len(data)
-                        connection.sendall(data)
+                        try:
+                            connection.sendall(data)
+                        except OSError as exc:
+                            reason = "socket_error:" + type(exc).__name__
+                            open_streams = 0
+                            break
                 if max(counts) > 64 * MAX_PIPE_BYTES:
                     break
         finally:
             selector.close()
             connection.close()
-        self.session._emit(run_id, RunStatus.OBSERVING, tool_ok="true",
+        ok = ":" not in reason
+        self.session._emit(run_id, RunStatus.OBSERVING, tool_ok=str(ok).lower(),
                            received_sha256=received.hexdigest(), sent_sha256=sent.hexdigest())
         self.session._emit(run_id, RunStatus.REPLANNING)
         self.session._emit(run_id, RunStatus.PLANNING)
         return {"run_id": run_id, "sent_bytes": counts[0], "received_bytes": counts[1],
-                "route": self.last_route}
+                "route": self.last_route, "termination": reason}
 
     def _finish(self, run_id: str, ok: bool, received: bytes, sent_digest: str,
                 transcript: list[dict[str, Any]]) -> str | None:
@@ -358,7 +453,8 @@ class RemoteWorkflow:
         buffer = b""
         eof = False
         try:
-            connection = self._connect(host, port, tls, script.connect_timeout)
+            connection = self._connect(host, port, tls, script.connect_timeout,
+                                        **self._tls_kwargs(run_id, index))
         except (OSError, ValueError, ssl.SSLError) as exc:
             self._finish(run_id, False, b"", sent.hexdigest(), [])
             return {"run_id": run_id, "ok": False, "error": "connection failed: " + type(exc).__name__,
@@ -573,7 +669,7 @@ class RemoteWorkflow:
         self.session._reserve(run_id, "remote_service_solver_pipe", endpoint=f"{host}:{port}",
                               command_sha256=hashlib.sha256("\0".join(command).encode()).hexdigest())
         try:
-            connection = self._connect(host, port, tls, 10)
+            connection = self._connect(host, port, tls, 10, **self._tls_kwargs(run_id, index))
         except (OSError, ValueError, ssl.SSLError) as exc:
             self._finish(run_id, False, b"", hashlib.sha256().hexdigest(), [])
             return {"run_id": run_id, "ok": False, "error": "connection failed: " + type(exc).__name__,
@@ -597,6 +693,47 @@ class RemoteWorkflow:
         selector.register(process.stdout, selectors.EVENT_READ, "stdout")
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         socket_open, stdout_open = True, True
+        # Solver stdin is non-blocking and buffered so a solver that never reads
+        # cannot stall the loop past its deadline.
+        stdin_fd = process.stdin.fileno()
+        os.set_blocking(stdin_fd, False)
+        stdin_buffer = bytearray()
+        stdin_state = {"open": True, "registered": False, "closing": False}
+
+        def close_solver_stdin() -> None:
+            if stdin_state["registered"]:
+                selector.unregister(stdin_fd)
+                stdin_state["registered"] = False
+            if stdin_state["open"]:
+                stdin_state["open"] = False
+                stdin_buffer.clear()
+                try:
+                    process.stdin.close()  # type: ignore[union-attr]
+                except (OSError, ValueError):
+                    pass
+
+        def pump_solver_stdin() -> None:
+            if not stdin_state["open"]:
+                return
+            while stdin_buffer:
+                try:
+                    written = os.write(stdin_fd, stdin_buffer)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    close_solver_stdin()
+                    return
+                del stdin_buffer[:written]
+            if stdin_buffer:
+                if not stdin_state["registered"]:
+                    selector.register(stdin_fd, selectors.EVENT_WRITE, "solver_stdin")
+                    stdin_state["registered"] = True
+            elif stdin_state["closing"]:
+                close_solver_stdin()
+            elif stdin_state["registered"]:
+                selector.unregister(stdin_fd)
+                stdin_state["registered"] = False
+
         try:
             while stdout_open or process.poll() is None:
                 remaining = deadline - time.monotonic()
@@ -615,21 +752,19 @@ class RemoteWorkflow:
                         if not data:
                             selector.unregister(connection)
                             socket_open = False
-                            try:
-                                process.stdin.close()
-                            except OSError:
-                                pass
+                            stdin_state["closing"] = True
+                            pump_solver_stdin()
                             continue
                         received.extend(data)
                         transcript_tail.extend(data)
                         del transcript_tail[:-TRANSCRIPT_KEEP]
                         if len(received) > MAX_PIPE_BYTES:
                             raise ValueError("received byte limit exceeded")
-                        try:
-                            process.stdin.write(data)
-                            process.stdin.flush()
-                        except (BrokenPipeError, ValueError):
-                            pass
+                        if stdin_state["open"]:
+                            stdin_buffer.extend(data)
+                            pump_solver_stdin()
+                    elif key.data == "solver_stdin":
+                        pump_solver_stdin()
                     elif key.data == "stdout":
                         data = os.read(process.stdout.fileno(), 65_536)
                         if not data:
