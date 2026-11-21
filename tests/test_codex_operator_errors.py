@@ -131,3 +131,15 @@ def test_submit_reports_reasons(tmp_path):
     wrong = committed.submit(committed_id, "wrong")
     assert wrong["verified"] is False and "does not match" in wrong["reason"]
     assert "reason" not in committed.submit(committed_id, "right")
+
+
+def test_recover_reports_unreachable_engine(tmp_path, monkeypatch, capsys):
+    def blocked(self, run_id):
+        raise RuntimeError("recovery blocked: sandbox worker teardown is unknown")
+
+    monkeypatch.setattr(CodexSession, "recover", blocked)
+    monkeypatch.setattr(sys, "argv", ["metis", "codex", "--database", str(tmp_path / "s.sqlite"), "recover", "r"])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 2
+    assert "outside the sandbox" in capsys.readouterr().err

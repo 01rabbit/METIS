@@ -1224,7 +1224,14 @@ def main() -> int:
                     output = session.submit(args.run_id, strip_one_newline(data))
             print(json.dumps(output))
             return 0
-        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+        except RuntimeError as error:
+            # Only METIS's own fixed recovery message is surfaced; anything else stays generic.
+            if "sandbox worker teardown is unknown" not in str(error):
+                parser.exit(2, "Codex session command rejected; check scope, state and input limits\n")
+            parser.exit(2, "Codex session command rejected: recovery blocked: sandbox worker teardown is "
+                           "unknown; the container engine was unreachable — inside Claude Code's Bash sandbox, "
+                           "re-run it outside the sandbox (check `metis sandbox status` engine_available)\n")
+        except (OSError, ValueError, sqlite3.Error):
             parser.exit(2, "Codex session command rejected; check scope, state and input limits\n")
     if args.command == "generate-fixtures":
         try:
