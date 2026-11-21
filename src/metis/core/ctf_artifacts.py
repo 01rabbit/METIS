@@ -73,6 +73,11 @@ def inspect_file(root: Path, name: str, tool: str, options: dict | None = None,
             default_length = 1_048_576 if tool == "strings" else 16_384 if tool == "text" else 256
             maximum = MAX_ARTIFACT if tool == "strings" else 4096 if tool == "hex" else 65_536
             length = bounded_integer(options, "length", default_length, 1, maximum)
+            if tool == "disassemble" and "architecture" not in options:
+                stream.seek(0)
+                detected = elf_architecture(stream.read(20))
+                if detected is not None:
+                    options["architecture"] = detected
             stream.seek(offset)
             data = stream.read(length)
             if tool == "strings":
@@ -287,6 +292,17 @@ def _elf(data: bytes) -> dict:
             "symbol_scan_truncated": symbol_scan_truncated, "executed": False}
 
 
+_ELF_MACHINES = {3: "x86", 62: "x86_64", 40: "arm", 183: "arm64"}
+
+
+def elf_architecture(header: bytes) -> str | None:
+    """Capstone architecture name from an ELF header's e_machine, or None if not ELF/unknown."""
+    if len(header) < 20 or not header.startswith(b"\x7fELF") or header[5] not in (1, 2):
+        return None
+    machine = int.from_bytes(header[18:20], "little" if header[5] == 1 else "big")
+    return _ELF_MACHINES.get(machine)
+
+
 def _disassemble(data: bytes, options: dict) -> dict:
     import capstone
 
@@ -297,7 +313,7 @@ def _disassemble(data: bytes, options: dict) -> dict:
         "thumb": (capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB),
         "arm64": (capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM),
     }
-    architecture = options.get("architecture", "x86_64")
+    architecture = options.get("architecture") or elf_architecture(data[:20]) or "x86_64"
     if architecture not in architectures:
         raise ValueError("unsupported disassembly architecture")
     offset = bounded_integer(options, "offset", 0, 0, len(data))

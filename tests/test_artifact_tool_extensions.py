@@ -129,3 +129,21 @@ def test_flag_scan_custom_pattern_and_guards():
 def test_unknown_options_rejected():
     with pytest.raises(ValueError):
         inspect_bytes(b"x", "carve", {"bogus": 1})
+
+
+def test_disassemble_detects_elf_architecture():
+    from metis.core.ctf_artifacts import elf_architecture, inspect_bytes
+
+    header = bytearray(64)
+    header[:4] = b"\x7fELF"
+    header[4], header[5] = 2, 1
+    header[18:20] = (183).to_bytes(2, "little")
+    assert elf_architecture(bytes(header)) == "arm64"
+    header[18:20] = (62).to_bytes(2, "little")
+    assert elf_architecture(bytes(header)) == "x86_64"
+    assert elf_architecture(b"not an elf at all....") is None
+    nop = bytes.fromhex("1f2003d5")  # aarch64 nop
+    arm_elf = bytes(header[:18]) + (183).to_bytes(2, "little") + bytes(header[20:]) + nop
+    result = inspect_bytes(arm_elf, "disassemble", {"offset": 64, "length": 4})
+    assert result["architecture"] == "arm64"
+    assert result["instructions"][0]["mnemonic"] == "nop"
