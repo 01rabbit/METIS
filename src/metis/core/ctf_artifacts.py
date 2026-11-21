@@ -36,18 +36,20 @@ EVIDENCE_TOOLS = {"email": "email", "browser_history": "browser", "json_records"
                   "cloudtrail": "cloudtrail", "evtx_xml": "evtx-xml"}
 ARTIFACT_TOOLS = frozenset({
     "overview", "strings", "text", "hex", "elf", "disassemble", "zip_list", "zip_read",
-    "gzip", "image", "image_lsb", "pcap",
+    "gzip", "image", "image_lsb", "pcap", "pcap_streams", "pcap_stream", "http_objects",
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
     "tls_decrypt", "tls_http_body", "zipcrypto_info", "infozip_seed", "zipcrypto_attack",
     "zipcrypto_stay_scan", "zipcrypto_stay_stage2", "zipcrypto_stay_recover", "zipcrypto_decrypt",
+    "xor", "xor_single", "carve", "flag_scan",
     # Blue-team evidence readers (metis.blue.evidence).
     *EVIDENCE_TOOLS,
 })
 DERIVE_TOOLS = frozenset({
     "zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz", "base64_decode", "base32_decode",
-    "hex_decode", "tls_http_body", "zipcrypto_decrypt",
+    "hex_decode", "tls_http_body", "zipcrypto_decrypt", "xor", "carve",
+    "pcap_stream", "http_objects",
 })
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
@@ -71,6 +73,11 @@ def inspect_file(root: Path, name: str, tool: str, options: dict | None = None,
             default_length = 1_048_576 if tool == "strings" else 16_384 if tool == "text" else 256
             maximum = MAX_ARTIFACT if tool == "strings" else 4096 if tool == "hex" else 65_536
             length = bounded_integer(options, "length", default_length, 1, maximum)
+            if tool == "disassemble" and "architecture" not in options:
+                stream.seek(0)
+                detected = elf_architecture(stream.read(20))
+                if detected is not None:
+                    options["architecture"] = detected
             stream.seek(offset)
             data = stream.read(length)
             if tool == "strings":
@@ -285,6 +292,17 @@ def _elf(data: bytes) -> dict:
             "symbol_scan_truncated": symbol_scan_truncated, "executed": False}
 
 
+_ELF_MACHINES = {3: "x86", 62: "x86_64", 40: "arm", 183: "arm64"}
+
+
+def elf_architecture(header: bytes) -> str | None:
+    """Capstone architecture name from an ELF header's e_machine, or None if not ELF/unknown."""
+    if len(header) < 20 or not header.startswith(b"\x7fELF") or header[5] not in (1, 2):
+        return None
+    machine = int.from_bytes(header[18:20], "little" if header[5] == 1 else "big")
+    return _ELF_MACHINES.get(machine)
+
+
 def _disassemble(data: bytes, options: dict) -> dict:
     import capstone
 
@@ -295,7 +313,7 @@ def _disassemble(data: bytes, options: dict) -> dict:
         "thumb": (capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB),
         "arm64": (capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM),
     }
-    architecture = options.get("architecture", "x86_64")
+    architecture = options.get("architecture") or elf_architecture(data[:20]) or "x86_64"
     if architecture not in architectures:
         raise ValueError("unsupported disassembly architecture")
     offset = bounded_integer(options, "offset", 0, 0, len(data))
@@ -474,7 +492,8 @@ def _pcap(data: bytes, options: dict) -> dict:
         packets.append(record)
     return {"format": source_format, "linktype": linktype, "packets": packets,
             "more_records": source_more or cursor < len(data),
-            "tcp_reassembly": False}
+            "tcp_reassembly": True,
+            "reassembly_tools": ["pcap_streams", "pcap_stream", "http_objects"]}
 
 
 # Options each artifact tool accepts (also shown to delegated specialists).
@@ -485,6 +504,9 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "disassemble": {"architecture", "offset", "length", "count", "address"},
     "zip_list": set(), "zip_read": {"member", "max_bytes", "password"}, "gzip": {"max_bytes"},
     "image": set(), "image_lsb": {"channels", "bit", "max_bytes"}, "pcap": {"packets"},
+    "pcap_streams": {"packets", "limit", "preview"},
+    "pcap_stream": {"packets", "index", "direction", "max_bytes"},
+    "http_objects": {"packets", "index", "object", "max_bytes"},
     "x509": {"limit"}, "tls_certificates": {"packets", "connections", "limit"},
     "tls_decrypt": {"factor", "packets", "connections", "preview"},
     "tls_http_body": {"factor", "packets", "connections", "connection", "side", "message", "max_bytes"},
@@ -499,13 +521,15 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "zipcrypto_decrypt": {"member", "keys", "max_bytes", "expected_random_header_hex"},
     "pe": set(), "java_class": set(), "wav": set(),
     "wav_lsb": {"channel", "bit", "max_bytes"}, "sqlite": {"table", "limit"},
-    "base64_decode": set(), "base32_decode": set(), "hex_decode": set(),
+    "base64_decode": {"extract", "min_length", "max_runs"}, "base32_decode": set(), "hex_decode": set(),
     "zlib": {"max_bytes"},
     "tar_list": set(), "tar_read": {"member", "max_bytes"},
     "bzip2": {"max_bytes"}, "xz": {"max_bytes"}, "pdf_text": {"pages"},
     "email": {"email_format", "max_records"}, "browser_history": {"since", "until", "max_records"},
     "json_records": {"field", "records_key", "max_records"}, "cloudtrail": {"since", "until", "max_records"},
     "evtx_xml": {"max_records"},
+    "xor": {"key", "key_encoding"}, "xor_single": {"max_bytes", "top", "preview"},
+    "carve": {"offset", "length", "index", "limit"}, "flag_scan": {"pattern", "max_hits"},
 }
 
 
@@ -513,8 +537,14 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
                   *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     options = options or {}
     allowed = ALLOWED_OPTIONS
-    if tool not in allowed or not isinstance(options, dict) or set(options) - allowed[tool]:
-        raise ValueError("unknown artifact tool or options")
+    if tool not in allowed:
+        raise ValueError(f"unknown artifact tool {tool[:60]!r}; see `metis codex tools`")
+    if not isinstance(options, dict):
+        raise TypeError("options must be a JSON object")
+    unknown = sorted(str(key) for key in set(options) - allowed[tool])
+    if unknown:
+        accepted = ", ".join(sorted(allowed[tool])) or "none"
+        raise ValueError(f"unknown option(s) for {tool}: {', '.join(unknown)[:80]}; accepted: {accepted}")
     if len(data) > MAX_ARTIFACT:
         raise ValueError("artifact exceeds eight MiB")
     if tool == "overview":
@@ -551,6 +581,13 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
         if len(decoded) > maximum or not decompressor.eof:
             raise ValueError("truncated or oversized compressed content")
         return {**byte_view(decoded), "trailing_bytes": len(decompressor.unused_data)}
+    if tool in {"xor", "xor_single", "carve", "flag_scan"}:
+        from metis.core import ctf_artifact_extras as extras
+        return {"xor": extras.xor_repeating, "xor_single": extras.xor_single,
+                "carve": extras.carve, "flag_scan": extras.flag_scan}[tool](data, options)
+    if tool == "base64_decode" and options.get("extract"):
+        from metis.core.ctf_artifact_extras import base64_extract
+        return base64_extract(data, options)
     if tool in {"base64_decode", "base32_decode", "hex_decode"}:
         encoded = b"".join(data.split())
         if len(encoded) > 2_097_152:
@@ -579,6 +616,20 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
         return _image(data, tool, options)
     if tool == "pcap":
         return _pcap(data, options)
+    if tool in {"pcap_streams", "pcap_stream", "http_objects"}:
+        from metis.core import ctf_tcp
+        packets = bounded_integer(options, "packets", 4096, 1, 20_000)
+        if file_kind(data) == "PCAPNG":
+            data, _more = _pcapng_to_classic(data, packets)
+        if len(data) < 24 or file_kind(data) != "PCAP":
+            raise ValueError("PCAP or supported PCAPNG required")
+        if tool == "pcap_streams":
+            return ctf_tcp.list_streams(data, packets=packets, limit=bounded_integer(options, "limit", 64, 1, 256),
+                                        preview=bounded_integer(options, "preview", 64, 0, 256))
+        maximum = bounded_integer(options, "max_bytes", 65_536, 1, 1_048_576)
+        if tool == "pcap_stream":
+            return ctf_tcp.stream_payload(data, options, packets=packets, max_bytes=maximum)
+        return ctf_tcp.http_objects(data, options, packets=packets, max_bytes=maximum)
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))

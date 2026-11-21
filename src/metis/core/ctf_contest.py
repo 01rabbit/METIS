@@ -449,6 +449,8 @@ class ContestBoard:
     def claim(self, contest_id: str, worker: str, *, lease_seconds: int = 2400) -> dict[str, Any]:
         """Atomically lease the best queued challenge to one worker.
 
+        Challenges that ``dispatch`` marked investigating without a worker are claimable too.
+
         Expired leases return to the queue first, so a crashed worker never strands
         a challenge. Categories already being worked are deprioritized for coverage.
         """
@@ -475,7 +477,8 @@ class ContestBoard:
             busy = {row[1] for row in leased}
             eligible = []
             for row in rows:
-                if row[2] != "queued" or not set(json.loads(row[4])).issubset(solved):
+                dispatched = row[2] == "investigating" and not row[3]
+                if (row[2] != "queued" and not dispatched) or not set(json.loads(row[4])).issubset(solved):
                     continue
                 item = {"points": row[5], "confidence": row[6], "estimated_minutes": row[7], "service_health": row[8]}
                 eligible.append((row[1] in busy, -self._priority(contest, item), row[0]))

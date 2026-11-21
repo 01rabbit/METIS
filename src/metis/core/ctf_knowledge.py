@@ -20,8 +20,11 @@ def abstract_text(value: str) -> str:
     """Reject obvious answer/token material; this is not a complete DLP system."""
     if re.search(r"[A-Za-z0-9_]{1,32}\{[^{}\r\n]{1,200}\}|(?:FLAG|flag)_[^\s<>\"']{4,200}", value):
         raise ValueError("store abstract methods, not flag-shaped values")
-    if re.search(r"\bBearer\s+\S+|\b(?:password|token|cookie|api_key)\s*[:=]\s*\S+", value, re.IGNORECASE):
-        raise ValueError("credential-like values are not knowledge")
+    # A quoted prompt such as 'password: ' is not a credential; a value of 4+ chars is.
+    if re.search(r"\bBearer\s+\S{8,}|\b(?:password|token|cookie|api_key)\s*[:=]\s*(?![\'\"`),\]])\S{4,}",
+                 value, re.IGNORECASE):
+        raise ValueError("credential-like values are not knowledge (matched `password|token|cookie|api_key: "
+                         "VALUE` or `Bearer VALUE`; describe it without the value)")
     if re.search(r"[A-Za-z0-9_+/=-]{48,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}", value):
         raise ValueError("raw encoded payloads are not knowledge")
     return value

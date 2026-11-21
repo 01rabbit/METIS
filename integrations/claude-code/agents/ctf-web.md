@@ -15,7 +15,11 @@ Start from supplied source and the captured problem page. Map routes, trust boun
   (Daybreak) owns scope, credentials, submissions and synthesis.
 - Use only `.venv/bin/metis ...` commands and plain read-only shell utilities
   (`file`, `strings`, `xxd`, `python3` for your own arithmetic/decoding code).
-  Write any helper scripts under `.metis-state/work/`.
+  Write any helper scripts under `.metis-state/work/`. Run every `metis` command
+  from the repository root (the default database path is relative). Run
+  `metis sandbox` bare (no pipes/redirects); if it reports the engine
+  unreachable or `sandbox cleanup could not be confirmed`, stop retrying and
+  tell Daybreak.
 - If your brief has an `attempt_id`, run METIS data/artifact tools through
   `metis agent intent RUN_ID ASSIGNMENT_ID --attempt ATT --file intent.json`
   (one intent = one turn) and finish with `metis agent complete ... --attempt ATT --file report.json`

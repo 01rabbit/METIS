@@ -13,7 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 SOURCE_COMMIT = "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"
-TRACE_PATCH_SHA256 = "7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d"
+TRACE_PATCH_SHA256 = "c97500f6a98a2c34554953f82eb46ce6b39d1b82581fa1aef65b197090dd1c4c"
 PUBLIC_FIXTURE_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 TRACE_PREFIX = "METIS_LLAMA_TRACE_V1 "
 _HEX256 = re.compile(r"[0-9a-f]{64}")
@@ -39,7 +39,11 @@ class WorkTraceCounts(BaseModel):
     graph_pre_dispatch_failures: int = Field(ge=0, le=10**12)
     zero_position_graphs: int = Field(ge=0, le=10**12)
     server_batch_retries: int = Field(ge=0, le=10**12)
-    injected_precompute_failures: int = Field(ge=0, le=1)
+    injected_memory_prepare_failures: int = Field(ge=0, le=1)
+    memory_prepare_failures: int = Field(ge=0, le=10**12)
+    memory_update_retry_attempts: int = Field(ge=0, le=10**12)
+    memory_update_retry_successes: int = Field(ge=0, le=10**12)
+    memory_update_retry_false_results: int = Field(ge=0, le=10**12)
 
     @model_validator(mode="after")
     def check_counts(self) -> WorkTraceCounts:
@@ -53,6 +57,13 @@ class WorkTraceCounts(BaseModel):
             raise ValueError("zero-position graphs exceed submitted graph count")
         if self.server_batch_retries > self.process_failures:
             raise ValueError("server retries exceed failed llama_process calls")
+        if self.injected_memory_prepare_failures > self.memory_prepare_failures:
+            raise ValueError("injected memory prepare failures exceed observed memory prepare failures")
+        if self.memory_update_retry_attempts != (
+                self.memory_update_retry_successes + self.memory_update_retry_false_results):
+            raise ValueError("memory retry outcomes do not match retry attempts")
+        if self.memory_update_retry_attempts > self.memory_prepare_failures:
+            raise ValueError("memory retry attempts exceed memory prepare failures")
         return self
 
 
@@ -161,21 +172,33 @@ def validate_retry_probe(trace: NativeWorkTrace, *, injected: bool) -> None:
     startup_failures = (
         startup.process_failures,
         startup.server_batch_retries,
-        startup.injected_precompute_failures,
+        startup.injected_memory_prepare_failures,
         startup.graph_failures,
         startup.graph_pre_dispatch_failures,
+        startup.memory_prepare_failures,
+        startup.memory_update_retry_attempts,
+        startup.memory_update_retry_successes,
+        startup.memory_update_retry_false_results,
     )
-    if startup_failures != (0, 0, 0, 0, 0):
+    if startup_failures != (0,) * 9:
         raise ValueError("retry probe recorded an unexpected startup failure")
     counts = trace.requests
-    expected = (1, 1, 1) if injected else (0, 0, 0)
-    actual = (
-        counts.injected_precompute_failures,
-        counts.process_failures,
-        counts.server_batch_retries,
-    )
-    if actual != expected:
-        raise ValueError("synthetic retry probe counters do not match the selected mode")
+    if injected:
+        retry_outcomes = counts.memory_update_retry_successes + counts.memory_update_retry_false_results
+        common = (counts.injected_memory_prepare_failures == 1
+                  and counts.memory_prepare_failures == 1
+                  and counts.memory_update_retry_attempts == 1 and retry_outcomes == 1)
+        internal_retry = (counts.memory_update_retry_successes == 1
+                          and counts.process_failures == 0 and counts.server_batch_retries == 0)
+        batch_retry = (counts.memory_update_retry_false_results == 1
+                       and counts.process_failures == 1 and counts.server_batch_retries == 1)
+        if not common or not (internal_retry or batch_retry):
+            raise ValueError("synthetic memory retry counters do not match the selected mode")
+    elif (counts.injected_memory_prepare_failures != 0 or counts.memory_prepare_failures != 0
+          or counts.memory_update_retry_attempts != 0 or counts.memory_update_retry_successes != 0
+          or counts.memory_update_retry_false_results != 0 or counts.process_failures != 0
+          or counts.server_batch_retries != 0):
+        raise ValueError("retry probe recorded unexpected injected retry counters")
     if counts.graph_failures != 0 or counts.graph_pre_dispatch_failures != 0:
         raise ValueError("synthetic retry probe included a non-injected graph failure")
     if counts.process_calls == counts.process_failures:

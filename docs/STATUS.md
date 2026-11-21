@@ -1,5 +1,18 @@
 # METIS implementation status
 
+## CTF readiness pass under Claude Code (2026-11-21)
+
+Local integration branch `local/integration-2026-11-21` (not pushed): audits of
+the Claude Code integration, local-file, web, `nc`, sandbox and contest paths;
+fixes for CTFd redirects/CSRF/verdicts, remote timeouts and TLS opt-in, operator
+error detail, magic-based triage, ELF-aware disassembly and an engine
+reachability check before sandbox reservation; new `carve`, `flag_scan`, `xor`,
+TCP-reassembly and HTTP-object tools; and forensics, crypto and rev rehearsals
+solved through the real plan/dispatch/subagent/verify flow with local
+commitments. Operator readiness only: no Issue #6–#9 gate is met by this work.
+See [`ctf-readiness-2026-11-21.md`](reports/ctf-readiness-2026-11-21.md) and the
+Issue #6 retrospective [`issue6-failure-breakdown-2026-11-21.md`](reports/issue6-failure-breakdown-2026-11-21.md).
+
 ## Issue #9 queued specialist dispatch pause/resume (2026-11-20)
 
 The authenticated loopback operator view can pause or resume queued specialist
@@ -55,6 +68,18 @@ direct child; child processes are prohibited in these canaries. No model is
 launched, and the result does not satisfy Issue #6's measured-gain gate or its
 Issue #7 dependency. See
 [`issue6-transcript-canary-2026-11-20.md`](reports/issue6-transcript-canary-2026-11-20.md).
+
+## Issue #6 build-pilot receipt admission
+
+The synthetic build-pilot now writes its initial phase receipt from the
+scheduler's reservation transaction. A receipt-write fault rolls back the
+reservation and run turn count, marks the affected job failed, and leaves the
+scripted response unconsumed; 25 focused tests pass, including rollback
+isolation after a later phase fails.
+This verifies an offline controller path only; the live invocation path still
+requires its own admission check. No real model was launched, and Issue #6's
+measured-gain acceptance remains unmet. See
+[`issue6-build-triage-pilot-preflight-2026-11-19.md`](reports/issue6-build-triage-pilot-preflight-2026-11-19.md).
 
 ## Issue #9 artifact registration audit (2026-11-20)
 
@@ -1022,10 +1047,11 @@ remain open pending their separate evidence gates.
 
 A test-only instrumented CPU build now records aggregate `llama_process`, graph,
 and server-retry work for one fixed public model fixture. A local Darwin arm64
-probe observed 22 request graph positions; a synthetic precompute refusal
-recorded one failed process call and one retry while graph positions remained
-22. The synthetic branch is not a real KV/allocator failure, and the manifest
-does not independently prove binary provenance. This trace establishes no
+probe observed 22 request graph positions. An injected
+memory-prepare status entered `memory_update(true)` and then the server batch
+retry branch; graph positions remained 22. This is not a real KV/allocator
+failure, and the manifest does not independently prove binary provenance.
+This trace establishes no
 hard token budget, held-out eligibility, MUNIN gain, CTF solve, or Issue #8
 acceptance. Capability flags remain false. See
 `docs/reports/issue8-native-work-trace-2026-11-20.md`.

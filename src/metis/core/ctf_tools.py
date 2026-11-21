@@ -28,6 +28,39 @@ DATA_TOOLS = frozenset({
 })
 
 
+# Inline tools that take a JSON object string instead of plain text:
+# tool -> (accepted keys, required keys). Used by error messages and `codex tools`.
+JSON_TOOL_INPUTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "bytes_decode": (("data", "encoding"), ("data",)),
+    "zlib_decompress": (("data", "encoding"), ("data",)),
+    "aes_decrypt": (("data", "key", "iv", "mode", "padding"), ("data", "key")),
+    "fermat_factor": (("n", "steps"), ("n",)),
+    "rsa_common_modulus": (("n", "e1", "e2", "c1", "c2"), ("n", "e1", "e2", "c1", "c2")),
+    "pack": (("value", "data", "bits", "endian", "signed"), ()),
+    "unpack": (("value", "data", "bits", "endian", "signed"), ()),
+    "cyclic": (("length", "width", "value", "encoding"), ()),
+    "cyclic_find": (("length", "width", "value", "encoding"), ()),
+    "caesar": (("text", "shift"), ("text", "shift")),
+    "xor": (("data", "key", "encoding", "key_encoding"), ("data",)),
+    "xor_single": (("data", "key", "encoding", "key_encoding"), ("data",)),
+    "gcd": (("a", "b"), ("a", "b")),
+    "mod_inverse": (("a", "b"), ("a", "b")),
+    "crt": (("residues", "moduli"), ("residues", "moduli")),
+    "integer_root": (("n", "k"), ("n", "k")),
+    "rsa_decrypt": (("n", "d", "c", "p", "q", "e"), ("c",)),
+}
+
+
+def input_shape(tool: str) -> str:
+    """Compact input shape: JSON keys (required first, optional marked ?) or plain text."""
+    spec = JSON_TOOL_INPUTS.get(tool)
+    if spec is None:
+        return "plain text via --data or stdin"
+    accepted, required = spec
+    keys = [*required, *(f"{key}?" for key in accepted if key not in required)]
+    return "JSON object string {" + ",".join(keys) + "}"
+
+
 def parameters(data: str, allowed: set[str], required: set[str]) -> dict[str, Any]:
     value = json.loads(data)
     if not isinstance(value, dict) or set(value) - allowed or required - set(value):
@@ -264,7 +297,15 @@ def _structured(tool: str, data: str) -> Any:
         if "d" in args:
             n, d = number(args["n"]), number(args["d"])
         else:
-            p, q, e = number(args["p"]), number(args["q"]), number(args["e"])
+            e = number(args["e"])
+            if "p" in args and "q" in args:
+                p, q = number(args["p"]), number(args["q"])
+            else:
+                # One factor plus the modulus is enough (e.g. after a shared-prime gcd).
+                modulus, known = number(args["n"]), number(args.get("p", args.get("q")))
+                if known < 2 or modulus % known:
+                    raise ValueError("supplied factor does not divide n")
+                p, q = known, modulus // known
             if p < 2 or q < 2 or p == q or (p * q).bit_length() > 4096:
                 raise ValueError("invalid supplied RSA factors")
             n, d = p * q, pow(e, -1, (p - 1) * (q - 1))
@@ -344,4 +385,10 @@ def transform(request: ToolRequest) -> ToolResult:
             output = _structured(tool, data)
         return ToolResult(ok=True, output=output if isinstance(output, str) else json.dumps(output))
     except (ValueError, KeyError, TypeError, OverflowError, zlib.error):
-        return ToolResult(ok=False, output="invalid or unsupported bounded tool input")
+        hint = ""
+        if request.tool in JSON_TOOL_INPUTS:
+            accepted, required = JSON_TOOL_INPUTS[request.tool]
+            example = json.dumps({key: "..." for key in (required or accepted[:1])})
+            hint = f" (? = optional; integers may be decimal or 0x-hex strings; e.g. --data '{example}')"
+        return ToolResult(ok=False, output=("invalid or unsupported bounded tool input; "
+                                            f"{request.tool} expects {input_shape(request.tool)}{hint}"))

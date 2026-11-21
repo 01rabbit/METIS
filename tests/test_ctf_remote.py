@@ -3,6 +3,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -363,3 +364,129 @@ def test_endpoint_selectors_replace_and_revoke(tmp_path, quiz_server, monkeypatc
     # Re-granting a revoked endpoint reactivates it under the same index.
     assert remote.grant(run_id, "127.0.0.1", 1)["index"] == 0
     assert remote.resolve(run_id, "latest") == 0
+
+
+def test_grant_warns_when_hostname_is_private(tmp_path, monkeypatch):
+    _no_proxy(monkeypatch)
+    database, run_id = _run(tmp_path)
+    remote = RemoteWorkflow(database)
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: [(0, 0, 0, "", ("127.0.0.1", 4000))])
+    granted = remote.grant(run_id, "localhost", 4000)
+    assert granted["granted"] is True and granted["private_address"] == ["127.0.0.1"]
+    assert "literal IP" in granted["warnings"][0]
+    assert "warnings" not in remote.grant(run_id, "127.0.0.1", 4001)
+
+
+def test_grant_tls_options_are_stored_and_listed(tmp_path):
+    database, run_id = _run(tmp_path)
+    remote = RemoteWorkflow(database)
+    default = remote.grant(run_id, "127.0.0.1", 4443, tls=True)
+    assert default["tls_insecure"] is False and "warnings" not in default
+    granted = remote.grant(run_id, "127.0.0.1", 4443, tls=True, tls_insecure=True, sni="chal.example.org")
+    assert granted["index"] == default["index"] and "disabled" in granted["warnings"][0]
+    listed = remote.endpoints(run_id)["endpoints"][0]
+    assert listed["tls_insecure"] is True and listed["sni"] == "chal.example.org"
+    assert remote._tls_settings(run_id, 0) == (True, "chal.example.org")
+    with pytest.raises(ValueError):
+        remote.grant(run_id, "127.0.0.1", 4000, tls_insecure=True)
+    with pytest.raises(ValueError):
+        remote.grant(run_id, "127.0.0.1", 4443, tls=True, sni="bad name!")
+
+
+def test_legacy_endpoint_table_is_migrated(tmp_path):
+    import sqlite3
+    database, run_id = _run(tmp_path)
+    with sqlite3.connect(database) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS remote_endpoints (
+            run_id TEXT NOT NULL, idx INTEGER NOT NULL, host TEXT NOT NULL,
+            port INTEGER NOT NULL, tls INTEGER NOT NULL, created REAL NOT NULL,
+            revoked INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(run_id, idx), UNIQUE(run_id, host, port, tls))""")
+        db.execute("INSERT INTO remote_endpoints VALUES (?,?,?,?,?,?,?)", (run_id, 0, "10.0.0.1", 443, 1, 1.0, 0))
+    remote = RemoteWorkflow(database)
+    assert remote.endpoints(run_id)["endpoints"][0]["tls_insecure"] is False
+    assert remote._tls_settings(run_id, 0) == (False, None)
+
+
+def test_wrap_verifies_unless_insecure(monkeypatch):
+    import ssl
+    seen = {}
+
+    class Context:
+        check_hostname = True
+        verify_mode = None
+
+        def wrap_socket(self, raw, server_hostname):
+            seen.update(check=self.check_hostname, mode=self.verify_mode, name=server_hostname)
+            return raw
+
+    monkeypatch.setattr("ssl.create_default_context", lambda: Context())
+    RemoteWorkflow._wrap(object(), "host.example", True)
+    assert seen == {"check": True, "mode": None, "name": "host.example"}
+    RemoteWorkflow._wrap(object(), "host.example", True, True, "sni.example")
+    assert seen == {"check": False, "mode": ssl.CERT_NONE, "name": "sni.example"}
+
+
+def test_stdio_bridge_idle_timeout_after_stdin_eof(tmp_path):
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(1)
+    held = []
+    threading.Thread(target=lambda: held.append(silent.accept()[0]), daemon=True).start()
+    database, run_id = _run(tmp_path)
+    RemoteWorkflow(database).grant(run_id, "127.0.0.1", silent.getsockname()[1])
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-m", "metis.cli", "remote", "--database", str(database), "connect", run_id, "0",
+         "--idle-timeout", "1"], input=b"hello\n", capture_output=True, timeout=30, check=False)
+    assert time.monotonic() - started < 20
+    assert completed.returncode == 0 and b'"idle_timeout"' in completed.stderr
+    silent.close()
+
+
+def test_stdio_bridge_survives_connection_reset(tmp_path):
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def reset():
+        client = server.accept()[0]
+        client.recv(16)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        client.close()
+
+    threading.Thread(target=reset, daemon=True).start()
+    database, run_id = _run(tmp_path)
+    RemoteWorkflow(database).grant(run_id, "127.0.0.1", server.getsockname()[1])
+    completed = subprocess.run(
+        [sys.executable, "-m", "metis.cli", "remote", "--database", str(database), "connect", run_id, "0"],
+        input=b"hi\n", capture_output=True, timeout=30, check=False)
+    assert completed.returncode == 0 and b"received_bytes" in completed.stderr
+    server.close()
+
+
+def test_pipe_deadline_enforced_when_solver_never_reads(tmp_path):
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def flood():
+        client = server.accept()[0]
+        try:
+            for _ in range(64):
+                client.sendall(b"x" * 65_536)
+            time.sleep(10)
+        except OSError:
+            pass
+        finally:
+            client.close()
+
+    threading.Thread(target=flood, daemon=True).start()
+    database, run_id = _run(tmp_path)
+    remote = RemoteWorkflow(database)
+    remote.grant(run_id, "127.0.0.1", server.getsockname()[1])
+    started = time.monotonic()
+    result = remote.pipe(run_id, 0, [sys.executable, "-c", "import time; time.sleep(30)"], timeout=2)
+    assert time.monotonic() - started < 15
+    assert result["termination"] == "timeout"
+    server.close()

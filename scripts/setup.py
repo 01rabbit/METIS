@@ -25,6 +25,41 @@ ROOT = Path(__file__).resolve().parents[1]
 SANDBOX_PATTERN = "/.venv/bin/metis sandbox *"
 
 
+def run_uv_sync(command: list[str], root: Path, environment: dict[str, str]) -> None:
+    """Run ``uv sync``; retry once with uv's bundled roots when the system trust store is unusable.
+
+    Some sandboxes make the macOS trust store unreadable (``invalid peer certificate``). The retry
+    only switches the certificate source; TLS verification is never disabled, and variables the
+    user set themselves are respected.
+    """
+    user_set = "UV_SYSTEM_CERTS" in os.environ or "UV_NATIVE_TLS" in os.environ
+    first = _run_tee(command, root, environment)
+    if first[0] == 0:
+        return
+    if user_set or "invalid peer certificate" not in first[1]:
+        raise subprocess.CalledProcessError(first[0], command)
+    print("METIS: uv could not use the system certificate store; retrying once with "
+          "UV_SYSTEM_CERTS=false UV_NATIVE_TLS=false (TLS verification stays on).", flush=True)
+    retry_env = {**environment, "UV_SYSTEM_CERTS": "false", "UV_NATIVE_TLS": "false"}
+    second = _run_tee(command, root, retry_env)
+    if second[0] == 0:
+        return
+    print(f"METIS: uv sync failed twice. First attempt (exit {first[0]}) and retry "
+          f"(exit {second[0]}) output are shown above.", file=sys.stderr, flush=True)
+    raise subprocess.CalledProcessError(second[0], command)
+
+
+def _run_tee(command: list[str], root: Path, environment: dict[str, str]) -> tuple[int, str]:
+    process = subprocess.Popen(command, cwd=root, env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, errors="replace")
+    assert process.stdout is not None
+    lines: list[str] = []
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        lines.append(line)
+    return process.wait(), "".join(lines)
+
+
 def shebang_target(script: Path) -> str | None:
     try:
         with script.open("rb") as stream:
@@ -146,7 +181,7 @@ def main():
         command.extend(["--extra", "dev"])
     if args.browser:
         command.extend(["--extra", "browser"])
-    subprocess.run(command, cwd=root, env=environment, check=True)
+    run_uv_sync(command, root, environment)
     if args.browser:
         subprocess.run([str(root / ".venv/bin/playwright"), "install", "chromium"], cwd=root, check=True)
     state = root / ".metis-state"

@@ -618,3 +618,135 @@ def test_browser_reservation_requires_revision_and_honors_cap(site, tmp_path):
         workflow.prepare_browser(run_id, "second-candidate")
     with pytest.raises(ValueError, match="identical candidate"):
         workflow.prepare_browser(run_id, "first-candidate")
+
+
+class _FakeCTFd:
+    """Port-free CTFd stand-in that replaces SafeHTTP.request."""
+
+    BASE = "http://ctfd.test"
+
+    def __init__(self):
+        self.calls = []
+        self.attempt = {"success": True, "data": {"status": "incorrect", "message": "no"}}
+        self.files = ["/files/abc/x.zip"]
+        self.file_redirect = None
+        self.challenge_body = None
+        self.nonce_page = "<script>var init = {'csrfNonce': \"nonce-0123456789abcdef\"};</script>"
+
+    def result(self, url, body, status=200):
+        data = body if isinstance(body, bytes) else body.encode()
+        return HTTPResult(url, status, {}, data, len(data), "0" * 64)
+
+    def request(self, url, *, method="GET", body=None, headers=None, sink=None, **_):
+        from metis.core.ctf_http import OutOfScopeRedirect
+        self.calls.append((method, url, dict(headers or {})))
+        path = url[len(self.BASE):]
+        if path == "/api/v1/challenges/1":
+            if self.challenge_body is not None:
+                return self.result(url, self.challenge_body)
+            return self.result(url, json.dumps({"success": True, "data": {
+                "name": "c", "category": "misc", "description": "d", "files": self.files}}))
+        if path == "/api/v1/challenges":
+            return self.result(url, self.challenge_body or "{}")
+        if path == "/challenges":
+            return self.result(url, self.nonce_page)
+        if path.startswith("/files/"):
+            if self.file_redirect:
+                raise OutOfScopeRedirect(self.file_redirect)
+            sink.write(b"zipdata")
+            return self.result(url, b"")
+        if path == "/api/v1/challenges/attempt":
+            return self.result(url, json.dumps(self.attempt))
+        return self.result(url, "missing", 404)
+
+
+@pytest.fixture
+def fake_ctfd(monkeypatch):
+    fake = _FakeCTFd()
+    monkeypatch.setattr(SafeHTTP, "request", lambda self, url, **kw: fake.request(url, **kw))
+    monkeypatch.setenv("TEST_CTF_TOKEN", "test-token")
+    monkeypatch.setenv("TEST_CTF_COOKIE", "session=abc123")
+    return fake
+
+
+def test_ctfd_file_redirect_to_other_origin_is_skipped_with_allow_origin_hint(fake_ctfd, tmp_path):
+    fake_ctfd.file_redirect = "https://cdn.example.net"
+    result = WebWorkflow(tmp_path / "s.sqlite").open(
+        fake_ctfd.BASE, adapter="ctfd", challenge_id=1, token_env="TEST_CTF_TOKEN")
+    assert result["context"]["run_id"] and result["downloaded_files"] == 0
+    skipped = result["skipped_files"]
+    assert len(skipped) == 1 and "https://cdn.example.net" in skipped[0]["reason"]
+    assert "--allow-origin https://cdn.example.net" in skipped[0]["next"]
+    assert not any(url.startswith("https://cdn") for _, url, _ in fake_ctfd.calls)
+
+
+def test_safehttp_out_of_scope_redirect_is_never_followed(monkeypatch):
+    from metis.core.ctf_http import OutOfScopeRedirect
+
+    class Redirect:
+        status = 302
+        headers = {"Location": "https://cdn.example.net/x?sig=secret"}  # noqa: RUF012
+
+        def close(self):
+            pass
+
+    opened = []
+    client = SafeHTTP(["http://127.0.0.1:9"], auth_origin="http://127.0.0.1:9")
+    monkeypatch.setattr(client, "_open", lambda url, *a: opened.append(url) or (Redirect(), None))
+    with pytest.raises(OutOfScopeRedirect) as caught:
+        client.request("http://127.0.0.1:9/files/a/x.zip")
+    assert caught.value.destination_origin == "https://cdn.example.net"
+    assert "sig=secret" not in str(caught.value) and len(opened) == 1
+
+
+def test_ctfd_login_html_is_reported_as_authentication_required(fake_ctfd, tmp_path):
+    fake_ctfd.challenge_body = "<html><title>Login</title></html>"
+    workflow = WebWorkflow(tmp_path / "s.sqlite")
+    with pytest.raises(ValueError, match="authentication required"):
+        workflow.catalog(fake_ctfd.BASE, cookie_env="TEST_CTF_COOKIE")
+    with pytest.raises(ValueError, match="authentication required"):
+        workflow.open(fake_ctfd.BASE, adapter="ctfd", challenge_id=1, cookie_env="TEST_CTF_COOKIE")
+
+
+def _ctfd_run(fake, directory, **auth):
+    workflow = WebWorkflow(directory / "s.sqlite")
+    run_id = workflow.open(fake.BASE, adapter="ctfd", challenge_id=1, download=False, **auth)["context"]["run_id"]
+    return workflow, run_id
+
+
+def test_ctfd_paused_is_retryable_and_partial_is_recorded_not_solved(fake_ctfd, tmp_path):
+    workflow, run_id = _ctfd_run(fake_ctfd, tmp_path, token_env="TEST_CTF_TOKEN")
+    fake_ctfd.attempt = {"success": True, "data": {"status": "paused", "message": "paused"}}
+    first = workflow.submit(run_id, "cand-one")
+    assert first["verdict"] == "paused" and not first["verified"]
+    fake_ctfd.attempt = {"success": True, "data": {"status": "partial", "message": "half"}}
+    again = workflow.submit(run_id, "cand-one")  # paused did not burn the candidate
+    assert again["verdict"] == "partial" and not again["verified"]
+    with sqlite3.connect(tmp_path / "s.sqlite") as db:
+        stored = db.execute("SELECT verdict FROM web_attempts WHERE run_id=?", (run_id,)).fetchall()
+    assert stored == [("partial",)]
+    with pytest.raises(ValueError, match="identical candidate"):
+        workflow.submit(run_id, "cand-one")
+
+
+def test_ctfd_cookie_submit_sends_csrf_nonce_and_token_auth_does_not(fake_ctfd, tmp_path):
+    workflow, run_id = _ctfd_run(fake_ctfd, tmp_path, cookie_env="TEST_CTF_COOKIE")
+    workflow.submit(run_id, "cookie-cand")
+    post = next(call for call in fake_ctfd.calls if call[1].endswith("/attempt"))
+    assert post[2]["CSRF-Token"] == "nonce-0123456789abcdef"
+    token_dir = tmp_path / "token"
+    token_dir.mkdir()
+    workflow2, run2 = _ctfd_run(fake_ctfd, token_dir, token_env="TEST_CTF_TOKEN")
+    fake_ctfd.calls.clear()
+    workflow2.submit(run2, "token-cand")
+    assert not any(url.endswith("/challenges") for _, url, _ in fake_ctfd.calls)
+    post = next(call for call in fake_ctfd.calls if call[1].endswith("/attempt"))
+    assert "CSRF-Token" not in post[2]
+
+
+def test_ctfd_cookie_submit_without_nonce_fails_clearly_before_sending(fake_ctfd, tmp_path):
+    fake_ctfd.nonce_page = "<html>please log in</html>"
+    workflow, run_id = _ctfd_run(fake_ctfd, tmp_path, cookie_env="TEST_CTF_COOKIE")
+    with pytest.raises(ValueError, match="csrfNonce not found"):
+        workflow.submit(run_id, "cookie-cand")
+    assert not any(url.endswith("/attempt") for _, url, _ in fake_ctfd.calls)

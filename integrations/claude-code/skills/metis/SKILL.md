@@ -36,6 +36,7 @@ direct the user to `metis web auth`, which prompts with masked input).
 | ksnctf | `metis web open https://ksnctf.sweetduet.info/problem/N` |
 | HTML page | `metis web open URL` (add `--render` if the statement is built by JavaScript) |
 | Local files | `metis codex intake --title T --description D --artifact PATH ...` |
+| nc only (no URL/files) | `metis codex intake --title T --description "nc HOST PORT"` (no `--artifact`), then `metis remote suggest RUN` |
 | Whole event | `metis web catalog URL [--adapter rctf]` → `metis contest create/add/dispatch` |
 
 Files on another origin (e.g. a CDN bucket) need `--allow-origin ORIGIN` and only
@@ -120,8 +121,21 @@ narrative or scripts into the vault automatically.
 
 - Static: `metis codex tools`, `metis codex artifact RUN_ID NAME TOOL [--options JSON]`,
   `metis codex derive ...`, `metis codex act RUN_ID TOOL --data ...`.
+  `metis codex tools` lists every tool's accepted options. Useful forensics
+  tools: `carve` (embedded files and trailing data; `derive ... carve --options
+  '{"index":N}'` extracts one), `flag_scan` (flag-shaped strings across raw,
+  UTF-16, rot13 and one base64/hex/gzip/zlib layer of the whole artifact — carve
+  or derive embedded blobs first), `base64_decode --options '{"extract":true}'`
+  (base64 inside surrounding text), artifact-level `xor` / `xor_single`, and
+  `pcap_streams` → `pcap_stream {"index":N}` / `http_objects` for TCP
+  reassembly and HTTP bodies. Error replies carry a `detail` with the cause.
 - Dynamic (challenge binaries — **never run them on the host**):
   `metis sandbox run RUN_ID NAME [--mode run|strace|ltrace|gdb|script] [--arg A] [--with LIBC] [--stdin-file F | --stdin-hex H] [--gdb CMD]... [--script exploit.py]`.
+  Run it as a bare command (no pipes, redirects or `&&`): only the bare form is
+  exempt from Claude Code's Bash sandbox. A redirected call fails with
+  `sandbox cleanup could not be confirmed` and leaves `run has an unreconciled
+  active operation`; clear it with a bare `metis codex recover RUN_ID` (it also
+  needs the container engine, so it fails inside the Bash sandbox).
   Script mode runs your Python/sh inside the no-network container with the
   target at `$METIS_TARGET` and pwntools available — use it to develop exploits.
   Foreign-architecture targets (x86-64 on Apple Silicon) run under QEMU
@@ -129,8 +143,10 @@ narrative or scripts into the vault automatically.
   ltrace is unavailable, and scripts must prefix the target with
   `$METIS_RUNNER`. Emulated absolute addresses differ from the real service.
 - Remote services: `metis remote suggest RUN_ID` lists `nc host port` candidates
-  from the statement (untrusted, not grants). `metis remote grant RUN_ID HOST PORT [--tls]`
-  only for an endpoint the user authorized (the challenge's own service counts
+  from the statement (untrusted, not grants). `metis remote grant RUN_ID HOST PORT [--tls [--tls-insecure] [--sni NAME]]`
+  only for an endpoint the user authorized (`--tls-insecure` only for a
+  self-signed challenge certificate the user accepted; grant literal IPs for
+  private hosts) (the challenge's own service counts
   when the user authorized the challenge). Then either
   `metis remote exchange RUN_ID IDX --script steps.json` (scripted send/recv) or
   `metis remote pipe RUN_ID IDX -- python3 solver.py` (your solver's stdin/stdout
@@ -238,8 +254,12 @@ candidate as soon as it is ready; do not wait for unrelated branches.
 
 Immediately after each `correct` verdict, write the problem's write-up:
 `metis writeup save CONTEST_ID CHALLENGE_ID --file .metis-state/work/<id>-writeup.json`
-(schema in `.agents/skills/metis/SKILL.md`, "Write-ups and accumulated
-knowledge"). Write it in Japanese, include the exact verified `flag`, the
+(schema: `WriteupInput` in `src/metis/core/ctf_writeup.py`; extra keys are
+rejected). Required: `summary` (10–4000 chars). Optional: `analysis`,
+`solution`, `flag`, `lessons`, `tags`, `references`, `scripts` (paths, ≤16),
+`run_id`, `source_split` (`practice`|`competition`), and `techniques` (≤8), each
+`{"title", "category", "summary", "conditions"}` with optional `outcome`
+(`success`|`failure`|`inconclusive`), `failure_reason`, `evidence`. Write it in Japanese, include the exact verified `flag`, the
 solving scripts (copy them into `.metis-state/work/` first), and 1–3 abstract
 `techniques`; METIS turns those into reusable technique cards and updates
 `writeups/<ctf>/README.md` and `writeups/KNOWLEDGE.md`. Ask executor subagents

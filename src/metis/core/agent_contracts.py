@@ -194,7 +194,7 @@ def _categories(context: dict[str, Any]) -> tuple[list[str], CategorySource, str
     suggested = [item for item in context.get("triage", {}).get("suggested_categories", [])
                  if item in CATEGORIES and item != "misc"]
     if suggested:
-        return suggested[:2], "triage", "keyword triage of title/description/artifact names (unverified)"
+        return suggested[:2], "triage", "triage from artifact magic and title/description/artifact-name keywords (unverified)"
     return ["misc"], "default", "no declared or suggested category"
 
 

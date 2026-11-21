@@ -324,6 +324,28 @@ def engine_check(engine: str) -> tuple[bool, str | None]:
     return False, (message[-1] if message else f"exit status {result.returncode}")[:300]
 
 
+_SOCKET_PATH = re.compile(r"unix://(/[^\s\"'?]+)|(/[^\s\"'?:]+\.sock)\b")
+SANDBOX_SOCKET_HINT = ("the engine socket exists and is yours, so this is likely Claude Code's own Bash "
+                       "sandbox blocking it; run `.venv/bin/metis sandbox status` as an excluded command "
+                       "(see integrations/claude-code/README.md)")
+
+
+def socket_permission_hint(reason: str | None) -> str | None:
+    """Diagnostic only: spot a 'permission denied' on a socket this user owns."""
+    if not reason or "permission denied" not in reason.lower():
+        return None
+    found = _SOCKET_PATH.search(reason)
+    if not found:
+        return None
+    try:
+        info = os.stat(found.group(1) or found.group(2))
+    except OSError:
+        return None
+    if info.st_uid != os.getuid() and not (info.st_mode & 0o006):
+        return None
+    return SANDBOX_SOCKET_HINT
+
+
 def image_present(engine: str, image: str | None) -> bool | None:
     """Whether the recorded image exists in this engine (None when it cannot be checked)."""
     if not image:
@@ -393,6 +415,8 @@ def status(database: Path) -> dict[str, Any]:
     hint = None
     if not config.get("image") or present is False:
         hint = "run `.venv/bin/metis sandbox build` (images are per machine and per engine)"
+    if not reachable:
+        hint = socket_permission_hint(reason) or hint
     return {"configured": bool(config.get("image")) and present is not False, "engine": engine,
             "engine_available": reachable, "engine_error": reason, "image": config.get("image"),
             "image_present": present, "hint": hint,
@@ -529,6 +553,13 @@ class Sandbox:
                   "target_arch": target_arch}
         bundle = _bundle(header, files, request.stdin)
         if not _reserved:
+            # Fail before reserving budget or registering an operation when the engine
+            # cannot be reached at all, so the run is not left needing `codex recover`.
+            reachable, reason = engine_check(self.engine)
+            if not reachable:
+                raise ValueError("container engine unreachable; nothing was started or charged "
+                                 f"({reason}). Inside Claude Code run `metis sandbox` as a bare command "
+                                 "(no pipes/redirects); if it persists, ask Daybreak to run it")
             with run_lock(self.session.database, run_id):
                 with sqlite3.connect(self.session.database) as db:
                     if db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone():

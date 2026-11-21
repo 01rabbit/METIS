@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from metis import __version__, cli_ext
 from metis.core.artifacts import read_artifact
-from metis.core.codex_session import CodexSession
+from metis.core.codex_session import CodexSession, tool_catalog
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS, MAX_ARTIFACT, MAX_FILE
 from metis.core.ctf_browser import available as browser_available
@@ -70,11 +70,12 @@ def read_candidate(path: Path | None) -> str:
     change the candidate; every other byte is kept.
     """
     raw = path.read_bytes()[:65_537] if path is not None else sys.stdin.buffer.read(65_537)
-    if raw.endswith(b"\r\n"):
-        raw = raw[:-2]
-    elif raw.endswith(b"\n"):
-        raw = raw[:-1]
-    return raw.decode()
+    return strip_one_newline(raw.decode())
+
+
+def strip_one_newline(text: str) -> str:
+    """Remove exactly one trailing CRLF or LF (shared by `web submit` and `codex submit`)."""
+    return text.removesuffix("\r\n") if text.endswith("\r\n") else text.removesuffix("\n")
 
 
 def _json_input(path: Path | None, limit: int = 65_536) -> dict[str, Any]:
@@ -166,6 +167,13 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
                                specialist_turn_budget=args.specialist_turn_budget)
 
 
+def _explain_missing_session(reason: str) -> str:
+    if "Codex session not found" in reason:
+        return (reason + " (the run_id must come from `metis codex intake` or `metis web open`; "
+                "`metis prepare` run ids are not Codex sessions)")
+    return reason
+
+
 def _note(args: argparse.Namespace) -> str | None:
     if args.note_file:
         return args.note_file.read_text()[:4000]
@@ -227,8 +235,23 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def main() -> int:
-    output: dict[str, Any]
+def _accept_database_after_subcommand(parser: argparse.ArgumentParser, inherited: bool = False) -> None:
+    """Let `--database` follow the subcommand as well as precede it.
+
+    Leaf values use SUPPRESS so they override the group value only when given.
+    """
+    has_database = inherited or any("--database" in action.option_strings for action in parser._actions)
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for child in action.choices.values():
+            if has_database and not any("--database" in a.option_strings for a in child._actions):
+                child.add_argument("--database", type=Path, default=argparse.SUPPRESS, dest="database",
+                                   help=argparse.SUPPRESS)
+            _accept_database_after_subcommand(child, has_database)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="metis")
     parser.add_argument("--version", action="version", version=f"METIS {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -490,6 +513,9 @@ def main() -> int:
     grant.add_argument("host")
     grant.add_argument("port", type=int)
     grant.add_argument("--tls", action="store_true")
+    grant.add_argument("--tls-insecure", action="store_true",
+                       help="with --tls: skip certificate verification for this endpoint (self-signed CTF service)")
+    grant.add_argument("--sni", help="with --tls: server name to send and verify instead of the host")
     grant.add_argument("--replace", action="store_true",
                        help="revoke this run's other endpoints (new instance of the same challenge)")
     endpoints_parser = remote_commands.add_parser("list", help="granted endpoints of a run (active, latest)")
@@ -506,6 +532,8 @@ def main() -> int:
     connect.add_argument("run_id")
     connect.add_argument("index", help="index, host:port or latest (newest active grant)")
     connect.add_argument("--timeout", type=float, default=3600)
+    connect.add_argument("--idle-timeout", type=float, default=10,
+                         help="seconds of server silence after stdin EOF before closing")
     ssh = remote_commands.add_parser("ssh", help="run a command and/or download files over SSH on a granted endpoint")
     ssh.add_argument("run_id")
     ssh.add_argument("index", help="index, host:port or latest (newest active grant)")
@@ -717,6 +745,13 @@ def main() -> int:
             action.add_argument("tool", choices=sorted(DATA_TOOLS))
             action.add_argument("--data", help="omit to read exact UTF-8 input from stdin")
     cli_ext.register(sub)
+    _accept_database_after_subcommand(parser)
+    return parser
+
+
+def main() -> int:
+    output: dict[str, Any]
+    parser = build_parser()
     args = parser.parse_args()
     handled = cli_ext.handle(args, parser)
     if handled is not None:
@@ -789,6 +824,12 @@ def main() -> int:
                 if len(raw) > 262_144:
                     raise ValueError("write-up input exceeds 256 KiB")
                 output = book.save(args.contest_id, args.challenge_id, WriteupInput.model_validate_json(raw))
+                unstored = [item for item in output.get("techniques", [])
+                            if not item.get("stored") and not item.get("already_known")]
+                if unstored:
+                    reasons = "; ".join(f"{item.get('title')}: {item.get('error', 'not stored')}" for item in unstored)
+                    output["warning"] = f"{len(unstored)} technique(s) were NOT stored in memory ({reasons})"
+                    print("warning: " + output["warning"], file=sys.stderr)
             elif args.writeup_command == "index":
                 output = book.index(args.contest_id)
             elif args.writeup_command == "knowledge":
@@ -817,15 +858,22 @@ def main() -> int:
                                            next_step=args.next_step, status=args.status)
             print(json.dumps(output))
             return 0
-        except (OSError, ValueError, TypeError, sqlite3.Error):
-            parser.exit(2, "Knowledge command rejected: use abstract, evidence-backed methods without flags or credentials\n")
+        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+            # pydantic ValidationError messages echo input values, so only plain ValueErrors are surfaced
+            detail = _explain_missing_session((str(exc).splitlines() or [""])[0][:300]) if type(exc) is ValueError else ""
+            parser.exit(2, "Knowledge command rejected: " + (detail + "; " if detail else "")
+                        + "use abstract, evidence-backed methods without flags or credentials\n")
     if args.command == "plan":
         try:
             mode = None if args.mode == "auto" else args.mode
-            print(json.dumps(AgentLedger(args.database).create_wave(args.run_id, mode=mode, reason=args.reason)))
+            wave = AgentLedger(args.database).create_wave(args.run_id, mode=mode, reason=args.reason)
+            if wave.get("execution_mode") == "sequential" and not wave.get("assignments"):
+                wave["next"] = ("sequential: Daybreak covers the roles itself; to delegate, re-run with "
+                                "--mode delegated --reason '<unresolved, different hypothesis>'")
+            print(json.dumps(wave))
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
-            plan_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
+            plan_reason = _explain_missing_session((str(exc).splitlines() or [type(exc).__name__])[0][:300])
             parser.exit(2, "Agent plan rejected: " + plan_reason + "\n")
     if args.command == "contest":
         try:
@@ -879,7 +927,7 @@ def main() -> int:
             print(json.dumps(output))
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
-            contest_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:400]
+            contest_reason = _explain_missing_session((str(exc).splitlines() or [type(exc).__name__])[0][:400])
             parser.exit(2, "Contest command rejected: " + contest_reason + "\n")
     if args.command == "agent":
         try:
@@ -1037,14 +1085,16 @@ def main() -> int:
                 output = remote_workflow.suggest(args.run_id)
             elif args.remote_command == "grant":
                 output = remote_workflow.grant(args.run_id, args.host, args.port, tls=args.tls,
-                                               replace=args.replace)
+                                               replace=args.replace, tls_insecure=args.tls_insecure,
+                                               sni=args.sni)
             elif args.remote_command == "list":
                 output = remote_workflow.endpoints(args.run_id)
             elif args.remote_command == "revoke":
                 output = remote_workflow.revoke(args.run_id, args.endpoint)
             elif args.remote_command == "connect":
                 # stdout carries the raw stream; the summary goes to stderr.
-                summary = remote_workflow.connect_stdio(args.run_id, args.index, timeout=args.timeout)
+                summary = remote_workflow.connect_stdio(args.run_id, args.index, timeout=args.timeout,
+                                                     idle_timeout=args.idle_timeout)
                 print(json.dumps(summary), file=sys.stderr)
                 return 0
             elif args.remote_command == "ssh":
@@ -1136,7 +1186,8 @@ def main() -> int:
             elif args.codex_command == "tools":
                 output = {"inline_tools": sorted(DATA_TOOLS), "artifact_tools": sorted(ARTIFACT_TOOLS),
                           "artifact_parser_limit_bytes": MAX_ARTIFACT, "artifact_file_limit_bytes": MAX_FILE,
-                          "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536}
+                          "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536,
+                          **tool_catalog()}
             elif args.codex_command == "plan":
                 output = AgentLedger(args.database).create_wave(
                     args.run_id, mode=None if args.mode == "auto" else args.mode, reason=args.reason)
@@ -1191,10 +1242,18 @@ def main() -> int:
                 if args.codex_command == "act":
                     output = session.act(args.run_id, ToolRequest(tool=args.tool, data=data))
                 else:
-                    output = session.submit(args.run_id, data)
+                    # Same single trailing LF/CRLF removal as `web submit` (read_candidate).
+                    output = session.submit(args.run_id, strip_one_newline(data))
             print(json.dumps(output))
             return 0
-        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+        except RuntimeError as error:
+            # Only METIS's own fixed recovery message is surfaced; anything else stays generic.
+            if "sandbox worker teardown is unknown" not in str(error):
+                parser.exit(2, "Codex session command rejected; check scope, state and input limits\n")
+            parser.exit(2, "Codex session command rejected: recovery blocked: sandbox worker teardown is "
+                           "unknown; the container engine was unreachable — inside Claude Code's Bash sandbox, "
+                           "re-run it outside the sandbox (check `metis sandbox status` engine_available)\n")
+        except (OSError, ValueError, sqlite3.Error):
             parser.exit(2, "Codex session command rejected; check scope, state and input limits\n")
     if args.command == "generate-fixtures":
         try:

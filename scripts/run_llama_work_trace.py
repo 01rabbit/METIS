@@ -244,7 +244,7 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
             "context_size": CONTEXT_SIZE,
             "n_predict": N_PREDICT,
             "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
-            "injected_precompute_retry": inject_one_retry,
+            "injected_memory_prepare_failure": inject_one_retry,
         },
         "response": {"http_status": status, "tokens_evaluated": evaluated,
                      "tokens_predicted": predicted},
@@ -303,7 +303,7 @@ def main() -> int:
     parser.add_argument("binary", type=Path)
     parser.add_argument("model", type=Path)
     parser.add_argument("--inject-one-retry", action="store_true",
-                        help="inject one synthetic precompute refusal after readiness")
+                        help="inject one synthetic memory-prepare refusal after readiness")
     parser.add_argument("--output", type=Path,
                         help="create a new 0600 JSON file with aggregate-only evidence")
     args = parser.parse_args()

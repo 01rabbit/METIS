@@ -2,54 +2,69 @@
 
 ## Scope
 
-This change adds a separate test-only CPU build of llama.cpp at source commit
-`b1b770d90d94cad9e9ea5b993bdbc383a522fb28`. It emits aggregate counters for
-`llama_process`, encode/decode calls, graph dispatches, graph positions,
-pre-dispatch and graph failures, and server batch retries. Prompts, generated
-text, and raw server logs are not retained in the result. The registered public
-fixture is `stories260K.gguf`, SHA-256
-`270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d`.
+This test-only CPU build traces llama.cpp source commit
+`b1b770d90d94cad9e9ea5b993bdbc383a522fb28` against the public
+`stories260K.gguf` fixture (SHA-256
+`270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d`).
+It records aggregate `llama_process`, encode/decode, graph-dispatch, memory
+prepare, retry, and failure counters. Prompts, generated text, and raw process
+logs are not retained.
 
-The patch SHA-256 is
-`7b4e755bd13a2cc2505fb6147dd066de682da2b6e1aa6ff9715b68238a62123d`; the
-latest locally built binary SHA-256 was
-`3b11670bba685f535eae45dd880113045637e5325b762a0eaa83c3c4df99f090`. The
-manifest identifies those artifact digests and the declared source pin. The
-manifest alone is not a signed or independent proof that an arbitrary binary
-was built from that source; the reported observation came from the checked
-fresh-checkout build procedure.
+The fixture is the public `ggml-org-dev/stories260K` artifact: https://huggingface.co/ggml-org-dev/stories260K/blob/main/stories260K.gguf.
 
-## Observed local probes
+The instrumented patch SHA-256 is
+`c97500f6a98a2c34554953f82eb46ce6b39d1b82581fa1aef65b197090dd1c4c`.
+A fresh build from the pinned commit produced binary SHA-256
+`dc1baf03d86236e1aa187bd53e9e404abe4e0c6b0119f4addd2e72c629984065`.
+The manifest records source, patch, binary, and host digests but is not a signed
+or independent build attestation.
 
-On Darwin arm64, the fixed prompt returned HTTP 200, 20 evaluated positions,
+## Observed probes
+
+On Darwin arm64, the normal fixed request returned HTTP 200 with 20 evaluated
 and 3 predicted positions. Startup recorded one process call and 2 graph
 positions. The request recorded 3 process calls, 3 graph dispatches, and 22
-graph positions.
+graph positions, with no memory prepare failure.
 
-With the test-only retry switch, the same request returned the same response
-counts. The request trace recorded 4 process calls, one failed process call,
-one injected precompute refusal, and one server batch retry. It still recorded
-3 graph dispatches and 22 graph positions. The injection returns before graph
-submission; this exercises retry-loop control flow, not genuine KV-capacity or
-allocator failure behavior.
+With the test-only memory prepare status injection, the fixed request returned
+HTTP 200 with the same usage counts. The request trace recorded one injected
+`FAILED_PREPARE`, one memory-update optimization attempt, and one `false` return
+from `memory_update(true)`. That boolean does not distinguish `NO_UPDATE` from
+an optimization failure. The server then made one batch retry: 4 process calls
+total, one failed process call, and 3 successful graph dispatches covering 22
+positions. This executes the pinned memory-update and server retry branches;
+the injected status is synthetic and is not evidence of an actual allocator or
+KV-capacity failure.
+
+An exploratory one-off harness made two context-edge requests with 4,095 and
+4,088 prompt tokens, each with an eight-token prediction allowance. Both
+received HTTP 400 before any `llama_process` call and recorded zero process
+calls and graph work. For the 4,088-token request, response metadata was
+`exceed_context_size_error`, `n_ctx=2048`, and `n_prompt_tokens=4088`, despite
+launching the server with `--ctx-size 4096`. The reason for this effective
+context mismatch was not investigated. The one-off harness and prompt text were
+not retained, so these observations are exploratory and cannot be reproduced
+with the committed runner.
 
 ## Validation
 
-- The pinned CPU-only `llama-server` build completed from a fresh source tree.
-- Normal and injected-retry fixture probes completed and their aggregate
-  records passed the strict parser.
-- `tests/test_native_work_trace.py`: 20 passed, including pre-apply patch pin
-  checks, startup and request retry-counter invariants, duplicate JSON keys,
-  and OS-level 4 MiB log-file limit checks.
-- Ruff, mypy, `scripts/check_repo.py`, `sh -n scripts/build_llama_work_trace.sh`,
-  and `git diff --check` passed.
+- `scripts/build_llama_work_trace.sh /tmp/metis-issue8-context-boundary-final-v5`
+  completed from a fresh pinned-source checkout; binary SHA-256 was
+  `dc1baf03d86236e1aa187bd53e9e404abe4e0c6b0119f4addd2e72c629984065`.
+- Normal and injected-memory-prepare requests completed and parsed against the
+  aggregate trace schema.
+- `PYTHONPATH=.:src pytest -q tests/test_native_work_trace.py`: 37 passed;
+  the primary checkout virtualenv was used for this worktree.
+- Ruff, mypy, `scripts/check_repo.py` (zero findings), shell syntax validation,
+  and `git diff --check` passed after the final patch update.
 
 ## Limits
 
-These are single-profile local observations. The synthetic refusal is not a
-real backend failure. Hashing and later execution/model loading are path-based,
-so a concurrent same-user replacement between those steps is not excluded.
-The probe does not establish a provider or token ceiling, held-out eligibility,
-real CTF solving, MUNIN benefit, or any Issue #8 acceptance criterion. The hard
-token-budget capability flags remain false. No official challenge endpoint or
-verifier was contacted.
+The injected status is not a genuine memory failure. The context-edge requests
+were rejected before inference. This is one public fixture and one Darwin arm64
+profile; timeout/cancellation, concurrent calls, encoder or multimodal models,
+other backends/models, held-out benchmarks, and actual allocator exhaustion
+remain untested. The trace does not establish a strict token/work ceiling,
+provider cost limit, CTF solve, MUNIN benefit, or any Issue #8 acceptance
+criterion. `hard_cap_capable` and `hard_token_budget_enforced` remain false. No
+official challenge endpoint or verifier was contacted.

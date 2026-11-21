@@ -96,7 +96,13 @@ rCTFではチームトークンをマスク入力で一度だけ渡し、派生�
 
 問題文の `nc host port` は候補にすぎません。許可された接続先だけを登録します。
 
+URLもファイルもない nc だけの問題は、`--artifact` なしで run を作れます。
+問題文（`nc host port`、`host:port`、`socat`、`openssl s_client -connect` など）を
+`--description` に入れると `remote suggest` が候補にします。CTFdの `connection_info` も
+問題文に取り込まれます。候補は許可ではなく、`remote grant` で登録して初めて接続できます。
+
 ```sh
+.venv/bin/metis codex intake --title "pwn1" --description "nc chall.example.org 31337"
 .venv/bin/metis remote suggest RUN_ID
 .venv/bin/metis remote grant RUN_ID chall.example.org 31337
 .venv/bin/metis remote exchange RUN_ID 0 --script steps.json

@@ -175,6 +175,9 @@ TOOL_HINTS = (
      "data byte) and returns keys x,y,z; derive tool zipcrypto_decrypt{member,keys:'x,y,z'} registers the "
      "plaintext. For a Stay double-encrypted Info-ZIP header, optionally provide "
      "expected_random_header_hex with the ten recovered PRNG bytes to validate both header layers."),
+    ("pcap_streams lists reassembled TCP streams (5-tuple, per-direction bytes, gaps, protocol hint, preview); "
+     "derive tool pcap_stream{index,direction:client|server|both} registers one stream's payload and derive tool "
+     "http_objects{object} registers one HTTP response body (chunked/gzip decoded; list with http_objects first)."),
     ("derive tool tls_http_body{factor,connection,side,message} on the PCAP registers one decrypted HTTP body as a "
     "new artifact (name returned); then inspect it (overview/text/image) or view it if it is a picture."),
 )
