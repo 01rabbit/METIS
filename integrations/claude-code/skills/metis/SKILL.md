@@ -121,6 +121,14 @@ narrative or scripts into the vault automatically.
 
 - Static: `metis codex tools`, `metis codex artifact RUN_ID NAME TOOL [--options JSON]`,
   `metis codex derive ...`, `metis codex act RUN_ID TOOL --data ...`.
+  `metis codex tools` lists every tool's accepted options. Useful forensics
+  tools: `carve` (embedded files and trailing data; `derive ... carve --options
+  '{"index":N}'` extracts one), `flag_scan` (flag-shaped strings across raw,
+  UTF-16, rot13 and one base64/hex/gzip/zlib layer of the whole artifact — carve
+  or derive embedded blobs first), `base64_decode --options '{"extract":true}'`
+  (base64 inside surrounding text), artifact-level `xor` / `xor_single`, and
+  `pcap_streams` → `pcap_stream {"index":N}` / `http_objects` for TCP
+  reassembly and HTTP bodies. Error replies carry a `detail` with the cause.
 - Dynamic (challenge binaries — **never run them on the host**):
   `metis sandbox run RUN_ID NAME [--mode run|strace|ltrace|gdb|script] [--arg A] [--with LIBC] [--stdin-file F | --stdin-hex H] [--gdb CMD]... [--script exploit.py]`.
   Script mode runs your Python/sh inside the no-network container with the
@@ -130,8 +138,10 @@ narrative or scripts into the vault automatically.
   ltrace is unavailable, and scripts must prefix the target with
   `$METIS_RUNNER`. Emulated absolute addresses differ from the real service.
 - Remote services: `metis remote suggest RUN_ID` lists `nc host port` candidates
-  from the statement (untrusted, not grants). `metis remote grant RUN_ID HOST PORT [--tls]`
-  only for an endpoint the user authorized (the challenge's own service counts
+  from the statement (untrusted, not grants). `metis remote grant RUN_ID HOST PORT [--tls [--tls-insecure] [--sni NAME]]`
+  only for an endpoint the user authorized (`--tls-insecure` only for a
+  self-signed challenge certificate the user accepted; grant literal IPs for
+  private hosts) (the challenge's own service counts
   when the user authorized the challenge). Then either
   `metis remote exchange RUN_ID IDX --script steps.json` (scripted send/recv) or
   `metis remote pipe RUN_ID IDX -- python3 solver.py` (your solver's stdin/stdout
