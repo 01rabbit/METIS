@@ -90,6 +90,39 @@ report can be written once to a new 0600 file with `--output PATH`; existing
 output files are never replaced. Output includes digests and aggregate counters
 only.
 
+## Context-edge cells and bound falsification (B2 cell A1)
+
+`--context-edge` runs the reproducible context-edge cells pre-registered in the
+[B2 instrumentation plan](../../docs/reports/issue8-b2-instrumentation-plan-2026-11-21.md)
+(Issue #8, PR #148). For each offset `k` in `--edge-offsets` (default `0,1,8`)
+it starts a fresh server and makes one answer-free completion whose prompt is
+calibrated, by a deterministic seeded word stream and the server's own
+`/tokenize`, to the largest token count at or below `effective_n_ctx − k`. The
+prompt text is never retained; only its token count is recorded. Each cell
+records the effective context, the requested prompt token count, the HTTP
+status, reported `tokens_evaluated`/`tokens_predicted`, the full startup/request
+counters, and the measured work `M = requests.graph_positions`.
+
+The upper bound is `B = effective_n_ctx * (n_predict + 1)`, computed from the
+**effective per-slot context the server reports on `/props`**, not the launched
+`--ctx-size`. This is deliberate: an earlier exploratory probe saw the server
+report `n_ctx=2048` under a requested `--ctx-size 4096`, and B must track the
+context the server actually enforces, so a clamped context never inflates B.
+
+`--falsify-bound` applies the registered falsification rule: if any cell records
+`M > B` (`bound_falsified: true`), the run exits non-zero and the bound is
+falsified — `hard_token_budget_enforced` stays false and B2 is not cleared. The
+bound is provisionally held only when no cell exceeds it. A pre-dispatch
+rejection (HTTP 400, `M = 0`) is a valid non-falsifying data point. This mode
+flips no flag, runs no model comparison, and keeps `heldout_eligible` false.
+
+```sh
+uv run --locked --extra dev python scripts/run_llama_work_trace.py \
+    --context-edge --falsify-bound --output /path/to/context-edge.json \
+    /tmp/metis-llama-trace-build/build/bin/llama-server \
+    /path/to/stories260K.gguf
+```
+
 ## Observed local probes
 
 On Darwin arm64 with the pinned CPU build and registered public fixture, the

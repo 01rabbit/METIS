@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -205,3 +207,89 @@ def validate_retry_probe(trace: NativeWorkTrace, *, injected: bool) -> None:
         raise ValueError("retry probe recorded no successful request process call")
     if counts.graph_dispatches == counts.zero_position_graphs or counts.graph_positions == 0:
         raise ValueError("retry probe recorded no request graph work with positive positions")
+
+
+# --- B2 context-edge bound falsification (Issue #8, pre-registered in #148) ---
+
+_PROMPT_VOCABULARY = (
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+    "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+)
+
+
+class BoundEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    effective_n_ctx: int = Field(ge=1, le=10**9)
+    n_predict: int = Field(ge=0, le=10**9)
+    bound: int = Field(ge=0, le=10**18)
+    observed_graph_positions: int = Field(ge=0, le=10**15)
+    falsified: bool
+
+
+def work_bound(effective_n_ctx: int, n_predict: int) -> int:
+    """Source-derived upper bound B = effective_n_ctx * (n_predict + 1).
+
+    B is computed from the server's effective per-slot context (read from
+    ``/props``), never the launched ``--ctx-size``, so a context the server
+    clamps below the request (for example an effective 2048 under a requested
+    4096) does not inflate B. See the B2 instrumentation plan (#148)."""
+    if effective_n_ctx < 1:
+        raise ValueError("effective context size must be positive")
+    if n_predict < 0:
+        raise ValueError("n_predict must be non-negative")
+    return effective_n_ctx * (n_predict + 1)
+
+
+def evaluate_work_bound(trace: NativeWorkTrace, *, effective_n_ctx: int,
+                        n_predict: int) -> BoundEvaluation:
+    """Compare measured work M against the bound B for one request trace.
+
+    M is ``trace.requests.graph_positions`` (positions submitted to
+    ``graph_compute`` across every attempt). A pre-dispatch rejection records
+    M == 0 and is a valid, non-falsifying data point. By the registered rule
+    (#148) ``falsified`` is True iff M > B, and any falsified cell keeps
+    ``hard_token_budget_enforced`` false."""
+    bound = work_bound(effective_n_ctx, n_predict)
+    observed = trace.requests.graph_positions
+    return BoundEvaluation(
+        effective_n_ctx=effective_n_ctx,
+        n_predict=n_predict,
+        bound=bound,
+        observed_graph_positions=observed,
+        falsified=observed > bound,
+    )
+
+
+def expand_prompt_to_token_budget(target_tokens: int, tokenize: Callable[[str], int],
+                                  *, seed: int) -> str:
+    """Build a deterministic prompt whose token count is as close to, and never
+    above, ``target_tokens``.
+
+    ``tokenize`` returns the token count of a string (the live llama-server
+    tokenizer in production, a fake in tests). The returned text is used only to
+    drive one request; callers retain the resulting token count, never the text.
+    The growth loop is bounded so a pathological tokenizer cannot spin forever,
+    and an overshoot is trimmed by a prefix binary search (token count is
+    non-decreasing in prefix length)."""
+    if target_tokens < 0:
+        raise ValueError("target token budget must be non-negative")
+    if target_tokens == 0:
+        return ""
+    generator = random.Random(seed)
+    words: list[str] = []
+    for _ in range(target_tokens * 8 + 16):
+        if tokenize(" ".join(words)) >= target_tokens:
+            break
+        words.append(generator.choice(_PROMPT_VOCABULARY))
+    text = " ".join(words)
+    if tokenize(text) <= target_tokens:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if tokenize(text[:mid]) <= target_tokens:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]

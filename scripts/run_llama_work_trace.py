@@ -25,6 +25,9 @@ from typing import Any
 
 from metis.evaluation.native_work_trace import (
     PUBLIC_FIXTURE_SHA256,
+    NativeWorkTrace,
+    evaluate_work_bound,
+    expand_prompt_to_token_budget,
     parse_trace,
     validate_retry_probe,
     verify_build_manifest,
@@ -33,6 +36,8 @@ from metis.evaluation.native_work_trace import (
 PROMPT = "One day, a rabbit ran down the road."
 CONTEXT_SIZE = 4096
 N_PREDICT = 3
+DEFAULT_EDGE_OFFSETS = (0, 1, 8)
+DEFAULT_EDGE_SEED = 20261121
 MAX_MODEL_BYTES = 64 * 1024 * 1024
 MAX_LOG_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -124,7 +129,7 @@ def sha256_model(path: Path) -> str:
 
 
 def request(socket_path: Path, route: str, payload: dict[str, Any] | None,
-            *, timeout: float) -> tuple[int, dict[str, Any]]:
+            *, timeout: float, allow_error: bool = False) -> tuple[int, dict[str, Any]]:
     body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
     with closing(UnixConnection(socket_path, timeout)) as connection:
         connection.request("GET" if body is None else "POST", route, body=body,
@@ -133,7 +138,7 @@ def request(socket_path: Path, route: str, payload: dict[str, Any] | None,
             raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError("native trace response exceeded size boundary")
-            if response.status != 200:
+            if response.status != 200 and not allow_error:
                 raise ValueError("native trace request failed")
             value = json.loads(raw)
             if not isinstance(value, dict):
@@ -171,7 +176,7 @@ def _stop(process: subprocess.Popen[bytes]) -> int:
         return process.wait(timeout=5)
 
 
-def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
+def _verify_binary_and_model(binary: Path, model: Path) -> tuple[Path, Path, Any, str]:
     binary = binary.resolve(strict=True)
     model = model.resolve(strict=True)
     build_root = binary.parent.parent.parent
@@ -182,10 +187,16 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
     model_sha256 = sha256_model(model)
     if model_sha256 != PUBLIC_FIXTURE_SHA256:
         raise ValueError("model is not the registered public trace fixture")
+    return binary, model, manifest, model_sha256
 
+
+def _execute_trace_run(binary: Path, model: Path, *, inject_one_retry: bool,
+                       termination: _Termination,
+                       interact: Any) -> tuple[Any, NativeWorkTrace]:
+    """Start the pinned server once, run ``interact(socket_path)`` under SIGTERM
+    deferral, stop cleanly, and return its result with the parsed aggregate trace."""
     nonce = secrets.token_hex(16)
-    with (_handle_termination() as termination,
-          tempfile.TemporaryDirectory(prefix="metis-llama-trace-") as temp):
+    with tempfile.TemporaryDirectory(prefix="metis-llama-trace-") as temp:
         root = Path(temp)
         os.chmod(root, 0o700)
         socket_path = root / "server.sock"
@@ -210,17 +221,7 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
                 # Defer SIGTERM while acquiring and releasing the child process.
                 with termination.interrupt_wait():
                     wait_ready(process, socket_path, deadline=time.monotonic() + 60)
-                    status, response = request(
-                        socket_path, "/completion",
-                        {"prompt": PROMPT, "n_predict": N_PREDICT, "temperature": 0,
-                         "cache_prompt": False}, timeout=30,
-                    )
-                evaluated = response.get("tokens_evaluated")
-                predicted = response.get("tokens_predicted")
-                if (status != 200 or isinstance(evaluated, bool) or not isinstance(evaluated, int)
-                        or evaluated <= 0 or isinstance(predicted, bool) or not isinstance(predicted, int)
-                        or not 0 <= predicted <= N_PREDICT):
-                    raise ValueError("pinned trace response did not contain bounded token counts")
+                    result = interact(socket_path)
             finally:
                 exit_code = _stop(process)
             if exit_code != 0:
@@ -230,7 +231,31 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
             if len(stderr) > MAX_LOG_BYTES:
                 raise ValueError("pinned trace log exceeded size boundary")
 
-    trace = parse_trace(stderr, expected_nonce=nonce)
+    return result, parse_trace(stderr, expected_nonce=nonce)
+
+
+def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
+    resolved_binary, resolved_model, manifest, model_sha256 = _verify_binary_and_model(binary, model)
+
+    def interact(socket_path: Path) -> dict[str, Any]:
+        status, response = request(
+            socket_path, "/completion",
+            {"prompt": PROMPT, "n_predict": N_PREDICT, "temperature": 0,
+             "cache_prompt": False}, timeout=30,
+        )
+        evaluated = response.get("tokens_evaluated")
+        predicted = response.get("tokens_predicted")
+        if (status != 200 or isinstance(evaluated, bool) or not isinstance(evaluated, int)
+                or evaluated <= 0 or isinstance(predicted, bool) or not isinstance(predicted, int)
+                or not 0 <= predicted <= N_PREDICT):
+            raise ValueError("pinned trace response did not contain bounded token counts")
+        return {"http_status": status, "tokens_evaluated": evaluated, "tokens_predicted": predicted}
+
+    with _handle_termination() as termination:
+        result, trace = _execute_trace_run(
+            resolved_binary, resolved_model, inject_one_retry=inject_one_retry,
+            termination=termination, interact=interact)
+
     validate_retry_probe(trace, injected=inject_one_retry)
 
     # Intentionally retain no prompt text, generated output, or raw process logs.
@@ -246,9 +271,102 @@ def run(binary: Path, model: Path, *, inject_one_retry: bool) -> dict[str, Any]:
             "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
             "injected_memory_prepare_failure": inject_one_retry,
         },
-        "response": {"http_status": status, "tokens_evaluated": evaluated,
-                     "tokens_predicted": predicted},
+        "response": {"http_status": result["http_status"],
+                     "tokens_evaluated": result["tokens_evaluated"],
+                     "tokens_predicted": result["tokens_predicted"]},
         "trace": trace.model_dump(mode="json"),
+        "hard_token_budget_enforced": False,
+        "heldout_eligible": False,
+    }
+
+
+def _read_effective_n_ctx(socket_path: Path) -> int:
+    """Read the server's effective per-slot context from /props (patch-unchanged)."""
+    _, props = request(socket_path, "/props", None, timeout=5)
+    settings = props.get("default_generation_settings")
+    candidate = settings.get("n_ctx") if isinstance(settings, dict) else None
+    if isinstance(candidate, bool) or not isinstance(candidate, int):
+        candidate = props.get("n_ctx")
+    if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
+        raise ValueError("pinned trace server did not report a positive effective context")
+    return candidate
+
+
+def _tokenize_count(socket_path: Path, text: str) -> int:
+    _, value = request(socket_path, "/tokenize", {"content": text}, timeout=10)
+    tokens = value.get("tokens")
+    if not isinstance(tokens, list):
+        raise TypeError("pinned trace server returned an invalid tokenization")
+    return len(tokens)
+
+
+def _require_clean_startup(trace: NativeWorkTrace) -> None:
+    startup = trace.startup
+    if (startup.process_failures or startup.graph_failures or startup.graph_pre_dispatch_failures
+            or startup.server_batch_retries or startup.memory_prepare_failures
+            or startup.injected_memory_prepare_failures):
+        raise ValueError("context-edge trace recorded an unexpected startup failure")
+
+
+def run_context_edge(binary: Path, model: Path, *, edge_offsets: tuple[int, ...],
+                     n_predict: int, seed: int) -> dict[str, Any]:
+    resolved_binary, resolved_model, manifest, model_sha256 = _verify_binary_and_model(binary, model)
+    cells: list[dict[str, Any]] = []
+    with _handle_termination() as termination:
+        for offset in edge_offsets:
+            def interact(socket_path: Path, offset: int = offset) -> dict[str, Any]:
+                effective = _read_effective_n_ctx(socket_path)
+                target = max(effective - offset, 1)
+                prompt = expand_prompt_to_token_budget(
+                    target, lambda text: _tokenize_count(socket_path, text), seed=seed)
+                requested = _tokenize_count(socket_path, prompt)
+                status, response = request(
+                    socket_path, "/completion",
+                    {"prompt": prompt, "n_predict": n_predict, "temperature": 0,
+                     "cache_prompt": False}, timeout=60, allow_error=True)
+                evaluated = response.get("tokens_evaluated")
+                predicted = response.get("tokens_predicted")
+                return {
+                    "offset": offset, "effective_n_ctx": effective,
+                    "requested_prompt_tokens": requested, "http_status": status,
+                    "tokens_evaluated": evaluated if isinstance(evaluated, int)
+                    and not isinstance(evaluated, bool) else None,
+                    "tokens_predicted": predicted if isinstance(predicted, int)
+                    and not isinstance(predicted, bool) else None,
+                }
+
+            result, trace = _execute_trace_run(
+                resolved_binary, resolved_model, inject_one_retry=False,
+                termination=termination, interact=interact)
+            _require_clean_startup(trace)
+            evaluation = evaluate_work_bound(
+                trace, effective_n_ctx=result["effective_n_ctx"], n_predict=n_predict)
+            cells.append({
+                **result,
+                "bound": evaluation.bound,
+                "observed_graph_positions": evaluation.observed_graph_positions,
+                "falsified": evaluation.falsified,
+                "startup": trace.startup.model_dump(mode="json"),
+                "requests": trace.requests.model_dump(mode="json"),
+            })
+
+    bound_falsified = any(cell["falsified"] for cell in cells)
+    # Intentionally retain only counts, token counts, and digests — never prompt text.
+    return {
+        "version": 1,
+        "mode": "context-edge",
+        "source_commit": manifest.source_commit,
+        "trace_patch_sha256": manifest.trace_patch_sha256,
+        "binary_sha256": manifest.binary_sha256,
+        "model_sha256": model_sha256,
+        "profile": {
+            "context_size": CONTEXT_SIZE,
+            "n_predict": n_predict,
+            "edge_offsets": list(edge_offsets),
+            "seed": seed,
+        },
+        "cells": cells,
+        "bound_falsified": bound_falsified,
         "hard_token_budget_enforced": False,
         "heldout_eligible": False,
     }
@@ -298,17 +416,59 @@ def _write_new(path: Path, data: bytes) -> None:
             pass
 
 
+def _parse_offsets(raw: str) -> tuple[int, ...]:
+    unique: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        offset = int(part)
+        if not 0 <= offset <= CONTEXT_SIZE:
+            raise ValueError("context-edge offset is out of range")
+        if offset not in unique:
+            unique.append(offset)
+    if not unique:
+        raise ValueError("no context-edge offsets were provided")
+    return tuple(unique)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("model", type=Path)
     parser.add_argument("--inject-one-retry", action="store_true",
                         help="inject one synthetic memory-prepare refusal after readiness")
+    parser.add_argument("--context-edge", action="store_true",
+                        help="run reproducible context-edge cells and measure graph work per cell")
+    parser.add_argument("--edge-offsets", default=",".join(str(o) for o in DEFAULT_EDGE_OFFSETS),
+                        help="comma-separated token offsets below the effective context (default 0,1,8)")
+    parser.add_argument("--n-predict", type=int, default=N_PREDICT,
+                        help="output token cap per context-edge request")
+    parser.add_argument("--seed", type=int, default=DEFAULT_EDGE_SEED,
+                        help="deterministic prompt seed for context-edge calibration")
+    parser.add_argument("--falsify-bound", action="store_true",
+                        help="exit non-zero if any context-edge cell has M > n_ctx*(n_predict+1)")
     parser.add_argument("--output", type=Path,
                         help="create a new 0600 JSON file with aggregate-only evidence")
     args = parser.parse_args()
+    if args.falsify_bound and not args.context_edge:
+        parser.error("--falsify-bound requires --context-edge")
+    if args.context_edge and args.inject_one_retry:
+        parser.error("--context-edge cannot be combined with --inject-one-retry")
+    offsets: tuple[int, ...] = ()
+    if args.context_edge:
+        if not 0 <= args.n_predict <= 10**6:
+            parser.error("--n-predict is out of range")
+        try:
+            offsets = _parse_offsets(args.edge_offsets)
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
-        value = run(args.binary, args.model, inject_one_retry=args.inject_one_retry)
+        if args.context_edge:
+            value = run_context_edge(args.binary, args.model, edge_offsets=offsets,
+                                     n_predict=args.n_predict, seed=args.seed)
+        else:
+            value = run(args.binary, args.model, inject_one_retry=args.inject_one_retry)
     except _TraceTerminated:
         return 128 + signal.SIGTERM
     data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -317,6 +477,8 @@ def main() -> int:
     else:
         _write_new(args.output, data)
         print(json.dumps({"status": "written", "path": str(args.output)}))
+    if args.falsify_bound and value.get("bound_falsified"):
+        return 1
     return 0
 
 

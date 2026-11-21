@@ -16,9 +16,12 @@ from metis.evaluation.native_work_trace import (
     SOURCE_COMMIT,
     TRACE_PREFIX,
     NativeWorkTrace,
+    evaluate_work_bound,
+    expand_prompt_to_token_budget,
     parse_trace,
     validate_retry_probe,
     verify_build_manifest,
+    work_bound,
 )
 from scripts.run_llama_work_trace import MAX_LOG_BYTES, _popen_with_bounded_file_size, _write_new
 
@@ -254,6 +257,63 @@ def test_retry_probe_rejects_unexpected_startup_failures(field):
         validate_retry_probe(trace, injected=False)
     with pytest.raises(ValueError, match="startup failure"):
         validate_retry_probe(trace, injected=True)
+
+
+def test_work_bound_uses_effective_context_times_predict_plus_one():
+    assert work_bound(2048, 3) == 2048 * 4
+    assert work_bound(1, 0) == 1
+    for bad in ((0, 3), (-1, 3), (2048, -1)):
+        with pytest.raises(ValueError):
+            work_bound(*bad)
+
+
+def test_evaluate_work_bound_flags_only_overshoot():
+    within = NativeWorkTrace.model_validate(_record(requests={
+        "process_calls": 2, "process_decode_calls": 2, "decode_calls": 2,
+        "input_positions": 2048, "graph_dispatches": 2, "graph_positions": 4096,
+    }))
+    result = evaluate_work_bound(within, effective_n_ctx=2048, n_predict=3)
+    assert result.bound == 8192 and result.observed_graph_positions == 4096
+    assert result.falsified is False
+
+    over = NativeWorkTrace.model_validate(_record(requests={
+        "process_calls": 2, "process_decode_calls": 2, "decode_calls": 2,
+        "input_positions": 2048, "graph_dispatches": 2, "graph_positions": 9000,
+    }))
+    assert evaluate_work_bound(over, effective_n_ctx=2048, n_predict=3).falsified is True
+
+
+def test_evaluate_work_bound_accepts_pre_dispatch_rejection_as_zero_work():
+    rejected = NativeWorkTrace.model_validate(_record(requests={
+        "process_calls": 0, "process_decode_calls": 0, "decode_calls": 0,
+        "input_positions": 0, "graph_dispatches": 0, "graph_positions": 0,
+    }))
+    result = evaluate_work_bound(rejected, effective_n_ctx=2048, n_predict=3)
+    assert result.observed_graph_positions == 0 and result.falsified is False
+
+
+def test_expand_prompt_hits_exact_character_budget_and_is_deterministic():
+    def by_character(text: str) -> int:
+        return len(text)
+
+    first = expand_prompt_to_token_budget(40, by_character, seed=20261121)
+    second = expand_prompt_to_token_budget(40, by_character, seed=20261121)
+    assert first == second
+    assert by_character(first) == 40
+    assert expand_prompt_to_token_budget(0, by_character, seed=1) == ""
+    assert expand_prompt_to_token_budget(13, by_character, seed=1) != \
+        expand_prompt_to_token_budget(13, by_character, seed=2)
+    with pytest.raises(ValueError):
+        expand_prompt_to_token_budget(-1, by_character, seed=1)
+
+
+def test_expand_prompt_never_exceeds_budget_with_multi_character_tokens():
+    def by_word(text: str) -> int:
+        return len(text.split())
+
+    for target in (1, 5, 12):
+        prompt = expand_prompt_to_token_budget(target, by_word, seed=7)
+        assert by_word(prompt) <= target
 
 
 def test_server_log_file_is_limited_by_child_file_size_resource(tmp_path):
