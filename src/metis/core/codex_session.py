@@ -209,7 +209,7 @@ class CodexSession:
             "challenge": json.loads(manifest), "tools": sorted(NATIVE_TOOLS),
             "evaluation_split": evaluation_split,
             "artifact_tools": sorted(ARTIFACT_TOOLS),
-            "triage": triage(ChallengeManifest.model_validate_json(manifest)),
+            "triage": triage(ChallengeManifest.model_validate_json(manifest), self._artifact_magics(run_id)),
             "network_tools": self._network_tools(run_id),
             "verification_available": commitment is not None,
             "actions_remaining": max(0, max_actions - used),
@@ -490,6 +490,21 @@ class CodexSession:
                     db.execute("DELETE FROM codex_active_operations WHERE run_id=? AND assignment_id IS ? "
                                "AND attempt_id IS ?", (run_id, _owner[0] if _owner else None,
                                                         _owner[1] if _owner else None))
+
+    def _artifact_magics(self, run_id: str) -> dict[str, bytes]:
+        """First bytes of each declared artifact (best effort; unreadable files are skipped)."""
+        root = self.artifact_root(run_id)
+        if root is None:
+            return {}
+        manifest = ChallengeManifest.model_validate_json(self._session(run_id)[0])
+        magics: dict[str, bytes] = {}
+        for name in manifest.artifacts:
+            try:
+                with (root / name).open("rb") as handle:
+                    magics[name] = handle.read(8)
+            except OSError:
+                continue
+        return magics
 
     def artifact_root(self, run_id: str) -> Path | None:
         """Snapshot directory of a run; relative roots live beside the database."""
