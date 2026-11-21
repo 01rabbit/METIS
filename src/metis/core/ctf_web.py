@@ -28,7 +28,7 @@ from metis.core.answer_vault import split_for
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import RunStatus
 from metis.core.ctf_html import Page, display_url
-from metis.core.ctf_http import SafeHTTP, clean_url, origin
+from metis.core.ctf_http import OutOfScopeRedirect, SafeHTTP, clean_url, origin
 from metis.core.ctf_knowledge import KnowledgeBase
 from metis.core.ctf_ksnctf import KsnctfVerdict, is_official_problem, problem_id
 from metis.core.resources import ResourceBroker
@@ -180,6 +180,18 @@ def is_distribution(link: dict, page_url: str, adapter: str, challenge_id: int |
         if same_origin and path.startswith(f"/q/{challenge_id}/") and name:
             return True
     return bool(suffix in ATTACHMENTS or re.fullmatch(r".+\.so(\.[0-9]+)+", name))
+
+
+CTFD_CSRF_NONCE = re.compile(r"""['"]csrfNonce['"]\s*:\s*(?:"([^"\\]{8,256})"|'([^'\\]{8,256})')""")
+
+
+def ctfd_json(response: Any) -> Any:
+    """Decode a CTFd API body; HTML (such as a /login redirect) means authentication is required."""
+    try:
+        return json.loads(response.body)
+    except ValueError:
+        raise ValueError("CTFd returned a non-JSON response (typically a redirect to /login); "
+                         "authentication required: check --token-env or --cookie-env") from None
 
 
 def feedback_text(value: str, candidate: str, client: SafeHTTP) -> str:
@@ -691,7 +703,9 @@ class WebWorkflow:
         response = client.request(base + "/api/v1/challenges", max_bytes=8 * 1024 * 1024)
         if response.status != 200:
             raise ValueError("CTFd catalog retrieval failed; check URL and authentication")
-        payload = json.loads(response.body)
+        payload = ctfd_json(response)
+        if not isinstance(payload, dict):
+            raise ValueError("unrecognized or oversized CTFd catalog")
         items = payload.get("data") if payload.get("success") is True else None
         if not isinstance(items, list) or len(items) > 500:
             raise ValueError("unrecognized or oversized CTFd catalog")
@@ -826,8 +840,9 @@ class WebWorkflow:
             files = [urllib.parse.urljoin(url, item["url"]) for item in raw]
             response.body = json.dumps(challenge).encode()
         elif adapter == "ctfd":
-            payload = json.loads(body)
-            if payload.get("success") is not True or not isinstance(payload.get("data"), dict):
+            payload = ctfd_json(response)
+            if not isinstance(payload, dict) or payload.get("success") is not True \
+                    or not isinstance(payload.get("data"), dict):
                 raise ValueError("unrecognized CTFd challenge response")
             challenge = payload["data"]
             title = str(challenge.get("name", "CTF challenge"))[:256]
@@ -879,6 +894,7 @@ class WebWorkflow:
                     path = stage / filename
                     downloaded = None
                     failure = ""
+                    redirect_origin = ""
                     for attempt in range(3):
                         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                         try:
@@ -886,12 +902,26 @@ class WebWorkflow:
                                 downloaded = client.request(file_url, sink=sink, max_bytes=256 * 1024 * 1024,
                                                             deadline=300)
                             break
+                        except OutOfScopeRedirect as exc:
+                            # Never follow it; let the operator grant the destination origin explicitly.
+                            downloaded = None
+                            redirect_origin = exc.destination_origin
+                            break
                         except TRANSIENT_DOWNLOAD_ERRORS as exc:
                             # Idempotent GET of a distribution file: retry dropped or truncated transfers.
                             downloaded, failure = None, type(exc).__name__
                             client.requests = 0
                             if attempt < 2:
                                 time.sleep(2 * (attempt + 1))
+                    if downloaded is None and redirect_origin:
+                        path.unlink(missing_ok=True)
+                        skipped.append({"url": display_url(file_url),
+                                        "reason": f"redirects to out-of-scope origin {redirect_origin}; "
+                                                  "origin grant required",
+                                        "next": f"re-run `metis web open` with `--allow-origin {redirect_origin}`, "
+                                                "or download it in the browser and run "
+                                                "`metis codex add-file RUN_ID PATH`"})
+                        continue
                     if downloaded is None:
                         path.unlink(missing_ok=True)
                         skipped.append({"url": display_url(file_url), "reason": f"download failed ({failure})",
@@ -1182,7 +1212,7 @@ class WebWorkflow:
         fingerprint = hmac.new(bytes.fromhex(salt), candidate.encode(), hashlib.sha256).hexdigest()
         with sqlite3.connect(self.database) as db:
             previous = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? AND digest=?", (run_id, fingerprint)).fetchone()
-            retryable = {"ratelimited", "authentication_required", "not_sent"}
+            retryable = {"ratelimited", "paused", "authentication_required", "not_sent"}
             # ksnctf flag submissions are idempotent. A transport failure after the
             # request was reserved must remain recoverable without changing the
             # evidence-derived candidate.
@@ -1207,6 +1237,17 @@ class WebWorkflow:
                 raise ValueError("record an evidence-based revised hypothesis before submitting a new candidate")
         client = self._client(config, state)
         client._headers(config["auth_origin"], {})  # Validate missing bindings before reserving/sending.
+        csrf_nonce = ""
+        if config["adapter"] == "ctfd" and not (
+                client.token_env and os.environ.get(client.token_env) or client.credentials.get("token")):
+            # Cookie/session authentication: CTFd requires the page-embedded nonce as CSRF-Token.
+            page_response = client.request(config["base_url"] + "/challenges", max_bytes=2_097_152)
+            found = CTFD_CSRF_NONCE.search(page_response.body.decode("utf-8", errors="replace"))
+            self._save_client(run_id, client)
+            if page_response.status != 200 or origin(page_response.url) != origin(config["base_url"]) or not found:
+                raise ValueError("CTFd csrfNonce not found on /challenges; the session cookie may be expired "
+                                 "or invalid (cookie-only submission needs a CSRF nonce); nothing was sent")
+            csrf_nonce = found.group(1) or found.group(2)
         self.session._reserve(run_id, "official_flag_submission")
         self.session._emit(run_id, RunStatus.OBSERVING)
         self.session._emit(run_id, RunStatus.VERIFYING)
@@ -1223,12 +1264,15 @@ class WebWorkflow:
                 submitted = True
                 response = client.request(config["base_url"] + "/api/v1/challenges/attempt", method="POST",
                                           body=json.dumps({"challenge_id": config["challenge_id"], "submission": candidate}).encode(),
-                                          headers={"Content-Type": "application/json"}, sensitive=True)
+                                          headers={"Content-Type": "application/json",
+                                                   **({"CSRF-Token": csrf_nonce} if csrf_nonce else {})},
+                                          sensitive=True)
                 payload = json.loads(response.body)
                 data = payload.get("data") if isinstance(payload, dict) else None
                 if isinstance(data, dict) and payload.get("success") is True:
                     reported = data.get("status")
-                    if reported in {"correct", "incorrect", "already_solved", "ratelimited"}:
+                    if reported in {"correct", "incorrect", "already_solved", "ratelimited",
+                                    "paused", "partial"}:
                         verdict = reported
                     message = str(data.get("message", verdict))
             elif config["adapter"] == "rctf":
@@ -1323,4 +1367,5 @@ class WebWorkflow:
         return {"run_id": run_id, "verdict": verdict, "verified": verdict == "correct",
                 "feedback": message, "status": self.session.context(run_id)["status"],
                 "next": "record the successful technique" if verdict == "correct"
+                        else "contest is paused; retry the same candidate later" if verdict == "paused"
                         else "inspect feedback and revise the hypothesis; do not repeat the same candidate"}
