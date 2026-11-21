@@ -238,8 +238,12 @@ candidate as soon as it is ready; do not wait for unrelated branches.
 
 Immediately after each `correct` verdict, write the problem's write-up:
 `metis writeup save CONTEST_ID CHALLENGE_ID --file .metis-state/work/<id>-writeup.json`
-(schema in `.agents/skills/metis/SKILL.md`, "Write-ups and accumulated
-knowledge"). Write it in Japanese, include the exact verified `flag`, the
+(schema: `WriteupInput` in `src/metis/core/ctf_writeup.py`; extra keys are
+rejected). Required: `summary` (10–4000 chars). Optional: `analysis`,
+`solution`, `flag`, `lessons`, `tags`, `references`, `scripts` (paths, ≤16),
+`run_id`, `source_split` (`practice`|`competition`), and `techniques` (≤8), each
+`{"title", "category", "summary", "conditions"}` with optional `outcome`
+(`success`|`failure`|`inconclusive`), `failure_reason`, `evidence`. Write it in Japanese, include the exact verified `flag`, the
 solving scripts (copy them into `.metis-state/work/` first), and 1–3 abstract
 `techniques`; METIS turns those into reusable technique cards and updates
 `writeups/<ctf>/README.md` and `writeups/KNOWLEDGE.md`. Ask executor subagents
