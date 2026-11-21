@@ -84,6 +84,20 @@ def test_writeup_files_indexes_and_knowledge(solved, tmp_path):
     assert book.missing(contest_id)["solved_without_writeup"] == []
 
 
+def test_save_keeps_evaluation_split_in_sync(solved):
+    from metis.core.answer_vault import build_split
+
+    database, contest_id, _run_id = solved
+    book = WriteupBook(database)
+    result = book.save(contest_id, "2", _entry())
+    split_path = Path(result["evaluation_split"])
+    assert split_path == Path("writeups/EVALUATION_SPLIT.json")
+    recorded = json.loads(split_path.read_text(encoding="utf-8"))
+    # save() must not leave EVALUATION_SPLIT.json stale: it equals a fresh rebuild.
+    assert recorded == build_split(Path("writeups"))
+    assert {"ctf": "ksnctf", "problem": "2", "writeup": "ksnctf/2-easy-cipher.md"} in recorded["practice"]
+
+
 def test_unsolved_writeup_and_script_scope(solved):
     database, contest_id, _ = solved
     book = WriteupBook(database)
