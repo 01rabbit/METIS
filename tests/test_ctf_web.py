@@ -229,6 +229,52 @@ def test_alpacahack_html_intake_passes_declared_category_to_manifest(site, tmp_p
     assert result["context"]["challenge"]["categories"] == ["web"]
 
 
+def test_browser_plan_surfaces_spawn_submit_forms_and_commands(tmp_path):
+    from metis.core.ctf_http import HTTPResult
+
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    page_url = "https://alpacahack.com/daily-bside/challenges/wimp"
+    body = (b'<title>what is my pointer 3</title><p>malloc</p>'
+            b'<form action="/challenges/wimp/request-instance" method="post">'
+            b'<input type="hidden" name="programCanonical" value="wimp"></form>'
+            b'<form action="/challenges/wimp/submit-flag" method="post">'
+            b'<input type="hidden" name="programCanonical" value="wimp">'
+            b'<input name="flag" type="text"></form>')
+    response = HTTPResult(url=page_url, status=200, headers={"content-type": "text/html"},
+                          body=body, size=len(body), sha256="0" * 64)
+    workflow._client = lambda config, state: type("Client", (), {
+        "request": lambda self, *args, **kwargs: response,
+        "export_state": lambda self: {"cookies": {}},
+        "auth_generation": 0,
+    })()
+    run_id = workflow.open(page_url)["context"]["run_id"]
+
+    plan = WebWorkflow(tmp_path / "session.sqlite").browser_plan(run_id)
+    assert plan["submission_mode"] == "browser"
+    assert plan["page_url"] == page_url
+    assert plan["spawn_form"]["action"].endswith("/request-instance")
+    assert plan["submit_form"]["action"].endswith("/submit-flag")
+    assert plan["flag_field"] == "flag"
+    assert plan["submission_state"] == {
+        "pending": False, "remaining": 10, "verdicts": [], "cooldown_active": False}
+    joined = " ".join(plan["next_commands"])
+    assert "prepare-browser" in joined and "attest" in joined and run_id in joined
+    # Read-only: the plan must not reserve a submission or change verdict state.
+    assert WebWorkflow(tmp_path / "session.sqlite").context(run_id)["web"]["verdicts"] == []
+
+
+def test_browser_plan_points_api_runs_at_submit(site, tmp_path, monkeypatch):
+    base, _ = site
+    monkeypatch.setenv("TEST_CTF_TOKEN", "test-token")
+    workflow = WebWorkflow(tmp_path / "session.sqlite")
+    run_id = workflow.open(base, adapter="ctfd", challenge_id=1,
+                           token_env="TEST_CTF_TOKEN")["context"]["run_id"]
+    plan = workflow.browser_plan(run_id)
+    assert plan["submission_mode"] == "api"
+    assert plan["next_commands"] == []
+    assert "metis web submit" in plan["guidance"]
+
+
 @pytest.mark.parametrize("alpacahack", [False, True])
 def test_generic_html_and_ambiguous_alpacahack_links_do_not_claim_category(site, tmp_path,
                                                                             alpacahack):

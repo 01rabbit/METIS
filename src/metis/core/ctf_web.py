@@ -993,6 +993,73 @@ class WebWorkflow:
             "cookie_count": sum(len(values) for values in state.get("cookies", {}).values()),
         }}
 
+    def browser_plan(self, run_id: str) -> dict:
+        """Read-only guidance for the browser-only touchpoints (Claude in Chrome or a user).
+
+        Surfaces the per-user instance spawn form, the flag submission form, the
+        remaining submission budget, and the exact `prepare-browser`/`attest`
+        commands. It never submits and never changes run state, so the one-send
+        reservation gate in `prepare_browser`/`attest` stays authoritative and
+        "only Daybreak submits" is unaffected.
+        """
+        config, _, forms, _, _, paused = self._load(run_id)
+        submission_mode = ("api" if config["adapter"] in {"ctfd", "ksnctf", "rctf"} or config.get("submission")
+                           else "browser" if config["auth_origin"] in BROWSER_SUBMISSION_ORIGINS
+                           else "unconfigured")
+
+        def _form(index: int, form: dict) -> dict:
+            return {"index": index, "action": display_url(form["action"]), "method": form["method"],
+                    "fields": [{"name": field["name"], "type": field["type"], "has_default": bool(field["value"])}
+                               for field in form["fields"]]}
+
+        spawn_form = None
+        submit_form = None
+        flag_field = None
+        for index, form in enumerate(forms):
+            action = form.get("action", "")
+            if spawn_form is None and "request-instance" in action:
+                spawn_form = _form(index, form)
+            text_flag = next((field["name"] for field in form["fields"]
+                              if field["name"] == "flag" or (field["type"] == "text" and "flag" in field["name"].lower())),
+                             None)
+            if submit_form is None and ("submit-flag" in action or text_flag is not None):
+                submit_form = _form(index, form)
+                flag_field = text_flag or "flag"
+
+        with sqlite3.connect(self.database) as db:
+            attempts = db.execute("SELECT verdict FROM web_attempts WHERE run_id=? ORDER BY created", (run_id,)).fetchall()
+            used = db.execute("SELECT COALESCE(SUM(attempts),0) FROM web_attempts WHERE run_id=?", (run_id,)).fetchone()[0]
+        verdicts = [row[0] for row in attempts]
+
+        plan: dict = {
+            "run_id": run_id, "submission_mode": submission_mode,
+            "page_url": display_url(config["page_url"]),
+            "spawn_form": spawn_form, "submit_form": submit_form, "flag_field": flag_field,
+            "submission_state": {
+                "pending": "pending" in verdicts,
+                "remaining": max(0, config["max_submissions"] - used),
+                "verdicts": verdicts, "cooldown_active": paused > time.time(),
+            },
+            "notes": [
+                "Only Daybreak submits; do not let subagents or Codex race the browser form.",
+                "Submit each evidence-backed candidate once, through the page's own flag form; never call the site API directly.",
+                "If the page shows a login screen or CAPTCHA, stop and ask the user.",
+            ],
+        }
+        if submission_mode != "browser":
+            plan["next_commands"] = []
+            plan["guidance"] = ("This run has an official API/form verdict route; "
+                                "use `metis web submit` instead of the browser flow.")
+            return plan
+        plan["next_commands"] = [
+            "1) write the exact candidate to .metis-state/work/<id>.candidate (no trailing newline)",
+            f"2) .venv/bin/metis web prepare-browser {run_id} --candidate-file .metis-state/work/<id>.candidate",
+            "3) in the browser, submit that flag once through the page's flag form and read the verdict",
+            (f"4) .venv/bin/metis web attest {run_id} --verdict correct|incorrect "
+             f"--evidence '<what the page showed>' --candidate-file .metis-state/work/<id>.candidate"),
+        ]
+        return plan
+
     def grant_origin(self, run_id: str, url: str) -> dict:
         """Add a user-authorized challenge origin (e.g. the challenge's web server) to a run."""
         config, _, _, _, _, _ = self._load(run_id)

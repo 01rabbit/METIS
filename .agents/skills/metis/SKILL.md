@@ -142,6 +142,26 @@ explicit trusted result marker configured with `metis web configure-form`; HTTP
 200, reflected input, regex matches, and local extraction never count as
 success. An unknown response fails closed.
 
+### Platforms with browser-only submission
+
+Some platforms have no flag API; `metis web context RUN_ID` reports
+`submission_mode: browser` and `metis web submit` is refused. There the flag is
+entered in the user's logged-in browser. The flow is plain CLI, so it works the
+same under Codex as under Claude Code:
+
+1. `metis web browser-plan RUN_ID` — read-only; prints the spawn form, the flag
+   form and its field, the remaining budget, and the exact commands. It never
+   submits or changes state.
+2. Write the exact candidate to `.metis-state/work/<id>.candidate`, then
+   `metis web prepare-browser RUN_ID --candidate-file ...` to reserve one send.
+3. The browser step itself — spawning the per-user instance and submitting the
+   flag through the page's own form — is performed by the user (Codex has no
+   browser automation; Claude Code can drive it with `--chrome`). Submit once;
+   never call the site API directly.
+4. Record the verdict the page showed with `metis web attest RUN_ID --verdict
+   correct|incorrect --evidence '...' --candidate-file ...`. The same replay,
+   revision and cap rules as `metis web submit` apply; only Daybreak submits.
+
 In tournament mode, link the web run ID to its contest challenge. The contest
 board records `solved` only when that linked run is already officially verified;
 then update the score and dispatch the next packet.
