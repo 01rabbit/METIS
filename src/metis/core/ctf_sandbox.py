@@ -553,6 +553,13 @@ class Sandbox:
                   "target_arch": target_arch}
         bundle = _bundle(header, files, request.stdin)
         if not _reserved:
+            # Fail before reserving budget or registering an operation when the engine
+            # cannot be reached at all, so the run is not left needing `codex recover`.
+            reachable, reason = engine_check(self.engine)
+            if not reachable:
+                raise ValueError("container engine unreachable; nothing was started or charged "
+                                 f"({reason}). Inside Claude Code run `metis sandbox` as a bare command "
+                                 "(no pipes/redirects); if it persists, ask Daybreak to run it")
             with run_lock(self.session.database, run_id):
                 with sqlite3.connect(self.session.database) as db:
                     if db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone():

@@ -195,7 +195,10 @@ def test_recovery_revokes_reserved_sandbox_before_launch_and_allows_fresh_operat
     assert not thread.is_alive()
     assert not errors, errors
     assert results[0]["cancelled"] is True
-    assert not engine.exists(), "stale operation contacted the container engine"
+    # Only the read-only reachability probe made before reservation may appear;
+    # the stale operation itself must never create, start, inspect or remove a container.
+    calls = [json.loads(line) for line in engine.read_text().splitlines()] if engine.exists() else []
+    assert all(call[:1] == ["version"] for call in calls), "stale operation contacted the container engine"
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT container_name FROM sandbox_workers WHERE run_id=?", (run_id,)).fetchone() == (
             "newer-worker",)
@@ -933,3 +936,19 @@ def test_socket_permission_hint_only_for_owned_socket(tmp_path):
     assert ctf_sandbox.socket_permission_hint(reason.replace("permission denied", "refused")) is None
     assert ctf_sandbox.socket_permission_hint("permission denied at unix:///nonexistent/x.sock") is None
     assert ctf_sandbox.socket_permission_hint(None) is None
+
+
+def test_unreachable_engine_fails_before_reserving(tmp_path, engine, monkeypatch):
+    from metis.core import ctf_sandbox
+
+    database, run_id = _run(tmp_path)
+    configure(database, engine="docker", image=IMAGE, platform=None)
+    sandbox = Sandbox(database)
+    target = sandbox.session.context(run_id)["challenge"]["artifacts"][0]
+    before = sandbox.session.context(run_id)["actions_remaining"]
+    monkeypatch.setattr(ctf_sandbox, "engine_check", lambda engine_name: (False, "permission denied"))
+    with pytest.raises(ValueError, match="unreachable; nothing was started"):
+        sandbox.execute(run_id, SandboxRequest(target=target, stdin=b"x\n"))
+    with sqlite3.connect(database) as db:
+        assert not db.execute("SELECT 1 FROM codex_active_operations WHERE run_id=?", (run_id,)).fetchone()
+    assert sandbox.session.context(run_id)["actions_remaining"] == before
