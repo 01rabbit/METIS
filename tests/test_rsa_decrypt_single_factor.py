@@ -25,3 +25,13 @@ def test_non_dividing_factor_is_rejected_with_tool_specific_hint():
     assert not result.ok
     assert "rsa_decrypt expects" in result.output
     assert '"c": "..."' in result.output
+
+
+def test_quoted_prompt_is_not_a_credential():
+    import pytest
+
+    from metis.core.ctf_knowledge import abstract_text
+
+    assert abstract_text("strings show 'password: ' and 'nope'")
+    with pytest.raises(ValueError, match="describe it without the value"):
+        abstract_text("password: hunter2xyz")
