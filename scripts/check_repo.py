@@ -57,20 +57,28 @@ def _content(path: str, staged: bool) -> bytes | None:
     return target.read_bytes()
 
 
-def check(staged: bool = False) -> list[str]:
+def check(staged: bool = False, allow_unreadable: bool = False,
+          warnings: list[str] | None = None) -> list[str]:
+    """Return findings. Unreadable files are findings unless ``allow_unreadable`` (then warnings)."""
     errors: list[str] = []
+    warned = warnings if warnings is not None else []
     deny = os.environ.get("METIS_DENY_PATTERN")
     paths = _paths(staged)
     for path in paths:
         if PRIVATE_PATH.search(path):
             errors.append(f"private or runtime path: {path}")
-        data = _content(path, staged)
+        try:
+            data = _content(path, staged)
+            work = _content(path, False) if staged and data is not None else None
+        except OSError as exc:
+            message = (f"unreadable file (a sandbox may hide it; run outside the sandbox or pass "
+                       f"--allow-unreadable): {path} ({type(exc).__name__})")
+            (warned if allow_unreadable else errors).append(message)
+            continue
         if data is None:
             continue
-        if staged:
-            work = _content(path, False)
-            if work is not None and work != data:
-                errors.append(f"staged snapshot differs from the worktree (check what is committed): {path}")
+        if staged and work is not None and work != data:
+            errors.append(f"staged snapshot differs from the worktree (check what is committed): {path}")
         if SECRET.search(data):
             errors.append(f"secret-shaped content: {path}")
         text = data.decode("utf-8", errors="replace")
@@ -87,11 +95,17 @@ def check(staged: bool = False) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--staged", action="store_true", help="check the index (pre-commit hook)")
+    parser.add_argument("--allow-unreadable", action="store_true",
+                        help="report unreadable files as warnings, not findings (for use inside a sandbox; CI stays strict)")
     args = parser.parse_args(argv)
-    errors = check(args.staged)
+    warnings: list[str] = []
+    errors = check(args.staged, args.allow_unreadable, warnings)
+    for warning in warnings:
+        print("warning: " + warning, file=sys.stderr)
     for error in errors:
         print(error, file=sys.stderr)
-    print(json.dumps({"status": "failed" if errors else "passed", "findings": len(errors)}))
+    print(json.dumps({"status": "failed" if errors else "passed", "findings": len(errors),
+                      "warnings": len(warnings)}))
     return 1 if errors else 0
 
 

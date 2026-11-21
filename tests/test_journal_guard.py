@@ -96,3 +96,29 @@ def test_metis_journal_cli_is_wired(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["metis", "journal", "--root", str(tmp_path / "j"), "open", "--case", "cli"])
     assert cli.main() == 0
     assert capsys.readouterr().out.strip().endswith("-cli")
+
+
+def _hide_file(module, monkeypatch, hidden):
+    original = module._content
+
+    def content(path, staged):
+        if path == hidden:
+            raise PermissionError(1, "Operation not permitted")
+        return original(path, staged)
+    monkeypatch.setattr(module, "_content", content)
+
+
+def test_guard_unreadable_file_is_finding_unless_allowed(tmp_path, monkeypatch, capsys):
+    module, repo = _guard(tmp_path, monkeypatch)
+    (repo / "a_credential.txt").write_text("x")
+    (repo / "ok.txt").write_text("fine")
+    _hide_file(module, monkeypatch, "a_credential.txt")
+    errors = module.check()
+    assert len(errors) == 1 and "a_credential.txt" in errors[0] and "sandbox" in errors[0]
+    assert module.main([]) == 1
+    warnings = []
+    assert module.check(allow_unreadable=True, warnings=warnings) == []
+    assert len(warnings) == 1 and "a_credential.txt" in warnings[0]
+    capsys.readouterr()
+    assert module.main(["--allow-unreadable"]) == 0
+    assert '"warnings": 1' in capsys.readouterr().out
