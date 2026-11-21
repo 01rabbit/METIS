@@ -167,30 +167,46 @@ narrative or scripts into the vault automatically.
   remaining problems need.
 - Hypotheses: `metis memory reason RUN_ID --summary ... --evidence ... --next-step ... --status proposed|revised|rejected|supported`.
 
-## Platforms with browser submission (AlpacaHack)
+## Browser-driven touchpoints (Claude in Chrome)
 
 Some platforms have no flag API for METIS; the flag is submitted in the user's
-logged-in browser. `metis web context RUN_ID` shows `submission_mode: browser`.
-For AlpacaHack (https://alpacahack.com, Claude Code started with `--chrome`):
+logged-in browser. `metis web context RUN_ID` shows `submission_mode: browser`
+(AlpacaHack, https://alpacahack.com, is the current example). Use Chrome **only**
+for the parts that truly need the logged-in browser — viewing a login/JS-gated
+statement, spawning the per-user instance, and submitting the flag. Keep intake
+(`metis web open`) and solving (`metis remote` / the static tools) on METIS's
+scoped, evidenced path, and keep "only Daybreak submits".
 
-- Take the statement with `metis web open CHALLENGE_URL`; distribution files on
-  the platform's S3 storage are fetched automatically.
-- Start the per-user challenge server with the page's "Spawn Challenge Server"
-  button in Chrome, then `metis remote grant RUN_ID HOST PORT --replace` the host/port the
-  page shows (a respawned instance gets a new port; `--replace` revokes the old one) and
-  connect with `latest`. If
-  the sandbox proxy refuses that host, ask the user to add it to the allowlist.
-- Submit each evidence-backed candidate once, through the page's own flag form
-  (never call the site's API directly). Read the result shown on the page and
-  record it with
-  `.venv/bin/metis web attest RUN_ID --verdict correct|incorrect --evidence 'what the page showed' --candidate-file .metis-state/work/<id>.candidate`
-  (write the exact candidate to that file first; a `printf … |` pipe is not
-  allowed for unattended workers).
-  The same replay, revision and cap rules as `metis web submit` apply.
-- If the browser shows a login page or CAPTCHA, stop and ask the user.
-- Daily rules: discussion with AI is allowed, account sharing is not, and
-  solutions may be shared only after the challenge period ends. Never publish
-  write-ups for a challenge that is still running.
+**Prerequisite.** Driving the browser needs Claude Code started with `--chrome`
+and the `mcp__claude-in-chrome__*` tools available. If they are not, fall back to
+asking the user to perform each browser step and report what the page showed.
+
+`.venv/bin/metis web browser-plan RUN_ID` is a read-only helper that prints the
+spawn form, the flag submission form and its flag field, the remaining submission
+budget, and the exact `prepare-browser`/`attest` commands for this run. Run it
+first; it never submits and never changes run state.
+
+1. **Statement + files.** `metis web open CHALLENGE_URL` (distribution files on
+   the platform's S3 storage are fetched automatically). Only open the page in
+   Chrome when `metis web open` cannot reach a login/JS-gated statement.
+2. **Spawn the instance.** Click the page's "Spawn Challenge Server" button in
+   Chrome (the `browser-plan` `spawn_form`), then
+   `metis remote grant RUN_ID HOST PORT --replace` the host/port the page shows (a
+   respawned instance gets a new port; `--replace` revokes the old one) and connect
+   with `latest`. If the sandbox proxy refuses that host, ask the user to add it to
+   the allowlist. Solve via `metis remote` as usual.
+3. **Submit once.** Write the exact candidate to `.metis-state/work/<id>.candidate`
+   (no trailing newline), then
+   `.venv/bin/metis web prepare-browser RUN_ID --candidate-file .metis-state/work/<id>.candidate`
+   (reserves one send). In Chrome, type that flag into the page's flag form
+   (`browser-plan` `submit_form`/`flag_field`) and submit **once** — never call the
+   site's API directly. Read the verdict shown and record it with
+   `.venv/bin/metis web attest RUN_ID --verdict correct|incorrect --evidence 'what the page showed' --candidate-file .metis-state/work/<id>.candidate`.
+   The same replay, revision and cap rules as `metis web submit` apply.
+4. If the browser shows a login page or CAPTCHA, stop and ask the user.
+5. Daily rules (AlpacaHack): discussion with AI is allowed, account sharing is
+   not, and solutions may be shared only after the challenge period ends. Never
+   publish write-ups for a challenge that is still running.
 
 ## Swarm mode
 

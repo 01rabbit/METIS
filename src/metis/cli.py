@@ -445,6 +445,9 @@ def build_parser() -> argparse.ArgumentParser:
     retention.add_argument("--apply", action="store_true", help="apply the bounded local retirement")
     web_context = web_commands.add_parser("context")
     web_context.add_argument("run_id")
+    web_browser_plan = web_commands.add_parser(
+        "browser-plan", help="read-only guidance for the browser-only touchpoints (spawn, flag form, prepare/attest)")
+    web_browser_plan.add_argument("run_id")
     web_grant = web_commands.add_parser("grant", help="add a user-authorized challenge origin to a run")
     web_grant.add_argument("run_id")
     web_grant.add_argument("url")
@@ -985,6 +988,8 @@ def main() -> int:
                 )
             elif args.web_command == "context":
                 output = workflow.context(args.run_id)
+            elif args.web_command == "browser-plan":
+                output = workflow.browser_plan(args.run_id)
             elif args.web_command == "prepare-browser":
                 output = workflow.prepare_browser(args.run_id, read_candidate(args.candidate_file))
             elif args.web_command == "attest":
@@ -1034,7 +1039,7 @@ def main() -> int:
                 http.client.HTTPException) as exc:
             # Never echo submitted candidates or credentials; METIS validation messages are safe.
             web_reason = ""
-            if args.web_command in {"grant", "request", "open", "catalog", "attest"}:
+            if args.web_command in {"grant", "request", "open", "catalog", "attest", "browser-plan"}:
                 web_reason = ": " + (str(exc).splitlines() or [type(exc).__name__])[0][:300]
             parser.exit(2, "CTF web command rejected" + web_reason
                         + " (check target scope, credentials, form configuration and limits)\n")
