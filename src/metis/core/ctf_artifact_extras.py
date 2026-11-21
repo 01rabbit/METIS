@@ -16,7 +16,7 @@ import zlib
 from metis.core.ctf_tools import byte_view, score_text
 
 ONE_MIB = 1_048_576
-DEFAULT_FLAG_PATTERN = r"[A-Za-z0-9_]{2,16}\{[^}]{3,200}\}"
+DEFAULT_SCAN_PATTERN = r"[A-Za-z0-9_]{2,16}\{[^}]{3,200}\}"
 _B64_RUN = re.compile(rb"[A-Za-z0-9+/]{16,}={0,2}")
 _HEX_RUN = re.compile(rb"(?:[0-9A-Fa-f]{2}){8,}")
 
@@ -96,7 +96,7 @@ def xor_single(data: bytes, options: dict) -> dict:
     top = _integer(options, "top", 5, 1, 16)
     preview = _integer(options, "preview", 160, 0, 1024)
     sample = data[:window]
-    pattern = re.compile(DEFAULT_FLAG_PATTERN)
+    pattern = re.compile(DEFAULT_SCAN_PATTERN)
     ranked = []
     for key in range(256):
         decoded = bytes(value ^ key for value in sample)
@@ -235,7 +235,7 @@ def carve(data: bytes, options: dict) -> dict:
 
 
 def _compile(options: dict) -> re.Pattern[str]:
-    pattern = options.get("pattern", DEFAULT_FLAG_PATTERN)
+    pattern = options.get("pattern", DEFAULT_SCAN_PATTERN)
     if not isinstance(pattern, str) or not 1 <= len(pattern) <= 200:
         raise ValueError("pattern must be a regex of 1 to 200 characters")
     if re.search(r"\)\s*[*+{]|\\[1-9]|\(\?[<=!P]", pattern):
