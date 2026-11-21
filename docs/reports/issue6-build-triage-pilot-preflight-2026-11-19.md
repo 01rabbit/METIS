@@ -39,8 +39,13 @@ The exact UTF-8 prompt and canonical fixture bytes are committed using keyed
 HMAC receipts before invocation. The receipt is tied to a scheduler call
 reservation and strict output schema. Each finished receipt is reconciled
 against the reservation, phase, assignment, attempt, terminal job state,
-and handoff report. Reservation and initial receipt are separate transactions.
-These are controller commitments without provider attestation. The scripted
+and handoff report. The scheduler reservation and initial receipt now commit
+in one transaction; an injected receipt-write failure rolls back both the
+reservation row and the reserved-turn counter before any scripted response is
+consumed; the affected scheduler job is then marked failed. A later-phase
+failure preserves only earlier committed reservations and receipts. This is
+tested only in the offline synthetic pilot. These are
+controller commitments without provider attestation. The scripted
 controller does not save note contents. A live CodexCLI can write last-message
 and CODEX_HOME data, so live retention and cleanup require their own canary.
 The scripted ledger and outcome records contain no option IDs, note, raw prompt,
@@ -60,9 +65,11 @@ A calibration claims a fresh private directory exclusively. A repeated call
 against that directory is refused whether the previous run completed or was
 interrupted. A controlled scripted interruption records a terminal failure. A process
 crash can leave a missing or nonterminal receipt. Either interruption makes
-the existing root ineligible for resume. Before real execution, verify one-shot admission across directories,
-atomic call-and-receipt admission, an outer cohort watchdog, live retention,
-and the persisted action/finalizer join. No authority or token exists for a
+the existing root ineligible for resume. Before any live launch, verify
+one-shot admission across directories, atomic reservation-and-receipt admission
+in the live invocation path, an outer cohort watchdog, live retention, and the
+persisted action/finalizer join. The atomic admission test covers only the
+offline synthetic scheduler path. No authority or token exists for a
 live launch in this draft. No operator override or resume path ships
 here.
 

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, final
 
-from metis.core.agent_host import BridgeHost
+from metis.core.agent_host import FakeHost
 from metis.core.agent_scheduler import AgentScheduler
 from metis.core.codex_session import CodexSession
 from metis.core.codex_specialist import CodexTurn
@@ -59,6 +59,45 @@ class ScriptedTurns:
         return CodexTurn(0, output, usage={"input_tokens": 10, "output_tokens": 2})
 
 
+class _ScriptedBoundaryHost(FakeHost):
+    """Deterministic scheduler host; it records briefs and never runs inference."""
+
+    name = "issue6-scripted-boundary"
+
+    def spawn(self, assignment: dict[str, Any], brief: dict[str, Any], model: Any,
+              *, timeout: float = 30.0) -> str:
+        job_id = f"issue6-boundary-{len(self.spawned) + 1}"
+        self.jobs[job_id] = {"assignment": assignment, "brief": brief, "model": model,
+                             "plan": {"after": 1, "state": "finished", "output": None},
+                             "polls": 0, "started": time.time()}
+        self.spawned.append(assignment["assignment_id"])
+        return job_id
+
+    def deliver_phase(self, host_job_id: str, assignment_id: str, attempt_id: str, prompt: str,
+                      schema: dict[str, Any], timeout: float) -> None:
+        job = self.jobs.get(host_job_id)
+        if (job is None or job["brief"].get("assignment_id") != assignment_id
+                or job["brief"].get("attempt_id") != attempt_id):
+            raise ValueError("phase prompt did not match the dispatched scheduler attempt")
+        if not 0 < timeout <= PHASE_SECONDS or len(prompt.encode("utf-8")) > 256_000:
+            raise ValueError("phase prompt or deadline exceeds the bounded fake-host contract")
+        job["prompt"] = prompt
+        job["schema"] = json.loads(_json(schema))
+        job["timeout"] = timeout
+
+    def consume_phase(self, host_job_id: str, assignment_id: str, attempt_id: str
+                      ) -> tuple[str, dict[str, Any], float]:
+        job = self.jobs.get(host_job_id)
+        if (job is None or job["brief"].get("assignment_id") != assignment_id
+                or job["brief"].get("attempt_id") != attempt_id or job.get("consumed")):
+            raise ValueError("captured phase prompt did not match one unconsumed scheduler attempt")
+        prompt, schema, timeout = job.get("prompt"), job.get("schema"), job.get("timeout")
+        if not isinstance(prompt, str) or not isinstance(schema, dict) or not isinstance(timeout, float):
+            raise TypeError("captured phase prompt is incomplete")
+        job["consumed"] = True
+        return prompt, schema, timeout
+
+
 def _require_scripted(runner: ScriptedTurns) -> None:
     if type(runner) is not ScriptedTurns:
         raise TypeError("offline rehearsal accepts only built-in scripted responses")
@@ -67,8 +106,11 @@ def _require_scripted(runner: ScriptedTurns) -> None:
 @dataclass(frozen=True)
 class PhaseReceipt:
     phase: int
+    assignment_id: str
+    attempt_id: str
     reservation: int
     prompt_hmac: str
+    brief_sha256: str
     artifact_hmac: str
     schema_sha256: str
     input_tokens: int | None
@@ -87,6 +129,10 @@ class ArmResult:
     oracle_checks: int
     elapsed_ms: int
     phases: tuple[PhaseReceipt, ...]
+
+
+class _PilotReceiptPersistenceError(RuntimeError):
+    """The reservation transaction could not persist its initial phase receipt."""
 
 
 def _json(value: object) -> str:
@@ -136,12 +182,14 @@ def _prompt(artifact: bytes, prior: tuple[str, str] | None, workflow: Workflow) 
             + "Review context: " + _json(context) + "\nPublic fixture: " + artifact.decode("ascii"))
 
 
-def _one_assignment(plan: dict[str, Any]) -> dict[str, Any]:
+def _one_assignment(plan: dict[str, Any], artifact_ref: str | None = None) -> dict[str, Any]:
     assignments = [item for item in plan["assignments"] if item["role"] == "artifact-triage"]
     if len(assignments) != 1:
         raise RuntimeError("planner must provide one artifact-triage profile")
     assignments[0]["max_turns"] = 1
     assignments[0]["deadline_seconds"] = PHASE_SECONDS
+    if artifact_ref is not None:
+        assignments[0]["inputs"] = {"artifacts": [artifact_ref]}
     plan["assignments"] = assignments
     plan["decision"]["required_roles"] = ["artifact-triage"]
     plan["daybreak_covers"] = []
@@ -151,21 +199,24 @@ def _one_assignment(plan: dict[str, Any]) -> dict[str, Any]:
 def _prepare_receipts(database: Path) -> None:
     with sqlite3.connect(database) as db:
         db.execute("""CREATE TABLE IF NOT EXISTS issue6_build_pilot_receipts (
-            run_id TEXT NOT NULL, phase INTEGER NOT NULL, reservation INTEGER NOT NULL UNIQUE,
+            run_id TEXT NOT NULL, phase INTEGER NOT NULL, assignment_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL, reservation INTEGER NOT NULL UNIQUE,
             payload TEXT NOT NULL, PRIMARY KEY (run_id, phase))""")
 
 
 def _reconcile(database: Path, run_id: str, receipts: list[PhaseReceipt], actions: int) -> None:
     expected = [
         (
-            item.reservation, item.phase, _json(asdict(item)),
+            item.reservation, item.assignment_id, item.attempt_id,
+            item.assignment_id, item.attempt_id, item.phase, _json(asdict(item)),
             "completed" if item.outcome == "accepted" else "failed", int(item.outcome == "accepted"),
         )
         for item in receipts
     ]
     with sqlite3.connect(database) as db:
         recorded = db.execute("""
-            SELECT turns.id, receipts.phase, receipts.payload, jobs.state,
+            SELECT turns.id, turns.assignment_id, turns.attempt_id,
+                receipts.assignment_id, receipts.attempt_id, receipts.phase, receipts.payload, jobs.state,
                 (SELECT COUNT(*) FROM ctf_agent_reports reports
                 WHERE reports.run_id = turns.run_id AND reports.assignment_id = turns.assignment_id
                     AND reports.attempt_id = turns.attempt_id)
@@ -185,20 +236,61 @@ def _reconcile(database: Path, run_id: str, receipts: list[PhaseReceipt], action
         raise RuntimeError("pilot phase, reservation or report evidence does not reconcile")
 
 
+def _ensure_dispatch_capacity(scheduler: AgentScheduler, run_id: str, required_calls: int) -> None:
+    """Refuse before dispatch unless calls and a slot are available.
+
+    This is a model-free preflight for one private pilot ledger, not an atomic slot
+    lease. AgentScheduler.dispatch remains authoritative; any intervening capacity
+    change must fail closed when exactly one assignment does not start.
+    """
+    if required_calls < 1:
+        raise ValueError("pilot preflight requires a positive remaining-call count")
+    budget = scheduler.model_turn_budget(run_id)
+    if budget is None or budget["limit"] - budget["reserved"] < required_calls:
+        raise ValueError("pilot scheduler preflight refused: insufficient model-call budget")
+    settings = scheduler.config()
+    slot_limit = min(settings["global_slots"], scheduler.host.capabilities().max_parallel)
+    with sqlite3.connect(scheduler.database) as db:
+        global_busy, = db.execute(
+            "SELECT COUNT(*) FROM agent_jobs WHERE state IN ('running','unknown')",
+        ).fetchone()
+        run_busy, = db.execute(
+            "SELECT COUNT(*) FROM agent_jobs WHERE run_id=? AND state IN ('running','unknown')",
+            (run_id,),
+        ).fetchone()
+    if global_busy >= slot_limit or run_busy >= settings["per_run_slots"]:
+        raise ValueError("pilot scheduler preflight refused: no dispatch slot is available")
+
+
+def _dispatch_phase(scheduler: AgentScheduler, run_id: str, required_calls: int) -> dict[str, Any]:
+    """Run the preflight immediately before dispatch and require one started assignment."""
+    _ensure_dispatch_capacity(scheduler, run_id, required_calls)
+    started = scheduler.dispatch(run_id)["started"]
+    if len(started) != 1:
+        raise RuntimeError("pilot scheduler preflight could not start exactly one phase assignment")
+    return started[0]
+
+
 def _charge_receipt(database: Path, run_id: str, receipt: PhaseReceipt, *, terminal: bool = False) -> None:
     with sqlite3.connect(database) as db:
         if terminal:
             prior = replace(receipt, input_tokens=None, output_tokens=None, outcome="launching")
             changed = db.execute(
                 "UPDATE issue6_build_pilot_receipts SET payload=? WHERE run_id=? AND phase=? "
-                "AND reservation=? AND payload=?",
-                (_json(asdict(receipt)), run_id, receipt.phase, receipt.reservation, _json(asdict(prior))),
+                "AND assignment_id=? AND attempt_id=? AND reservation=? AND payload=?",
+                (_json(asdict(receipt)), run_id, receipt.phase, receipt.assignment_id, receipt.attempt_id,
+                 receipt.reservation, _json(asdict(prior))),
             )
             if changed.rowcount != 1:
                 raise RuntimeError("pilot launch receipt mismatch")
         else:
-            db.execute("INSERT INTO issue6_build_pilot_receipts VALUES (?,?,?,?)",
-                       (run_id, receipt.phase, receipt.reservation, _json(asdict(receipt))))
+            _insert_receipt(db, run_id, receipt)
+
+
+def _insert_receipt(db: sqlite3.Connection, run_id: str, receipt: PhaseReceipt) -> None:
+    db.execute("INSERT INTO issue6_build_pilot_receipts VALUES (?,?,?,?,?,?)",
+               (run_id, receipt.phase, receipt.assignment_id, receipt.attempt_id,
+                receipt.reservation, _json(asdict(receipt))))
 
 
 def _usage(turn: CodexTurn, key: str) -> int | None:
@@ -219,7 +311,8 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
     directory.mkdir(mode=0o700, exist_ok=False)
     started = clock()
     database = directory / "ledger.sqlite"
-    scheduler = AgentScheduler(database, BridgeHost())
+    host = _ScriptedBoundaryHost(max_parallel=1)
+    scheduler = AgentScheduler(database, host)
     # Scheduler initialization owns several tables; explicitly restrict the file.
     database.chmod(0o600)
     _prepare_receipts(database)
@@ -249,12 +342,19 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
         phase_start = started if phase == 1 else clock()
         deadline = min(started + PHASE_SECONDS * MAX_PHASES, phase_start + PHASE_SECONDS)
         wave = scheduler.ledger.create_wave(
-            run_id, mode="delegated", plan_policy=_one_assignment,
+            run_id, mode="delegated", plan_policy=lambda plan: _one_assignment(plan, artifact_ref),
             reason="Check provisional diagnosis against the supplied observations" if phase > 1 else None,
         )
         scheduler.enqueue(run_id, wave["wave_id"])
-        job, = scheduler.dispatch(run_id)["started"]
+        job = _dispatch_phase(scheduler, run_id, MAX_PHASES - phase + 1)
         assignment, attempt = job["assignment_id"], job["attempt_id"]
+        brief = job["brief"]
+        if (brief.get("run_id") != run_id or brief.get("assignment_id") != assignment
+                or brief.get("attempt_id") != attempt or brief.get("artifacts") != [artifact_ref]):
+            raise RuntimeError("scheduler phase brief did not match its run, attempt, and artifact scope")
+        host_brief = host.jobs[job["host_job_id"]]["brief"]
+        if host_brief != brief:
+            raise RuntimeError("fake host received a different scheduler phase brief")
         prompt = _prompt(artifact, prior, workflow)
         schema = _schema(phase == 1)
 
@@ -264,15 +364,78 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
         if should_stop():
             scheduler.fail(assignment, attempt, "deadline before launch")
             break
-        reserved = scheduler.reserve_model_turn(run_id, assignment, attempt)
-        if reserved is None or reserved["turn"] != phase:
+        budget_before = scheduler.model_turn_budget(run_id)
+        if budget_before is None or budget_before["reserved"] != phase - 1:
+            raise RuntimeError("pilot phase must begin with exactly one reservation per prior phase")
+
+        receipt: PhaseReceipt | None = None
+
+        def persist_receipt(
+            db: sqlite3.Connection,
+            reservation_id: int,
+            *,
+            receipt_phase: int = phase,
+            receipt_assignment: str = assignment,
+            receipt_attempt: str = attempt,
+            receipt_prompt: str = prompt,
+            receipt_brief: dict[str, Any] = brief,
+            receipt_artifact: bytes = artifact,
+            receipt_schema: dict[str, Any] = schema,
+        ) -> None:
+            nonlocal receipt
+            try:
+                if receipt is not None:
+                    raise RuntimeError("pilot initial receipt was persisted more than once")
+                receipt = PhaseReceipt(
+                    receipt_phase, receipt_assignment, receipt_attempt, reservation_id,
+                    _mac(receipt_key, b"prompt", receipt_prompt.encode()),
+                    hashlib.sha256(_json(receipt_brief).encode()).hexdigest(),
+                    _mac(receipt_key, b"artifact", receipt_artifact),
+                    hashlib.sha256(_json(receipt_schema).encode()).hexdigest(),
+                    None, None, "launching",
+                )
+                _insert_receipt(db, run_id, receipt)
+            except Exception as error:
+                raise _PilotReceiptPersistenceError(
+                    f"pilot initial receipt persistence failed: {error}"
+                ) from error
+
+        try:
+            reserved = scheduler.reserve_model_turn(
+                run_id, assignment, attempt, persist_receipt=persist_receipt,
+            )
+        except Exception as reservation_error:
+            recovery_error: Exception | None = None
+            try:
+                current = next((item for item in scheduler.jobs(run_id)
+                                if item["assignment_id"] == assignment
+                                and item.get("attempt_id") == attempt), None)
+                if current is not None and current["state"] == "running":
+                    reason = ("pilot reservation receipt persistence failed"
+                              if isinstance(reservation_error, _PilotReceiptPersistenceError)
+                              else "pilot model-turn reservation transaction failed")
+                    try:
+                        scheduler.fail(assignment, attempt, reason)
+                    except Exception as error:  # noqa: BLE001 - preserve recovery failure for diagnosis
+                        recovery_error = error
+            except Exception as error:  # noqa: BLE001 - job lookup failure also prevents safe recovery
+                recovery_error = error
+            if recovery_error is not None:
+                try:
+                    latest = next((item for item in scheduler.jobs(run_id)
+                                   if item["assignment_id"] == assignment
+                                   and item.get("attempt_id") == attempt), None)
+                except Exception:  # noqa: BLE001 - retain the original recovery failure
+                    latest = None
+                if latest is not None and latest["state"] != "running":
+                    raise
+                raise RuntimeError("pilot reservation failed and job recovery also failed") from recovery_error
+            raise
+        if (reserved is None or reserved["turn"] != phase or reserved["limit"] != MAX_PHASES
+                or reserved["remaining"] != MAX_PHASES - phase):
             raise RuntimeError("pilot model-call reservation mismatch")
-        receipt = PhaseReceipt(
-            phase, reserved["reservation_id"], _mac(receipt_key, b"prompt", prompt.encode()),
-            _mac(receipt_key, b"artifact", artifact), hashlib.sha256(_json(schema).encode()).hexdigest(),
-            None, None, "launching",
-        )
-        _charge_receipt(database, run_id, receipt)
+        if receipt is None or receipt.reservation != reserved["reservation_id"]:
+            raise RuntimeError("pilot atomic reservation receipt mismatch")
         timeout = deadline - clock()
         if timeout <= 0:
             receipt = replace(receipt, outcome="deadline_before_launch")
@@ -281,7 +444,23 @@ def _run_arm(directory: Path, case_id: str, fixture: BuildFixture, runner: Scrip
             scheduler.fail(assignment, attempt, "deadline after reservation")
             break
         try:
-            turn = ScriptedTurns._next_turn(runner, prompt, schema, timeout)
+            # The scripted response consumes the exact prompt/schema captured for this
+            # scheduler attempt; it has no route to a model or provider.
+            host.deliver_phase(job["host_job_id"], assignment, attempt, prompt, schema, timeout)
+            captured_prompt, captured_schema, captured_timeout = host.consume_phase(
+                job["host_job_id"], assignment, attempt)
+            if (_mac(receipt_key, b"prompt", captured_prompt.encode()) != receipt.prompt_hmac
+                    or hashlib.sha256(_json(captured_schema).encode()).hexdigest() != receipt.schema_sha256
+                    or captured_timeout != timeout):
+                raise ValueError("captured phase input did not match its pre-dispatch receipt")
+        except (TypeError, ValueError):
+            receipt = replace(receipt, outcome="prompt_delivery_rejected")
+            _charge_receipt(database, run_id, receipt, terminal=True)
+            receipts.append(receipt)
+            scheduler.fail(assignment, attempt, receipt.outcome)
+            break
+        try:
+            turn = ScriptedTurns._next_turn(runner, captured_prompt, captured_schema, captured_timeout)
         except RuntimeError:
             receipt = replace(receipt, outcome="script_interrupted")
             _charge_receipt(database, run_id, receipt, terminal=True)
