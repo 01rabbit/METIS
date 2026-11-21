@@ -685,7 +685,7 @@ def test_safehttp_out_of_scope_redirect_is_never_followed(monkeypatch):
 
     class Redirect:
         status = 302
-        headers = {"Location": "https://cdn.example.net/x?sig=secret"}
+        headers = {"Location": "https://cdn.example.net/x?sig=secret"}  # noqa: RUF012
 
         def close(self):
             pass

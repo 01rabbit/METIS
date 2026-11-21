@@ -705,7 +705,7 @@ class WebWorkflow:
             raise ValueError("CTFd catalog retrieval failed; check URL and authentication")
         payload = ctfd_json(response)
         if not isinstance(payload, dict):
-            raise ValueError("unrecognized or oversized CTFd catalog")
+            raise ValueError("unrecognized or oversized CTFd catalog")  # noqa: TRY004 -- callers handle ValueError
         items = payload.get("data") if payload.get("success") is True else None
         if not isinstance(items, list) or len(items) > 500:
             raise ValueError("unrecognized or oversized CTFd catalog")
