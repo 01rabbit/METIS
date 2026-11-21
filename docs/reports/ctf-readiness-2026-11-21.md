@@ -40,8 +40,13 @@ Issue #6 retrospective analysis: `docs/reports/issue6-failure-breakdown-2026-11-
 
 ## Verification
 
-- Full suite outside the Bash sandbox at `420d2d1`: 2145 passed, 40 skipped,
-  0 failed (`.venv/bin/python -m pytest -q`). `ruff check src tests scripts`, `mypy src/metis`
+- Full suite outside the Bash sandbox at `f9488b0`: 2175 passed, 40 skipped,
+  1 failed (`.venv/bin/python -m pytest -q`). The failure,
+  `test_ctf_web_request.py::test_remediation_and_environment_mode_recheck_paths_after_open[-wal-WAL]`,
+  passed in 3 isolated runs and 5 runs of its file; neither the test nor its code
+  path changed on this branch, so it is recorded as an existing timing-dependent
+  flake around the SQLite WAL sidecar. At `420d2d1` the suite had 2145 passed,
+  0 failed. `ruff check src tests scripts`, `mypy src/metis`
   (120 files) and `scripts/check_repo.py` (0 findings) pass.
 - `metis sandbox` on this machine (OrbStack, linux/arm64 image
   `sha256:2509ca19…`): run with stdin, script mode, network blocked, uid 65534,
@@ -62,6 +67,17 @@ Issue #6 retrospective analysis: `docs/reports/issue6-failure-breakdown-2026-11-
   recover` hid the cause, the credential filter rejected a quoted `'password: '`
   prompt, and running `metis` from another directory missed the relative
   database.
+- Rehearsal 3 (pwn: aarch64 ELF where `fgets` overruns a 32-byte name into an
+  adjacent role field): planned as `pwn` with a declared category (keyword
+  triage now also puts pwn first for a binary with exploitation words). The
+  `ctf-pwn` subagent found the bug and payload layout and wrote a pwntools
+  script; its own sandbox call met the intermittently blocked engine and was
+  refused before reservation with the new message, so it handed off as
+  instructed. Daybreak ran the script with `metis sandbox run --mode script
+  --with 01-fakeflag.txt`, which printed the admin branch with the local stand-in
+  flag. No service was granted, so the real flag was not retrieved or submitted.
+- `--database` is now accepted before or after the subcommand for every group
+  that has it.
 - Live intake of ksnctf problem 1 created a planning run with the problem page
   artifact; nothing was submitted.
 
@@ -75,4 +91,6 @@ Issue #6 retrospective analysis: `docs/reports/issue6-failure-breakdown-2026-11-
   append-only ledger and audit accounting.
 - `flag_scan` decodes only whole-artifact layers; carve or derive embedded blobs
   first. pcapng support is limited to enhanced packet blocks with one link type.
-- `--database` placement differs between subcommand groups.
+- Subagent Bash calls to the docker socket fail intermittently even as bare
+  `metis sandbox` commands; Daybreak's own calls have worked. Plan for Daybreak
+  to run dynamic steps when a worker reports the engine unreachable.
