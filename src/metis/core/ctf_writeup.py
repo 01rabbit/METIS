@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from metis.core.answer_vault import AnswerVault, redact
+from metis.core.answer_vault import AnswerVault, redact, write_split
 from metis.core.codex_session import CodexSession
 from metis.core.contracts import ChallengeCategory, RunStatus
 from metis.core.ctf_contest import ContestBoard
@@ -265,9 +265,11 @@ class WriteupBook:
                        (contest_id, challenge_id, run_id, str(path), time.time()))
         index = self.index(contest_id)
         knowledge = self.export_knowledge()
+        split = write_split(self.root)  # keep EVALUATION_SPLIT.json in sync with the new write-up
         return {"path": str(path), "flag_check": check, "scripts": copied, "techniques": learned,
                 "answers_in_vault": len(answers), "vault": str(self.vault.path),
-                "ctf_index": index["path"], "knowledge_index": knowledge["path"]}
+                "ctf_index": index["path"], "knowledge_index": knowledge["path"],
+                "evaluation_split": split["path"]}
 
     def _render(self, contest: dict[str, Any], challenge: dict[str, Any], run_id: str | None,
                 facts: dict[str, Any] | None, entry: WriteupInput, scripts: list[str],
