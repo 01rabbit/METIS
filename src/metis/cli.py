@@ -235,8 +235,23 @@ def codex_probe(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def main() -> int:
-    output: dict[str, Any]
+def _accept_database_after_subcommand(parser: argparse.ArgumentParser, inherited: bool = False) -> None:
+    """Let `--database` follow the subcommand as well as precede it.
+
+    Leaf values use SUPPRESS so they override the group value only when given.
+    """
+    has_database = inherited or any("--database" in action.option_strings for action in parser._actions)
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for child in action.choices.values():
+            if has_database and not any("--database" in a.option_strings for a in child._actions):
+                child.add_argument("--database", type=Path, default=argparse.SUPPRESS, dest="database",
+                                   help=argparse.SUPPRESS)
+            _accept_database_after_subcommand(child, has_database)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="metis")
     parser.add_argument("--version", action="version", version=f"METIS {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -730,6 +745,13 @@ def main() -> int:
             action.add_argument("tool", choices=sorted(DATA_TOOLS))
             action.add_argument("--data", help="omit to read exact UTF-8 input from stdin")
     cli_ext.register(sub)
+    _accept_database_after_subcommand(parser)
+    return parser
+
+
+def main() -> int:
+    output: dict[str, Any]
+    parser = build_parser()
     args = parser.parse_args()
     handled = cli_ext.handle(args, parser)
     if handled is not None:
