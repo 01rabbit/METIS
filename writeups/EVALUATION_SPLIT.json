@@ -2,6 +2,11 @@
  "policy": "Problems with a write-up are practice, never heldout. Answers are in the vault, not here.",
  "practice": [
   {
+   "ctf": "alpacahack-b-side",
+   "problem": "what-is-my-pointer-3",
+   "writeup": "alpacahack-b-side/what-is-my-pointer-3.md"
+  },
+  {
    "ctf": "alpacahack-daily",
    "problem": "almost-share-almost-shared-prime",
    "writeup": "alpacahack-daily/almost-share-almost-shared-prime.md"
