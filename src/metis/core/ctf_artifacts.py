@@ -513,8 +513,14 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
                   *, zipcrypto_runner: Callable[[bytes, dict], dict] | None = None) -> dict:
     options = options or {}
     allowed = ALLOWED_OPTIONS
-    if tool not in allowed or not isinstance(options, dict) or set(options) - allowed[tool]:
-        raise ValueError("unknown artifact tool or options")
+    if tool not in allowed:
+        raise ValueError(f"unknown artifact tool {tool[:60]!r}; see `metis codex tools`")
+    if not isinstance(options, dict):
+        raise TypeError("options must be a JSON object")
+    unknown = sorted(str(key) for key in set(options) - allowed[tool])
+    if unknown:
+        accepted = ", ".join(sorted(allowed[tool])) or "none"
+        raise ValueError(f"unknown option(s) for {tool}: {', '.join(unknown)[:80]}; accepted: {accepted}")
     if len(data) > MAX_ARTIFACT:
         raise ValueError("artifact exceeds eight MiB")
     if tool == "overview":

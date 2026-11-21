@@ -21,13 +21,14 @@ from uuid import uuid4
 from metis.core.artifacts import artifact_stream
 from metis.core.contracts import ChallengeManifest, RunEvent, RunStatus
 from metis.core.ctf_artifacts import (
+    ALLOWED_OPTIONS,
     ARTIFACT_ERRORS,
     ARTIFACT_TOOLS,
     DERIVE_TOOLS,
     MAX_FILE,
     inspect_file,
 )
-from metis.core.ctf_tools import DATA_TOOLS, transform
+from metis.core.ctf_tools import DATA_TOOLS, input_shape, transform
 from metis.core.ctf_triage import triage
 from metis.core.run_lock import locked, operation_lock, run_lock
 from metis.core.runtime import ToolRequest
@@ -290,6 +291,9 @@ class CodexSession:
     def submit(self, run_id: str, candidate: str) -> dict:
         if len(candidate.encode()) > 65_536:
             raise ValueError("candidate exceeds limit")
+        if not candidate:
+            return {"run_id": run_id, "verified": False, "reason": "empty candidate; nothing was checked or charged",
+                    "status": self.context(run_id)["status"]}
         self._reserve(run_id, "submit_candidate")
         self._emit(run_id, RunStatus.OBSERVING)
         self._emit(run_id, RunStatus.VERIFYING)
@@ -302,7 +306,13 @@ class CodexSession:
         else:
             self._emit(run_id, RunStatus.REPLANNING, reason="candidate_unverified")
             self._emit(run_id, RunStatus.PLANNING)
-        return {"run_id": run_id, "verified": accepted, "status": self.context(run_id)["status"]}
+        output: dict = {"run_id": run_id, "verified": accepted, "status": self.context(run_id)["status"]}
+        if commitment is None:
+            output["reason"] = ("verification unavailable: this run has no --expected-sha256 commitment; "
+                                "submit through the platform (web submit) to verify")
+        elif not accepted:
+            output["reason"] = "candidate does not match the run's SHA-256 commitment"
+        return output
 
     def artifact(self, run_id: str, name: str, tool: str, options: dict | None = None, *,
                  _owner: tuple[str, str] | None = None, _retain_operation: bool = False) -> dict:
@@ -357,8 +367,7 @@ class CodexSession:
             except ARTIFACT_ERRORS as exc:
                 output = {"run_id": run_id, "ok": False, "error": "artifact rejected or unsupported",
                           "error_type": type(exc).__name__, "_tool": tool}
-                if type(exc) in (ValueError, TypeError):
-                    output["detail"] = str(exc).splitlines()[0][:200] if str(exc) else ""
+                output["detail"] = _safe_cause(exc)
             except BaseException:
                 self._finish_artifact_operation(run_id, operation_id, {"ok": False})
                 raise
@@ -850,6 +859,37 @@ class CodexSession:
             contexts.append(self.start(manifest, commitment=hashlib.sha256(answer.encode()).hexdigest(),
                                        evaluation_split="practice"))
         return contexts
+
+
+def tool_catalog() -> dict[str, dict[str, str]]:
+    """Compact per-tool input discovery for `metis codex tools`."""
+    return {
+        "inline_tool_inputs": {tool: input_shape(tool) for tool in sorted(DATA_TOOLS)},
+        "artifact_tool_options": {
+            tool: "{" + ",".join(sorted(ALLOWED_OPTIONS.get(tool, ()))) + "}" for tool in sorted(ARTIFACT_TOOLS)
+        },
+    }
+
+
+_PATH_TEXT =re.compile(r"(?<![\w.])/(?:[\w.\-]+/)+[\w.\-]*")
+
+
+def _safe_cause(exc: BaseException) -> str:
+    """Short operator-facing cause: exception class plus a bounded first message line.
+
+    OSError text is reduced to the OS reason (no filename), and absolute path
+    fragments are masked so host paths outside the run never reach the output.
+    """
+    if isinstance(exc, OSError):
+        text = exc.strerror or ""
+    else:
+        text = str(exc).splitlines()[0] if str(exc) else ""
+    text = _PATH_TEXT.sub("<path>", text)[:200]
+    kind = type(exc)
+    if kind in (ValueError, TypeError):
+        return text
+    qualified = kind.__name__ if kind.__module__ == "builtins" else f"{kind.__module__}.{kind.__name__}"
+    return f"{qualified}: {text}" if text else qualified
 
 
 def _suffix(content: bytes) -> str:
