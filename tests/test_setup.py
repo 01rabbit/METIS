@@ -48,3 +48,57 @@ def test_start_repairs_a_moved_virtualenv(tmp_path):
     start = runpy.run_path(str(ROOT / "start"))
     _venv(tmp_path, "/Users/old/METIS/.venv/bin/python")
     assert start["venv_moved"](tmp_path) is True
+
+
+def _fake_tee(results, seen):
+    def fake(command, root, environment):
+        seen.append(dict(environment))
+        return results.pop(0)
+    return fake
+
+
+def test_uv_retries_once_on_certificate_error(monkeypatch, capsys):
+    run = SETUP["run_uv_sync"]
+    monkeypatch.delenv("UV_SYSTEM_CERTS", raising=False)
+    monkeypatch.delenv("UV_NATIVE_TLS", raising=False)
+    seen = []
+    run.__globals__["_run_tee"] = _fake_tee([(2, "invalid peer certificate: OSStatus -26276"), (0, "")], seen)
+    run(["uv"], Path("."), {"UV_SYSTEM_CERTS": "true"})
+    assert len(seen) == 2
+    assert seen[1]["UV_SYSTEM_CERTS"] == "false" and seen[1]["UV_NATIVE_TLS"] == "false"
+    assert "retrying once" in capsys.readouterr().out
+
+
+def test_uv_does_not_retry_unrelated_failure_or_user_env(monkeypatch):
+    import subprocess
+
+    import pytest
+    run = SETUP["run_uv_sync"]
+    monkeypatch.delenv("UV_SYSTEM_CERTS", raising=False)
+    monkeypatch.delenv("UV_NATIVE_TLS", raising=False)
+    seen = []
+    run.__globals__["_run_tee"] = _fake_tee([(1, "no such package")], seen)
+    with pytest.raises(subprocess.CalledProcessError):
+        run(["uv"], Path("."), {})
+    assert len(seen) == 1
+    monkeypatch.setenv("UV_NATIVE_TLS", "true")
+    seen.clear()
+    run.__globals__["_run_tee"] = _fake_tee([(2, "invalid peer certificate")], seen)
+    with pytest.raises(subprocess.CalledProcessError):
+        run(["uv"], Path("."), {})
+    assert len(seen) == 1
+
+
+def test_uv_fails_when_retry_fails_too(monkeypatch, capsys):
+    import subprocess
+
+    import pytest
+    run = SETUP["run_uv_sync"]
+    monkeypatch.delenv("UV_SYSTEM_CERTS", raising=False)
+    monkeypatch.delenv("UV_NATIVE_TLS", raising=False)
+    seen = []
+    run.__globals__["_run_tee"] = _fake_tee([(2, "invalid peer certificate"), (3, "still bad")], seen)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        run(["uv"], Path("."), {})
+    assert caught.value.returncode == 3 and len(seen) == 2
+    assert "failed twice" in capsys.readouterr().err

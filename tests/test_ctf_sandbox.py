@@ -913,3 +913,23 @@ def test_missing_cross_libc_and_ltrace_are_reported(tmp_path, engine):
     result = Sandbox(database).execute(run_id, SandboxRequest(target=target))
     # The fake engine has no /usr/x86_64-linux-gnu, so the bootstrap must say so plainly.
     assert result["ok"] is False and "cross libc for x86_64" in result["stderr"]["text"]
+
+
+def test_socket_permission_hint_only_for_owned_socket(tmp_path):
+    import socket
+
+    from metis.core import ctf_sandbox
+    path = str(tmp_path / "d.sock")
+    server = socket.socket(socket.AF_UNIX)
+    try:
+        server.bind(path)
+    except OSError:
+        import pytest
+        pytest.skip("cannot create a unix socket here")
+    finally:
+        server.close()
+    reason = f"permission denied while trying to connect to the docker API at unix://{path}"
+    assert "Claude Code" in ctf_sandbox.socket_permission_hint(reason)
+    assert ctf_sandbox.socket_permission_hint(reason.replace("permission denied", "refused")) is None
+    assert ctf_sandbox.socket_permission_hint("permission denied at unix:///nonexistent/x.sock") is None
+    assert ctf_sandbox.socket_permission_hint(None) is None
