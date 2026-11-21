@@ -36,7 +36,7 @@ EVIDENCE_TOOLS = {"email": "email", "browser_history": "browser", "json_records"
                   "cloudtrail": "cloudtrail", "evtx_xml": "evtx-xml"}
 ARTIFACT_TOOLS = frozenset({
     "overview", "strings", "text", "hex", "elf", "disassemble", "zip_list", "zip_read",
-    "gzip", "image", "image_lsb", "pcap",
+    "gzip", "image", "image_lsb", "pcap", "pcap_streams", "pcap_stream", "http_objects",
     "pe", "java_class", "wav", "wav_lsb", "sqlite",
     "base64_decode", "base32_decode", "hex_decode", "zlib",
     "tar_list", "tar_read", "bzip2", "xz", "pdf_text", "x509", "tls_certificates",
@@ -47,7 +47,7 @@ ARTIFACT_TOOLS = frozenset({
 })
 DERIVE_TOOLS = frozenset({
     "zip_read", "tar_read", "gzip", "zlib", "bzip2", "xz", "base64_decode", "base32_decode",
-    "hex_decode", "tls_http_body", "zipcrypto_decrypt",
+    "hex_decode", "tls_http_body", "zipcrypto_decrypt", "pcap_stream", "http_objects",
 })
 MAX_ARTIFACT = 8 * 1024 * 1024
 MAX_FILE = 256 * 1024 * 1024
@@ -474,7 +474,8 @@ def _pcap(data: bytes, options: dict) -> dict:
         packets.append(record)
     return {"format": source_format, "linktype": linktype, "packets": packets,
             "more_records": source_more or cursor < len(data),
-            "tcp_reassembly": False}
+            "tcp_reassembly": True,
+            "reassembly_tools": ["pcap_streams", "pcap_stream", "http_objects"]}
 
 
 # Options each artifact tool accepts (also shown to delegated specialists).
@@ -485,6 +486,9 @@ ALLOWED_OPTIONS: dict[str, set[str]] = {
     "disassemble": {"architecture", "offset", "length", "count", "address"},
     "zip_list": set(), "zip_read": {"member", "max_bytes", "password"}, "gzip": {"max_bytes"},
     "image": set(), "image_lsb": {"channels", "bit", "max_bytes"}, "pcap": {"packets"},
+    "pcap_streams": {"packets", "limit", "preview"},
+    "pcap_stream": {"packets", "index", "direction", "max_bytes"},
+    "http_objects": {"packets", "index", "object", "max_bytes"},
     "x509": {"limit"}, "tls_certificates": {"packets", "connections", "limit"},
     "tls_decrypt": {"factor", "packets", "connections", "preview"},
     "tls_http_body": {"factor", "packets", "connections", "connection", "side", "message", "max_bytes"},
@@ -585,6 +589,20 @@ def inspect_bytes(data: bytes, tool: str, options: dict | None = None,
         return _image(data, tool, options)
     if tool == "pcap":
         return _pcap(data, options)
+    if tool in {"pcap_streams", "pcap_stream", "http_objects"}:
+        from metis.core import ctf_tcp
+        packets = bounded_integer(options, "packets", 4096, 1, 20_000)
+        if file_kind(data) == "PCAPNG":
+            data, _more = _pcapng_to_classic(data, packets)
+        if len(data) < 24 or file_kind(data) != "PCAP":
+            raise ValueError("PCAP or supported PCAPNG required")
+        if tool == "pcap_streams":
+            return ctf_tcp.list_streams(data, packets=packets, limit=bounded_integer(options, "limit", 64, 1, 256),
+                                        preview=bounded_integer(options, "preview", 64, 0, 256))
+        maximum = bounded_integer(options, "max_bytes", 65_536, 1, 1_048_576)
+        if tool == "pcap_stream":
+            return ctf_tcp.stream_payload(data, options, packets=packets, max_bytes=maximum)
+        return ctf_tcp.http_objects(data, options, packets=packets, max_bytes=maximum)
     if tool == "x509":
         from metis.core.ctf_x509 import MAX_CERTIFICATES, x509_file
         return x509_file(data, options, bounded_integer(options, "limit", 8, 1, MAX_CERTIFICATES))
