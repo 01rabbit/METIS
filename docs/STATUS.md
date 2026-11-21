@@ -1,5 +1,18 @@
 # METIS implementation status
 
+## CTF readiness pass under Claude Code (2026-11-21)
+
+Local integration branch `local/integration-2026-11-21` (not pushed): audits of
+the Claude Code integration, local-file, web, `nc`, sandbox and contest paths;
+fixes for CTFd redirects/CSRF/verdicts, remote timeouts and TLS opt-in, operator
+error detail, magic-based triage, ELF-aware disassembly and an engine
+reachability check before sandbox reservation; new `carve`, `flag_scan`, `xor`,
+TCP-reassembly and HTTP-object tools; and forensics, crypto and rev rehearsals
+solved through the real plan/dispatch/subagent/verify flow with local
+commitments. Operator readiness only: no Issue #6–#9 gate is met by this work.
+See [`ctf-readiness-2026-11-21.md`](reports/ctf-readiness-2026-11-21.md) and the
+Issue #6 retrospective [`issue6-failure-breakdown-2026-11-21.md`](reports/issue6-failure-breakdown-2026-11-21.md).
+
 ## Issue #9 queued specialist dispatch pause/resume (2026-11-20)
 
 The authenticated loopback operator view can pause or resume queued specialist
