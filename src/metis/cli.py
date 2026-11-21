@@ -166,6 +166,13 @@ def agent_scheduler_command(args: argparse.Namespace) -> Any:
                                specialist_turn_budget=args.specialist_turn_budget)
 
 
+def _explain_missing_session(reason: str) -> str:
+    if "Codex session not found" in reason:
+        return (reason + " (the run_id must come from `metis codex intake` or `metis web open`; "
+                "`metis prepare` run ids are not Codex sessions)")
+    return reason
+
+
 def _note(args: argparse.Namespace) -> str | None:
     if args.note_file:
         return args.note_file.read_text()[:4000]
@@ -789,6 +796,12 @@ def main() -> int:
                 if len(raw) > 262_144:
                     raise ValueError("write-up input exceeds 256 KiB")
                 output = book.save(args.contest_id, args.challenge_id, WriteupInput.model_validate_json(raw))
+                unstored = [item for item in output.get("techniques", [])
+                            if not item.get("stored") and not item.get("already_known")]
+                if unstored:
+                    reasons = "; ".join(f"{item.get('title')}: {item.get('error', 'not stored')}" for item in unstored)
+                    output["warning"] = f"{len(unstored)} technique(s) were NOT stored in memory ({reasons})"
+                    print("warning: " + output["warning"], file=sys.stderr)
             elif args.writeup_command == "index":
                 output = book.index(args.contest_id)
             elif args.writeup_command == "knowledge":
@@ -817,15 +830,22 @@ def main() -> int:
                                            next_step=args.next_step, status=args.status)
             print(json.dumps(output))
             return 0
-        except (OSError, ValueError, TypeError, sqlite3.Error):
-            parser.exit(2, "Knowledge command rejected: use abstract, evidence-backed methods without flags or credentials\n")
+        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+            # pydantic ValidationError messages echo input values, so only plain ValueErrors are surfaced
+            detail = _explain_missing_session((str(exc).splitlines() or [""])[0][:300]) if type(exc) is ValueError else ""
+            parser.exit(2, "Knowledge command rejected: " + (detail + "; " if detail else "")
+                        + "use abstract, evidence-backed methods without flags or credentials\n")
     if args.command == "plan":
         try:
             mode = None if args.mode == "auto" else args.mode
-            print(json.dumps(AgentLedger(args.database).create_wave(args.run_id, mode=mode, reason=args.reason)))
+            wave = AgentLedger(args.database).create_wave(args.run_id, mode=mode, reason=args.reason)
+            if wave.get("execution_mode") == "sequential" and not wave.get("assignments"):
+                wave["next"] = ("sequential: Daybreak covers the roles itself; to delegate, re-run with "
+                                "--mode delegated --reason '<unresolved, different hypothesis>'")
+            print(json.dumps(wave))
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
-            plan_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:300]
+            plan_reason = _explain_missing_session((str(exc).splitlines() or [type(exc).__name__])[0][:300])
             parser.exit(2, "Agent plan rejected: " + plan_reason + "\n")
     if args.command == "contest":
         try:
@@ -879,7 +899,7 @@ def main() -> int:
             print(json.dumps(output))
             return 0
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
-            contest_reason = (str(exc).splitlines() or [type(exc).__name__])[0][:400]
+            contest_reason = _explain_missing_session((str(exc).splitlines() or [type(exc).__name__])[0][:400])
             parser.exit(2, "Contest command rejected: " + contest_reason + "\n")
     if args.command == "agent":
         try:

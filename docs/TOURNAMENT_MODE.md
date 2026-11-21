@@ -128,3 +128,61 @@ printf '%s' '{"rules": {"ends_at": "2026-12-31 21:00 JST"}}' | .venv/bin/metis c
 ボードに無い問題だけを追加します。既存の問題の状態・run・メモは変わりません（配点と解答数だけ更新）。
 AlpacaHack Daily のように毎日増える大会は、`./play` で大会を選べば Claude が最初に新着を取り込みます。
 
+
+## 本番大会の手順（live contest recipe）
+
+1. runを作ります。run IDは `metis codex intake` か `metis web open` が返すものだけが使えます。
+   `metis prepare` のrun IDは Codex セッションではないため、`contest update` / `plan` / `agent` は
+   "Codex session not found" で失敗します。大会の問題は `competition` として分類します（既定の
+   `unlisted` のままだと `memory learn` / `writeup save` の technique は保存されません）。
+
+   ```sh
+   .venv/bin/metis codex intake --title 'CHALLENGE' --artifact ./files/chal.zip --evaluation-split competition
+   ```
+
+2. 問題とrunを結び付けます。
+
+   ```sh
+   printf '%s' '{"state":"investigating","run_id":"RUN_ID"}' \
+     | .venv/bin/metis contest update CONTEST_ID CHALLENGE_ID
+   ```
+
+3. 計画を立てます。`--mode auto`（既定）は単純な問題だと `sequential` を返し、wave を消費します。
+   委任したいときは最初から指定します。
+
+   ```sh
+   .venv/bin/metis plan RUN_ID --mode delegated --reason 'independent static and crypto hypotheses'
+   ```
+
+注意:
+
+- `--database` はグループ名の後、サブコマンドの前に置きます:
+  `metis contest --database .metis-state/metis.sqlite dispatch CONTEST_ID`。
+- `contest dispatch` は問題を `investigating`（担当者なし）にします。`swarm`（`contest claim`）は担当者なしの
+  `investigating` も借りられますが、dispatch の timebox が切れると `blocked` になります。1つの大会では
+  どちらか一方の運用を選ぶのが安全です。
+- `contest board` の `blocked_by_prerequisites` は、前提問題が `abandoned`（断念）になり永久に解放されない
+  問題だけを示します。前提が未解決で待っているだけの問題は含まれません。
+
+stdinへ渡すJSONの例:
+
+```sh
+# contest add: 配列、または {"challenges":[...]}
+printf '%s' '[{"challenge_id":"web-1","title":"Login","category":"web","points":300,"estimated_minutes":20,"confidence":0.5,"prerequisites":[]}]' \
+  | .venv/bin/metis contest add CONTEST_ID
+
+# agent report: hypothesis/evidence/falsifier/next_action は5〜2000文字、event_sequences は観測済みのrunイベント番号
+printf '%s' '{"hypothesis":"Signature check skips the alg field","evidence":"Source shows verify() without algorithms list","falsifier":"A tampered token is rejected","next_action":"Replay one tampered token in the sandbox","event_sequences":[1,2],"status":"supported","artifact_refs":[]}' \
+  | .venv/bin/metis agent report RUN_ID WAVE_ID ASSIGNMENT_ID
+
+# writeup save: summary 必須。techniques は run_id が competition/practice のrunにリンクしている場合だけ保存される
+printf '%s' '{"summary":"Forged the session token via the missing algorithm check.","analysis":"...","solution":"...","tags":["jwt"],"run_id":"RUN_ID","source_split":"competition","techniques":[{"title":"JWT alg confusion","category":"web","summary":"Verify that the algorithm list is pinned","conditions":"JWT session cookie"}]}' \
+  | .venv/bin/metis writeup --root writeups save CONTEST_ID CHALLENGE_ID
+
+# memory learn: 抽象的な方法のみ（flag・認証情報・長い符号化文字列は拒否される）
+printf '%s' '{"title":"JWT alg confusion","category":"web","summary":"Check that the verifier pins the algorithm list.","conditions":"JWT session cookie","outcome":"success","source_run_id":"RUN_ID"}' \
+  | .venv/bin/metis memory learn
+```
+
+`writeup save` は technique を保存できなかった場合も終了コード0を返しますが、出力の最上位に `warning` を付け、
+stderr にも同じ内容を出します。
