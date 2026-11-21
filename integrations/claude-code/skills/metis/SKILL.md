@@ -36,6 +36,7 @@ direct the user to `metis web auth`, which prompts with masked input).
 | ksnctf | `metis web open https://ksnctf.sweetduet.info/problem/N` |
 | HTML page | `metis web open URL` (add `--render` if the statement is built by JavaScript) |
 | Local files | `metis codex intake --title T --description D --artifact PATH ...` |
+| nc only (no URL/files) | `metis codex intake --title T --description "nc HOST PORT"` (no `--artifact`), then `metis remote suggest RUN` |
 | Whole event | `metis web catalog URL [--adapter rctf]` → `metis contest create/add/dispatch` |
 
 Files on another origin (e.g. a CDN bucket) need `--allow-origin ORIGIN` and only

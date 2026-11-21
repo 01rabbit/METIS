@@ -45,7 +45,26 @@ NC_PATTERN = re.compile(
     r"\b(?:nc|ncat|netcat|telnet)\s+(?:-[a-zA-Z]+\s+)*(?P<ssl>--ssl\s+)?"
     r"(?P<host>[A-Za-z0-9.-]{1,253}|\[[0-9a-fA-F:]+\])\s+(?P<port>[0-9]{1,5})\b")
 OPENSSL_PATTERN = re.compile(
-    r"openssl\s+s_client\s+(?:-\S+\s+)*-connect\s+(?P<host>[A-Za-z0-9.-]{1,253}):(?P<port>[0-9]{1,5})")
+    r"openssl\s+s_client\s+(?:-\S+\s+)*-connect\s+"
+    r"(?P<host>[A-Za-z0-9.-]{1,253}|\[[0-9a-fA-F:]+\]):(?P<port>[0-9]{1,5})")
+SOCAT_PATTERN = re.compile(
+    r"\bsocat\s+(?:-\S+\s+)*(?:\S+\s+)?(?P<proto>OPENSSL|SSL|TCP4?|TCP6?)(?:-CONNECT)?:"
+    r"(?P<host>[A-Za-z0-9.-]{1,253}|\[[0-9a-fA-F:]+\]):(?P<port>[0-9]{1,5})\b", re.IGNORECASE)
+_HOST_PORT = (r"(?<![\w@./:-])(?P<host>(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+              r"(?:[A-Za-z][A-Za-z0-9-]{0,62}|[0-9]{1,3})|\[[0-9a-fA-F:]+\]):(?P<port>[0-9]{1,5})\b")
+BARE_HOST_PORT = re.compile(_HOST_PORT)
+BARE_CONTEXT = re.compile(r"\b(?:nc|ncat|netcat|port|connect|connection|server|host|service|remote|socket)\b",
+                          re.IGNORECASE)
+_IPV4 = re.compile(r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}")
+
+
+def _plausible_host(host: str) -> bool:
+    """Reject dotted numbers such as 1.5 or 3.14 that are not IPv4 addresses."""
+    if host.startswith("["):
+        return True
+    if host.rsplit(".", 1)[-1].isdigit():
+        return bool(_IPV4.fullmatch(host)) and all(int(part) <= 255 for part in host.split("."))
+    return True
 
 
 class Step(Contract):
@@ -177,6 +196,18 @@ class RemoteWorkflow:
                           "tls": bool(match["ssl"])})
         for match in OPENSSL_PATTERN.finditer(text):
             found.append({"host": match["host"], "port": int(match["port"]), "tls": True})
+        for match in SOCAT_PATTERN.finditer(text):
+            found.append({"host": match["host"].strip("[]"), "port": int(match["port"]),
+                          "tls": match["proto"].upper() in {"OPENSSL", "SSL"}})
+        for line in text.splitlines():
+            if not BARE_CONTEXT.search(line):
+                continue
+            for match in BARE_HOST_PORT.finditer(line):
+                if _plausible_host(match["host"]):
+                    found.append({"host": match["host"].strip("[]"), "port": int(match["port"]),
+                                  "tls": False})
+        for item in found:
+            item["host"] = item["host"].lower()
         unique = [dict(item) for item in {json.dumps(item, sort_keys=True): item for item in found}.values()
                   if 1 <= item["port"] <= 65535]
         return {"run_id": run_id, "candidates": unique[:MAX_ENDPOINTS],

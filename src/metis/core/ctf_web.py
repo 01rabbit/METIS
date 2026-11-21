@@ -707,10 +707,11 @@ class WebWorkflow:
         if not isinstance(payload, dict):
             raise ValueError("unrecognized or oversized CTFd catalog")  # noqa: TRY004 -- callers handle ValueError
         items = payload.get("data") if payload.get("success") is True else None
-        if not isinstance(items, list) or len(items) > 500:
-            raise ValueError("unrecognized or oversized CTFd catalog")
+        if not isinstance(items, list):
+            raise ValueError("unrecognized CTFd catalog")  # noqa: TRY004 -- callers handle ValueError
+        truncated = len(items) > 500
         challenges = []
-        for item in items:
+        for item in items[:500]:
             if not isinstance(item, dict):
                 raise TypeError("invalid CTFd catalog item")
             identity = item.get("id")
@@ -727,8 +728,12 @@ class WebWorkflow:
                                "category": category, "points": float(value), "solves": solves,
                                "estimated_minutes": 30, "confidence": 0.35,
                                "url": base, "adapter": "ctfd"})
+            if isinstance(item.get("type"), str):
+                challenges[-1]["type"] = item["type"][:40]
+            if isinstance(item.get("solved_by_me"), bool):
+                challenges[-1]["solved"] = item["solved_by_me"]
         return {"source": "ctfd", "base_url": display_url(url), "challenges": challenges,
-                "count": len(challenges), "credentials_exposed": False}
+                "count": len(challenges), "truncated": truncated, "credentials_exposed": False}
 
     def open(self, url: str, *, adapter: str = "auto", challenge_id: int | str | None = None,
              allowed_origins: list[str] | None = None, token_env: str | None = None,
@@ -849,6 +854,9 @@ class WebWorkflow:
             description_html = str(challenge.get("description", ""))[:131072]
             page = Page(description_html, url)
             description = page.text or description_html
+            connection = challenge.get("connection_info")
+            if isinstance(connection, str) and connection.strip():
+                description += "\n\nConnection info: " + " ".join(connection.split())[:300]
             category = str(challenge.get("category", "")).lower()
             categories = [category] if category in {"web", "crypto", "rev", "pwn", "forensics", "misc"} else []
             raw_files = challenge.get("files", [])
