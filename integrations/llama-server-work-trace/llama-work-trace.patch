@@ -1,5 +1,5 @@
 diff --git a/include/llama.h b/include/llama.h
-index 181d840a6..29ea597cc 100644
+index 181d840..29ea597 100644
 --- a/include/llama.h
 +++ b/include/llama.h
 @@ -63,6 +63,10 @@ extern "C" {
@@ -14,10 +14,10 @@ index 181d840a6..29ea597cc 100644
  
      typedef int32_t llama_pos;
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 9066e061e..cbd6057a5 100644
+index 9066e06..9d28e19 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -15,14 +15,167 @@
+@@ -15,14 +15,177 @@
  #include "llama.h"
  
  #include <algorithm>
@@ -48,7 +48,11 @@ index 9066e061e..cbd6057a5 100644
 +    std::atomic<uint64_t> graph_pre_dispatch_failures{0};
 +    std::atomic<uint64_t> zero_position_graphs{0};
 +    std::atomic<uint64_t> server_batch_retries{0};
-+    std::atomic<uint64_t> injected_precompute_failures{0};
++    std::atomic<uint64_t> injected_memory_prepare_failures{0};
++    std::atomic<uint64_t> memory_prepare_failures{0};
++    std::atomic<uint64_t> memory_update_retry_attempts{0};
++    std::atomic<uint64_t> memory_update_retry_successes{0};
++    std::atomic<uint64_t> memory_update_retry_false_results{0};
 +};
 +
 +struct metis_trace_state {
@@ -91,7 +95,9 @@ index 9066e061e..cbd6057a5 100644
 +                "\"graph_dispatches\":%llu,\"graph_positions\":%llu,"
 +                "\"graph_failures\":%llu,\"graph_pre_dispatch_failures\":%llu,"
 +                "\"zero_position_graphs\":%llu,\"server_batch_retries\":%llu,"
-+                "\"injected_precompute_failures\":%llu}",
++                "\"injected_memory_prepare_failures\":%llu,\"memory_prepare_failures\":%llu,"
++                "\"memory_update_retry_attempts\":%llu,\"memory_update_retry_successes\":%llu,"
++                "\"memory_update_retry_false_results\":%llu}",
 +                name,
 +                static_cast<unsigned long long>(counts.process_calls.load()),
 +                static_cast<unsigned long long>(counts.process_encode_calls.load()),
@@ -106,7 +112,11 @@ index 9066e061e..cbd6057a5 100644
 +                static_cast<unsigned long long>(counts.graph_pre_dispatch_failures.load()),
 +                static_cast<unsigned long long>(counts.zero_position_graphs.load()),
 +                static_cast<unsigned long long>(counts.server_batch_retries.load()),
-+                static_cast<unsigned long long>(counts.injected_precompute_failures.load()));
++                static_cast<unsigned long long>(counts.injected_memory_prepare_failures.load()),
++                static_cast<unsigned long long>(counts.memory_prepare_failures.load()),
++                static_cast<unsigned long long>(counts.memory_update_retry_attempts.load()),
++                static_cast<unsigned long long>(counts.memory_update_retry_successes.load()),
++                static_cast<unsigned long long>(counts.memory_update_retry_false_results.load()));
 +        };
 +        std::fputs("METIS_LLAMA_TRACE_V1 {\"version\":1,\"source_commit\":"
 +                   "\"b1b770d90d94cad9e9ea5b993bdbc383a522fb28\",\"nonce\":\"",
@@ -185,7 +195,7 @@ index 9066e061e..cbd6057a5 100644
  //
  // llama_context
  //
-@@ -1816,6 +1969,7 @@ bool llama_context::set_adapter_cvec(
+@@ -1816,6 +1979,7 @@ bool llama_context::set_adapter_cvec(
  
  llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
      if (mctx && !mctx->apply()) {
@@ -193,7 +203,7 @@ index 9066e061e..cbd6057a5 100644
          LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
          ret = GGML_STATUS_FAILED;
          return nullptr;
-@@ -1853,12 +2007,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1853,12 +2017,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
  
          if (!gf) {
@@ -208,7 +218,7 @@ index 9066e061e..cbd6057a5 100644
              LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
              ret = GGML_STATUS_ALLOC_FAILED;
              return nullptr;
-@@ -1877,7 +2033,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1877,7 +2043,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
      }
  
@@ -217,7 +227,7 @@ index 9066e061e..cbd6057a5 100644
      if (status != GGML_STATUS_SUCCESS) {
          LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
          ret = status;
-@@ -1890,6 +2046,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1890,6 +2056,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
  }
  
  int llama_context::encode(const llama_batch_ext & batch_inp) {
@@ -225,19 +235,54 @@ index 9066e061e..cbd6057a5 100644
      if (batch_inp.tokens.empty()) {
          LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
          return -1;
-@@ -2138,6 +2295,11 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+@@ -2138,6 +2305,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
  }
  
  int llama_context::decode(const llama_batch_ext & batch_inp) {
 +    if (metis_trace.enabled()) metis_trace.active().decode_calls.fetch_add(1, std::memory_order_relaxed);
-+    if (metis_trace_take_retry_injection()) {
-+        metis_trace.active().injected_precompute_failures.fetch_add(1, std::memory_order_relaxed);
-+        return 1; // simulate a KV-capacity refusal before any graph is submitted
-+    }
      if (!memory) {
          LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
          return encode(batch_inp);
-@@ -3122,7 +3284,8 @@ void llama_context::sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph
+@@ -2258,7 +2426,16 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+             return -2;
+         }
+ 
+-        switch (mctx->get_status()) {
++        auto memory_status = mctx->get_status();
++        if (memory_status == LLAMA_MEMORY_STATUS_SUCCESS &&
++                metis_trace_take_retry_injection()) {
++            metis_trace.active().injected_memory_prepare_failures.fetch_add(1, std::memory_order_relaxed);
++            memory_status = LLAMA_MEMORY_STATUS_FAILED_PREPARE;
++        }
++        if (metis_trace.enabled() && memory_status == LLAMA_MEMORY_STATUS_FAILED_PREPARE) {
++            metis_trace.active().memory_prepare_failures.fetch_add(1, std::memory_order_relaxed);
++        }
++        switch (memory_status) {
+             case LLAMA_MEMORY_STATUS_SUCCESS:
+                 {
+                 } break;
+@@ -2273,11 +2449,20 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+                     if (!did_optimize) {
+                         did_optimize = true;
+ 
++                        if (metis_trace.enabled()) {
++                            metis_trace.active().memory_update_retry_attempts.fetch_add(1, std::memory_order_relaxed);
++                        }
+                         if (memory_update(true)) {
++                            if (metis_trace.enabled()) {
++                                metis_trace.active().memory_update_retry_successes.fetch_add(1, std::memory_order_relaxed);
++                            }
+                             LLAMA_LOG_DEBUG("%s: retrying batch size %d after cache optimization\n", __func__, balloc->get_n_tokens());
+ 
+                             continue;
+                         }
++                        if (metis_trace.enabled()) {
++                            metis_trace.active().memory_update_retry_false_results.fetch_add(1, std::memory_order_relaxed);
++                        }
+                     }
+ 
+                     LLAMA_LOG_WARN("%s: failed to find a memory slot for batch of size %d\n", __func__, balloc->get_n_tokens());
+@@ -3122,7 +3307,8 @@ void llama_context::sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph
  
  ggml_status llama_context::graph_compute(
              ggml_cgraph * gf,
@@ -247,7 +292,7 @@ index 9066e061e..cbd6057a5 100644
      int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
      ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
  
-@@ -3141,7 +3304,9 @@ ggml_status llama_context::graph_compute(
+@@ -3141,7 +3327,9 @@ ggml_status llama_context::graph_compute(
  
      copy_experts.reset();
  
@@ -257,7 +302,7 @@ index 9066e061e..cbd6057a5 100644
      if (status != GGML_STATUS_SUCCESS) {
          LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
      }
-@@ -5165,11 +5330,14 @@ void llama_opt_epoch(
+@@ -5165,11 +5353,14 @@ void llama_opt_epoch(
  }
  
  int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_ext * batch) {
@@ -276,7 +321,7 @@ index 9066e061e..cbd6057a5 100644
  
  //
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 45eca4566..94d09afa5 100644
+index 45eca45..94d09af 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
 @@ -277,7 +277,7 @@ public:
@@ -289,7 +334,7 @@ index 45eca4566..94d09afa5 100644
      // reserve a graph with a dummy ubatch of the specified size
      ggml_cgraph * graph_reserve(
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 4ec7fb89c..986896086 100644
+index 4ec7fb8..9868960 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -929,7 +929,7 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
@@ -302,7 +347,7 @@ index 4ec7fb89c..986896086 100644
                  return updated;
              }
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index a6059ab38..bc66d61e8 100644
+index a6059ab..bc66d61 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -4767,6 +4767,8 @@ private:
@@ -315,7 +360,7 @@ index a6059ab38..bc66d61e8 100644
          } else {
              // success, apply batch metrics
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index ca3eb2dbb..14b4a169e 100644
+index ca3eb2d..14b4a16 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
 @@ -702,6 +702,8 @@ static int server_run_instance(common_params & params, server_role & role, commo

@@ -12,9 +12,11 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Barrier
 from typing import BinaryIO, Literal
 
 FIXTURE_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
@@ -186,6 +188,32 @@ def main() -> None:
     with running_server(binary, model, exact_cap - 1) as server:
         expect_denial(server, PROMPT, prompt_tokens, STARTUP_PROBE_TOKENS)
 
+    with running_server(binary, model, exact_cap) as server:
+        start = Barrier(3)
+
+        def concurrent_completion() -> dict | Exception:
+            start.wait(timeout=5)
+            try:
+                return server.request("/completion", PROMPT, timeout=15)
+            except (OSError, http.client.HTTPException, TimeoutError, ValueError) as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(concurrent_completion)
+            second = workers.submit(concurrent_completion)
+            start.wait(timeout=5)
+            outcomes = [first.result(timeout=20), second.result(timeout=20)]
+
+        successful = [result for result in outcomes if isinstance(result, dict)]
+        assert all(
+            result.get("tokens_evaluated") == prompt_tokens
+            and result.get("tokens_predicted") == 1
+            for result in successful
+        ), outcomes
+        assert len(successful) in (0, 1), outcomes
+        server.expect_outcome(75, exact_cap, "cap_denied")
+        assert f"METIS token work budget denied, requested={prompt_tokens}\n".encode() in server.logs()
+
     longer_completion = {**PROMPT, "n_predict": 3, "temperature": 0, "ignore_eos": True}
     with running_server(binary, model, exact_cap + 2) as server:
         assert server.request("/completion", longer_completion)["tokens_predicted"] == 3
@@ -231,6 +259,7 @@ def main() -> None:
         server.expect_no_receipt(-signal.SIGKILL)
 
     print(f"Verified work receipts on Unix socket shutdown and denial at prompt/decode cap {exact_cap}.")
+    print("Verified two client threads released together at cap; denial receipt charged the full cap.")
     print("Verified literal comma path, single Unix listener, and stale/symlink/public paths refused.")
     print("Verified broken receipt pipe refusal and missing receipt after a deadline and SIGKILL.")
 

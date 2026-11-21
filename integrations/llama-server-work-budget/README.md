@@ -105,8 +105,9 @@ python3 integrations/llama-server-work-budget/smoke.py \
     /tmp/metis-llama-guard-build/build/bin/llama-server /absolute/path/to/stories260K.gguf
 ```
 
-The smoke test has passed on macOS arm64 and in an Ubuntu 24.04 `linux/arm64`
-container under Colima's `rosetta` profile (full run details are in
+Before adding the concurrent-client case below, the sequential smoke passed on
+macOS arm64 and in an Ubuntu 24.04 `linux/arm64` container under Colima's
+`rosetta` profile (details are in
 [`issue8-native-linux-fixture-smoke-2026-11-20.md`](../../docs/reports/issue8-native-linux-fixture-smoke-2026-11-20.md)).
 The Linux run targeted aarch64 and did not exercise x86_64 translation. The
 smoke checks startup refusal at cap 1, prompt refusal at cap 21, one completion
@@ -120,6 +121,8 @@ sockets and symlinks; a nonprivate directory; a broken receipt pipe; an
 API-key requirement in XDG user config that must not
 change the controlled launch, and a SIGSTOP-induced client timeout followed by
 server SIGKILL with no receipt.
+
+A concurrent-client probe releases two client threads together to request completion at the exact cap. This pinned launch uses `--parallel 1`, so requests queue rather than decoding simultaneously; it does not test overlapping server work. On the pinned fixture and linux/arm64 target, the native counter denied a request at the cap and the terminal receipt reported the full cap. Since denial exits the process, the other request may also disconnect; the smoke accepts zero or one valid completion and requires the cap-denial receipt. This is fixture-specific evidence, not concurrency qualification across models or platforms.
 
 This builds on the native gate in METIS PR #87. The admitted
 `LlamaSpecialist` path now binds the scheduler-consumed claim to the cap,

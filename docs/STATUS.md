@@ -1022,10 +1022,11 @@ remain open pending their separate evidence gates.
 
 A test-only instrumented CPU build now records aggregate `llama_process`, graph,
 and server-retry work for one fixed public model fixture. A local Darwin arm64
-probe observed 22 request graph positions; a synthetic precompute refusal
-recorded one failed process call and one retry while graph positions remained
-22. The synthetic branch is not a real KV/allocator failure, and the manifest
-does not independently prove binary provenance. This trace establishes no
+probe observed 22 request graph positions. An injected
+memory-prepare status entered `memory_update(true)` and then the server batch
+retry branch; graph positions remained 22. This is not a real KV/allocator
+failure, and the manifest does not independently prove binary provenance.
+This trace establishes no
 hard token budget, held-out eligibility, MUNIN gain, CTF solve, or Issue #8
 acceptance. Capability flags remain false. See
 `docs/reports/issue8-native-work-trace-2026-11-20.md`.

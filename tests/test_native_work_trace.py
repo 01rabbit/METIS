@@ -32,7 +32,9 @@ def _counts(**overrides):
         "decode_calls": 1, "graph_dispatches": 1, "graph_positions": 2,
         "graph_failures": 0, "graph_pre_dispatch_failures": 0,
         "zero_position_graphs": 0, "server_batch_retries": 0,
-        "injected_precompute_failures": 0,
+        "injected_memory_prepare_failures": 0,
+        "memory_prepare_failures": 0, "memory_update_retry_attempts": 0,
+        "memory_update_retry_successes": 0, "memory_update_retry_false_results": 0,
     }
     value.update(overrides)
     return value
@@ -54,14 +56,17 @@ def test_parse_trace_discards_logs_and_preserves_aggregate_retry_counts():
         "process_calls": 2, "process_failures": 1, "decode_calls": 2,
         "process_decode_calls": 2, "input_positions": 22, "graph_dispatches": 2,
         "graph_positions": 22, "server_batch_retries": 1,
-        "injected_precompute_failures": 1,
+        "injected_memory_prepare_failures": 1,
+        "memory_prepare_failures": 1, "memory_update_retry_attempts": 1,
+        "memory_update_retry_false_results": 1,
     })
 
     trace = parse_trace(_stderr(record), expected_nonce=NONCE)
 
     assert trace.requests.process_failures == 1
     assert trace.requests.server_batch_retries == 1
-    assert trace.requests.injected_precompute_failures == 1
+    assert trace.requests.injected_memory_prepare_failures == 1
+    assert trace.requests.memory_update_retry_false_results == 1
 
 
 @pytest.mark.parametrize("mutation", [
@@ -96,7 +101,8 @@ def test_parse_trace_rejects_duplicate_json_keys():
     {"process_failures": 2},
     {"graph_failures": 2},
     {"server_batch_retries": 2},
-    {"injected_precompute_failures": 2},
+    {"injected_memory_prepare_failures": 2},
+    {"memory_update_retry_attempts": 1},
 ])
 def test_parse_trace_rejects_inconsistent_counts(changes):
     with pytest.raises(ValueError, match="invalid"):
@@ -156,22 +162,33 @@ def test_builder_checks_patch_digest_before_source_application():
 def test_retry_probe_requires_exact_synthetic_counters():
     trace = NativeWorkTrace.model_validate(_record(requests={
         "process_calls": 2, "process_decode_calls": 2, "decode_calls": 2,
-        "process_failures": 1, "server_batch_retries": 1,
-        "injected_precompute_failures": 1,
+        "process_failures": 0, "server_batch_retries": 0,
+        "injected_memory_prepare_failures": 1, "memory_prepare_failures": 1,
+        "memory_update_retry_attempts": 1, "memory_update_retry_successes": 1,
     }))
     validate_retry_probe(trace, injected=True)
 
+    server_retry = NativeWorkTrace.model_validate(_record(requests={
+        "process_calls": 3, "process_decode_calls": 3, "decode_calls": 3,
+        "process_failures": 1, "server_batch_retries": 1,
+        "injected_memory_prepare_failures": 1, "memory_prepare_failures": 1,
+        "memory_update_retry_attempts": 1, "memory_update_retry_false_results": 1,
+    }))
+    validate_retry_probe(server_retry, injected=True)
+
     for changes in (
-        {"process_failures": 2},
-        {"process_failures": 2, "server_batch_retries": 2},
-        {"injected_precompute_failures": 0},
+        {"process_failures": 1},
+        {"process_failures": 1, "server_batch_retries": 1},
+        {"memory_update_retry_successes": 0, "memory_update_retry_false_results": 1},
+        {"injected_memory_prepare_failures": 0},
         {"graph_pre_dispatch_failures": 1},
         {"graph_dispatches": 2, "graph_failures": 1},
     ):
         record = _record(requests={
             "process_calls": 2, "process_decode_calls": 2, "decode_calls": 2,
-            "process_failures": 1, "server_batch_retries": 1,
-            "injected_precompute_failures": 1,
+            "process_failures": 0, "server_batch_retries": 0,
+            "injected_memory_prepare_failures": 1, "memory_prepare_failures": 1,
+            "memory_update_retry_attempts": 1, "memory_update_retry_successes": 1,
             **changes,
         })
         candidate = NativeWorkTrace.model_validate(record)
@@ -200,10 +217,8 @@ def test_retry_probe_rejects_unexpected_counters_without_injection():
 def test_retry_probe_requires_successful_request_work(injected, missing, message):
     requests = _counts(**missing)
     if injected:
-        requests["process_calls"] += 1
-        requests["process_decode_calls"] += 1
-        requests.update(process_failures=1, server_batch_retries=1,
-                        injected_precompute_failures=1)
+        requests.update(injected_memory_prepare_failures=1, memory_prepare_failures=1,
+                        memory_update_retry_attempts=1, memory_update_retry_successes=1)
     trace = NativeWorkTrace.model_validate(_record(requests=requests))
 
     with pytest.raises(ValueError, match=message):
@@ -211,8 +226,10 @@ def test_retry_probe_requires_successful_request_work(injected, missing, message
 
 
 @pytest.mark.parametrize("field", [
-    "process_failures", "server_batch_retries", "injected_precompute_failures",
-    "graph_failures", "graph_pre_dispatch_failures",
+    "process_failures", "server_batch_retries", "injected_memory_prepare_failures",
+    "graph_failures", "graph_pre_dispatch_failures", "memory_prepare_failures",
+    "memory_update_retry_attempts", "memory_update_retry_successes",
+    "memory_update_retry_false_results",
 ])
 def test_retry_probe_rejects_unexpected_startup_failures(field):
     startup = _counts()
@@ -222,9 +239,13 @@ def test_retry_probe_rejects_unexpected_startup_failures(field):
     elif field == "server_batch_retries":
         startup.update(process_calls=2, process_decode_calls=2, decode_calls=2,
                        process_failures=1)
-    elif field == "injected_precompute_failures":
-        startup.update(process_calls=2, process_decode_calls=2, decode_calls=2,
-                       process_failures=1, server_batch_retries=1)
+    elif field == "injected_memory_prepare_failures":
+        startup.update(memory_prepare_failures=1, memory_update_retry_attempts=1,
+                       memory_update_retry_successes=1)
+    elif field == "memory_update_retry_attempts":
+        startup.update(memory_prepare_failures=1, memory_update_retry_successes=1)
+    elif field in {"memory_update_retry_successes", "memory_update_retry_false_results"}:
+        startup.update(memory_prepare_failures=1, memory_update_retry_attempts=1)
     elif field == "graph_failures":
         startup.update(graph_dispatches=2)
     trace = NativeWorkTrace.model_validate(_record(startup=startup))
