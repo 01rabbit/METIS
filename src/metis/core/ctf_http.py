@@ -64,6 +64,14 @@ class HTTPResult:
     sha256: str
 
 
+class OutOfScopeRedirect(ValueError):
+    """A redirect pointed outside the authorized origin scope; it was never followed."""
+
+    def __init__(self, destination_origin: str):
+        super().__init__("redirect destination is outside scope")
+        self.destination_origin = destination_origin
+
+
 class SafeHTTP:
     """Pin direct DNS and preserve platform proxies. Credentials bind to one origin.
 
@@ -263,7 +271,7 @@ class SafeHTTP:
                         and response_headers.get("location")):
                     destination = clean_url(urllib.parse.urljoin(url, response_headers["location"]))
                     if origin(destination) not in self.allowed or (sensitive and origin(destination) != initial_origin):
-                        raise ValueError("redirect destination is outside scope")
+                        raise OutOfScopeRedirect(origin(destination))
                     if method == "POST" and status in (301, 302, 303):
                         method, body, headers = "GET", None, {}
                     url = destination
