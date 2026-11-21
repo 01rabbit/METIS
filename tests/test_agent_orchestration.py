@@ -1024,6 +1024,11 @@ def test_cli_plan_dispatch_intent_complete(state, tmp_path, monkeypatch, capsys)
     started = cli("agent", "--database", str(state), "dispatch", run_id, plan["wave_id"])["started"]
     job = started[0]
     assert job["brief"]["how"]["report"].startswith("metis agent complete")
+    from metis.core.agent_contracts import CompactReport, ProposedAction
+    for example in job["brief"]["how"]["intent_examples"]:
+        ProposedAction.model_validate(example)
+    template = dict(job["brief"]["how"]["report_template"], status="inconclusive")
+    CompactReport.model_validate(template)
     intent = tmp_path / "intent.json"
     intent.write_text(json.dumps({"kind": "artifact", "tool": "text",
                                   "artifact": job["brief"]["artifacts"][0]}))

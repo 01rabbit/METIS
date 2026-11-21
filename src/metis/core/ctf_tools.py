@@ -297,7 +297,15 @@ def _structured(tool: str, data: str) -> Any:
         if "d" in args:
             n, d = number(args["n"]), number(args["d"])
         else:
-            p, q, e = number(args["p"]), number(args["q"]), number(args["e"])
+            e = number(args["e"])
+            if "p" in args and "q" in args:
+                p, q = number(args["p"]), number(args["q"])
+            else:
+                # One factor plus the modulus is enough (e.g. after a shared-prime gcd).
+                modulus, known = number(args["n"]), number(args.get("p", args.get("q")))
+                if known < 2 or modulus % known:
+                    raise ValueError("supplied factor does not divide n")
+                p, q = known, modulus // known
             if p < 2 or q < 2 or p == q or (p * q).bit_length() > 4096:
                 raise ValueError("invalid supplied RSA factors")
             n, d = p * q, pow(e, -1, (p - 1) * (q - 1))
@@ -377,7 +385,10 @@ def transform(request: ToolRequest) -> ToolResult:
             output = _structured(tool, data)
         return ToolResult(ok=True, output=output if isinstance(output, str) else json.dumps(output))
     except (ValueError, KeyError, TypeError, OverflowError, zlib.error):
-        hint = (" (? = optional; e.g. --data '{\"data\":\"ab\",\"encoding\":\"hex\"}')"
-                if request.tool in JSON_TOOL_INPUTS else "")
+        hint = ""
+        if request.tool in JSON_TOOL_INPUTS:
+            accepted, required = JSON_TOOL_INPUTS[request.tool]
+            example = json.dumps({key: "..." for key in (required or accepted[:1])})
+            hint = f" (? = optional; integers may be decimal or 0x-hex strings; e.g. --data '{example}')"
         return ToolResult(ok=False, output=("invalid or unsupported bounded tool input; "
                                             f"{request.tool} expects {input_shape(request.tool)}{hint}"))

@@ -611,6 +611,19 @@ class AgentScheduler:
                 "report": f"metis agent complete {run_id} {assignment['assignment_id']} {prefix} --file REPORT.json",
                 "give_up": f"metis agent fail {run_id} {assignment['assignment_id']} {prefix} --reason TEXT",
                 "candidate": "never in reports; tell Daybreak which recorded transformation produces it",
+                # Templates so lower-tier workers do not guess the contracts (fields per
+                # agent_contracts.ProposedAction / CompactReport; unknown keys are rejected).
+                "intent_examples": [
+                    {"kind": "artifact", "tool": "zip_list", "artifact": "NAME", "options": {}},
+                    {"kind": "derive", "tool": "zip_read", "artifact": "NAME", "options": {"member": "PATH"}},
+                    {"kind": "data", "tool": "xor_single", "data": '{"data":"HEX","encoding":"hex"}'},
+                ],
+                "report_template": {
+                    "hypothesis": "one sentence", "evidence": "one string citing observations",
+                    "falsifier": "what would disprove it", "next_action": "one concrete step",
+                    "event_sequences": [0], "status": "supported|rejected|inconclusive",
+                },
+                "tool_options": "metis codex tools",
             },
         }
 
