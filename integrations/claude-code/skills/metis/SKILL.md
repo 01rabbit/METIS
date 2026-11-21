@@ -131,6 +131,11 @@ narrative or scripts into the vault automatically.
   reassembly and HTTP bodies. Error replies carry a `detail` with the cause.
 - Dynamic (challenge binaries — **never run them on the host**):
   `metis sandbox run RUN_ID NAME [--mode run|strace|ltrace|gdb|script] [--arg A] [--with LIBC] [--stdin-file F | --stdin-hex H] [--gdb CMD]... [--script exploit.py]`.
+  Run it as a bare command (no pipes, redirects or `&&`): only the bare form is
+  exempt from Claude Code's Bash sandbox. A redirected call fails with
+  `sandbox cleanup could not be confirmed` and leaves `run has an unreconciled
+  active operation`; clear it with a bare `metis codex recover RUN_ID` (it also
+  needs the container engine, so it fails inside the Bash sandbox).
   Script mode runs your Python/sh inside the no-network container with the
   target at `$METIS_TARGET` and pwntools available — use it to develop exploits.
   Foreign-architecture targets (x86-64 on Apple Silicon) run under QEMU
