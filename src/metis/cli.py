@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from metis import __version__, cli_ext
 from metis.core.artifacts import read_artifact
-from metis.core.codex_session import CodexSession
+from metis.core.codex_session import CodexSession, tool_catalog
 from metis.core.contracts import ChallengeManifest, RunBudget, RunEvent, RunStatus
 from metis.core.ctf_artifacts import ARTIFACT_TOOLS, MAX_ARTIFACT, MAX_FILE
 from metis.core.ctf_browser import available as browser_available
@@ -70,11 +70,12 @@ def read_candidate(path: Path | None) -> str:
     change the candidate; every other byte is kept.
     """
     raw = path.read_bytes()[:65_537] if path is not None else sys.stdin.buffer.read(65_537)
-    if raw.endswith(b"\r\n"):
-        raw = raw[:-2]
-    elif raw.endswith(b"\n"):
-        raw = raw[:-1]
-    return raw.decode()
+    return strip_one_newline(raw.decode())
+
+
+def strip_one_newline(text: str) -> str:
+    """Remove exactly one trailing CRLF or LF (shared by `web submit` and `codex submit`)."""
+    return text.removesuffix("\r\n") if text.endswith("\r\n") else text.removesuffix("\n")
 
 
 def _json_input(path: Path | None, limit: int = 65_536) -> dict[str, Any]:
@@ -1136,7 +1137,8 @@ def main() -> int:
             elif args.codex_command == "tools":
                 output = {"inline_tools": sorted(DATA_TOOLS), "artifact_tools": sorted(ARTIFACT_TOOLS),
                           "artifact_parser_limit_bytes": MAX_ARTIFACT, "artifact_file_limit_bytes": MAX_FILE,
-                          "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536}
+                          "intake_total_limit_bytes": 512 * 1024 * 1024, "inline_limit_bytes": 65_536,
+                          **tool_catalog()}
             elif args.codex_command == "plan":
                 output = AgentLedger(args.database).create_wave(
                     args.run_id, mode=None if args.mode == "auto" else args.mode, reason=args.reason)
@@ -1191,7 +1193,8 @@ def main() -> int:
                 if args.codex_command == "act":
                     output = session.act(args.run_id, ToolRequest(tool=args.tool, data=data))
                 else:
-                    output = session.submit(args.run_id, data)
+                    # Same single trailing LF/CRLF removal as `web submit` (read_candidate).
+                    output = session.submit(args.run_id, strip_one_newline(data))
             print(json.dumps(output))
             return 0
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
